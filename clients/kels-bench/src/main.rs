@@ -34,7 +34,7 @@ fn test_said(name: &str) -> String {
     compute_said(&name.to_string()).expect("valid said computation")
 }
 
-const DEFAULT_KELS_URL: &str = "http://kels.authentic-ddi.local";
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
 
 /// KELS Load Testing Tool
 #[derive(Parser, Debug)]
