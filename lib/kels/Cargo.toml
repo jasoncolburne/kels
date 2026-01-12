@@ -1,0 +1,83 @@
+[package]
+name = "libkels"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS client library - Key Event Log Storage"
+
+[lib]
+name = "kels"
+path = "src/lib.rs"
+
+[features]
+default = ["native"]
+native = ["tokio/full", "cesr/native", "reqwest/rustls-tls"]
+wasm = ["cesr/wasm", "wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
+secure-enclave = ["security-framework", "security-framework-sys", "core-foundation", "core-foundation-sys"]
+redis = ["dep:redis"]
+server-caching = ["dep:cacheable"]
+dev-tools = []  # Developer-only tools - DO NOT enable in production
+
+[dependencies]
+# Local CESR library for cryptographic operations
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false }
+
+# Caching traits and derive macro (optional, for server-side caching)
+cacheable = { git = "https://github.com/jasoncolburne/cacheable", optional = true }
+
+# Async runtime (optional for WASM)
+tokio = { version = "1", optional = true }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Verifiable storage traits and derive macros
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# SAID computation
+blake3 = "1.5"
+
+# Time with microsecond precision
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+
+# Async traits
+async-trait = "0.1"
+
+# Base64 encoding
+base64 = "0.22"
+
+# Redis caching (optional, native only)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# WASM dependencies (optional)
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = ["console"], optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+# macOS/iOS Secure Enclave support (optional, for HardwareKeyProvider)
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = { version = "2.11", optional = true, features = ["OSX_10_15"] }
+security-framework-sys = { version = "2.14", optional = true }
+core-foundation = { version = "0.9", optional = true }
+core-foundation-sys = { version = "0.8", optional = true }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

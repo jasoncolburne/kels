@@ -1,0 +1,71 @@
+[package]
+name = "kels"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "Key Event Log Service - Storage for KERI-inspired key event logs"
+
+[[bin]]
+name = "kels"
+path = "src/main.rs"
+
+[[bin]]
+name = "kels-admin"
+path = "src/bin/admin.rs"
+
+[lib]
+name = "kels_service"
+path = "src/lib.rs"
+
+[dependencies]
+# Local libraries
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+cacheable = { git = "https://github.com/jasoncolburne/cacheable", features = ["redis"] }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+libkels = { path = "../../lib/kels", features = ["redis", "server-caching"] }
+libkels-derive = { path = "../../lib/kels-derive" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time with microsecond precision
+chrono = "0.4"
+
+# Error handling
+thiserror = "1"
+async-trait = "0.1.89"
+
+# Redis for KelStreamCache
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+futures-util = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

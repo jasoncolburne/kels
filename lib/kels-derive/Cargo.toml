@@ -1,0 +1,15 @@
+[package]
+name = "libkels-derive"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Jason Colburne"]
+description = "Derive macros for libkels - generates signed event repository methods"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2.0"
+quote = "1.0"
+proc-macro2 = "1.0"

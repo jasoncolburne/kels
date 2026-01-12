@@ -1,0 +1,34 @@
+kind: Build
+name: kels
+type: container
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/kels-derive/**/*
+  - lib/adns/**/*
+  - services/kels/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/kels/Dockerfile
+
+---
+
+kind: Deploy
+name: kels
+type: kubernetes
+
+dependencies:
+  - build.kels
+  - deploy.postgres
+  - deploy.redis
+
+variables:
+  kelsDatabaseUrl: ${var.postgres.url}/kels
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

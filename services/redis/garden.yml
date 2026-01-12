@@ -1,0 +1,7 @@
+kind: Deploy
+name: redis
+type: kubernetes
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

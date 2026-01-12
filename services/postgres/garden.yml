@@ -1,0 +1,7 @@
+kind: Deploy
+name: postgres
+type: kubernetes
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

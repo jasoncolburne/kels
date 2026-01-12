@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "lib/kels",
+    "lib/kels-derive",
+    "services/kels",
+    "clients/kels-bench",
+]
+
+# Shared dependencies across workspace for version consistency
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+# Workspace-wide clippy lints - deny panicky code patterns
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

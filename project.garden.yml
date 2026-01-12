@@ -1,0 +1,41 @@
+apiVersion: garden.io/v2
+kind: Project
+name: kels
+defaultEnvironment: node-a
+
+environments:
+  - name: node-a
+    defaultNamespace: kels-node-a
+    variables:
+      nodeId: "a"
+  - name: node-b
+    defaultNamespace: kels-node-b
+    variables:
+      nodeId: "b"
+
+providers:
+  - name: local-kubernetes
+    environments: [node-a, node-b]
+    namespace:
+      name: ${environment.namespace}
+    setupIngressController: nginx
+    defaultHostname: ${environment.namespace}.local
+    buildMode: local-docker
+
+variables:
+  rustLogLevel: info
+  postgres:
+    user: kels_admin
+    password: use_something_better_in_production
+    host: postgres
+    port: 5432
+    url: "postgres://${var.postgres.user}:${var.postgres.password}@${var.postgres.host}:${var.postgres.port}"
+  redis:
+    host: redis
+    port: 6379
+    url: "redis://${var.redis.host}:${var.redis.port}"
+  kels:
+    replicas: 2
+    host: kels
+    port: "80"
+    url: http://${var.kels.host}:${var.kels.port}
