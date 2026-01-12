@@ -1,0 +1,28 @@
+kind: Build
+name: test-client
+type: container
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - clients/kels-bench/**/*
+  - clients/test/**/*
+
+spec:
+  dockerfile: clients/test/Dockerfile
+
+---
+
+kind: Deploy
+name: test-client
+type: kubernetes
+
+dependencies:
+  - build.test-client
+  - deploy.kels
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl
