@@ -40,6 +40,95 @@ pub struct DivergenceInfo {
     pub divergent_saids: Vec<String>,
 }
 
+/// State extracted from a KEL for building new events.
+///
+/// Handles both normal and divergent KELs by computing the correct
+/// last event, last establishment event, and confirmed cursor.
+#[derive(Debug, Clone)]
+pub struct KelBuilderState {
+    /// The last event to chain from (last non-divergent event if divergent)
+    pub last_event: Option<KeyEvent>,
+    /// The last establishment event (last non-divergent if divergent)
+    pub last_establishment_event: Option<KeyEvent>,
+    /// Index of first unconfirmed/divergent event (equals len if no divergence)
+    pub confirmed_cursor: usize,
+}
+
+impl KelBuilderState {
+    /// Update state after adding an establishment event (rot/ror/dec/rec/cnt).
+    /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
+    pub fn update_establishment(&mut self, event: &KeyEvent) {
+        self.last_event = Some(event.clone());
+        self.last_establishment_event = Some(event.clone());
+    }
+
+    /// Update state after adding a non-establishment event (ixn).
+    /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
+    pub fn update_non_establishment(&mut self, event: &KeyEvent) {
+        self.last_event = Some(event.clone());
+    }
+
+    /// Mark events as confirmed up to the given cursor position.
+    pub fn confirm(&mut self, cursor: usize) {
+        self.confirmed_cursor = cursor;
+    }
+
+    /// Compute builder state from a slice of events.
+    ///
+    /// Handles divergence detection: if multiple events share the same version,
+    /// returns state pointing to the last non-divergent position.
+    pub fn from_events(events: &[SignedKeyEvent]) -> Self {
+        // Check for divergence (multiple events at same version)
+        let divergence_version = Self::find_divergence_version(events);
+
+        if let Some(div_ver) = divergence_version {
+            let last_event = events
+                .iter()
+                .filter(|e| e.event.version < div_ver)
+                .next_back()
+                .map(|s| s.event.clone());
+
+            let last_establishment_event = events
+                .iter()
+                .filter(|e| e.event.version < div_ver && e.event.is_establishment())
+                .next_back()
+                .map(|s| s.event.clone());
+
+            let confirmed_cursor = events
+                .iter()
+                .position(|e| e.event.version >= div_ver)
+                .unwrap_or(events.len());
+
+            Self {
+                last_event,
+                last_establishment_event,
+                confirmed_cursor,
+            }
+        } else {
+            Self {
+                last_event: events.last().map(|s| s.event.clone()),
+                last_establishment_event: events
+                    .iter()
+                    .rev()
+                    .find(|e| e.event.is_establishment())
+                    .map(|s| s.event.clone()),
+                confirmed_cursor: events.len(),
+            }
+        }
+    }
+
+    /// Find the version where divergence occurs (multiple events at same version).
+    fn find_divergence_version(events: &[SignedKeyEvent]) -> Option<u64> {
+        let mut seen_versions = std::collections::HashSet::new();
+        for event in events {
+            if !seen_versions.insert(event.event.version) {
+                return Some(event.event.version);
+            }
+        }
+        None
+    }
+}
+
 /// A Key Event Log (KEL) - a cryptographically linked chain of key events.
 ///
 /// The KEL is the authoritative record of an identity's key state. It contains:
@@ -263,6 +352,51 @@ impl Kel {
         self.0
             .iter()
             .any(|e| e.event.version >= version && e.event.reveals_recovery_key())
+    }
+
+    /// Extract builder state from this KEL, handling divergence correctly.
+    ///
+    /// For normal KELs: returns the last event, last establishment event, and full length as cursor.
+    /// For divergent KELs: returns the last non-divergent event/establishment and divergence index.
+    ///
+    /// This method consolidates the logic for computing state that `KeyEventBuilder` needs,
+    /// whether loading from storage or updating after divergence detection.
+    pub fn builder_state(&self) -> KelBuilderState {
+        if let Some(divergence) = self.find_divergence() {
+            let divergence_version = divergence.diverged_at_version;
+
+            let last_event = self
+                .0
+                .iter()
+                .filter(|e| e.event.version < divergence_version)
+                .next_back()
+                .map(|s| s.event.clone());
+
+            let last_establishment_event = self
+                .0
+                .iter()
+                .filter(|e| e.event.version < divergence_version && e.event.is_establishment())
+                .next_back()
+                .map(|s| s.event.clone());
+
+            let confirmed_cursor = self
+                .0
+                .iter()
+                .position(|e| e.event.version >= divergence_version)
+                .unwrap_or(self.0.len());
+
+            KelBuilderState {
+                last_event,
+                last_establishment_event,
+                confirmed_cursor,
+            }
+        } else {
+            KelBuilderState {
+                last_event: self.last_event().map(|s| s.event.clone()),
+                last_establishment_event: self.last_establishment_event().map(|s| s.event.clone()),
+                confirmed_cursor: self.0.len(),
+            }
+        }
     }
 
     /// Merge submitted events into this KEL.
@@ -1040,14 +1174,12 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 /// each successful operation.
 pub struct KeyEventBuilder {
     key_provider: KeyProvider,
-    last_event: Option<KeyEvent>,
-    last_establishment_event: Option<KeyEvent>,
+    /// Cached state derived from events (last event, establishment, confirmed cursor)
+    state: KelBuilderState,
     #[allow(dead_code)] // Used only on native/mobile for auto-flush
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
     events: Vec<SignedKeyEvent>,
-    #[allow(dead_code)] // Used only on native/mobile for divergence tracking
-    confirmed_cursor: usize,
 }
 
 impl KeyEventBuilder {
@@ -1057,58 +1189,28 @@ impl KeyEventBuilder {
     pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
-            last_event: None,
-            last_establishment_event: None,
+            state: KelBuilderState {
+                last_event: None,
+                last_establishment_event: None,
+                confirmed_cursor: 0,
+            },
             kels_client,
             kel_store: None,
             events: Vec::new(),
-            confirmed_cursor: 0,
         }
     }
 
     /// Create a builder with existing KEL state.
     pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: &Kel) -> Self {
         let events: Vec<SignedKeyEvent> = kel.iter().cloned().collect();
-
-        // Check for divergence and set state accordingly
-        let (last_event, last_establishment_event, confirmed_cursor) = if let Some(divergence) =
-            kel.find_divergence()
-        {
-            let divergence_version = divergence.diverged_at_version;
-            // last_event is the last event BEFORE divergence
-            let last_event = events
-                .iter()
-                .filter(|e| e.event.version < divergence_version)
-                .next_back()
-                .map(|s| s.event.clone());
-            // last_establishment_event is the last establishment event BEFORE divergence
-            let last_establishment_event = events
-                .iter()
-                .filter(|e| e.event.version < divergence_version && e.event.is_establishment())
-                .next_back()
-                .map(|s| s.event.clone());
-            // confirmed_cursor is the position of the first divergent event
-            let confirmed_cursor = events
-                .iter()
-                .position(|e| e.event.version >= divergence_version)
-                .unwrap_or(events.len());
-            (last_event, last_establishment_event, confirmed_cursor)
-        } else {
-            // No divergence - use normal last event
-            let last_event = kel.last_event().map(|s| s.event.clone());
-            let last_establishment_event = kel.last_establishment_event().map(|s| s.event.clone());
-            let confirmed_cursor = events.len();
-            (last_event, last_establishment_event, confirmed_cursor)
-        };
+        let state = kel.builder_state();
 
         Self {
             key_provider,
-            last_event,
-            last_establishment_event,
+            state,
             kels_client,
             kel_store: None,
             events,
-            confirmed_cursor,
         }
     }
 
@@ -1133,64 +1235,44 @@ impl KeyEventBuilder {
 
         if let Some(kel) = kel {
             let events: Vec<SignedKeyEvent> = kel.iter().cloned().collect();
-
-            // Check for divergence and set state accordingly
-            let (last_event, last_establishment_event, confirmed_cursor) = if let Some(divergence) =
-                kel.find_divergence()
-            {
-                let divergence_version = divergence.diverged_at_version;
-                // last_event is the last event BEFORE divergence
-                let last_event = events
-                    .iter()
-                    .filter(|e| e.event.version < divergence_version)
-                    .next_back()
-                    .map(|s| s.event.clone());
-                // last_establishment_event is the last establishment event BEFORE divergence
-                let last_establishment_event = events
-                    .iter()
-                    .filter(|e| e.event.version < divergence_version && e.event.is_establishment())
-                    .next_back()
-                    .map(|s| s.event.clone());
-                // confirmed_cursor is the position of the first divergent event
-                let confirmed_cursor = events
-                    .iter()
-                    .position(|e| e.event.version >= divergence_version)
-                    .unwrap_or(events.len());
-                (last_event, last_establishment_event, confirmed_cursor)
-            } else {
-                // No divergence - use normal last event
-                let last_event = kel.last_event().map(|s| s.event.clone());
-                let last_establishment_event =
-                    kel.last_establishment_event().map(|s| s.event.clone());
-                let confirmed_cursor = events.len();
-                (last_event, last_establishment_event, confirmed_cursor)
-            };
+            let state = kel.builder_state();
 
             Ok(Self {
                 key_provider,
-                last_event,
-                last_establishment_event,
+                state,
                 kels_client,
                 kel_store,
                 events,
-                confirmed_cursor,
             })
         } else {
             Ok(Self {
                 key_provider,
-                last_event: None,
-                last_establishment_event: None,
+                state: KelBuilderState {
+                    last_event: None,
+                    last_establishment_event: None,
+                    confirmed_cursor: 0,
+                },
                 kels_client,
                 kel_store,
                 events: Vec::new(),
-                confirmed_cursor: 0,
             })
         }
     }
 
+    /// Update the events and recompute state from them.
+    ///
+    /// This replaces the current events with the provided ones and recomputes
+    /// `last_event`, `last_establishment_event`, and `confirmed_cursor` based
+    /// on the new events (handling divergence correctly).
+    fn set_events(&mut self, events: Vec<SignedKeyEvent>) {
+        self.events = events;
+        self.state = KelBuilderState::from_events(&self.events);
+    }
+
     /// Check if this builder's KEL is decommissioned.
     pub fn is_decommissioned(&self) -> bool {
-        self.last_establishment_event
+        self.state
+            .last_establishment_event
             .as_ref()
             .map(|e| e.decommissions())
             .unwrap_or(false)
@@ -1253,7 +1335,11 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self.last_event.as_ref().ok_or(KelsError::NotIncepted)?;
+        let last_event = self
+            .state
+            .last_event
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
 
         // PHASE 1: Prepare rotation (stage keys, don't commit yet)
         let new_current = self.key_provider.prepare_rotation().await?;
@@ -1269,13 +1355,14 @@ impl KeyEventBuilder {
         // Add event to local state
         let signed_event = SignedKeyEvent::new(event.clone(), new_current.qb64(), signature.qb64());
         self.events.push(signed_event);
-        self.last_event = Some(event.clone());
-        self.last_establishment_event = Some(event.clone());
+        self.state.update_establishment(&event);
 
         // PHASE 2: Submit to KELS
         let flush_result = if self.kels_client.is_some() {
             self.flush().await
         } else {
+            // Offline mode - mark as confirmed immediately
+            self.state.confirm(self.events.len());
             Ok(())
         };
 
@@ -1294,13 +1381,7 @@ impl KeyEventBuilder {
                 // Rollback on other errors and remove event
                 self.key_provider.rollback_rotation().await;
                 self.events.pop();
-                self.last_event = self.events.last().map(|e| e.event.clone());
-                self.last_establishment_event = self
-                    .events
-                    .iter()
-                    .rev()
-                    .find(|e| e.event.is_establishment())
-                    .map(|e| e.event.clone());
+                self.state = KelBuilderState::from_events(&self.events);
             }
         }
 
@@ -1325,7 +1406,11 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self.last_event.as_ref().ok_or(KelsError::NotIncepted)?;
+        let last_event = self
+            .state
+            .last_event
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
 
         // Prepare signing key rotation (to access pre-committed next key)
         let new_current = self.key_provider.prepare_rotation().await?;
@@ -1362,8 +1447,7 @@ impl KeyEventBuilder {
         let Some(client) = self.kels_client.as_ref().cloned() else {
             self.key_provider.commit_rotation().await;
             self.events.push(signed_event);
-            self.last_event = Some(event.clone());
-            self.last_establishment_event = Some(event.clone());
+            self.state.update_establishment(&event);
             return Ok((event, primary_signature));
         };
 
@@ -1379,9 +1463,7 @@ impl KeyEventBuilder {
 
                 // Update local state
                 self.events.push(signed_event);
-                self.confirmed_cursor = self.events.len();
-                self.last_event = Some(event.clone());
-                self.last_establishment_event = Some(event.clone());
+                self.state.update_establishment(&event);
 
                 // Save to local store if configured
                 if let Some(ref store) = self.kel_store {
@@ -1427,7 +1509,11 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self.last_event.as_ref().ok_or(KelsError::NotIncepted)?;
+        let last_event = self
+            .state
+            .last_event
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
 
         // PHASE 1: Prepare both rotations (staging only, no commit)
 
@@ -1481,9 +1567,7 @@ impl KeyEventBuilder {
 
                 // Update local state
                 self.events.push(signed_event);
-                self.confirmed_cursor = self.events.len();
-                self.last_event = Some(event.clone());
-                self.last_establishment_event = Some(event.clone());
+                self.state.update_establishment(&event);
 
                 // Save to local store if configured
                 if let Some(ref store) = self.kel_store {
@@ -1531,6 +1615,7 @@ impl KeyEventBuilder {
             .clone();
 
         let prefix = self
+            .state
             .last_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?
@@ -1560,15 +1645,7 @@ impl KeyEventBuilder {
             let all_accepted = pending.iter().all(|e| kels_saids.contains(&e.event.said));
             if all_accepted {
                 // Our events were accepted and no divergence - sync local state and return
-                self.events = kels_events.to_vec();
-                self.confirmed_cursor = self.events.len();
-                self.last_event = self.events.last().map(|e| e.event.clone());
-                self.last_establishment_event = self
-                    .events
-                    .iter()
-                    .rev()
-                    .find(|e| e.event.is_establishment())
-                    .map(|e| e.event.clone());
+                self.set_events(kels_events.to_vec());
                 return Err(KelsError::NoRecoveryNeeded(
                     "Pending events were accepted, state synced".into(),
                 ));
@@ -1609,13 +1686,11 @@ impl KeyEventBuilder {
             .cloned()
             .collect();
 
-        self.events = agreed_events;
-        self.confirmed_cursor = self.events.len();
-        self.last_event = self.events.last().map(|e| e.event.clone());
-        self.last_establishment_event = Some(valid_establishment.event.clone());
+        self.set_events(agreed_events);
 
         // Get the last agreed event to chain from
         let last_agreed_event = self
+            .state
             .last_event
             .as_ref()
             .ok_or_else(|| KelsError::InvalidKel("No agreed events".into()))?;
@@ -1743,9 +1818,7 @@ impl KeyEventBuilder {
             for signed_event in &events_to_submit {
                 self.events.push(signed_event.clone());
             }
-            self.confirmed_cursor = self.events.len();
-            self.last_event = Some(final_event.clone());
-            self.last_establishment_event = Some(final_event.clone());
+            self.state.update_establishment(&final_event);
 
             // Save to local store if configured
             if let Some(ref store) = self.kel_store {
@@ -1773,7 +1846,11 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self.last_event.as_ref().ok_or(KelsError::NotIncepted)?;
+        let last_event = self
+            .state
+            .last_event
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
         let current_key = self.key_provider.current_public_key().await?;
 
         let event = KeyEvent::create_interaction(last_event, anchor.to_string())?;
@@ -1791,27 +1868,31 @@ impl KeyEventBuilder {
 
     /// Get the KEL prefix (None if not yet incepted).
     pub fn prefix(&self) -> Option<&str> {
-        self.last_event.as_ref().map(|e| e.prefix.as_str())
+        self.state.last_event.as_ref().map(|e| e.prefix.as_str())
     }
 
     /// Get the current event version.
     pub fn version(&self) -> u64 {
-        self.last_event.as_ref().map(|e| e.version).unwrap_or(0)
+        self.state
+            .last_event
+            .as_ref()
+            .map(|e| e.version)
+            .unwrap_or(0)
     }
 
     /// Get the SAID of the last event (None if not yet incepted).
     pub fn last_said(&self) -> Option<&str> {
-        self.last_event.as_ref().map(|e| e.said.as_str())
+        self.state.last_event.as_ref().map(|e| e.said.as_str())
     }
 
     /// Get the last event (None if not yet incepted).
     pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.last_event.as_ref()
+        self.state.last_event.as_ref()
     }
 
     /// Get the last establishment event (None if not yet incepted).
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.last_establishment_event.as_ref()
+        self.state.last_establishment_event.as_ref()
     }
 
     /// Get the current public key.
@@ -1841,17 +1922,17 @@ impl KeyEventBuilder {
 
     /// Get pending events (created but not yet confirmed in KELS).
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.events[self.confirmed_cursor..]
+        &self.events[self.state.confirmed_cursor..]
     }
 
     /// Get the number of confirmed events.
     pub fn confirmed_count(&self) -> usize {
-        self.confirmed_cursor
+        self.state.confirmed_cursor
     }
 
     /// Check if all events are confirmed.
     pub fn is_fully_confirmed(&self) -> bool {
-        self.confirmed_cursor == self.events.len()
+        self.state.confirmed_cursor == self.events.len()
     }
 
     /// Flush pending events to KELS.
@@ -1891,42 +1972,20 @@ impl KeyEventBuilder {
 
             let server_kel = client.fetch_full_kel(&prefix).await?;
 
-            // Find the divergence point to know what to chain recovery from
-            let divergence_info = server_kel.find_divergence().ok_or_else(|| {
-                KelsError::InvalidKel(
+            // Verify server reports divergence
+            if server_kel.find_divergence().is_none() {
+                return Err(KelsError::InvalidKel(
                     "Server reported divergence but KEL has no divergent events".into(),
-                )
-            })?;
-            let divergence_version = divergence_info.diverged_at_version;
+                ));
+            }
 
-            // Update local events to match server
+            // Extract builder state before consuming the KEL
+            self.state = server_kel.builder_state();
             self.events = server_kel.into_inner();
-
-            // Set last_event to the last NON-divergent event (for recovery chaining)
-            self.last_event = self
-                .events
-                .iter()
-                .filter(|e| e.event.version < divergence_version)
-                .next_back()
-                .map(|e| e.event.clone());
-
-            self.last_establishment_event = self
-                .events
-                .iter()
-                .filter(|e| e.event.version < divergence_version && e.event.is_establishment())
-                .next_back()
-                .map(|e| e.event.clone());
-
-            // confirmed_cursor points to the divergence point (events before are confirmed)
-            self.confirmed_cursor = self
-                .events
-                .iter()
-                .position(|e| e.event.version >= divergence_version)
-                .unwrap_or(self.events.len());
 
             Err(KelsError::DivergenceDetected(diverged_at))
         } else if response.accepted {
-            self.confirmed_cursor = self.events.len();
+            self.state.confirm(self.events.len());
             Ok(())
         } else {
             Err(KelsError::InvalidKel(
@@ -1947,9 +2006,10 @@ impl KeyEventBuilder {
             public_key,
             signature.qb64(),
         ));
-        self.last_event = Some(event.clone());
         if is_establishment {
-            self.last_establishment_event = Some(event);
+            self.state.update_establishment(&event);
+        } else {
+            self.state.update_non_establishment(&event);
         }
 
         let flush_result = if self.kels_client.is_some() {
