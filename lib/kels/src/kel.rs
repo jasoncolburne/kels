@@ -47,30 +47,30 @@ pub struct DivergenceInfo {
 #[derive(Debug, Clone)]
 pub struct KelBuilderState {
     /// The last event to chain from (last non-divergent event if divergent)
-    pub last_event: Option<KeyEvent>,
+    pub last_trusted_event: Option<KeyEvent>,
     /// The last establishment event (last non-divergent if divergent)
-    pub last_establishment_event: Option<KeyEvent>,
+    pub last_trusted_establishment_event: Option<KeyEvent>,
     /// Index of first unconfirmed/divergent event (equals len if no divergence)
-    pub confirmed_cursor: usize,
+    pub trusted_cursor: usize,
 }
 
 impl KelBuilderState {
     /// Update state after adding an establishment event (rot/ror/dec/rec/cnt).
     /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
     pub fn update_establishment(&mut self, event: &KeyEvent) {
-        self.last_event = Some(event.clone());
-        self.last_establishment_event = Some(event.clone());
+        self.last_trusted_event = Some(event.clone());
+        self.last_trusted_establishment_event = Some(event.clone());
     }
 
     /// Update state after adding a non-establishment event (ixn).
     /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
     pub fn update_non_establishment(&mut self, event: &KeyEvent) {
-        self.last_event = Some(event.clone());
+        self.last_trusted_event = Some(event.clone());
     }
 
     /// Mark events as confirmed up to the given cursor position.
     pub fn confirm(&mut self, cursor: usize) {
-        self.confirmed_cursor = cursor;
+        self.trusted_cursor = cursor;
     }
 
     /// Compute builder state from a slice of events.
@@ -100,19 +100,19 @@ impl KelBuilderState {
                 .unwrap_or(events.len());
 
             Self {
-                last_event,
-                last_establishment_event,
-                confirmed_cursor,
+                last_trusted_event: last_event,
+                last_trusted_establishment_event: last_establishment_event,
+                trusted_cursor: confirmed_cursor,
             }
         } else {
             Self {
-                last_event: events.last().map(|s| s.event.clone()),
-                last_establishment_event: events
+                last_trusted_event: events.last().map(|s| s.event.clone()),
+                last_trusted_establishment_event: events
                     .iter()
                     .rev()
                     .find(|e| e.event.is_establishment())
                     .map(|s| s.event.clone()),
-                confirmed_cursor: events.len(),
+                trusted_cursor: events.len(),
             }
         }
     }
@@ -386,15 +386,15 @@ impl Kel {
                 .unwrap_or(self.0.len());
 
             KelBuilderState {
-                last_event,
-                last_establishment_event,
-                confirmed_cursor,
+                last_trusted_event: last_event,
+                last_trusted_establishment_event: last_establishment_event,
+                trusted_cursor: confirmed_cursor,
             }
         } else {
             KelBuilderState {
-                last_event: self.last_event().map(|s| s.event.clone()),
-                last_establishment_event: self.last_establishment_event().map(|s| s.event.clone()),
-                confirmed_cursor: self.0.len(),
+                last_trusted_event: self.last_event().map(|s| s.event.clone()),
+                last_trusted_establishment_event: self.last_establishment_event().map(|s| s.event.clone()),
+                trusted_cursor: self.0.len(),
             }
         }
     }
@@ -1190,9 +1190,9 @@ impl KeyEventBuilder {
         Self {
             key_provider,
             state: KelBuilderState {
-                last_event: None,
-                last_establishment_event: None,
-                confirmed_cursor: 0,
+                last_trusted_event: None,
+                last_trusted_establishment_event: None,
+                trusted_cursor: 0,
             },
             kels_client,
             kel_store: None,
@@ -1248,9 +1248,9 @@ impl KeyEventBuilder {
             Ok(Self {
                 key_provider,
                 state: KelBuilderState {
-                    last_event: None,
-                    last_establishment_event: None,
-                    confirmed_cursor: 0,
+                    last_trusted_event: None,
+                    last_trusted_establishment_event: None,
+                    trusted_cursor: 0,
                 },
                 kels_client,
                 kel_store,
@@ -1272,7 +1272,7 @@ impl KeyEventBuilder {
     /// Check if this builder's KEL is decommissioned.
     pub fn is_decommissioned(&self) -> bool {
         self.state
-            .last_establishment_event
+            .last_trusted_establishment_event
             .as_ref()
             .map(|e| e.decommissions())
             .unwrap_or(false)
@@ -1337,7 +1337,7 @@ impl KeyEventBuilder {
 
         let last_event = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?;
 
@@ -1408,7 +1408,7 @@ impl KeyEventBuilder {
 
         let last_event = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?;
 
@@ -1511,7 +1511,7 @@ impl KeyEventBuilder {
 
         let last_event = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?;
 
@@ -1616,7 +1616,7 @@ impl KeyEventBuilder {
 
         let prefix = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?
             .prefix
@@ -1691,7 +1691,7 @@ impl KeyEventBuilder {
         // Get the last agreed event to chain from
         let last_agreed_event = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or_else(|| KelsError::InvalidKel("No agreed events".into()))?;
 
@@ -1848,7 +1848,7 @@ impl KeyEventBuilder {
 
         let last_event = self
             .state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .ok_or(KelsError::NotIncepted)?;
         let current_key = self.key_provider.current_public_key().await?;
@@ -1868,13 +1868,13 @@ impl KeyEventBuilder {
 
     /// Get the KEL prefix (None if not yet incepted).
     pub fn prefix(&self) -> Option<&str> {
-        self.state.last_event.as_ref().map(|e| e.prefix.as_str())
+        self.state.last_trusted_event.as_ref().map(|e| e.prefix.as_str())
     }
 
     /// Get the current event version.
     pub fn version(&self) -> u64 {
         self.state
-            .last_event
+            .last_trusted_event
             .as_ref()
             .map(|e| e.version)
             .unwrap_or(0)
@@ -1882,17 +1882,17 @@ impl KeyEventBuilder {
 
     /// Get the SAID of the last event (None if not yet incepted).
     pub fn last_said(&self) -> Option<&str> {
-        self.state.last_event.as_ref().map(|e| e.said.as_str())
+        self.state.last_trusted_event.as_ref().map(|e| e.said.as_str())
     }
 
     /// Get the last event (None if not yet incepted).
     pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.state.last_event.as_ref()
+        self.state.last_trusted_event.as_ref()
     }
 
     /// Get the last establishment event (None if not yet incepted).
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.state.last_establishment_event.as_ref()
+        self.state.last_trusted_establishment_event.as_ref()
     }
 
     /// Get the current public key.
@@ -1922,17 +1922,17 @@ impl KeyEventBuilder {
 
     /// Get pending events (created but not yet confirmed in KELS).
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.events[self.state.confirmed_cursor..]
+        &self.events[self.state.trusted_cursor..]
     }
 
     /// Get the number of confirmed events.
     pub fn confirmed_count(&self) -> usize {
-        self.state.confirmed_cursor
+        self.state.trusted_cursor
     }
 
     /// Check if all events are confirmed.
     pub fn is_fully_confirmed(&self) -> bool {
-        self.state.confirmed_cursor == self.events.len()
+        self.state.trusted_cursor == self.events.len()
     }
 
     /// Flush pending events to KELS.
