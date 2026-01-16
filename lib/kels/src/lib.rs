@@ -34,6 +34,6 @@ pub use kel::{
 };
 pub use types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,
-    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditEvent, KelsAuditKind,
-    KelsAuditRecord, KeyEvent, KeyEventSignature, RecoveryOutcome, SignedKeyEvent,
+    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent,
+    KeyEventSignature, RecoveryOutcome, SignedKeyEvent,
 };

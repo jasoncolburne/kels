@@ -239,6 +239,14 @@ impl Kel {
             .unwrap_or(false)
     }
 
+    /// Check if this KEL was contested (frozen due to adversary having recovery key).
+    ///
+    /// A contested KEL has a `cnt` event, indicating both parties used the recovery key
+    /// and the KEL is permanently frozen.
+    pub fn is_contested(&self) -> bool {
+        self.last().map(|e| e.event.is_contest()).unwrap_or(false)
+    }
+
     /// Get the current public key (from the last establishment event).
     ///
     /// Returns an error if the KEL is empty or decommissioned.
@@ -393,7 +401,9 @@ impl Kel {
         } else {
             KelBuilderState {
                 last_trusted_event: self.last_event().map(|s| s.event.clone()),
-                last_trusted_establishment_event: self.last_establishment_event().map(|s| s.event.clone()),
+                last_trusted_establishment_event: self
+                    .last_establishment_event()
+                    .map(|s| s.event.clone()),
                 trusted_cursor: self.0.len(),
             }
         }
@@ -439,11 +449,6 @@ impl Kel {
             return Err(KelsError::InvalidKel("No events to add".to_string()));
         }
 
-        // Decommission is final - no further events allowed
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
         let first = &events[0];
 
         // Check if KEL is already divergent (frozen)
@@ -465,6 +470,10 @@ impl Kel {
         // Track old events that get removed (for archiving) and the merge result
         let (old_events_removed, result) = if existing_length == index {
             // Normal append - no overlap, no divergence
+            // Decommission blocks normal appends (but not divergence detection)
+            if self.is_decommissioned() {
+                return Err(KelsError::KelDecommissioned);
+            }
             self.0.extend(events.iter().cloned());
             (vec![], KelMergeResult::Verified)
         } else if existing_length > index {
@@ -485,9 +494,15 @@ impl Kel {
                         // Check if new event reveals recovery key (rec/ror/dec/cnt)
                         let new_reveals_recovery = new_event.event.reveals_recovery_key();
 
+                        // Check if KEL is ALREADY divergent (multiple events at same version)
+                        // RecoveryProtected only applies when recovery RESOLVED prior divergence
+                        let already_divergent = self.find_divergence().is_some();
+
                         // Check if existing KEL has any recovery-revealing event at or after divergence.
                         // Such events require dual signatures and cannot be superseded by single-sig events.
-                        if self.reveals_recovery_at_or_after(old_event.event.version)
+                        // Only enforce this if KEL was already divergent and recovered.
+                        if already_divergent
+                            && self.reveals_recovery_at_or_after(old_event.event.version)
                             && !new_reveals_recovery
                         {
                             return Ok((vec![], KelMergeResult::RecoveryProtected));
@@ -1868,7 +1883,10 @@ impl KeyEventBuilder {
 
     /// Get the KEL prefix (None if not yet incepted).
     pub fn prefix(&self) -> Option<&str> {
-        self.state.last_trusted_event.as_ref().map(|e| e.prefix.as_str())
+        self.state
+            .last_trusted_event
+            .as_ref()
+            .map(|e| e.prefix.as_str())
     }
 
     /// Get the current event version.
@@ -1882,7 +1900,10 @@ impl KeyEventBuilder {
 
     /// Get the SAID of the last event (None if not yet incepted).
     pub fn last_said(&self) -> Option<&str> {
-        self.state.last_trusted_event.as_ref().map(|e| e.said.as_str())
+        self.state
+            .last_trusted_event
+            .as_ref()
+            .map(|e| e.said.as_str())
     }
 
     /// Get the last event (None if not yet incepted).

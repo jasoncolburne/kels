@@ -511,24 +511,6 @@ pub struct BatchSubmitResponse {
     pub accepted: bool,
 }
 
-/// Kind of audited item in KELS.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum KelsAuditKind {
-    /// A signed key event was audited
-    SignedKeyEvent,
-}
-
-/// Type of audit event in KELS.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum KelsAuditEvent {
-    /// Events were removed during recovery
-    Recover,
-    /// KEL was contested
-    Contest,
-}
-
 /// KELS audit record for tracking deletions and contestations of key events.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "kels_audit_records")]
@@ -541,14 +523,8 @@ pub struct KelsAuditRecord {
     /// The registrant/KEL prefix this audit record relates to
     pub kel_prefix: String,
 
-    /// Kind of item being audited
-    pub kind: KelsAuditKind,
-
-    /// Type of audit event
-    pub event: KelsAuditEvent,
-
-    /// Prefix of the deleted/contested item
-    pub data_prefix: String,
+    /// Kind of event that triggered this audit (rec or cnt)
+    pub kind: EventKind,
 
     /// JSON-serialized data of the audited item(s)
     pub data_json: String,
@@ -565,13 +541,7 @@ impl KelsAuditRecord {
         events: &[SignedKeyEvent],
     ) -> Result<Self, verifiable_storage::StorageError> {
         let data_json = serde_json::to_string(events)?;
-        Self::create(
-            kel_prefix.clone(),
-            KelsAuditKind::SignedKeyEvent,
-            KelsAuditEvent::Recover,
-            kel_prefix,
-            data_json,
-        )
+        Self::create(kel_prefix, EventKind::Rec, data_json)
     }
 
     /// Create an audit record for a contested KEL.
@@ -580,13 +550,7 @@ impl KelsAuditRecord {
         events: &[SignedKeyEvent],
     ) -> Result<Self, verifiable_storage::StorageError> {
         let data_json = serde_json::to_string(events)?;
-        Self::create(
-            kel_prefix.clone(),
-            KelsAuditKind::SignedKeyEvent,
-            KelsAuditEvent::Contest,
-            kel_prefix,
-            data_json,
-        )
+        Self::create(kel_prefix, EventKind::Cnt, data_json)
     }
 
     /// Deserialize the stored data as signed key events.

@@ -36,11 +36,9 @@ CREATE TABLE IF NOT EXISTS kels_audit_records (
     said CHAR(44) PRIMARY KEY,
     kel_prefix CHAR(44) NOT NULL,
     kind VARCHAR(32) NOT NULL,
-    event VARCHAR(32) NOT NULL,
-    data_prefix CHAR(44) NOT NULL,
     data_json TEXT NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS kels_audit_records_kel_prefix_idx ON kels_audit_records(kel_prefix);
-CREATE INDEX IF NOT EXISTS kels_audit_records_kind_event_idx ON kels_audit_records(kind, event);
+CREATE INDEX IF NOT EXISTS kels_audit_records_kind_idx ON kels_audit_records(kind);

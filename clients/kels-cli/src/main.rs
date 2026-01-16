@@ -23,8 +23,6 @@ use std::path::PathBuf;
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
 use anyhow::{Context, Result};
-#[cfg(feature = "dev-tools")]
-use cesr::Matter;
 use cesr::PrivateKey;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -492,10 +490,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, _audit: bool, since: Option<&str>) -> 
         println!("  Latest Type: {}", last.event.kind);
     }
 
-    if kel.is_decommissioned() {
-        println!("  Status: {}", "DECOMMISSIONED".red());
-    } else if kel.find_divergence().is_some() {
+    // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
+    if kel.find_divergence().is_some() {
         println!("  Status: {}", "DIVERGENT".yellow());
+    } else if kel.is_contested() {
+        println!("  Status: {}", "CONTESTED".red());
+    } else if kel.is_decommissioned() {
+        println!("  Status: {}", "DECOMMISSIONED".red());
     } else {
         println!("  Status: {}", "OK".green());
     }
@@ -567,11 +568,14 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Created At:   {}", last.event.created_at);
     }
 
-    if kel.is_decommissioned() {
-        println!("  Status:       {}", "DECOMMISSIONED".red());
-    } else if let Some(div) = kel.find_divergence() {
+    // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
+    if let Some(div) = kel.find_divergence() {
         println!("  Status:       {}", "DIVERGENT".yellow());
         println!("  Diverged At:  v{}", div.diverged_at_version);
+    } else if kel.is_contested() {
+        println!("  Status:       {}", "CONTESTED".red());
+    } else if kel.is_decommissioned() {
+        println!("  Status:       {}", "DECOMMISSIONED".red());
     } else {
         println!("  Status:       {}", "OK".green());
     }
@@ -661,54 +665,65 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     // Parse event types
     let event_types: Vec<&str> = events_str.split(',').map(|s| s.trim()).collect();
 
-    // Build events locally but DON'T save them
-    let client = create_client(cli);
-    let mut builder = KeyEventBuilder::with_kel(key_provider, None, &kel); // No client = offline
+    let has_recovery = event_types.iter().any(|e| matches!(*e, "rec" | "ror"));
 
-    let mut events_to_submit = Vec::new();
-
-    for event_type in &event_types {
-        match *event_type {
-            "ixn" => {
-                // Anchor must be a valid SAID (44 chars)
-                // Dynamically pad based on version digit count
-                let version_str = builder.version().to_string();
-                let padding = 44 - 16 - version_str.len(); // 16 = "EAdversaryAnchor".len()
-                let anchor = format!("EAdversaryAnchor{}{}", version_str, "_".repeat(padding));
-                let (event, sig) = builder.interact(&anchor).await?;
-                let public_key = builder.current_public_key().await?.qb64();
-                events_to_submit.push(kels::SignedKeyEvent::new(event, public_key, sig.qb64()));
-            }
-            "rot" => {
-                let (event, sig) = builder.rotate().await?;
-                let public_key = builder.current_public_key().await?.qb64();
-                events_to_submit.push(kels::SignedKeyEvent::new(event, public_key, sig.qb64()));
-            }
-            other => {
-                bail!("Unsupported adversary event type: {}", other);
-            }
-        }
-    }
-
-    // Submit directly to server (bypassing local storage)
-    let response = client.submit_events(&events_to_submit).await?;
-
-    if response.accepted {
+    if has_recovery {
         println!(
             "{}",
-            format!("Adversary injected {} events!", events_to_submit.len())
-                .yellow()
-                .bold()
+            "(Includes recovery event - simulates true key compromise)".yellow()
         );
-        for event in &events_to_submit {
-            println!("  {} - {}", event.event.kind, event.event.said);
-        }
-    } else {
-        println!("{}", "Injection rejected by server.".yellow());
-        if let Some(diverged) = response.diverged_at {
-            println!("  Diverged at: {}", diverged);
-        }
     }
+
+    // Create adversary builder WITH KELS client but NO kel_store
+    // Events submit to KELS but don't save locally (simulating adversary)
+    let client = create_client(cli);
+    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), &kel);
+
+    let mut saids = Vec::new();
+    let mut counter = 0u32;
+
+    for event_type in &event_types {
+        let (event, _) = match *event_type {
+            "ixn" => {
+                // Generate a realistic 44-char SAID-like anchor
+                let anchor = format!(
+                    "EAdversaryAnchor{}{}",
+                    counter,
+                    "_".repeat(44 - 16 - counter.to_string().len())
+                );
+                counter += 1;
+                builder.interact(&anchor).await?
+            }
+            "rot" => builder.rotate().await?,
+            "rec" | "ror" => {
+                // Both rec and ror prove the adversary has both signing and recovery keys.
+                // Use rotate_recovery() which creates a ror event with dual signatures.
+                builder.rotate_recovery().await?
+            }
+            "dec" => builder.decommission().await?,
+            other => {
+                bail!(
+                    "Unsupported adversary event type: {}. Valid types: ixn, rot, rec, ror, dec",
+                    other
+                );
+            }
+        };
+        saids.push(event.said.clone());
+    }
+
+    println!(
+        "{}",
+        format!("Adversary injected {} events!", saids.len())
+            .yellow()
+            .bold()
+    );
+    for (i, said) in saids.iter().enumerate() {
+        println!("  Event {}: {}", i + 1, said);
+    }
+    println!(
+        "{}",
+        "Local state NOT updated (simulating adversary)".yellow()
+    );
 
     Ok(())
 }
