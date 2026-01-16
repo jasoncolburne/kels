@@ -26,7 +26,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // KEL operations
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
         .route(
-            "/api/kels/kel/:prefix/since/:since_version",
+            "/api/kels/kel/:prefix/since/:since_timestamp",
             get(handlers::get_kel_since),
         )
         // Batch operations

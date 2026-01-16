@@ -11,6 +11,7 @@ use crate::types::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use verifiable_storage::StorageDatetime;
 
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
@@ -450,11 +451,10 @@ impl KelsClient {
                     return Ok(cached_kel);
                 }
 
-                let last_event = cached_kel
-                    .last()
+                let max_timestamp = cached_kel
+                    .max_event_timestamp()
                     .ok_or(KelsError::KeyNotFound(prefix.to_string()))?;
-                let last_version = last_event.event.version;
-                let new_events = self.get_kel_since(prefix, last_version).await?;
+                let new_events = self.get_kel_since(prefix, max_timestamp).await?;
                 if new_events.is_empty() {
                     return Err(KelsError::AnchorVerificationFailed(
                         "Some anchors not found in KEL".to_string(),
@@ -561,17 +561,19 @@ impl KelsClient {
         }
     }
 
-    /// Get KEL events since a given version
+    /// Get KEL events since a given timestamp.
+    ///
+    /// Returns events where `created_at > since_timestamp`.
     async fn get_kel_since(
         &self,
         prefix: &str,
-        since_version: u64,
+        since_timestamp: &StorageDatetime,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let resp = self
             .client
             .get(format!(
                 "{}/api/kels/kel/{}/since/{}",
-                self.base_url, prefix, since_version
+                self.base_url, prefix, since_timestamp
             ))
             .send()
             .await?;
@@ -665,12 +667,13 @@ impl KelsClient {
             prefixes: batch_prefixes
                 .iter()
                 .map(|p| {
+                    // Use timestamp-based since to catch divergent events at earlier versions
                     let since = if missing_prefixes.contains(p) {
                         None
                     } else {
                         cached_kels
                             .get(*p)
-                            .and_then(|kel| kel.last().map(|e| e.event.version))
+                            .and_then(|kel| kel.max_event_timestamp().map(|ts| ts.0.to_rfc3339()))
                     };
                     BatchKelPrefixRequest {
                         prefix: (*p).to_string(),

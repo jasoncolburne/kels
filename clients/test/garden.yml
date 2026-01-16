@@ -6,8 +6,11 @@ source:
   path: ../..  # Set build context to repository root
 
 include:
+  - Cargo.toml
   - lib/kels/**/*
+  - lib/kels-derive/**/*
   - clients/kels-bench/**/*
+  - clients/kels-cli/**/*
   - clients/test/**/*
 
 spec:

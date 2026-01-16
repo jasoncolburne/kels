@@ -97,6 +97,7 @@ impl FromStr for EventKind {
 }
 
 /// Result of merging events into a KEL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
     /// Events accepted (no divergence, or idempotent re-submission)
     Verified,
@@ -108,6 +109,10 @@ pub enum KelMergeResult {
     Contestable,
     /// Key compromise - both parties revealed recovery keys, KEL frozen
     Contested,
+    /// KEL is already divergent - only rec/cnt events allowed
+    Frozen,
+    /// KEL has rec/cnt at this version - cannot introduce divergence
+    RecoveryProtected,
 }
 
 /// Outcome of a recovery attempt.
@@ -387,7 +392,7 @@ impl KeyEvent {
 
 /// Signature record for storage.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "kels_signatures")]
+#[storable(table = "kels_key_event_signatures")]
 #[serde(rename_all = "camelCase")]
 pub struct EventSignature {
     /// Self-Addressing IDentifier
@@ -596,9 +601,9 @@ impl KelsAuditRecord {
 pub struct BatchKelPrefixRequest {
     /// The KEL prefix to fetch
     pub prefix: String,
-    /// If provided, only return events with version > since
+    /// If provided, only return events with created_at > since (RFC3339 timestamp)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<u64>,
+    pub since: Option<String>,
 }
 
 /// Request to fetch multiple KELs in batch.
@@ -607,6 +612,19 @@ pub struct BatchKelPrefixRequest {
 pub struct BatchKelsRequest {
     /// Prefixes to fetch, with optional since values
     pub prefixes: Vec<BatchKelPrefixRequest>,
+}
+
+/// KEL response from the KELS server.
+///
+/// Contains all events and optionally audit records if requested.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KelResponse {
+    /// All key events (may include divergent events)
+    pub events: Vec<SignedKeyEvent>,
+    /// Audit records (only included when audit=true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_records: Option<Vec<KelsAuditRecord>>,
 }
 
 /// Cached Key Event Log for KELS service.

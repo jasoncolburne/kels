@@ -1,0 +1,28 @@
+[package]
+name = "kels-cli"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Command Line Interface"
+
+[[bin]]
+name = "kels-cli"
+path = "src/main.rs"
+
+[features]
+default = []
+dev-tools = ["libkels/dev-tools"]
+
+[dependencies]
+libkels = { path = "../../lib/kels", features = ["native"] }
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+colored = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = "6"
+toml = "0.8"

@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS kels_key_events (
 );
 
 CREATE INDEX IF NOT EXISTS kels_key_events_prefix_idx ON kels_key_events(prefix);
-CREATE UNIQUE INDEX IF NOT EXISTS kels_key_events_prefix_version_idx ON kels_key_events(prefix, version);
+-- Non-unique index: allows divergent events at same version
+CREATE INDEX IF NOT EXISTS kels_key_events_prefix_version_idx ON kels_key_events(prefix, version);
 
 -- Signatures table
 CREATE TABLE IF NOT EXISTS kels_key_event_signatures (
