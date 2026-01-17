@@ -441,10 +441,10 @@ pub async fn get_kels_batch(
                 };
 
                 // Fast path: no filtering needed, return cached bytes directly
-                if since_dt.is_none() {
-                    if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
-                        return Ok((prefix, (*bytes).clone()));
-                    }
+                if since_dt.is_none()
+                    && let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
+                {
+                    return Ok((prefix, (*bytes).clone()));
                 }
 
                 // Cache miss or filtering needed - fetch from DB
