@@ -121,8 +121,12 @@ run_test "Create second KEL" kels-cli -u "$KELS_URL" incept
 # Test 9: Decommission first KEL
 run_test "Decommission KEL" kels-cli -u "$KELS_URL" decommission --prefix "$PREFIX"
 
-# Test 10: Verify decommissioned KEL rejects new events
-run_test_expect_fail "Reject events on decommissioned KEL" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
+# Tests 10-14: Verify decommissioned KEL rejects all event types
+run_test_expect_fail "Reject anchor on decommissioned KEL" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
+run_test_expect_fail "Reject rotate on decommissioned KEL" kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX"
+run_test_expect_fail "Reject rotate-recovery on decommissioned KEL" kels-cli -u "$KELS_URL" rotate-recovery --prefix "$PREFIX"
+run_test_expect_fail "Reject recover on decommissioned KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
+run_test_expect_fail "Reject decommission on decommissioned KEL" kels-cli -u "$KELS_URL" decommission --prefix "$PREFIX"
 
 # Print summary
 echo ""
