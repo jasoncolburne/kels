@@ -731,7 +731,6 @@ impl SoftwareKeyProvider {
         }
     }
 
-    /// Create with current and next keys.
     pub fn with_keys(current: PrivateKey, next: PrivateKey) -> Self {
         Self {
             signing_keys: vec![current, next],
@@ -778,7 +777,6 @@ impl SoftwareKeyProvider {
         self.recovery_key.as_ref()
     }
 
-    /// Get all signing keys for persistence.
     pub fn signing_keys(&self) -> &[PrivateKey] {
         &self.signing_keys
     }

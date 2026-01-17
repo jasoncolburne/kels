@@ -559,34 +559,26 @@ impl KelsAuditRecord {
     }
 }
 
-/// Single prefix request for batch KEL fetching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchKelPrefixRequest {
-    /// The KEL prefix to fetch
     pub prefix: String,
-    /// If provided, only return events with created_at > since (RFC3339 timestamp)
+    /// RFC3339 timestamp filter - only return events created after this time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
 }
 
-/// Request to fetch multiple KELs in batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchKelsRequest {
-    /// Prefixes to fetch, with optional since values
     pub prefixes: Vec<BatchKelPrefixRequest>,
 }
 
-/// KEL response from the KELS server.
-///
-/// Contains all events and optionally audit records if requested.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KelResponse {
-    /// All key events (may include divergent events)
+    /// May include divergent events at same version
     pub events: Vec<SignedKeyEvent>,
-    /// Audit records (only included when audit=true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audit_records: Option<Vec<KelsAuditRecord>>,
 }

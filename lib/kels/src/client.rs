@@ -16,25 +16,18 @@ use verifiable_storage::StorageDatetime;
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
 
-/// Cached KEL entry with LRU tracking (internal implementation detail)
 #[doc(hidden)]
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CachedKelEntry {
-    /// The cached KEL (already verified)
     kel: Kel,
-    /// Monotonic counter for LRU eviction (higher = more recently used)
     last_access: u64,
 }
 
-/// In-memory KEL cache with LRU eviction (internal implementation detail)
 #[doc(hidden)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct KelCacheInner {
-    /// Cached KELs by prefix
     entries: HashMap<String, CachedKelEntry>,
-    /// Monotonic counter for LRU tracking
     access_counter: u64,
-    /// Maximum number of entries
     max_entries: usize,
 }
 
@@ -48,7 +41,6 @@ impl KelCacheInner {
     }
 
     fn set(&mut self, prefix: String, kel: Kel) {
-        // Evict LRU entry if at capacity
         if self.entries.len() >= self.max_entries
             && !self.entries.contains_key(&prefix)
             && let Some(lru_key) = self
@@ -123,7 +115,6 @@ impl RedisKelCache {
         format!("{}:{}", self.key_prefix, prefix)
     }
 
-    /// Get a KEL from the cache
     pub async fn get(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
         use redis::AsyncCommands;
         let key = self.cache_key(prefix);
@@ -143,7 +134,6 @@ impl RedisKelCache {
         }
     }
 
-    /// Set a KEL in the cache
     pub async fn set(&self, prefix: &str, kel: &Kel) -> Result<(), KelsError> {
         use redis::AsyncCommands;
         let key = self.cache_key(prefix);
@@ -156,7 +146,6 @@ impl RedisKelCache {
         Ok(())
     }
 
-    /// Invalidate a KEL in the cache
     pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
         use redis::AsyncCommands;
         let key = self.cache_key(prefix);
@@ -168,7 +157,6 @@ impl RedisKelCache {
         Ok(())
     }
 
-    /// Clear all KELs from the cache (matching the key prefix)
     pub async fn clear(&self) -> Result<(), KelsError> {
         use redis::AsyncCommands;
         let pattern = format!("{}:*", self.key_prefix);
@@ -186,22 +174,16 @@ impl RedisKelCache {
     }
 }
 
-/// Cache backend for KelsClient
 #[derive(Clone)]
 pub enum KelCache {
-    /// In-memory LRU cache (not shared between instances)
     InMemory(Arc<RwLock<KelCacheInner>>),
-    /// Redis-backed cache (shared between instances)
     #[cfg(feature = "redis")]
     Redis(Box<RedisKelCache>),
 }
 
-/// Configuration for client-side KEL caching
 #[derive(Clone, Debug)]
 pub struct KelCacheConfig {
-    /// Maximum number of KELs to cache (default: 256)
     pub max_entries: usize,
-    /// Whether caching is enabled (default: true)
     pub enabled: bool,
 }
 
@@ -306,12 +288,10 @@ impl KelsClient {
         }
     }
 
-    /// Get the base URL
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    /// Clear all cached KELs
     pub fn clear_cache(&self) {
         if let Some(KelCache::InMemory(cache)) = &self.cache
             && let Ok(mut cache) = cache.write()
@@ -320,7 +300,6 @@ impl KelsClient {
         }
     }
 
-    /// Clear all cached KELs (async version, works with Redis)
     #[cfg(feature = "redis")]
     pub async fn clear_cache_async(&self) -> Result<(), KelsError> {
         match &self.cache {
@@ -335,7 +314,6 @@ impl KelsClient {
         }
     }
 
-    /// Invalidate a specific cached KEL
     pub fn invalidate_cache(&self, prefix: &str) {
         if let Some(KelCache::InMemory(cache)) = &self.cache
             && let Ok(mut cache) = cache.write()
@@ -344,7 +322,6 @@ impl KelsClient {
         }
     }
 
-    /// Invalidate a specific cached KEL (async version)
     pub async fn invalidate_cache_async(&self, prefix: &str) -> Result<(), KelsError> {
         match &self.cache {
             Some(KelCache::InMemory(cache)) => {
@@ -359,7 +336,6 @@ impl KelsClient {
         }
     }
 
-    /// Get a cached KEL (internal helper)
     async fn cache_get(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
         match &self.cache {
             Some(KelCache::InMemory(cache)) => {
@@ -374,7 +350,6 @@ impl KelsClient {
         }
     }
 
-    /// Set a cached KEL (internal helper)
     async fn cache_set(&self, prefix: &str, kel: &Kel) -> Result<(), KelsError> {
         match &self.cache {
             Some(KelCache::InMemory(cache)) => {
@@ -390,7 +365,6 @@ impl KelsClient {
         }
     }
 
-    /// Health check
     pub async fn health(&self) -> Result<String, KelsError> {
         let resp = self
             .client
@@ -408,7 +382,6 @@ impl KelsClient {
         }
     }
 
-    /// Submit key events with their signatures
     pub async fn submit_events(
         &self,
         events: &[SignedKeyEvent],
@@ -431,7 +404,6 @@ impl KelsClient {
         }
     }
 
-    /// Submit a single key event
     pub async fn submit_event(
         &self,
         event: KeyEvent,
@@ -442,7 +414,6 @@ impl KelsClient {
             .await
     }
 
-    /// Get the full KEL with signatures for a prefix
     pub async fn get_kel(&self, prefix: &str, anchors: &[&str]) -> Result<Kel, KelsError> {
         if self.cache.is_some() {
             if let Some(cached_kel) = self.cache_get(prefix).await? {
@@ -561,9 +532,6 @@ impl KelsClient {
         }
     }
 
-    /// Get KEL events since a given timestamp.
-    ///
-    /// Returns events where `created_at > since_timestamp`.
     async fn get_kel_since(
         &self,
         prefix: &str,
@@ -588,7 +556,6 @@ impl KelsClient {
         }
     }
 
-    /// Get a single event by its SAID
     pub async fn get_event(&self, said: &str) -> Result<SignedKeyEvent, KelsError> {
         let resp = self
             .client
@@ -606,7 +573,6 @@ impl KelsClient {
         }
     }
 
-    /// Fetch multiple KELs in a single batch request
     pub async fn get_kels(
         &self,
         prefixes: &[&str],

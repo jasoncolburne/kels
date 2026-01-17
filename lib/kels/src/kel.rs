@@ -152,13 +152,10 @@ impl KelBuilderState {
 pub struct Kel(Vec<SignedKeyEvent>);
 
 impl Kel {
-    /// Create a new empty KEL.
     pub fn new() -> Self {
         Self(Vec::new())
     }
 
-    /// Create a KEL from a vector of signed events.
-    ///
     /// Verifies the KEL structure and signatures unless `skip_verify` is true.
     /// Only use `skip_verify: true` for trusted sources (e.g., database reads
     /// where events were already verified on storage).
@@ -170,14 +167,10 @@ impl Kel {
         Ok(kel)
     }
 
-    /// Get a reference to the underlying events.
     pub fn events(&self) -> &[SignedKeyEvent] {
         &self.0
     }
 
-    /// Get the KEL prefix (from the inception event).
-    ///
-    /// Returns `None` if the KEL is empty.
     pub fn prefix(&self) -> Option<&str> {
         self.0.first().map(|e| e.event.prefix.as_str())
     }
@@ -212,17 +205,14 @@ impl Kel {
         self.0.iter().map(|e| &e.event.created_at).max()
     }
 
-    /// Get the last event in the KEL.
     pub fn last_event(&self) -> Option<&SignedKeyEvent> {
         self.0.last()
     }
 
-    /// Get the SAID of the last event.
     pub fn last_said(&self) -> Option<&str> {
         self.0.last().map(|e| e.event.said.as_str())
     }
 
-    /// Get the last establishment event (inception or rotation).
     pub fn last_establishment_event(&self) -> Option<&SignedKeyEvent> {
         self.0.iter().rev().find(|e| e.event.is_establishment())
     }
@@ -290,7 +280,6 @@ impl Kel {
         self.0.truncate(len);
     }
 
-    /// Check if the KEL contains an anchor for the given SAID.
     pub fn contains_anchor(&self, anchor: &str) -> bool {
         self.0
             .iter()
@@ -301,7 +290,6 @@ impl Kel {
         anchors.iter().cloned().all(|a| self.contains_anchor(a))
     }
 
-    /// Consume self and return the inner Vec.
     pub fn into_inner(self) -> Vec<SignedKeyEvent> {
         self.0
     }
@@ -1038,21 +1026,13 @@ pub trait KelStore: Send + Sync {
         self.save(kel).await
     }
 
-    /// Save the SAID of the last event the owner created before divergence sync.
-    /// Used during recovery to identify which events in the divergent portion are ours.
-    async fn save_owner_tail(&self, _prefix: &str, _said: &str) -> Result<(), KelsError> {
-        Ok(()) // Default no-op for stores that don't support this
-    }
+    /// Save the SAID of the last event the owner created.
+    /// Used during recovery to identify which events in the divergent portion are ours
+    /// vs the adversary's. Must be called before syncing with server.
+    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError>;
 
-    /// Load the owner's tail SAID (if divergence was detected).
-    async fn load_owner_tail(&self, _prefix: &str) -> Result<Option<String>, KelsError> {
-        Ok(None) // Default no-op
-    }
-
-    /// Clear the owner's tail SAID (after successful recovery).
-    async fn clear_owner_tail(&self, _prefix: &str) -> Result<(), KelsError> {
-        Ok(()) // Default no-op
-    }
+    /// Load the owner's tail SAID for tracing back through the owner's event chain.
+    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError>;
 }
 
 /// File-based KEL store for CLI and desktop apps
@@ -1175,14 +1155,6 @@ impl KelStore for FileKelStore {
             std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         Ok(Some(contents.trim().to_string()))
     }
-
-    async fn clear_owner_tail(&self, prefix: &str) -> Result<(), KelsError> {
-        let path = self.owner_tail_path(prefix);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        Ok(())
-    }
 }
 
 // ==================== Signed Event Repository ====================
@@ -1195,21 +1167,29 @@ impl KelStore for FileKelStore {
 /// Use `RepositoryKelStore` to wrap a `SignedEventRepository` as a `KelStore`.
 #[async_trait]
 pub trait SignedEventRepository: Send + Sync {
-    /// Get the full KEL for a prefix as a Kel struct.
     async fn get_kel(&self, prefix: &str) -> Result<Kel, KelsError>;
 
-    /// Check if a signature exists for an event SAID.
     async fn get_signature_by_said(
         &self,
         said: &str,
     ) -> Result<Option<crate::EventSignature>, KelsError>;
 
-    /// Store an event with its signatures.
     async fn create_with_signatures(
         &self,
         event: crate::KeyEvent,
         signatures: Vec<crate::EventSignature>,
     ) -> Result<crate::KeyEvent, KelsError>;
+
+    /// Save the SAID of the last event the owner created.
+    /// Repositories that support owner tail tracking should store this in a table.
+    async fn save_owner_tail(&self, _prefix: &str, _said: &str) -> Result<(), KelsError> {
+        Ok(())
+    }
+
+    /// Load the owner's tail SAID.
+    async fn load_owner_tail(&self, _prefix: &str) -> Result<Option<String>, KelsError> {
+        Ok(None)
+    }
 }
 
 /// KelStore implementation backed by a SignedEventRepository.
@@ -1269,9 +1249,15 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
     }
 
     async fn delete(&self, _prefix: &str) -> Result<(), KelsError> {
-        // No-op: KELs stored in repositories should not be deleted via KelStore
-        // Use the repository's delete methods directly if needed
         Ok(())
+    }
+
+    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
+        self.repo.save_owner_tail(prefix, said).await
+    }
+
+    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        self.repo.load_owner_tail(prefix).await
     }
 }
 

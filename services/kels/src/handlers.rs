@@ -301,7 +301,6 @@ pub async fn submit_events(
     }))
 }
 
-/// Get the full KEL with signatures for a prefix (returns pre-serialized JSON)
 pub async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
@@ -361,7 +360,6 @@ pub async fn get_kel_since(
     Ok(Json(signed_events).into_response())
 }
 
-/// Get a single event by its SAID
 pub async fn get_event(
     State(state): State<Arc<AppState>>,
     Path(said): Path<String>,

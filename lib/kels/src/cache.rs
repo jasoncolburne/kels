@@ -26,13 +26,11 @@ const LOCAL_CACHE_MAX_ENTRIES: usize = 768; // ~256 KELs * 3 entries each (full 
 const PUBSUB_CHANNEL: &str = "kel_updates";
 const MAX_TAIL_SIZE: usize = 2;
 
-/// Local cache entry for pre-serialized KEL data
 struct LocalCacheEntry {
     bytes: Arc<Vec<u8>>,
     last_access: u64,
 }
 
-/// Local LRU cache for pre-serialized KEL responses
 pub struct LocalCache {
     entries: HashMap<String, LocalCacheEntry>,
     access_counter: u64,
@@ -48,7 +46,6 @@ impl LocalCache {
         }
     }
 
-    /// Get cached bytes for a key (updates LRU tracking)
     fn get(&mut self, key: &str) -> Option<Arc<Vec<u8>>> {
         let entry = self.entries.get_mut(key)?;
         self.access_counter += 1;
@@ -56,9 +53,7 @@ impl LocalCache {
         Some(Arc::clone(&entry.bytes))
     }
 
-    /// Store pre-serialized bytes in cache
     fn set(&mut self, key: String, bytes: Vec<u8>) {
-        // Evict LRU if at capacity
         if self.entries.len() >= self.max_entries
             && !self.entries.contains_key(&key)
             && let Some(lru_key) = self
@@ -80,7 +75,6 @@ impl LocalCache {
         );
     }
 
-    /// Clear all entries for a prefix (full + all tails)
     pub fn clear(&mut self, prefix: &str) {
         self.entries.remove(&format!("{}:full", prefix));
         for i in 1..=MAX_TAIL_SIZE {
@@ -308,7 +302,6 @@ impl ServerKelCache {
         Ok(Some(SerializedKel::NeedsProcessing(filtered)))
     }
 
-    /// Get events since a version (deserialized)
     pub async fn get_since(
         &self,
         prefix: &str,
