@@ -180,7 +180,7 @@ pub async fn submit_events(
 
     // Load existing KEL within transaction (sees latest committed state)
     let existing_events = tx.load_signed_events().await?;
-    let mut kel = Kel::from_events(existing_events, true)?; // skip_verify: DB is trusted
+    let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
     // Merge submitted events into KEL
     let (events_to_remove, result) = kel
@@ -254,10 +254,22 @@ pub async fn submit_events(
             }));
         }
         KelMergeResult::Frozen => {
-            // KEL is already divergent - rollback and reject
-            return Err(ApiError::conflict(
-                "KEL is divergent (frozen). Submit rec or cnt event to resolve.",
-            ));
+            // KEL is already divergent - return response so client can sync
+            // Get the SAID at the divergence point
+            let diverged_at = kel
+                .find_divergence()
+                .and_then(|d| {
+                    kel.events()
+                        .iter()
+                        .find(|e| e.event.version == d.diverged_at_version)
+                        .map(|e| e.event.said.clone())
+                })
+                .unwrap_or_default();
+
+            return Ok(Json(BatchSubmitResponse {
+                diverged_at: Some(diverged_at),
+                accepted: false, // Event was NOT stored - KEL already frozen
+            }));
         }
         KelMergeResult::RecoveryProtected => {
             // Can't introduce divergence after recovery event

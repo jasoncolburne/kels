@@ -285,6 +285,11 @@ impl Kel {
         self.0.push(event);
     }
 
+    /// Truncate the KEL to keep only the first `len` events.
+    pub fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+
     /// Check if the KEL contains an anchor for the given SAID.
     pub fn contains_anchor(&self, anchor: &str) -> bool {
         self.0
@@ -351,11 +356,26 @@ impl Kel {
         }
     }
 
+    /// Get the signing key generation that was active at a given version.
+    ///
+    /// Generation 0 = inception key, Generation N = key after N rotations.
+    /// This counts rotations (rot events) that occurred BEFORE the given version.
+    ///
+    /// For recovery, use this to find which historical key should sign the recovery event.
+    pub fn key_generation_at_version(&self, version: u64) -> usize {
+        self.0
+            .iter()
+            .filter(|e| e.event.version < version && e.event.is_rotation())
+            .count()
+    }
+
     /// Check if the KEL has any event that reveals the recovery key at or after the given version.
     ///
     /// Events that reveal recovery keys (rec/ror/dec/cnt) require dual signatures and
     /// prove ownership of both signing and recovery keys. Once such an event exists,
-    /// single-signature events cannot supersede the dual-signature proof.
+    /// single-signature events cannot supersede the dual-signature proof at earlier versions.
+    /// Recovery-revealing events (rec, cnt, ror, dec) are still allowed via the
+    /// `!new_reveals_recovery` check in merge().
     pub fn reveals_recovery_at_or_after(&self, version: u64) -> bool {
         self.0
             .iter()
@@ -453,8 +473,36 @@ impl Kel {
 
         // Check if KEL is already divergent (frozen)
         // Only recovery-revealing events (rec/ror/dec/cnt) can unfreeze
-        if self.find_divergence().is_some() && !first.event.reveals_recovery_key() {
+        let divergence = self.find_divergence();
+        if divergence.is_some() && !first.event.reveals_recovery_key() {
             return Ok((vec![], KelMergeResult::Frozen));
+        }
+
+        // If KEL is divergent and we're receiving a recovery event, use special handling.
+        // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
+        if let Some(ref div_info) = divergence
+            && first.event.reveals_recovery_key()
+        {
+            // Find the offset where divergence begins
+            let divergence_offset = self
+                .0
+                .iter()
+                .position(|e| e.event.version >= div_info.diverged_at_version)
+                .unwrap_or(self.0.len());
+
+            let divergent_old_events = self.0[divergence_offset..].to_vec();
+
+            // For both recovery and contest, truncate at divergence point
+            // All divergent events get archived
+            self.0.truncate(divergence_offset);
+            self.0.extend(events.iter().cloned());
+            self.verify()?;
+
+            if first.event.is_contest() {
+                return Ok((divergent_old_events, KelMergeResult::Contested));
+            } else {
+                return Ok((divergent_old_events, KelMergeResult::Recovered));
+            }
         }
 
         if first.event.version > usize::MAX as u64 {
@@ -494,15 +542,10 @@ impl Kel {
                         // Check if new event reveals recovery key (rec/ror/dec/cnt)
                         let new_reveals_recovery = new_event.event.reveals_recovery_key();
 
-                        // Check if KEL is ALREADY divergent (multiple events at same version)
-                        // RecoveryProtected only applies when recovery RESOLVED prior divergence
-                        let already_divergent = self.find_divergence().is_some();
-
-                        // Check if existing KEL has any recovery-revealing event at or after divergence.
-                        // Such events require dual signatures and cannot be superseded by single-sig events.
-                        // Only enforce this if KEL was already divergent and recovered.
-                        if already_divergent
-                            && self.reveals_recovery_at_or_after(old_event.event.version)
+                        // Check if existing KEL has any recovery-revealing event at or after this version.
+                        // Such events require dual signatures and protect this version from re-divergence.
+                        // Recovery-revealing events are allowed through via `!new_reveals_recovery`.
+                        if self.reveals_recovery_at_or_after(old_event.event.version)
                             && !new_reveals_recovery
                         {
                             return Ok((vec![], KelMergeResult::RecoveryProtected));
@@ -519,20 +562,17 @@ impl Kel {
                             .any(|s| s.event.reveals_recovery_key());
 
                         if let Some(_rec) = recovery_event {
-                            if old_has_recovery {
-                                // FATAL: Adversary revealed recovery key - true key compromise
-                                // Both parties have recovery keys = contested, KEL is dead
-                                self.0.truncate(offset);
-                                self.0.extend(divergent_new_events.iter().cloned());
-                                break (divergent_old_events, KelMergeResult::Contested);
-                            }
-
-                            // Adversary did NOT reveal recovery key - owner can recover
-                            // This works whether adversary has ixn only OR rot (without rec/ror)
-                            // The dual-signature on rec proves recovery key ownership
+                            // Truncate at divergence, archive all divergent events
                             self.0.truncate(offset);
                             self.0.extend(divergent_new_events.iter().cloned());
-                            break (divergent_old_events, KelMergeResult::Recovered);
+
+                            if old_has_recovery {
+                                // FATAL: Adversary revealed recovery key - contested
+                                break (divergent_old_events, KelMergeResult::Contested);
+                            } else {
+                                // Owner recovers - archive adversary events
+                                break (divergent_old_events, KelMergeResult::Recovered);
+                            }
                         } else {
                             // No recovery event - accept divergent event and freeze KEL
                             // Add only the first divergent event (at the conflict version)
@@ -997,6 +1037,22 @@ pub trait KelStore: Send + Sync {
         }
         self.save(kel).await
     }
+
+    /// Save the SAID of the last event the owner created before divergence sync.
+    /// Used during recovery to identify which events in the divergent portion are ours.
+    async fn save_owner_tail(&self, _prefix: &str, _said: &str) -> Result<(), KelsError> {
+        Ok(()) // Default no-op for stores that don't support this
+    }
+
+    /// Load the owner's tail SAID (if divergence was detected).
+    async fn load_owner_tail(&self, _prefix: &str) -> Result<Option<String>, KelsError> {
+        Ok(None) // Default no-op
+    }
+
+    /// Clear the owner's tail SAID (after successful recovery).
+    async fn clear_owner_tail(&self, _prefix: &str) -> Result<(), KelsError> {
+        Ok(()) // Default no-op
+    }
 }
 
 /// File-based KEL store for CLI and desktop apps
@@ -1033,6 +1089,10 @@ impl FileKelStore {
 
     fn kel_path(&self, prefix: &str) -> std::path::PathBuf {
         self.kel_dir.join(format!("{}.kel.json", prefix))
+    }
+
+    fn owner_tail_path(&self, prefix: &str) -> std::path::PathBuf {
+        self.kel_dir.join(format!("{}.owner_tail", prefix))
     }
 }
 
@@ -1083,6 +1143,41 @@ impl KelStore for FileKelStore {
 
     async fn delete(&self, prefix: &str) -> Result<(), KelsError> {
         let path = self.kel_path(prefix);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        }
+        // Also clean up owner_tail file if it exists
+        let tail_path = self.owner_tail_path(prefix);
+        if tail_path.exists() {
+            let _ = std::fs::remove_file(&tail_path);
+        }
+        Ok(())
+    }
+
+    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
+        use std::io::Write;
+        let path = self.owner_tail_path(prefix);
+        let mut file =
+            std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        file.write_all(said.as_bytes())
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        file.sync_all()
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        let path = self.owner_tail_path(prefix);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents =
+            std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        Ok(Some(contents.trim().to_string()))
+    }
+
+    async fn clear_owner_tail(&self, prefix: &str) -> Result<(), KelsError> {
+        let path = self.owner_tail_path(prefix);
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         }
@@ -1648,154 +1743,243 @@ impl KeyEventBuilder {
 
         let kels_events = kels_kel.events();
 
-        // Check if KEL is divergent - if so, recovery is definitely needed
+        // Check if recovery key has been revealed - if so, we must contest
+        // We never reveal our own recovery key without rotating, so if it's revealed, adversary has it
+        let recovery_revelation = kels_events.iter().find(|e| e.event.reveals_recovery_key());
+
+        // Check if KEL is divergent
         let divergence_info = kels_kel.find_divergence();
 
-        // Check if our pending events were actually accepted (by SAID match)
-        // But only skip recovery if no divergence - divergent KEL always needs recovery
-        let pending = self.pending_events();
-        if !pending.is_empty() && divergence_info.is_none() {
-            let kels_saids: std::collections::HashSet<_> =
-                kels_events.iter().map(|e| &e.event.said).collect();
-            let all_accepted = pending.iter().all(|e| kels_saids.contains(&e.event.said));
-            if all_accepted {
-                // Our events were accepted and no divergence - sync local state and return
-                self.set_events(kels_events.to_vec());
-                return Err(KelsError::NoRecoveryNeeded(
-                    "Pending events were accepted, state synced".into(),
-                ));
-            }
+        // If no recovery revealed and no divergence, no recovery needed
+        if recovery_revelation.is_none() && divergence_info.is_none() {
+            return Err(KelsError::NoRecoveryNeeded(
+                "No divergence or recovery revelation detected".into(),
+            ));
         }
 
-        // Find divergence point from the fetched KEL
-        let divergence_version = divergence_info
-            .ok_or_else(|| KelsError::NoRecoveryNeeded("No divergence detected in KEL".into()))?
-            .diverged_at_version;
+        if let Some(recovery_event) = recovery_revelation {
+            // CONTEST: Adversary revealed recovery key
+            // Contest at the version of the recovery-revealing event, using historical keys
+            self.contest_at_version(&kels_kel, recovery_event.event.version, &client)
+                .await
+        } else {
+            // RECOVER: Chain rec from divergence point using historical keys
+            self.recover_from_divergence(&kels_kel, &client).await
+        }
+    }
 
-        // Get the last agreed establishment event (before divergence)
-        let valid_establishment = kels_events
-            .iter()
-            .rfind(|e| e.event.version < divergence_version && e.event.is_establishment())
-            .ok_or_else(|| {
-                KelsError::InvalidKel("No establishment event before divergence".into())
-            })?;
+    /// Contest at a specific version using historical keys.
+    /// Used when adversary has revealed the recovery key.
+    async fn contest_at_version(
+        &mut self,
+        kels_kel: &Kel,
+        contest_version: u64,
+        client: &crate::client::KelsClient,
+    ) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
+        let kels_events = kels_kel.events();
 
-        // Analyze adversary events in divergent range
-        let divergent_events: Vec<_> = kels_events
+        // Find events before the contest point to chain from
+        let agreed_events: Vec<_> = kels_events
             .iter()
-            .filter(|e| e.event.version >= divergence_version)
+            .filter(|e| e.event.version < contest_version)
+            .cloned()
             .collect();
 
-        // Check if adversary revealed recovery key - this means true compromise
-        let adversary_has_recovery = divergent_events
-            .iter()
-            .any(|e| e.event.reveals_recovery_key());
+        // Get the last event before contest point
+        let last_agreed_event = agreed_events
+            .last()
+            .ok_or_else(|| KelsError::InvalidKel("No events before contest point".into()))?;
 
-        // Check if adversary rotated (rot without rec) - recoverable but need immediate rotation
-        let adversary_rotated = divergent_events.iter().any(|e| e.event.is_rotation());
+        // Find the key generation at contest point
+        let key_gen_at_contest = kels_kel.key_generation_at_version(contest_version);
 
-        // Rebuild state from agreed-upon prefix
+        // Sign with the historical signing key that was current at the contest point
+        // key_gen_at_contest is the generation that was current, so +1 is the rotation key
+        let rotation_key_gen = key_gen_at_contest + 1;
+
+        // Get current recovery key
+        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
+
+        // Get the rotation key public key at this generation
+        let rotation_key = self.get_public_key_at_generation(rotation_key_gen).await?;
+
+        // Create contest event
+        let cnt_event = KeyEvent::create_contest(
+            &last_agreed_event.event,
+            rotation_key.qb64(),
+            current_recovery_pub.qb64(),
+        )?;
+
+        // Sign with historical rotation key
+        let cnt_primary_signature = self
+            .key_provider
+            .sign_with_generation(cnt_event.said.as_bytes(), rotation_key_gen)
+            .await?;
+
+        // Sign with recovery key
+        let cnt_secondary_signature = self
+            .key_provider
+            .sign_with_recovery(cnt_event.said.as_bytes())
+            .await?;
+
+        // Create signed contest event with dual signatures
+        let signed_cnt_event = SignedKeyEvent::new_recovery(
+            cnt_event.clone(),
+            rotation_key.qb64(),
+            cnt_primary_signature.qb64(),
+            current_recovery_pub.qb64(),
+            cnt_secondary_signature.qb64(),
+        );
+
+        // Submit to KELS
+        let response = client
+            .submit_events(std::slice::from_ref(&signed_cnt_event))
+            .await?;
+
+        if response.accepted {
+            // Update local state - set to agreed events plus contest
+            self.set_events(agreed_events);
+            self.events.push(signed_cnt_event);
+
+            // Save to local store if configured
+            if let Some(ref store) = self.kel_store {
+                store.save(&self.kel()).await?;
+            }
+
+            Ok((RecoveryOutcome::Contested, cnt_event, cnt_primary_signature))
+        } else {
+            Err(KelsError::SubmissionFailed(
+                "Contest event rejected by KELS".into(),
+            ))
+        }
+    }
+
+    /// Recover from the divergence point using historical keys.
+    /// Used when adversary only has signing key (not recovery).
+    async fn recover_from_divergence(
+        &mut self,
+        kels_kel: &Kel,
+        client: &crate::client::KelsClient,
+    ) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
+        let kels_events = kels_kel.events();
+
+        // Find divergence point from KELS KEL
+        let divergence = kels_kel
+            .find_divergence()
+            .ok_or_else(|| KelsError::NoRecoveryNeeded("No divergence found in KEL".into()))?;
+        let divergence_version = divergence.diverged_at_version;
+
+        // Get events before divergence to chain from
         let agreed_events: Vec<_> = kels_events
             .iter()
             .filter(|e| e.event.version < divergence_version)
             .cloned()
             .collect();
 
-        self.set_events(agreed_events);
+        // Get the last event before divergence point
+        let last_agreed_event = agreed_events
+            .last()
+            .ok_or_else(|| KelsError::InvalidKel("No events before divergence point".into()))?;
 
-        // Get the last agreed event to chain from
-        let last_agreed_event = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or_else(|| KelsError::InvalidKel("No agreed events".into()))?;
+        // Check if adversary rotated - they have the rotation key if there's a rotation
+        // at or after divergence that is NOT one of our original events.
+        // Load the owner's tail SAID and trace back to find all owner event SAIDs.
+        let prefix = kels_kel
+            .prefix()
+            .ok_or_else(|| KelsError::InvalidKel("KEL has no prefix".into()))?;
 
-        // Determine which case we're in based on key matching
-        let valid_pub_key = valid_establishment
-            .event
-            .public_key
-            .as_ref()
-            .ok_or_else(|| KelsError::InvalidKel("No public key in establishment".into()))?;
-
-        let valid_rotation_hash = valid_establishment.event.rotation_hash.as_ref();
-
-        let current_key = self.key_provider.current_public_key().await?;
-
-        // Case A: current matches valid_establishment.public_key (no local rotation happened)
-        // Case B: current matches valid_establishment.rotation_hash (local rotation was rejected)
-        let current_key_hash = compute_rotation_hash(&current_key);
-        let is_case_b = if current_key.qb64() == *valid_pub_key {
-            false // Case A
-        } else if valid_rotation_hash.is_some_and(|h| *h == current_key_hash) {
-            true // Case B - current key matches what was committed in rotation_hash
+        let owner_saids: std::collections::HashSet<String> = if let Some(ref store) = self.kel_store
+        {
+            if let Some(tail_said) = store.load_owner_tail(prefix).await? {
+                // Trace back from owner's tail through previous links to build owner's chain
+                let mut saids = std::collections::HashSet::new();
+                let mut current_said = Some(tail_said);
+                while let Some(said) = current_said {
+                    saids.insert(said.clone());
+                    // Find this event and get its previous
+                    current_said = kels_events
+                        .iter()
+                        .find(|e| e.event.said == said)
+                        .and_then(|e| e.event.previous.clone());
+                }
+                saids
+            } else {
+                // No tail saved - fail-secure: empty set means any rotation is "adversary"
+                std::collections::HashSet::new()
+            }
         } else {
-            return Err(KelsError::KeyMismatch(
-                "Current key matches neither establishment public_key nor rotation_hash".into(),
-            ));
+            // No store - fail-secure: empty set
+            std::collections::HashSet::new()
         };
 
-        // For Case A, we need to rotate internally first
-        if !is_case_b {
-            // Case A: rotate internally (next → current, generate new next)
-            self.key_provider.rotate().await?;
-        }
+        let adversary_rotated = kels_events.iter().any(|e| {
+            e.event.version >= divergence_version
+                && e.event.is_rotation()
+                && !owner_saids.contains(&e.event.said)
+        });
 
-        // Now current is the "next" key (for Case A) or already the post-rotation key (Case B)
-        let new_current_key = self.key_provider.current_public_key().await?;
-        let new_next_key = self.key_provider.next_public_key().await?;
+        // Find the key generation at divergence point
+        // This is the generation of the current key at that point
+        let key_gen_at_divergence = kels_kel.key_generation_at_version(divergence_version);
 
-        // Prepare recovery key rotation - get current and new recovery keys
-        let (current_recovery_pub, new_recovery_pub) =
-            self.key_provider.prepare_recovery_rotation().await?;
+        // The rotation key that was pre-committed is generation + 1
+        let rotation_key_gen = key_gen_at_divergence + 1;
 
-        // Create recovery event based on adversary compromise level
-        let rec_event = if adversary_has_recovery {
-            // Adversary revealed recovery key - create contest event (KEL frozen)
-            KeyEvent::create_contest(
-                last_agreed_event,
-                new_current_key.qb64(),
-                current_recovery_pub.qb64(),
-            )?
-        } else {
-            // Normal recovery: continue with new hashes
-            KeyEvent::create_recovery(
-                last_agreed_event,
-                new_current_key.qb64(),
-                compute_rotation_hash(&new_next_key),
-                current_recovery_pub.qb64(),
-                compute_rotation_hash(&new_recovery_pub),
-            )?
-        };
+        // Get the historical rotation key public key
+        let rotation_key = self.get_public_key_at_generation(rotation_key_gen).await?;
 
-        // Primary signature: sign with new current key (matches event.public_key)
-        let rec_primary_signature = self.key_provider.sign(rec_event.said.as_bytes()).await?;
+        // Get current recovery key (we always use current recovery, not historical)
+        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
 
-        // Secondary signature: sign with recovery key (proves ownership)
+        // Prepare recovery key rotation for forward security
+        let (_, new_recovery_pub) = self.key_provider.prepare_recovery_rotation().await?;
+
+        // Reset key provider to the historical state and generate new next key
+        // truncate keeps gen0 through rotation_key_gen (N+1 keys)
+        // generate_into_next adds new next key (N+2 keys)
+        // Result: current = genN (rotation_key), next = new key
+        self.key_provider
+            .truncate_signing_keys(rotation_key_gen + 1)
+            .await;
+        let new_next = self.key_provider.generate_keypair().await?;
+
+        // Create recovery event chaining from last agreed event
+        let rec_event = KeyEvent::create_recovery(
+            &last_agreed_event.event,
+            rotation_key.qb64(),
+            compute_rotation_hash(&new_next),
+            current_recovery_pub.qb64(),
+            compute_rotation_hash(&new_recovery_pub),
+        )?;
+
+        // Sign with historical rotation key (proves we had the pre-committed key)
+        let rec_primary_signature = self
+            .key_provider
+            .sign_with_generation(rec_event.said.as_bytes(), rotation_key_gen)
+            .await?;
+
+        // Sign with recovery key
         let rec_secondary_signature = self
             .key_provider
             .sign_with_recovery(rec_event.said.as_bytes())
             .await?;
 
-        // Create signed rec event with dual signatures
+        // Create signed recovery event with dual signatures
         let signed_rec_event = SignedKeyEvent::new_recovery(
             rec_event.clone(),
-            new_current_key.qb64(),
+            rotation_key.qb64(),
             rec_primary_signature.qb64(),
             current_recovery_pub.qb64(),
             rec_secondary_signature.qb64(),
         );
 
-        // If adversary rotated, they know our current signing key - need immediate rotation
-        let events_to_submit: Vec<SignedKeyEvent>;
-        let final_event: KeyEvent;
-        let final_signature: Signature;
+        // Build list of events to submit
+        let (events_to_submit, final_event, final_signature) = if adversary_rotated {
+            // Adversary has rotation key - must immediately rotate to escape compromised key
+            // After rec: current = rotation_key (compromised), next = new_next (safe)
+            // We need to rotate so: current = new_next (safe), next = fresh key
 
-        if adversary_has_recovery {
-            events_to_submit = vec![signed_rec_event];
-            final_event = rec_event.clone();
-            final_signature = rec_primary_signature;
-        } else if adversary_rotated {
-            // Rotate signing key to escape compromised key
+            // Rotate the key provider (new_next becomes current, generate fresh next)
             let post_rec_current = self.key_provider.rotate().await?;
             let post_rec_next = self.key_provider.next_public_key().await?;
 
@@ -1813,44 +1997,69 @@ impl KeyEventBuilder {
                 rot_signature.qb64(),
             );
 
-            events_to_submit = vec![signed_rec_event, signed_rot_event];
-            final_event = rot_event;
-            final_signature = rot_signature;
+            (
+                vec![signed_rec_event, signed_rot_event],
+                rot_event,
+                rot_signature,
+            )
         } else {
-            events_to_submit = vec![signed_rec_event];
-            final_event = rec_event.clone();
-            final_signature = rec_primary_signature;
-        }
+            // Adversary only has signing key (ixn injection) - rec alone is sufficient
+            (
+                vec![signed_rec_event.clone()],
+                rec_event.clone(),
+                rec_primary_signature.clone(),
+            )
+        };
 
-        // Submit to KELS (batch if adversary rotated)
+        // Submit to KELS
         let response = client.submit_events(&events_to_submit).await?;
 
         if response.accepted {
-            // Commit the recovery key rotation now that the events were accepted
+            // Commit recovery key rotation
             self.key_provider.commit_recovery_rotation().await;
 
-            // Update local state with all submitted events
-            for signed_event in &events_to_submit {
-                self.events.push(signed_event.clone());
+            // Update local state to agreed events plus submitted events
+            self.set_events(agreed_events);
+            for event in &events_to_submit {
+                self.events.push(event.clone());
             }
-            self.state.update_establishment(&final_event);
+            self.state = KelBuilderState::from_events(&self.events);
 
             // Save to local store if configured
             if let Some(ref store) = self.kel_store {
                 store.save(&self.kel()).await?;
             }
 
-            let outcome = if adversary_has_recovery {
-                RecoveryOutcome::Contested
-            } else {
-                RecoveryOutcome::Recovered
-            };
-
-            Ok((outcome, final_event, final_signature))
+            Ok((RecoveryOutcome::Recovered, final_event, final_signature))
         } else {
+            // Rollback recovery key rotation
+            self.key_provider.rollback_recovery_rotation().await;
             Err(KelsError::SubmissionFailed(
-                "Recovery events rejected by KELS".into(),
+                "Recovery event rejected by KELS".into(),
             ))
+        }
+    }
+
+    /// Get public key at a specific generation.
+    async fn get_public_key_at_generation(
+        &self,
+        generation: usize,
+    ) -> Result<PublicKey, KelsError> {
+        // For software provider, we can derive from signing keys
+        // For hardware provider, we need to load from enclave
+        // This is a simplified implementation - may need enhancement for hardware
+        match &self.key_provider {
+            KeyProvider::Software(p) => p.public_key_at_generation(generation),
+            #[cfg(all(
+                any(target_os = "macos", target_os = "ios"),
+                feature = "secure-enclave"
+            ))]
+            KeyProvider::Hardware(_) => {
+                // Hardware provider would need to expose this
+                Err(KelsError::NoHistoricalKey(generation))
+            }
+            #[cfg(feature = "native")]
+            KeyProvider::External(_) => Err(KelsError::NoHistoricalKey(generation)),
         }
     }
 
@@ -2033,6 +2242,11 @@ impl KeyEventBuilder {
             self.state.update_non_establishment(&event);
         }
 
+        // Save owner tail before flush - if divergence happens, we need to know our last event
+        if let Some(ref store) = self.kel_store {
+            store.save_owner_tail(&event.prefix, &event.said).await?;
+        }
+
         let flush_result = if self.kels_client.is_some() {
             self.flush().await
         } else {
@@ -2040,7 +2254,7 @@ impl KeyEventBuilder {
         };
 
         // Save to local store if configured
-        // Do this even on divergence since the event WAS stored on server
+        // Do this even on divergence - flush() syncs self.events with server state
         if let Some(ref store) = self.kel_store {
             store.save(&self.kel()).await?;
         }
@@ -2545,5 +2759,168 @@ mod tests {
         // confirmed_cursor should be 1, pending should have 3 events
         assert_eq!(loaded_builder.confirmed_count(), 1);
         assert_eq!(loaded_builder.pending_events().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_adversary_rotation_detection() {
+        // Test that we correctly detect when adversary rotated vs when we rotated
+        // This is critical for knowing when to submit [rec, rot] vs just [rec]
+
+        let mut owner = KeyEventBuilder::new(KeyProvider::software(), None);
+        let (icp, icp_sig) = owner.incept().await.unwrap();
+        let (owner_ixn, owner_ixn_sig) = owner.interact("owner-anchor").await.unwrap();
+
+        // Save owner's keys for adversary simulation
+        let software = owner.key_provider().as_software().unwrap();
+        let current_key = software.current_private_key().unwrap().clone();
+        let next_key = software.next_private_key().unwrap().clone();
+        let icp_public_key = icp.public_key.clone().unwrap();
+
+        // Adversary creates a rotation at v1 (same version as owner's ixn)
+        let mut adversary_kel = Kel::new();
+        adversary_kel.push(SignedKeyEvent::new(
+            icp.clone(),
+            icp_public_key.clone(),
+            icp_sig.qb64(),
+        ));
+
+        let mut adversary = KeyEventBuilder::with_kel(
+            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            None,
+            &adversary_kel,
+        );
+        let (adversary_rot, adversary_rot_sig) = adversary.rotate().await.unwrap();
+
+        // Both events are at version 1
+        assert_eq!(owner_ixn.version, 1);
+        assert_eq!(adversary_rot.version, 1);
+        assert!(adversary_rot.is_rotation());
+
+        // Create the server KEL with both divergent events
+        let rot_public_key = adversary_rot.public_key.clone().unwrap();
+        let server_kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), icp_public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(
+                    owner_ixn.clone(),
+                    icp_public_key.clone(),
+                    owner_ixn_sig.qb64(),
+                ),
+                SignedKeyEvent::new(
+                    adversary_rot.clone(),
+                    rot_public_key.clone(),
+                    adversary_rot_sig.qb64(),
+                ),
+            ],
+            true, // skip verify - divergent
+        )
+        .unwrap();
+
+        // Verify divergence exists
+        let divergence = server_kel.find_divergence().unwrap();
+        assert_eq!(divergence.diverged_at_version, 1);
+
+        // Owner's local events (what they know about)
+        let owner_events = owner.kel();
+        let owner_saids: std::collections::HashSet<_> =
+            owner_events.iter().map(|e| &e.event.said).collect();
+
+        // Check: adversary_rot should NOT be in owner's SAIDs (it's adversary's event)
+        assert!(!owner_saids.contains(&adversary_rot.said));
+
+        // Check: owner_ixn SHOULD be in owner's SAIDs
+        assert!(owner_saids.contains(&owner_ixn.said));
+
+        // Simulate the adversary rotation detection logic from recover_from_divergence
+        let adversary_rotated = server_kel.events().iter().any(|e| {
+            e.event.version >= divergence.diverged_at_version
+                && e.event.is_rotation()
+                && !owner_saids.contains(&e.event.said)
+        });
+
+        // Should detect adversary rotation
+        assert!(adversary_rotated, "Should detect adversary rotation");
+    }
+
+    #[tokio::test]
+    async fn test_owner_rotation_not_detected_as_adversary() {
+        // Test that owner's own rotation is NOT detected as adversary rotation
+
+        let mut owner = KeyEventBuilder::new(KeyProvider::software(), None);
+        let (icp, icp_sig) = owner.incept().await.unwrap();
+        let (owner_rot, owner_rot_sig) = owner.rotate().await.unwrap();
+
+        // Save keys for adversary
+        let software = owner.key_provider().as_software().unwrap();
+        let pre_rot_current = software.signing_keys().first().unwrap().clone(); // inception key
+        let pre_rot_next = software.signing_keys().get(1).unwrap().clone(); // first rotation key
+
+        let icp_public_key = icp.public_key.clone().unwrap();
+        let rot_public_key = owner_rot.public_key.clone().unwrap();
+
+        // Adversary injects ixn at v1 (same version as owner's rot) using inception key
+        let mut adversary_kel = Kel::new();
+        adversary_kel.push(SignedKeyEvent::new(
+            icp.clone(),
+            icp_public_key.clone(),
+            icp_sig.qb64(),
+        ));
+
+        let mut adversary = KeyEventBuilder::with_kel(
+            KeyProvider::with_software_keys(pre_rot_current, pre_rot_next),
+            None,
+            &adversary_kel,
+        );
+        let (adversary_ixn, adversary_ixn_sig) =
+            adversary.interact("adversary-anchor").await.unwrap();
+
+        // Both events at version 1
+        assert_eq!(owner_rot.version, 1);
+        assert_eq!(adversary_ixn.version, 1);
+        assert!(owner_rot.is_rotation());
+        assert!(!adversary_ixn.is_rotation());
+
+        // Create server KEL with divergence
+        let server_kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), icp_public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(
+                    owner_rot.clone(),
+                    rot_public_key.clone(),
+                    owner_rot_sig.qb64(),
+                ),
+                SignedKeyEvent::new(
+                    adversary_ixn.clone(),
+                    icp_public_key.clone(),
+                    adversary_ixn_sig.qb64(),
+                ),
+            ],
+            true,
+        )
+        .unwrap();
+
+        let divergence = server_kel.find_divergence().unwrap();
+        assert_eq!(divergence.diverged_at_version, 1);
+
+        // Owner's local events
+        let owner_events = owner.kel();
+        let owner_saids: std::collections::HashSet<_> =
+            owner_events.iter().map(|e| &e.event.said).collect();
+
+        // Owner's rot IS in owner's SAIDs
+        assert!(owner_saids.contains(&owner_rot.said));
+
+        // Simulate adversary rotation detection
+        let adversary_rotated = server_kel.events().iter().any(|e| {
+            e.event.version >= divergence.diverged_at_version
+                && e.event.is_rotation()
+                && !owner_saids.contains(&e.event.said)
+        });
+
+        // Should NOT detect adversary rotation (it was owner who rotated)
+        assert!(
+            !adversary_rotated,
+            "Should NOT detect owner rotation as adversary rotation"
+        );
     }
 }

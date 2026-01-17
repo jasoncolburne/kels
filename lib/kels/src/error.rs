@@ -136,6 +136,10 @@ pub enum KelsError {
     /// Hardware error (Secure Enclave, HSM, etc.)
     #[error("Hardware error: {0}")]
     HardwareError(String),
+
+    /// No historical key at given index
+    #[error("No historical key at index {0}")]
+    NoHistoricalKey(usize),
 }
 
 impl From<cesr::CesrError> for KelsError {

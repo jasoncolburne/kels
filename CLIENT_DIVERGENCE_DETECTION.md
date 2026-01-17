@@ -83,6 +83,28 @@ Client                              KELS Server
   │      { accepted: true }              │
 ```
 
+When KEL is already frozen (submitting to a divergent KEL):
+
+```
+Client                              KELS Server
+  │                                      │
+  │──── submit_events([event]) ─────────>│
+  │                                      │ KEL already divergent
+  │                                      │ reject event (not stored)
+  │<──── BatchSubmitResponse ────────────│
+  │      { accepted: false,              │
+  │        diverged_at: Some("E...") }   │
+  │                                      │
+  │──── fetch_full_kel() ───────────────>│
+  │<──── [all events including forks] ───│
+  │                                      │
+  │ sync local state with server         │
+  │ create rec event from last trusted   │
+  │                                      │
+  │──── submit_events([rec]) ───────────>│
+  │                                      │ ...
+```
+
 ## Key Components
 
 ### KeyEventBuilder
@@ -119,9 +141,22 @@ Key rotations use prepare/commit/rollback to ensure recovery is possible:
 
 ### Recovery Events
 
-Recovery (`rec`) requires dual signatures:
-- Signing key (proves current key ownership)
+Recovery (`rec`) is an **establishment event** that both proves ownership and rotates keys. It requires dual signatures:
+- Pre-committed rotation key at the divergence point (proves ownership of the key that was committed in `rotation_hash`)
 - Recovery key (proves recovery authority)
+
+The `rec` event establishes new forward keys:
+- The pre-committed rotation key becomes the new current signing key
+- A fresh next key is committed via `rotation_hash`
+- A fresh recovery key is committed via `recovery_hash`
+
+This means if the adversary rotated at the divergence point (consuming the same pre-committed key), the owner's `rec` at that version has dual signatures while the adversary's `rot` only has one. The `rec` trumps the `rot` and also handles key rotation in a single event.
+
+**Historical Key Recovery**: If the owner has rotated keys after the divergence point (e.g., adversary attacked at v3 but owner already rotated at v3 and v4), recovery uses the **historical** pre-committed key from when the divergence occurred. The `KeyEventBuilder` automatically:
+1. Fetches the KELS KEL to find the exact divergence point
+2. Calculates which key generation was pre-committed at that version
+3. Signs with that historical key
+4. Resets the key provider state to continue from the recovery point
 
 If the adversary has already used the recovery key, the owner submits a contest (`cnt`) event instead, permanently freezing the KEL.
 
@@ -215,12 +250,15 @@ Injects events to server without updating local state, simulating an adversary.
 Once divergence is detected, the KEL is frozen:
 - No new events accepted except `rec` or `cnt`
 - Prevents adversary from extending their fork
+- Server returns `{ accepted: false, diverged_at: "E..." }` for rejected submissions, allowing client to sync
 
 ### Recovery Protection
 
-After recovery:
-- Events at version <= recovery version are rejected
-- Prevents re-divergence at the same point
+Any recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at version N protects version N and all earlier versions:
+- Non-recovery events at version <= N are rejected with `RecoveryProtected`
+- Prevents re-divergence at the recovery version
+- Enables proactive protection: rotating recovery key (`ror`) prevents adversary from injecting events at earlier versions
+- Recovery-revealing events (like `cnt` to contest) are still allowed through
 
 ### Contest Finality
 
@@ -255,4 +293,7 @@ If both parties have used the recovery key, contest (`cnt`) permanently freezes 
 10. **Owner Rotates, Then Adversary Attacks** - Post-rotation ixn attack, owner recovers
 11. **Adversary Decommissions After Owner Anchors** - dec attack on data, owner contests
 12. **Adversary Injects Recovery (rec)** - rec attack, owner contests
-13. **Submission When Frozen** - All operations rejected on contested KEL
+13. **Adversary Attacks Old Version After Multiple Rotations** - Historical key injection, owner recovers with historical key
+14. **Submission When Frozen** - All operations rejected on contested KEL
+15. **Proactive Recovery Protection via ROR** - Owner rotates recovery key, preventing historical injection
+16. **Post-Recovery Protection** - After recovery, adversary cannot re-diverge at earlier versions
