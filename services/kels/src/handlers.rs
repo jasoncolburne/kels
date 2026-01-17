@@ -440,35 +440,34 @@ pub async fn get_kels_batch(
                     None
                 };
 
-                // Try cache first
-                let full_kel =
+                // Fast path: no filtering needed, return cached bytes directly
+                if since_dt.is_none() {
                     if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
-                        serde_json::from_slice(&bytes).unwrap_or_default()
-                    } else {
-                        // Cache miss - fetch from DB
-                        let events = state.repo.key_events.get_signed_history(&prefix).await?;
+                        return Ok((prefix, (*bytes).clone()));
+                    }
+                }
 
-                        // Store in cache
-                        if !events.is_empty()
-                            && let Err(e) = state.kel_cache.store(&prefix, &events).await
-                        {
-                            tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
-                        }
+                // Cache miss or filtering needed - fetch from DB
+                let events = state.repo.key_events.get_signed_history(&prefix).await?;
 
-                        events
-                    };
+                // Store in cache (full KEL)
+                if !events.is_empty()
+                    && let Err(e) = state.kel_cache.store(&prefix, &events).await
+                {
+                    tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
+                }
 
                 // Filter by timestamp if specified
-                let events: Vec<SignedKeyEvent> = if let Some(ref dt) = since_dt {
-                    full_kel
+                let bytes = if let Some(ref dt) = since_dt {
+                    let filtered: Vec<_> = events
                         .into_iter()
                         .filter(|e| e.event.created_at > *dt)
-                        .collect()
+                        .collect();
+                    serde_json::to_vec(&filtered).unwrap_or_else(|_| b"[]".to_vec())
                 } else {
-                    full_kel
+                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec())
                 };
 
-                let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
                 Ok((prefix, bytes))
             }
         })
