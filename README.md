@@ -15,6 +15,16 @@ KELS implements a key event log system where:
 All events are self-addressing (content-addressed via SAID) and cryptographically signed, making the entire log tamper-evident and end-verifiable. In the event that a divergent KEL is recovered, the removed events
 can be requested alongside the recovered KEL in the form of an audit query.
 
+## TODO
+
+**caveat: this is a work in progress, and needs to be audited by another**
+
+1. Introduce gossip protocol between deployments
+1. Add FFI bindings
+1. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+1. Build simple iOS App that can interact with kels like kels-cli
+1. Build a complete example with a use case that kels solves
+
 ## Project Structure
 
 ```
