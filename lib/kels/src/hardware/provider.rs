@@ -14,23 +14,21 @@ use super::secure_enclave::{
 /// Hardware-backed key provider using macOS Secure Enclave.
 ///
 /// Keys are stored persistently in the Secure Enclave and identified by labels.
-/// Uses unified signing_handles Vec where:
-/// - `signing_handles[len-2]` = current key (when len >= 2)
-/// - `signing_handles[len-1]` = next key (when len >= 2)
-/// - `signing_handles[0..len-2]` = historical keys
+/// The provider manages current, next, and recovery keys.
 /// The recovery key is a dedicated key for recovery events (rec/ror).
 ///
 /// Two-phase rotation support:
-/// - `pending_next_handle`: Staged next key during rotation
+/// - `pending_current_handle` / `pending_next_handle`: Staged signing key rotation
 /// - `pending_recovery_handle`: Staged recovery key rotation
 pub struct HardwareKeyProvider {
     enclave: Arc<dyn SecureEnclaveOperations>,
     key_namespace: String,
     next_label_generation: RwLock<u64>,
-    /// All signing key handles: historical (0..len-2), current (len-2), next (len-1)
-    signing_handles: RwLock<Vec<SecureEnclaveKeyHandle>>,
+    current_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
+    next_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     recovery_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     // Pending handles for two-phase rotation
+    pending_current_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     pending_next_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     pending_recovery_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
 }
@@ -45,40 +43,77 @@ impl HardwareKeyProvider {
             enclave,
             key_namespace: key_namespace.to_string(),
             next_label_generation: RwLock::new(0),
-            signing_handles: RwLock::new(Vec::new()),
+            current_handle: RwLock::new(None),
+            next_handle: RwLock::new(None),
             recovery_handle: RwLock::new(None),
+            pending_current_handle: RwLock::new(None),
             pending_next_handle: RwLock::new(None),
             pending_recovery_handle: RwLock::new(None),
         })
     }
 
-    /// Create a HardwareKeyProvider with all signing key handles and optional recovery.
+    /// Create a HardwareKeyProvider with existing key handles.
     ///
-    /// `signing_labels` should contain all signing key labels in order:
-    /// historical keys first, then current (len-2), then next (len-1).
+    /// Used to restore state from persisted labels.
+    pub fn with_handles(
+        key_namespace: &str,
+        current_label: Option<String>,
+        next_label: Option<String>,
+        next_label_generation: u64,
+    ) -> Option<Self> {
+        Self::with_all_handles(
+            key_namespace,
+            current_label,
+            next_label,
+            None,
+            next_label_generation,
+        )
+    }
+
+    /// Create a HardwareKeyProvider with all handles including recovery.
     ///
     /// Used to restore state from persisted labels.
     pub fn with_all_handles(
         key_namespace: &str,
-        signing_labels: Vec<String>,
+        current_label: Option<String>,
+        next_label: Option<String>,
         recovery_label: Option<String>,
         next_label_generation: u64,
     ) -> Option<Self> {
         let enclave = DefaultSecureEnclave::new()?;
 
-        // Load all signing key handles
-        let mut signing_handles = Vec::new();
-        for label in signing_labels {
+        // Load current key if label provided
+        let current_handle = if let Some(label) = current_label {
             match enclave.load_key(&label) {
-                Ok(Some(handle)) => signing_handles.push(handle),
+                Ok(Some(handle)) => Some(handle),
                 Ok(None) => {
-                    eprintln!("Warning: Signing key not found: {}", label);
+                    eprintln!("Warning: Current key not found: {}", label);
+                    None
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to load signing key: {}", e);
+                    eprintln!("Warning: Failed to load current key: {}", e);
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
+
+        let next_handle = if let Some(label) = next_label {
+            match enclave.load_key(&label) {
+                Ok(Some(handle)) => Some(handle),
+                Ok(None) => {
+                    eprintln!("Warning: Next key not found: {}", label);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to load next key: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Load recovery key if label provided
         let recovery_handle = if let Some(label) = recovery_label {
@@ -101,8 +136,10 @@ impl HardwareKeyProvider {
             enclave,
             key_namespace: key_namespace.to_string(),
             next_label_generation: RwLock::new(next_label_generation),
-            signing_handles: RwLock::new(signing_handles),
+            current_handle: RwLock::new(current_handle),
+            next_handle: RwLock::new(next_handle),
             recovery_handle: RwLock::new(recovery_handle),
+            pending_current_handle: RwLock::new(None),
             pending_next_handle: RwLock::new(None),
             pending_recovery_handle: RwLock::new(None),
         })
@@ -115,8 +152,10 @@ impl HardwareKeyProvider {
             enclave: Arc::clone(&self.enclave),
             key_namespace: self.key_namespace.clone(),
             next_label_generation: RwLock::new(*self.next_label_generation.read().await),
-            signing_handles: RwLock::new(self.signing_handles.read().await.clone()),
+            current_handle: RwLock::new(self.current_handle.read().await.clone()),
+            next_handle: RwLock::new(self.next_handle.read().await.clone()),
             recovery_handle: RwLock::new(self.recovery_handle.read().await.clone()),
+            pending_current_handle: RwLock::new(self.pending_current_handle.read().await.clone()),
             pending_next_handle: RwLock::new(self.pending_next_handle.read().await.clone()),
             pending_recovery_handle: RwLock::new(self.pending_recovery_handle.read().await.clone()),
         }
@@ -131,34 +170,22 @@ impl HardwareKeyProvider {
             .map(|h| h.label.clone())
     }
 
-    /// Get all signing key labels for persistence.
-    pub async fn signing_labels(&self) -> Vec<String> {
-        self.signing_handles
+    /// Get the current key's label for persistence.
+    pub async fn current_label(&self) -> Option<String> {
+        self.current_handle
             .read()
             .await
-            .iter()
+            .as_ref()
             .map(|h| h.label.clone())
-            .collect()
     }
 
-    /// Get the current signing key's label (for persistence).
-    pub async fn current_label(&self) -> Option<String> {
-        let handles = self.signing_handles.read().await;
-        match handles.len() {
-            0 => None,
-            1 => Some(handles[0].label.clone()),
-            n => Some(handles[n - 2].label.clone()),
-        }
-    }
-
-    /// Get the next signing key's label (for persistence).
+    /// Get the next key's label for persistence.
     pub async fn next_label(&self) -> Option<String> {
-        let handles = self.signing_handles.read().await;
-        if handles.len() >= 2 {
-            Some(handles[handles.len() - 1].label.clone())
-        } else {
-            None
-        }
+        self.next_handle
+            .read()
+            .await
+            .as_ref()
+            .map(|h| h.label.clone())
     }
 
     /// Get the next label generation for persistence.
@@ -173,16 +200,11 @@ impl HardwareKeyProvider {
     // Primitive operations for KeyProvider enum delegation
 
     pub async fn has_current(&self) -> bool {
-        let handles = self.signing_handles.read().await;
-        match handles.len() {
-            0 => false,
-            1 => true, // Single key acts as current
-            _ => true, // len-2 is current
-        }
+        self.current_handle.read().await.is_some()
     }
 
     pub async fn has_next(&self) -> bool {
-        self.signing_handles.read().await.len() >= 2
+        self.next_handle.read().await.is_some()
     }
 
     pub async fn has_recovery(&self) -> bool {
@@ -200,20 +222,7 @@ impl HardwareKeyProvider {
         });
 
         let (handle, public_key) = self.enclave.generate_key(&label)?;
-
-        // For inception: push as first key (will be current until next is added)
-        let mut handles = self.signing_handles.write().await;
-        if handles.is_empty() {
-            handles.push(handle);
-        } else {
-            // Insert at len-1 position (before next, or as current if only one key)
-            let insert_pos = if handles.len() == 1 {
-                0
-            } else {
-                handles.len() - 1
-            };
-            handles.insert(insert_pos, handle);
-        }
+        *self.current_handle.write().await = Some(handle);
         Ok(public_key)
     }
 
@@ -228,9 +237,7 @@ impl HardwareKeyProvider {
         });
 
         let (handle, public_key) = self.enclave.generate_key(&label)?;
-
-        // Push as next key (always at end)
-        self.signing_handles.write().await.push(handle);
+        *self.next_handle.write().await = Some(handle);
         Ok(public_key)
     }
 
@@ -250,9 +257,8 @@ impl HardwareKeyProvider {
     }
 
     pub fn promote_next_to_current(&mut self) {
-        // With unified model, promotion is automatic - just remove next
-        // Next (len-1) becomes current (len-2), old current becomes historical
-        // This is a no-op since the Vec structure handles it automatically
+        // Promote next → current (no previous key caching with dedicated recovery key)
+        *self.current_handle.get_mut() = self.next_handle.get_mut().take();
     }
 
     /// Prepare recovery key rotation - generates new key but doesn't replace yet.
@@ -287,19 +293,21 @@ impl HardwareKeyProvider {
         *self.recovery_handle.write().await = self.pending_recovery_handle.write().await.take();
     }
 
-    /// Prepare signing key rotation - generates new next key.
-    /// Returns the new current public key (what was next).
+    /// Prepare signing key rotation - stages next→current and generates new next.
+    /// Returns the new current public key.
     ///
     /// Does NOT modify the actual key state - call `commit_rotation()` after
     /// successful KELS submission, or the pending keys will be discarded.
     pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        // Get the current next key's public key (will become new current)
-        let handles = self.signing_handles.read().await;
-        if handles.len() < 2 {
-            return Err(KelsError::NoNextKey);
-        }
-        let new_current_pub = self.enclave.get_public_key(&handles[handles.len() - 1])?;
-        drop(handles);
+        // Take the next handle and stage it as pending current
+        let next_handle = self.next_handle.write().await.take();
+        let next_handle = next_handle.ok_or(KelsError::NoNextKey)?;
+
+        // Get the public key before staging
+        let new_current_pub = self.enclave.get_public_key(&next_handle)?;
+
+        // Stage it as pending current
+        *self.pending_current_handle.write().await = Some(next_handle);
 
         // Generate new next key into pending slot
         let mut generation = self.next_label_generation.write().await;
@@ -325,30 +333,23 @@ impl HardwareKeyProvider {
     }
 
     /// Sign with the pending current key (after prepare_rotation).
-    /// This is the current next key that will become current after commit.
     pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let handles = self.signing_handles.read().await;
-        if handles.len() < 2 {
-            return Err(KelsError::NoCurrentKey);
-        }
-        // Sign with the current next key (will become current)
-        self.enclave.sign(&handles[handles.len() - 1], data)
+        let pending_current = self.pending_current_handle.read().await;
+        let handle = pending_current.as_ref().ok_or(KelsError::NoCurrentKey)?;
+        self.enclave.sign(handle, data)
     }
 
     /// Commit the prepared signing key rotation.
-    /// Pushes the pending next key to the Vec, making:
-    /// - old current (len-3) historical
-    /// - old next (len-2) current
-    /// - new next (len-1) next
     pub async fn commit_rotation(&mut self) {
-        // Push the pending next key to the Vec
-        if let Some(new_next) = self.pending_next_handle.write().await.take() {
-            self.signing_handles.write().await.push(new_next);
-        }
+        // Move pending current → current (old key is NOT deleted - will be cleaned up on decommission)
+        *self.current_handle.write().await = self.pending_current_handle.write().await.take();
+
+        // Move pending next → next
+        *self.next_handle.write().await = self.pending_next_handle.write().await.take();
     }
 
     /// Rollback a prepared signing key rotation (if KELS rejects).
-    /// Deletes the pending next key that was staged.
+    /// Deletes the pending next key and restores next_handle.
     pub async fn rollback_rotation(&mut self) {
         // Delete the newly generated pending next key
         if let Some(ref handle) = *self.pending_next_handle.read().await
@@ -357,7 +358,10 @@ impl HardwareKeyProvider {
             eprintln!("Warning: Failed to delete pending next key: {}", e);
         }
 
-        // Clear pending next - signing_handles wasn't modified yet
+        // Move pending current back to next (it was the original next)
+        *self.next_handle.write().await = self.pending_current_handle.write().await.take();
+
+        // Clear pending next
         *self.pending_next_handle.write().await = None;
     }
 
@@ -376,27 +380,23 @@ impl HardwareKeyProvider {
     }
 
     /// Delete all keys from the Secure Enclave (for decommission).
+    /// Walks through all generated labels from 0 to current generation.
     pub async fn delete_all_keys(&mut self) {
-        // Delete all signing keys
-        {
-            let mut handles = self.signing_handles.write().await;
-            for handle in handles.drain(..) {
-                let _ = self.enclave.delete_key(&handle);
-            }
+        let generation = *self.next_label_generation.read().await;
+
+        // Delete all keys by walking through label history
+        for i in 0..generation {
+            let label = self.generate_label(i);
+            let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle { label });
         }
 
-        // Delete recovery key
-        if let Some(handle) = self.recovery_handle.write().await.take() {
-            let _ = self.enclave.delete_key(&handle);
-        }
-
-        // Delete pending keys
-        if let Some(handle) = self.pending_next_handle.write().await.take() {
-            let _ = self.enclave.delete_key(&handle);
-        }
-        if let Some(handle) = self.pending_recovery_handle.write().await.take() {
-            let _ = self.enclave.delete_key(&handle);
-        }
+        // Clear all handles
+        *self.current_handle.write().await = None;
+        *self.next_handle.write().await = None;
+        *self.recovery_handle.write().await = None;
+        *self.pending_current_handle.write().await = None;
+        *self.pending_next_handle.write().await = None;
+        *self.pending_recovery_handle.write().await = None;
     }
 
     /// Get the current label generation (for cleanup tracking).
@@ -418,21 +418,15 @@ impl HardwareKeyProvider {
     // Async operations called by KeyProvider enum
 
     pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        let handles = self.signing_handles.read().await;
-        let handle = match handles.len() {
-            0 => return Err(KelsError::NoCurrentKey),
-            1 => &handles[0],     // Single key acts as current
-            n => &handles[n - 2], // len-2 is current
-        };
+        let current = self.current_handle.read().await;
+        let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.get_public_key(handle)
     }
 
     pub async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
-        let handles = self.signing_handles.read().await;
-        if handles.len() < 2 {
-            return Err(KelsError::NoNextKey);
-        }
-        self.enclave.get_public_key(&handles[handles.len() - 1])
+        let next = self.next_handle.read().await;
+        let handle = next.as_ref().ok_or(KelsError::NoNextKey)?;
+        self.enclave.get_public_key(handle)
     }
 
     pub async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
@@ -442,12 +436,8 @@ impl HardwareKeyProvider {
     }
 
     pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let handles = self.signing_handles.read().await;
-        let handle = match handles.len() {
-            0 => return Err(KelsError::NoCurrentKey),
-            1 => &handles[0],
-            n => &handles[n - 2],
-        };
+        let current = self.current_handle.read().await;
+        let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.sign(handle, data)
     }
 
@@ -458,12 +448,8 @@ impl HardwareKeyProvider {
     }
 
     pub async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        let handles = self.signing_handles.read().await;
-        let handle = match handles.len() {
-            0 => return Err(KelsError::NoCurrentKey),
-            1 => &handles[0],
-            n => &handles[n - 2],
-        };
+        let current = self.current_handle.read().await;
+        let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.verify(handle, data, signature)
     }
 }
@@ -477,7 +463,16 @@ mod tests {
     async fn test_hardware_provider_availability() {
         if let Some(mut provider) = HardwareKeyProvider::new("test-adns-provider") {
             // Clean up any existing test keys
-            provider.delete_all_keys().await;
+            if let Some(label) = provider.current_label().await
+                && let Some(enclave) = DefaultSecureEnclave::new()
+            {
+                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
+            }
+            if let Some(label) = provider.next_label().await
+                && let Some(enclave) = DefaultSecureEnclave::new()
+            {
+                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
+            }
 
             // Generate keys using primitive methods
             let pub1 = provider.generate_into_current().await.unwrap();
@@ -498,7 +493,16 @@ mod tests {
             provider.verify(data, &sig).await.unwrap();
 
             // Clean up
-            provider.delete_all_keys().await;
+            if let Some(label) = provider.current_label().await
+                && let Some(enclave) = DefaultSecureEnclave::new()
+            {
+                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
+            }
+            if let Some(label) = provider.next_label().await
+                && let Some(enclave) = DefaultSecureEnclave::new()
+            {
+                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
+            }
         } else {
             println!("Secure Enclave not available, skipping test");
         }

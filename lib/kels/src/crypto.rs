@@ -98,13 +98,15 @@ impl KeyProvider {
     ))]
     pub fn with_hardware_handles(
         key_namespace: &str,
-        signing_labels: Vec<String>,
+        current_label: Option<String>,
+        next_label: Option<String>,
         recovery_label: Option<String>,
         next_label_generation: u64,
     ) -> Option<Self> {
         HardwareKeyProvider::with_all_handles(
             key_namespace,
-            signing_labels,
+            current_label,
+            next_label,
             recovery_label,
             next_label_generation,
         )
