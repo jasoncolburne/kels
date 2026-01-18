@@ -6,7 +6,7 @@ use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult,
-    KeyEvent, SignedKeyEvent,
+    KelResponse, KeyEvent, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -501,6 +501,27 @@ impl KelsClient {
         if resp.status().is_success() {
             let signed_events: Vec<SignedKeyEvent> = resp.json().await?;
             Kel::from_events(signed_events, false)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::KeyNotFound(prefix.to_string()))
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error))
+        }
+    }
+
+    /// Fetch full KEL with audit records from server
+    pub async fn fetch_kel_with_audit(&self, prefix: &str) -> Result<KelResponse, KelsError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/api/kels/kel/{}?audit=true",
+                self.base_url, prefix
+            ))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(prefix.to_string()))
         } else {

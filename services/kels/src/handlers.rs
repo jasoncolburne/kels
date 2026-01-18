@@ -4,15 +4,16 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use cesr::{Matter, Signature};
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, Kel, KelMergeResult, KelsAuditRecord,
-    KelsError, ServerKelCache, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, Kel, KelMergeResult, KelResponse,
+    KelsAuditRecord, KelsError, ServerKelCache, SignedKeyEvent,
 };
+use serde::Deserialize;
 use std::sync::Arc;
 use verifiable_storage::VersionedRepository;
 
@@ -182,10 +183,40 @@ pub async fn submit_events(
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
+    // Debug: dump KEL state before merge
+    tracing::info!("=== MERGE DEBUG for {} ===", prefix);
+    tracing::info!("Existing KEL events ({}):", kel.events().len());
+    for e in kel.events() {
+        tracing::info!(
+            "  v{} {} said={} prev={:?} pubkey={:?} rot_hash={:?}",
+            e.event.version,
+            e.event.kind,
+            &e.event.said[..16],
+            e.event.previous.as_ref().map(|s| &s[..16]),
+            e.event.public_key.as_ref().map(|s| &s[..16]),
+            e.event.rotation_hash.as_ref().map(|s| &s[..16]),
+        );
+    }
+    tracing::info!("Submitting events ({}):", events.len());
+    for e in &events {
+        tracing::info!(
+            "  v{} {} said={} prev={:?} pubkey={:?} rot_hash={:?}",
+            e.event.version,
+            e.event.kind,
+            &e.event.said[..16],
+            e.event.previous.as_ref().map(|s| &s[..16]),
+            e.event.public_key.as_ref().map(|s| &s[..16]),
+            e.event.rotation_hash.as_ref().map(|s| &s[..16]),
+        );
+    }
+
     // Merge submitted events into KEL
-    let (events_to_remove, result) = kel
-        .merge(events.clone())
-        .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+    let (events_to_remove, result) = kel.merge(events.clone()).map_err(|e| {
+        tracing::info!("MERGE FAILED: {}", e);
+        ApiError::unauthorized(format!("KEL merge failed: {}", e))
+    })?;
+
+    tracing::info!("Merge result: {:?}, events_to_remove: {}", result, events_to_remove.len());
 
     // Handle merge result within transaction
     let (diverged_at, accepted, should_clear_cache) = match result {
@@ -197,13 +228,16 @@ pub async fn submit_events(
             (None, true, false)
         }
         KelMergeResult::Recovered => {
-            // Recovery: archive old events, delete from DB, insert recovery events
+            // Recovery: archive adversary events, delete them from DB, insert recovery events
             if !events_to_remove.is_empty() {
-                let from_version = events_to_remove[0].event.version;
                 let audit_record =
                     KelsAuditRecord::for_recovery(prefix.clone(), &events_to_remove)?;
                 tx.insert_audit_record(&audit_record).await?;
-                tx.delete_from_version(from_version).await?;
+                let saids: Vec<String> = events_to_remove
+                    .iter()
+                    .map(|e| e.event.said.clone())
+                    .collect();
+                tx.delete_events_by_said(saids).await?;
             }
             for signed_event in &events {
                 tx.insert_signed_event(signed_event).await?;
@@ -211,25 +245,17 @@ pub async fn submit_events(
             (None, true, true) // Clear cache on recovery
         }
         KelMergeResult::Contested => {
-            // Contest: archive old events, delete from DB, insert cnt event
+            // Contest: just append cnt event. KEL stays divergent but is frozen.
+            // No archiving - all events remain visible to show contested state.
             if events.len() != 1 || !events[0].event.is_contest() {
                 // Rollback happens automatically when tx is dropped
                 return Err(ApiError::conflict(
                     "Must submit single cnt (contest) event to freeze contested KEL",
                 ));
             }
-            if events_to_remove.is_empty() {
-                return Err(ApiError::conflict(
-                    "Merge result is contested, but no events to remove",
-                ));
-            }
-            let from_version = events_to_remove[0].event.version;
-            let audit_record = KelsAuditRecord::for_contest(prefix.clone(), &events_to_remove)?;
-            tx.insert_audit_record(&audit_record).await?;
-            tx.delete_from_version(from_version).await?;
+            // Insert the contest event (divergence remains, KEL is frozen)
             tx.insert_signed_event(&events[0]).await?;
-            let said = events_to_remove[0].event.said.clone();
-            (Some(said), true, true) // Clear cache on contest
+            (None, true, true) // Clear cache on contest
         }
         KelMergeResult::Recoverable | KelMergeResult::Contestable => {
             // Divergence detected - store the divergent event to freeze the KEL
@@ -301,11 +327,45 @@ pub async fn submit_events(
     }))
 }
 
+/// Query parameters for KEL fetch
+#[derive(Debug, Deserialize)]
+pub struct GetKelParams {
+    /// Include audit records in response
+    #[serde(default)]
+    pub audit: bool,
+}
+
 pub async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
+    Query(params): Query<GetKelParams>,
 ) -> Result<Response, ApiError> {
-    // Try pre-serialized cache first
+    // If audit requested, skip cache and return full KelResponse
+    if params.audit {
+        let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
+
+        if signed_events.is_empty() {
+            return Err(ApiError::not_found(format!(
+                "No KEL found for prefix {}",
+                prefix
+            )));
+        }
+
+        let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
+
+        let response = KelResponse {
+            events: signed_events,
+            audit_records: if audit_records.is_empty() {
+                None
+            } else {
+                Some(audit_records)
+            },
+        };
+
+        return Ok(Json(response).into_response());
+    }
+
+    // Try pre-serialized cache first (non-audit path)
     if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
         return Ok(PreSerializedJson(bytes).into_response());
     }

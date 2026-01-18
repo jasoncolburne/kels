@@ -378,7 +378,12 @@ impl HardwareKeyProvider {
     /// Delete all keys from the Secure Enclave (for decommission).
     pub async fn delete_all_keys(&mut self) {
         // Delete all signing keys
-        self.truncate_signing_keys(0).await;
+        {
+            let mut handles = self.signing_handles.write().await;
+            for handle in handles.drain(..) {
+                let _ = self.enclave.delete_key(&handle);
+            }
+        }
 
         // Delete recovery key
         if let Some(handle) = self.recovery_handle.write().await.take() {
@@ -460,40 +465,6 @@ impl HardwareKeyProvider {
             n => &handles[n - 2],
         };
         self.enclave.verify(handle, data, signature)
-    }
-
-    // === Historical signing key methods ===
-
-    /// Get the total number of signing keys (including current and next).
-    pub async fn signing_handles_len(&self) -> usize {
-        self.signing_handles.read().await.len()
-    }
-
-    /// Sign with a signing key by generation index.
-    /// Index 0 = inception key, Index N = key after N rotations.
-    /// This indexes into the full signing_handles Vec.
-    pub async fn sign_with_generation(
-        &self,
-        data: &[u8],
-        generation: usize,
-    ) -> Result<Signature, KelsError> {
-        let handles = self.signing_handles.read().await;
-        let handle = handles
-            .get(generation)
-            .ok_or(KelsError::NoHistoricalKey(generation))?;
-        self.enclave.sign(handle, data)
-    }
-
-    /// Truncate signing keys to keep only the first `keep_count` keys.
-    /// Used after successful recovery to discard keys no longer needed.
-    /// Deletes the removed keys from the Secure Enclave.
-    pub async fn truncate_signing_keys(&mut self, keep_count: usize) {
-        let mut handles = self.signing_handles.write().await;
-        // Delete keys being removed
-        for handle in handles.iter().skip(keep_count) {
-            let _ = self.enclave.delete_key(handle);
-        }
-        handles.truncate(keep_count);
     }
 }
 

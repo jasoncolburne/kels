@@ -247,6 +247,15 @@ impl KelTransaction {
         self.tx.delete(delete).await
     }
 
+    /// Delete specific events by their SAIDs.
+    pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {
+        if saids.is_empty() {
+            return Ok(0);
+        }
+        let delete = Delete::<KeyEvent>::new().r#in("said", saids);
+        self.tx.delete(delete).await
+    }
+
     /// Insert a signed event within the transaction.
     pub async fn insert_signed_event(
         &mut self,

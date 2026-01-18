@@ -121,12 +121,27 @@ run_test "Create second KEL" kels-cli -u "$KELS_URL" incept
 # Test 9: Decommission first KEL
 run_test "Decommission KEL" kels-cli -u "$KELS_URL" decommission --prefix "$PREFIX"
 
-# Tests 10-14: Verify decommissioned KEL rejects all event types
+# Tests 10-13: Verify decommissioned KEL rejects normal event types
 run_test_expect_fail "Reject anchor on decommissioned KEL" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
 run_test_expect_fail "Reject rotate on decommissioned KEL" kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX"
 run_test_expect_fail "Reject rotate-recovery on decommissioned KEL" kels-cli -u "$KELS_URL" rotate-recovery --prefix "$PREFIX"
-run_test_expect_fail "Reject recover on decommissioned KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
 run_test_expect_fail "Reject decommission on decommissioned KEL" kels-cli -u "$KELS_URL" decommission --prefix "$PREFIX"
+
+# Test 14: Recover on decommissioned KEL contests (dec reveals recovery key)
+# With simplified model, recover detects adversary revealed recovery and auto-contests
+run_test "Recover on decommissioned KEL contests" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
+
+# Test 15: Verify cnt event is present in KEL after contest
+echo -e "${YELLOW}Testing: Verify cnt event present after contest${NC}"
+KEL_OUTPUT=$(kels-cli -u "$KELS_URL" get "$PREFIX" 2>&1)
+if echo "$KEL_OUTPUT" | grep -q 'CNT'; then
+    echo -e "${GREEN}PASSED: cnt event found in KEL${NC}"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo -e "${RED}FAILED: cnt event not found in KEL${NC}"
+    echo "KEL output: $KEL_OUTPUT"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
 
 # Print summary
 echo ""

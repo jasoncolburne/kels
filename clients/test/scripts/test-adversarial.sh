@@ -624,8 +624,8 @@ run_test "Owner recovers using historical inception key" kels-cli -u "$KELS_URL"
 # Verify recovery succeeded
 run_test "KEL status is OK after historical key recovery" check_kel_status "$PREFIX13" "OK"
 
-# Verify recovery ends with rec,rot (adversary had injected rot)
-run_test "KEL ends with rec,rot after historical key recovery" check_kel_ends_with "$PREFIX13" "rec,rot"
+# Owner already rotated (v3, v4) before adversary attacked, so no extra rot needed after rec
+run_test "KEL ends with rot,rec after historical key recovery" check_kel_ends_with "$PREFIX13" "rot,rec"
 
 # Owner can continue
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EPostHistoricalRecoveryAnchor_______________"

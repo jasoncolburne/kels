@@ -381,6 +381,10 @@ impl KeyEvent {
         self.kind.reveals_recovery_key()
     }
 
+    pub fn has_recovery_hash(&self) -> bool {
+        self.recovery_hash.is_some()
+    }
+
     pub fn requires_dual_signature(&self) -> bool {
         self.kind.requires_dual_signature()
     }

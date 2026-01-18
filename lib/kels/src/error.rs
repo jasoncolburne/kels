@@ -58,8 +58,11 @@ pub enum KelsError {
     KeyMismatch(String),
 
     /// Divergence detected
-    #[error("Divergence detected at: {0}")]
-    DivergenceDetected(String),
+    #[error("Divergence detected at: {diverged_at}, submission_accepted: {submission_accepted}")]
+    DivergenceDetected {
+        diverged_at: String,
+        submission_accepted: bool,
+    },
 
     /// Signature verification failed
     #[error("Signature verification failed")]
@@ -105,10 +108,6 @@ pub enum KelsError {
     #[error("Storage error: {0}")]
     StorageError(String),
 
-    /// KEL is contested (both parties revealed recovery keys)
-    #[error("KEL contested: {0}")]
-    Contested(String),
-
     /// Contested KEL (cannot perform operations)
     #[error("Contested KEL: {0}")]
     ContestedKel(String),
@@ -136,10 +135,6 @@ pub enum KelsError {
     /// Hardware error (Secure Enclave, HSM, etc.)
     #[error("Hardware error: {0}")]
     HardwareError(String),
-
-    /// No historical key at given index
-    #[error("No historical key at index {0}")]
-    NoHistoricalKey(usize),
 }
 
 impl From<cesr::CesrError> for KelsError {

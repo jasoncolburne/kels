@@ -209,77 +209,50 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     std::fs::create_dir_all(&key_dir)?;
 
-    // New format: signing_0.key, signing_1.key, ... (unified)
-    // Fallback: current.key, next.key, history_*.key (legacy)
-    let signing_0_path = key_dir.join("signing_0.key");
     let current_path = key_dir.join("current.key");
+    let next_path = key_dir.join("next.key");
     let recovery_path = key_dir.join("recovery.key");
 
-    let signing_keys = if signing_0_path.exists() {
-        // New unified format
-        let mut keys = Vec::new();
-        for i in 0.. {
-            let path = key_dir.join(format!("signing_{}.key", i));
-            if !path.exists() {
-                break;
-            }
-            let qb64 = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read signing key {}", i))?;
-            let key = PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid signing key {}: {}", i, e))?;
-            keys.push(key);
-        }
-        keys
-    } else if current_path.exists() {
-        // Legacy format: history_*, current, next
-        let mut keys = Vec::new();
-
-        // Load historical keys first
-        for i in 0.. {
-            let path = key_dir.join(format!("history_{}.key", i));
-            if !path.exists() {
-                break;
-            }
-            let qb64 = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read history key {}", i))?;
-            let key = PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid history key {}: {}", i, e))?;
-            keys.push(key);
-        }
-
-        // Load current
-        let current_qb64 =
-            std::fs::read_to_string(&current_path).context("Failed to read current key")?;
-        let current = PrivateKey::from_qb64(current_qb64.trim())
-            .map_err(|e| anyhow::anyhow!("Invalid current key: {}", e))?;
-        keys.push(current);
-
-        // Load next
-        let next_path = key_dir.join("next.key");
-        let next_qb64 = std::fs::read_to_string(&next_path).context("Failed to read next key")?;
-        let next = PrivateKey::from_qb64(next_qb64.trim())
-            .map_err(|e| anyhow::anyhow!("Invalid next key: {}", e))?;
-        keys.push(next);
-
-        keys
+    // Load current key if present
+    let current = if current_path.exists() {
+        let qb64 = std::fs::read_to_string(&current_path).context("Failed to read current key")?;
+        Some(
+            PrivateKey::from_qb64(qb64.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid current key: {}", e))?,
+        )
     } else {
-        // No keys - return fresh provider
-        return Ok(KeyProvider::software());
+        None
+    };
+
+    // Load next key if present
+    let next = if next_path.exists() {
+        let qb64 = std::fs::read_to_string(&next_path).context("Failed to read next key")?;
+        Some(
+            PrivateKey::from_qb64(qb64.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid next key: {}", e))?,
+        )
+    } else {
+        None
     };
 
     // Load recovery key if present
     let recovery = if recovery_path.exists() {
-        let recovery_qb64 =
+        let qb64 =
             std::fs::read_to_string(&recovery_path).context("Failed to read recovery key")?;
         Some(
-            PrivateKey::from_qb64(recovery_qb64.trim())
+            PrivateKey::from_qb64(qb64.trim())
                 .map_err(|e| anyhow::anyhow!("Invalid recovery key: {}", e))?,
         )
     } else {
         None
     };
 
-    Ok(KeyProvider::with_all_software_keys(signing_keys, recovery))
+    // If no keys exist, return fresh provider
+    if current.is_none() && next.is_none() {
+        return Ok(KeyProvider::software());
+    }
+
+    Ok(KeyProvider::with_all_software_keys(current, next, recovery))
 }
 
 /// Save KeyProvider keys to files
@@ -291,17 +264,26 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
         .as_software()
         .ok_or_else(|| anyhow::anyhow!("Cannot save non-software key provider"))?;
 
-    let num_keys = software.signing_keys().len();
-
-    // Save all signing keys in unified format
-    for (i, key) in software.signing_keys().iter().enumerate() {
-        let path = key_dir.join(format!("signing_{}.key", i));
-        std::fs::write(&path, key.qb64())
-            .with_context(|| format!("Failed to write signing key {}", i))?;
+    // Save current key
+    if let Some(current) = software.current_private_key() {
+        let path = key_dir.join("current.key");
+        std::fs::write(&path, current.qb64()).context("Failed to write current key")?;
     }
 
-    // Clean up any extra signing key files (e.g., after recovery truncation)
-    for i in num_keys.. {
+    // Save next key
+    if let Some(next) = software.next_private_key() {
+        let path = key_dir.join("next.key");
+        std::fs::write(&path, next.qb64()).context("Failed to write next key")?;
+    }
+
+    // Save recovery key
+    if let Some(recovery) = software.recovery_private_key() {
+        let path = key_dir.join("recovery.key");
+        std::fs::write(&path, recovery.qb64()).context("Failed to write recovery key")?;
+    }
+
+    // Clean up legacy files if present
+    for i in 0.. {
         let path = key_dir.join(format!("signing_{}.key", i));
         if path.exists() {
             let _ = std::fs::remove_file(path);
@@ -309,16 +291,6 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
             break;
         }
     }
-
-    // Save recovery key
-    if let Some(recovery) = software.recovery_private_key() {
-        let recovery_path = key_dir.join("recovery.key");
-        std::fs::write(&recovery_path, recovery.qb64()).context("Failed to write recovery key")?;
-    }
-
-    // Clean up legacy files if present
-    let _ = std::fs::remove_file(key_dir.join("current.key"));
-    let _ = std::fs::remove_file(key_dir.join("next.key"));
     for i in 0.. {
         let path = key_dir.join(format!("history_{}.key", i));
         if path.exists() {
@@ -370,7 +342,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
 
     // Update the store's owner prefix now that we know it
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
-    kel_store.save(&builder.kel()).await?;
+    kel_store.save(&builder.kel()?).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
     println!("  Prefix: {}", event.prefix.cyan());
@@ -397,15 +369,26 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder.rotate().await.context("Rotation failed")?;
-
-    // Save updated keys
-    save_key_provider(cli, prefix, builder.key_provider())?;
-
-    println!("{}", "Rotation successful!".green().bold());
-    println!("  Event SAID: {}", event.said);
-
-    Ok(())
+    match builder.rotate().await {
+        Ok((event, _sig)) => {
+            save_key_provider(cli, prefix, builder.key_provider())?;
+            println!("{}", "Rotation successful!".green().bold());
+            println!("  Event SAID: {}", event.said);
+            Ok(())
+        }
+        Err(kels::KelsError::DivergenceDetected {
+            submission_accepted: true,
+            ref diverged_at,
+        }) => {
+            // Keys were committed internally - save them before returning error
+            save_key_provider(cli, prefix, builder.key_provider())?;
+            Err(anyhow::anyhow!(
+                "Divergence detected at: {}, submission_accepted: true",
+                diverged_at
+            ))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
@@ -537,8 +520,75 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_get(cli: &Cli, prefix: &str, _audit: bool, since: Option<&str>) -> Result<()> {
+async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> Result<()> {
     let client = create_client(cli);
+
+    // Handle audit mode - returns full response with audit records
+    if audit {
+        println!(
+            "{}",
+            format!("Fetching KEL {} with audit records...", prefix).green()
+        );
+        let response = client.fetch_kel_with_audit(prefix).await?;
+
+        println!();
+        println!("{}", format!("KEL: {}", prefix).cyan().bold());
+        println!("  Events: {}", response.events.len());
+
+        // Build Kel from events for status checks
+        let kel = kels::Kel::from_events(response.events.clone(), true)?;
+
+        if let Some(last) = kel.last() {
+            println!("  Latest SAID: {}", last.event.said);
+            println!("  Latest Type: {}", last.event.kind);
+        }
+
+        // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
+        if kel.find_divergence().is_some() {
+            println!("  Status: {}", "DIVERGENT".yellow());
+        } else if kel.is_contested() {
+            println!("  Status: {}", "CONTESTED".red());
+        } else if kel.is_decommissioned() {
+            println!("  Status: {}", "DECOMMISSIONED".red());
+        } else {
+            println!("  Status: {}", "OK".green());
+        }
+
+        // Print events
+        println!();
+        println!("{}", "Events:".yellow().bold());
+        for (i, signed_event) in response.events.iter().enumerate() {
+            let event = &signed_event.event;
+            println!(
+                "  [{}] {} - {} ({})",
+                i,
+                event.kind.as_str().to_uppercase(),
+                &event.said[..16],
+                event.created_at
+            );
+        }
+
+        // Print audit records
+        if let Some(audit_records) = &response.audit_records {
+            println!();
+            println!("{}", "Audit Records:".yellow().bold());
+            for (i, record) in audit_records.iter().enumerate() {
+                println!(
+                    "  [{}] {} - {} ({})",
+                    i,
+                    record.kind.as_str().to_uppercase(),
+                    &record.said[..16],
+                    record.recorded_at
+                );
+                println!("      Data: {}", record.data_json);
+            }
+        } else {
+            println!();
+            println!("{}", "Audit Records: (none)".yellow());
+        }
+
+        return Ok(());
+    }
 
     let kel = if let Some(since_ts) = since {
         // Incremental fetch - for now just fetch full KEL
@@ -719,7 +769,7 @@ async fn cmd_adversary_inject(
     cli: &Cli,
     prefix: &str,
     events_str: &str,
-    generation: Option<usize>,
+    _generation: Option<usize>,
     event_version: Option<u64>,
 ) -> Result<()> {
     println!(
@@ -736,59 +786,17 @@ async fn cmd_adversary_inject(
         .await?
         .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
 
-    // Load the key provider
-    let mut key_provider = load_key_provider(cli, prefix).await?;
+    // Load the key provider (adversary has the same keys as owner)
+    let key_provider = load_key_provider(cli, prefix).await?;
 
-    // If using a historical key, set up the adversary's "old" state
-    if let Some(generation) = generation {
-        println!(
-            "{}",
-            format!(
-                "Using signing key from generation {} (pre-rotation keys)",
-                generation
-            )
-            .yellow()
-        );
+    // If event_version specified, truncate KEL to that point (simulates adversary with old state)
+    if let Some(version) = event_version {
+        let truncate_at = kel
+            .events()
+            .iter()
+            .position(|e| e.event.version >= version)
+            .unwrap_or(kel.len());
 
-        // Get the signing key at the specified generation
-        let software = key_provider.as_software().ok_or_else(|| {
-            anyhow::anyhow!("Generation keys only supported for software provider")
-        })?;
-
-        let keys_len = software.signing_keys_len();
-        if generation >= keys_len {
-            bail!(
-                "Generation {} not available (only {} signing keys)",
-                generation,
-                keys_len
-            );
-        }
-
-        // Determine truncation point
-        let truncate_at = if let Some(version) = event_version {
-            // Truncate to just before the specified version
-            kel.events()
-                .iter()
-                .position(|e| e.event.version >= version)
-                .unwrap_or(kel.len())
-        } else {
-            // Find where this generation's key was valid: before the (generation+1)th rotation
-            let mut rotation_count = 0usize;
-            let mut truncate_pos = kel.len();
-
-            for (i, event) in kel.events().iter().enumerate() {
-                if event.event.is_rotation() {
-                    if rotation_count == generation {
-                        truncate_pos = i;
-                        break;
-                    }
-                    rotation_count += 1;
-                }
-            }
-            truncate_pos
-        };
-
-        // Truncate KEL to the injection point
         kel.truncate(truncate_at);
         println!(
             "{}",
@@ -799,21 +807,6 @@ async fn cmd_adversary_inject(
             )
             .yellow()
         );
-
-        // Create a new key provider with the generation key as current
-        let gen_key = software
-            .signing_key(generation)
-            .ok_or_else(|| anyhow::anyhow!("Signing key not found at generation {}", generation))?
-            .clone();
-
-        // Generate a next key for the adversary's rotations
-        let (_, next_key) = cesr::generate_secp256r1()?;
-
-        // Get recovery key (adversary has this too)
-        let recovery_key = software.recovery_private_key().cloned();
-
-        // Create adversary's key provider: [gen_key (current), next_key (next)]
-        key_provider = KeyProvider::with_all_software_keys(vec![gen_key, next_key], recovery_key);
     }
 
     // Parse event types
