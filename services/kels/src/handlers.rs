@@ -164,14 +164,6 @@ pub async fn submit_events(
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
 
-    // Check if KEL is already contested (fast cache/DB check before transaction)
-    if state.repo.audit_records.is_contested(&prefix).await? {
-        return Err(ApiError::contested(format!(
-            "KEL {} is contested and permanently frozen",
-            prefix
-        )));
-    }
-
     // Begin transaction with advisory lock - serializes all operations on this prefix
     let mut tx = state
         .repo

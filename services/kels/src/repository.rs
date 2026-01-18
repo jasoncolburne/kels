@@ -2,7 +2,7 @@
 //!
 //! Implements CRUD operations for Key Event Logs with separate signature storage.
 
-use kels::{EventKind, EventSignature, KelsAuditRecord, KeyEvent, SignedKeyEvent};
+use kels::{EventSignature, KelsAuditRecord, KeyEvent, SignedKeyEvent};
 use libkels_derive::SignedEvents;
 use std::collections::HashMap;
 use verifiable_storage::{
@@ -295,16 +295,6 @@ impl KelTransaction {
 }
 
 impl AuditRecordRepository {
-    /// Check if a KEL prefix is contested (has a Contest audit record).
-    pub async fn is_contested(&self, kel_prefix: &str) -> Result<bool, StorageError> {
-        let query = Query::<KelsAuditRecord>::new()
-            .eq("kel_prefix", kel_prefix)
-            .eq("kind", EventKind::Cnt.as_str())
-            .limit(1);
-        let result = self.pool.fetch_optional(query).await?;
-        Ok(result.is_some())
-    }
-
     /// Get all audit records for a KEL prefix.
     pub async fn get_by_kel_prefix(
         &self,
