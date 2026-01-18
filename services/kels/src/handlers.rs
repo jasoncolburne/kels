@@ -183,40 +183,10 @@ pub async fn submit_events(
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
-    // Debug: dump KEL state before merge
-    tracing::info!("=== MERGE DEBUG for {} ===", prefix);
-    tracing::info!("Existing KEL events ({}):", kel.events().len());
-    for e in kel.events() {
-        tracing::info!(
-            "  v{} {} said={} prev={:?} pubkey={:?} rot_hash={:?}",
-            e.event.version,
-            e.event.kind,
-            &e.event.said[..16],
-            e.event.previous.as_ref().map(|s| &s[..16]),
-            e.event.public_key.as_ref().map(|s| &s[..16]),
-            e.event.rotation_hash.as_ref().map(|s| &s[..16]),
-        );
-    }
-    tracing::info!("Submitting events ({}):", events.len());
-    for e in &events {
-        tracing::info!(
-            "  v{} {} said={} prev={:?} pubkey={:?} rot_hash={:?}",
-            e.event.version,
-            e.event.kind,
-            &e.event.said[..16],
-            e.event.previous.as_ref().map(|s| &s[..16]),
-            e.event.public_key.as_ref().map(|s| &s[..16]),
-            e.event.rotation_hash.as_ref().map(|s| &s[..16]),
-        );
-    }
-
     // Merge submitted events into KEL
-    let (events_to_remove, result) = kel.merge(events.clone()).map_err(|e| {
-        tracing::info!("MERGE FAILED: {}", e);
-        ApiError::unauthorized(format!("KEL merge failed: {}", e))
-    })?;
-
-    tracing::info!("Merge result: {:?}, events_to_remove: {}", result, events_to_remove.len());
+    let (events_to_remove, result) = kel
+        .merge(events.clone())
+        .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
     // Handle merge result within transaction
     let (diverged_at, accepted, should_clear_cache) = match result {

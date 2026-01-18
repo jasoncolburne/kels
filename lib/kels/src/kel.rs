@@ -494,7 +494,9 @@ impl Kel {
         }
 
         if self.is_contested() {
-            return Err(KelsError::ContestedKel("Kel is already contested".to_string()));
+            return Err(KelsError::ContestedKel(
+                "Kel is already contested".to_string(),
+            ));
         }
 
         let first = &events[0];
