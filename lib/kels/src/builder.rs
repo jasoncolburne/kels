@@ -1,6 +1,4 @@
 //! Key Event Builder
-//!
-//! Provides `KeyEventBuilder` for creating key events with auto-flush to KELS.
 
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
@@ -14,16 +12,8 @@ fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
     compute_rotation_hash(&key.qb64())
 }
 
-/// Builder for creating key events with auto-flush to KELS.
-///
-/// When created with a KelsClient, events are automatically submitted to KELS
-/// after creation, with automatic divergence recovery. Pass `None` for offline use.
-///
-/// When created with a KelStore, events are automatically saved locally after
-/// each successful operation.
 pub struct KeyEventBuilder {
     key_provider: KeyProvider,
-    /// Cached state derived from events (last event, establishment, confirmed cursor)
     state: KelBuilderState,
     #[allow(dead_code)] // Used only on native/mobile for auto-flush
     kels_client: Option<KelsClient>,
@@ -32,9 +22,6 @@ pub struct KeyEventBuilder {
 }
 
 impl KeyEventBuilder {
-    /// Create a new builder with optional KELS client (no local store).
-    ///
-    /// For auto-save to local storage, use `with_dependencies()` instead.
     pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
@@ -49,7 +36,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Create a builder with existing KEL state.
     pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: &Kel) -> Self {
         let events: Vec<SignedKeyEvent> = kel.iter().cloned().collect();
         let state = kel.builder_state();
@@ -63,13 +49,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Create a builder with optional KELS client, local store, and prefix.
-    ///
-    /// If `prefix` and `kel_store` are both provided, attempts to load existing KEL state.
-    /// If no KEL exists for the prefix (or no prefix provided), the builder is ready for `incept()`.
-    ///
-    /// Events are automatically submitted to KELS (if client provided) and saved
-    /// to the local store (if store provided) after each successful operation.
     pub async fn with_dependencies(
         key_provider: KeyProvider,
         kels_client: Option<KelsClient>,
@@ -108,17 +87,11 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Update the events and recompute state from them.
-    ///
-    /// This replaces the current events with the provided ones and recomputes
-    /// `last_event`, `last_establishment_event`, and `confirmed_cursor` based
-    /// on the new events (handling divergence correctly).
     fn set_events(&mut self, events: Vec<SignedKeyEvent>) {
         self.events = events;
         self.state = KelBuilderState::from_events(&self.events);
     }
 
-    /// Check if this builder's KEL is decommissioned.
     pub fn is_decommissioned(&self) -> bool {
         self.state
             .last_trusted_establishment_event
@@ -128,10 +101,6 @@ impl KeyEventBuilder {
             || self.events.iter().any(|e| e.event.is_contest())
     }
 
-    /// Create an inception event with new keys.
-    /// Only available on native/mobile platforms (requires OsRng for key generation).
-    ///
-    /// Generates three keys: current (signing), next (pre-committed), and recovery.
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         let current_key = self.key_provider.generate_keypair().await?;
         let next_key = self.key_provider.generate_keypair().await?;
@@ -147,10 +116,6 @@ impl KeyEventBuilder {
         Ok((event, signature))
     }
 
-    /// Create a delegated inception event with new keys.
-    /// Only available on native/mobile platforms (requires OsRng for key generation).
-    ///
-    /// Generates three keys: current (signing), next (pre-committed), and recovery.
     pub async fn incept_delegated(
         &mut self,
         delegating_prefix: &str,
@@ -174,12 +139,7 @@ impl KeyEventBuilder {
         Ok((event, signature))
     }
 
-    /// Create a rotation event - promotes next key to current.
-    /// Only available on native/mobile platforms (requires OsRng for key generation).
-    ///
-    /// Uses two-phase rotation: signing key is staged first, then only committed
-    /// if KELS accepts the event without divergence. On divergence, the key
-    /// rotation is rolled back so recovery can use the correct keys.
+    /// Two-phase: key staged first, committed only if KELS accepts without divergence.
     pub async fn rotate(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
@@ -236,13 +196,7 @@ impl KeyEventBuilder {
         Ok((event, signature))
     }
 
-    /// Create a decommissioning event (no further events allowed).
-    ///
-    /// This creates a `dec` event which permanently freezes the KEL.
-    /// Requires dual signatures (signing key + recovery key).
-    ///
-    /// Uses two-phase rotation: signing key is staged first, then only committed
-    /// if KELS accepts the event. On failure, staged key is rolled back.
+    /// Two-phase, dual-signature (signing + recovery).
     pub async fn decommission(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
@@ -329,15 +283,7 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Rotate both signing and recovery keys proactively.
-    ///
-    /// This creates a `ror` event that rotates both keys at once, providing
-    /// stronger key hygiene than separate rotations. Requires dual signatures.
-    ///
-    /// Uses two-phase rotation: keys are staged first, then only committed
-    /// if KELS accepts the event. On failure, staged keys are rolled back.
-    ///
-    /// Returns the ror event and primary signature on success.
+    /// Two-phase, dual-signature (signing + recovery).
     pub async fn rotate_recovery(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         let client = self
             .kels_client
@@ -438,17 +384,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Recover from divergence by creating a recovery event.
-    ///
-    /// This should be called after a `DivergenceDetected` error from `flush()`, `rotate()`, etc.
-    /// The recovery event proves ownership by signing with:
-    /// 1. The pre-committed "next" key (matches `rotation_hash` from last establishment event)
-    /// 2. The recovery key (proves recovery key ownership)
-    ///
-    /// If the adversary has revealed their recovery key (submitted rec/ror/dec/cnt), this will
-    /// submit a contest event (`cnt`) and the KEL will be frozen.
-    ///
-    /// Returns the outcome (Recovered or Contested) along with the event and signature.
     pub async fn recover(&mut self) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
         let client = self
             .kels_client
@@ -505,8 +440,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Contest at a specific version using current rotation key.
-    /// Used when adversary has revealed the recovery key.
     async fn contest_at_version(
         &mut self,
         kels_kel: &Kel,
@@ -584,8 +517,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Recover from the divergence point using current rotation key.
-    /// Used when adversary only has signing key (not recovery).
     async fn recover_from_divergence(
         &mut self,
         kels_kel: &Kel,
@@ -756,9 +687,6 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Build a set of SAIDs for events created by the owner.
-    /// Traces back from the owner's tail SAID through previous links.
-    /// Returns empty set if no tail is saved (fail-secure: treats all events as adversary's).
     async fn build_owner_saids(
         &self,
         kels_kel: &Kel,
@@ -778,8 +706,6 @@ impl KeyEventBuilder {
         Ok(kels_kel.trace_chain_saids(&tail_said))
     }
 
-    /// Get the owner's tail event from the KEL.
-    /// Returns None if no tail is saved or if the event isn't found in the KEL.
     async fn get_owner_tail_event<'a>(
         &self,
         kels_kel: &'a Kel,
@@ -799,8 +725,6 @@ impl KeyEventBuilder {
         Ok(kels_kel.events().iter().find(|e| e.event.said == tail_said))
     }
 
-    /// Create an interaction event (anchor a SAID in the KEL).
-    /// Only available on native/mobile platforms (requires flush with auto-recovery).
     pub async fn interact(&mut self, anchor: &str) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
@@ -821,12 +745,10 @@ impl KeyEventBuilder {
         Ok((event, signature))
     }
 
-    /// Sign arbitrary data with the current key.
     pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
         self.key_provider.sign(data).await
     }
 
-    /// Get the KEL prefix (None if not yet incepted).
     pub fn prefix(&self) -> Option<&str> {
         self.state
             .last_trusted_event
@@ -834,7 +756,6 @@ impl KeyEventBuilder {
             .map(|e| e.prefix.as_str())
     }
 
-    /// Get the current event version.
     pub fn version(&self) -> u64 {
         self.state
             .last_trusted_event
@@ -843,7 +764,6 @@ impl KeyEventBuilder {
             .unwrap_or(0)
     }
 
-    /// Get the SAID of the last event (None if not yet incepted).
     pub fn last_said(&self) -> Option<&str> {
         self.state
             .last_trusted_event
@@ -851,68 +771,47 @@ impl KeyEventBuilder {
             .map(|e| e.said.as_str())
     }
 
-    /// Get the last event (None if not yet incepted).
     pub fn last_event(&self) -> Option<&KeyEvent> {
         self.state.last_trusted_event.as_ref()
     }
 
-    /// Get the last establishment event (None if not yet incepted).
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
         self.state.last_trusted_establishment_event.as_ref()
     }
 
-    /// Get the current public key.
     pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
         self.key_provider.current_public_key().await
     }
 
-    /// Get a reference to the underlying key provider.
     pub fn key_provider(&self) -> &KeyProvider {
         &self.key_provider
     }
 
-    /// Get a mutable reference to the underlying key provider.
     pub fn key_provider_mut(&mut self) -> &mut KeyProvider {
         &mut self.key_provider
     }
 
-    /// Get all events created by this builder.
     pub fn events(&self) -> &[SignedKeyEvent] {
         &self.events
     }
 
-    /// Get the current KEL state as a Kel struct.
     pub fn kel(&self) -> Result<Kel, KelsError> {
         Kel::from_events(self.events.clone(), true)
     }
 
-    /// Get pending events (created but not yet confirmed in KELS).
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
         &self.events[self.state.trusted_cursor..]
     }
 
-    /// Get the number of confirmed events.
     pub fn confirmed_count(&self) -> usize {
         self.state.trusted_cursor
     }
 
-    /// Check if all events are confirmed.
     pub fn is_fully_confirmed(&self) -> bool {
         self.state.trusted_cursor == self.events.len()
     }
 
-    /// Flush pending events to KELS.
-    ///
-    /// Submits all unconfirmed events to KELS and updates the confirmed cursor.
-    /// Handles divergence detection and recovery:
-    /// - If divergence detected and recoverable (no rotation in pending): auto-rotates and retries
-    /// - If divergence detected but contested (rotation in both): returns error
-    /// - If divergence detected but unrecoverable (adversary rotated): returns error
-    ///
-    /// Submit pending events to KELS.
-    ///
-    /// Does nothing if no KELS client is configured (offline mode).
-    /// Returns `DivergenceDetected` error if divergence occurs - caller should use `recover()`.
+    /// Returns `DivergenceDetected` error if divergence - use `recover()` to resolve.
     pub async fn flush(&mut self) -> Result<(), KelsError> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),

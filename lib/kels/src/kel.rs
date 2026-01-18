@@ -1,12 +1,8 @@
-//! Key Event Log (KEL) Builder
+//! Key Event Log (KEL)
 //!
-//! This module provides builders for creating key events using pluggable
-//! `KeyProvider` implementations. The same API works with software keys,
-//! HSM keys, or mobile hardware keys.
-//!
-//! # Key Event Kinds
-//!
-//! Defined in `src/types.rs` as `EventKind`.
+//! This module provides the `Kel` struct for storing, verifying, and merging
+//! key event logs. A KEL is a cryptographically linked chain of key events
+//! that establishes an identity's key state over time.
 
 use crate::error::KelsError;
 use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
@@ -15,64 +11,40 @@ use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 use verifiable_storage::{StorageDatetime, Versioned};
 
-/// Computes the rotation hash (pre-rotation commitment) for a public key.
-///
-/// The rotation hash is a Blake3 digest of the public key's raw bytes,
-/// encoded in CESR qb64 format.
 pub fn compute_rotation_hash(public_key: &str) -> String {
     let digest = Digest::blake3_256(public_key.as_bytes());
     digest.qb64()
 }
 
-/// Result of divergence detection during verification.
-///
-/// A KEL is divergent when multiple events exist at the same version,
-/// indicating an adversary has submitted conflicting events.
 #[derive(Debug, Clone)]
 pub struct DivergenceInfo {
-    /// The version at which divergence was detected
     pub diverged_at_version: u64,
-    /// SAIDs of all events at the divergent version
     pub divergent_saids: Vec<String>,
 }
 
-/// State extracted from a KEL for building new events.
-///
-/// Handles both normal and divergent KELs by computing the correct
-/// last event, last establishment event, and confirmed cursor.
 #[derive(Debug, Clone)]
 pub struct KelBuilderState {
-    /// The last event to chain from (last non-divergent event if divergent)
     pub last_trusted_event: Option<KeyEvent>,
-    /// The last establishment event (last non-divergent if divergent)
     pub last_trusted_establishment_event: Option<KeyEvent>,
-    /// Index of first unconfirmed/divergent event (equals len if no divergence)
     pub trusted_cursor: usize,
 }
 
 impl KelBuilderState {
-    /// Update state after adding an establishment event (rot/ror/dec/rec/cnt).
-    /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
+    /// Does NOT update trusted_cursor.
     pub fn update_establishment(&mut self, event: &KeyEvent) {
         self.last_trusted_event = Some(event.clone());
         self.last_trusted_establishment_event = Some(event.clone());
     }
 
-    /// Update state after adding a non-establishment event (ixn).
-    /// Does NOT update confirmed_cursor - caller should do that after flush succeeds.
+    /// Does NOT update trusted_cursor.
     pub fn update_non_establishment(&mut self, event: &KeyEvent) {
         self.last_trusted_event = Some(event.clone());
     }
 
-    /// Mark events as confirmed up to the given cursor position.
     pub fn confirm(&mut self, cursor: usize) {
         self.trusted_cursor = cursor;
     }
 
-    /// Compute builder state from a slice of events.
-    ///
-    /// Handles divergence detection: if multiple events share the same version,
-    /// returns state pointing to the last non-divergent position.
     pub fn from_events(events: &[SignedKeyEvent]) -> Self {
         // Check for divergence (multiple events at same version)
         let divergence_version = Self::find_divergence_version(events);
@@ -113,7 +85,6 @@ impl KelBuilderState {
         }
     }
 
-    /// Find the version where divergence occurs (multiple events at same version).
     fn find_divergence_version(events: &[SignedKeyEvent]) -> Option<u64> {
         let mut seen_versions = std::collections::HashSet::new();
         for event in events {
@@ -125,25 +96,6 @@ impl KelBuilderState {
     }
 }
 
-/// A Key Event Log (KEL) - a cryptographically linked chain of key events.
-///
-/// The KEL is the authoritative record of an identity's key state. It contains:
-/// - An inception event (first event, establishes the prefix/identifier)
-/// - Zero or more rotation events (key changes with pre-rotation commitment)
-/// - Zero or more interaction events (anchoring external data)
-///
-/// # Example
-///
-/// ```
-/// use kels::Kel;
-///
-/// // Create empty KEL
-/// let kel = Kel::new();
-/// assert!(kel.is_empty());
-///
-/// // KELs are serializable
-/// let json = serde_json::to_string(&kel).unwrap();
-/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Kel(Vec<SignedKeyEvent>);
 
@@ -152,9 +104,7 @@ impl Kel {
         Self(Vec::new())
     }
 
-    /// Verifies the KEL structure and signatures unless `skip_verify` is true.
-    /// Only use `skip_verify: true` for trusted sources (e.g., database reads
-    /// where events were already verified on storage).
+    /// Only use `skip_verify: true` for trusted sources (e.g., database reads).
     pub fn from_events(events: Vec<SignedKeyEvent>, skip_verify: bool) -> Result<Self, KelsError> {
         let kel = Self(events);
         if !skip_verify && !kel.is_empty() {
@@ -171,7 +121,6 @@ impl Kel {
         self.0.first().map(|e| e.event.prefix.as_str())
     }
 
-    /// Check if this is a delegated KEL (first event is `dip`).
     pub fn is_delegated(&self) -> bool {
         self.0
             .first()
@@ -179,24 +128,17 @@ impl Kel {
             .unwrap_or(false)
     }
 
-    /// Get the delegating prefix (for delegated KELs).
-    ///
-    /// Returns `None` if not a delegated KEL or if empty.
     pub fn delegating_prefix(&self) -> Option<&str> {
         self.0
             .first()
             .and_then(|e| e.event.delegating_prefix.as_deref())
     }
 
-    /// Get the inception event's created_at time (for time-bounding delegated KELs).
     pub fn inception_time(&self) -> Option<&StorageDatetime> {
         self.0.first().map(|e| &e.event.created_at)
     }
 
-    /// Get the maximum (most recent) timestamp from all events in the KEL.
-    ///
-    /// Used for timestamp-based incremental queries to fetch events newer than
-    /// the latest event in the cache.
+    /// For timestamp-based incremental queries.
     pub fn max_event_timestamp(&self) -> Option<&StorageDatetime> {
         self.0.iter().map(|e| &e.event.created_at).max()
     }
@@ -224,17 +166,11 @@ impl Kel {
             || self.iter().any(|e| e.event.is_contest())
     }
 
-    /// Check if this KEL was contested (frozen due to adversary having recovery key).
-    ///
-    /// A contested KEL has a `cnt` event, indicating both parties used the recovery key
-    /// and the KEL is permanently frozen.
+    /// A contested KEL has a `cnt` event, meaning both parties used the recovery key.
     pub fn is_contested(&self) -> bool {
         self.0.iter().any(|e| e.event.is_contest())
     }
 
-    /// Get the current public key (from the last establishment event).
-    ///
-    /// Returns an error if the KEL is empty or decommissioned.
     pub fn current_public_key(&self) -> Result<PublicKey, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::InvalidKel("KEL is decommissioned".to_string()));
@@ -251,12 +187,6 @@ impl Kel {
         PublicKey::from_qb64(qb64).map_err(KelsError::from)
     }
 
-    /// Verify a signature against the current public key.
-    ///
-    /// This verifies that `signature` is a valid signature of `data` using
-    /// the current key from the most recent establishment event.
-    ///
-    /// Returns an error if the KEL is decommissioned or the signature is invalid.
     pub fn verify_signature(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
         let public_key = self.current_public_key()?;
 
@@ -265,12 +195,10 @@ impl Kel {
             .map_err(|_| KelsError::SignatureVerificationFailed)
     }
 
-    /// Append a signed event to the KEL.
     pub fn push(&mut self, event: SignedKeyEvent) {
         self.0.push(event);
     }
 
-    /// Truncate the KEL to keep only the first `len` events.
     pub fn truncate(&mut self, len: usize) {
         self.0.truncate(len);
     }
@@ -289,10 +217,6 @@ impl Kel {
         self.0
     }
 
-    /// Check if this KEL is divergent (multiple events at the same version).
-    ///
-    /// Returns `Some(DivergenceInfo)` if divergence is detected, `None` otherwise.
-    /// A divergent KEL cannot be trusted and requires recovery.
     pub fn find_divergence(&self) -> Option<DivergenceInfo> {
         if self.0.is_empty() {
             return None;
@@ -322,8 +246,6 @@ impl Kel {
         })
     }
 
-    /// Trace back from a given SAID through previous links to build a chain of SAIDs.
-    /// Returns all SAIDs in the chain from the given tail back to inception.
     pub fn trace_chain_saids(&self, tail_said: &str) -> std::collections::HashSet<String> {
         let mut saids = std::collections::HashSet::new();
         let mut current_said = Some(tail_said.to_string());
@@ -338,9 +260,6 @@ impl Kel {
         saids
     }
 
-    /// Partition events into owner chain and adversary events.
-    /// Owner chain: events before divergence OR in the owner's chain (by SAID).
-    /// Adversary events: events at/after divergence that are NOT in owner's chain.
     pub fn partition_by_owner_chain(
         &mut self,
         owner_chain_saids: &std::collections::HashSet<String>,
@@ -363,11 +282,6 @@ impl Kel {
         adversary_events
     }
 
-    /// Get the last valid version before any divergence.
-    ///
-    /// If the KEL is not divergent, returns the version of the last event.
-    /// If divergent, returns the version just before the divergence point.
-    /// Returns `None` if the KEL is empty.
     pub fn last_valid_version(&self) -> Option<u64> {
         if self.0.is_empty() {
             return None;
@@ -380,12 +294,7 @@ impl Kel {
         }
     }
 
-    /// Get the signing key generation that was active at a given version.
-    ///
-    /// Generation 0 = inception key, Generation N = key after N rotations.
-    /// This counts rotations (rot events) that occurred BEFORE the given version.
-    ///
-    /// For recovery, use this to find which historical key should sign the recovery event.
+    /// Generation 0 = inception key, generation N = key after N rotations.
     pub fn key_generation_at_version(&self, version: u64) -> usize {
         self.0
             .iter()
@@ -393,26 +302,13 @@ impl Kel {
             .count()
     }
 
-    /// Check if the KEL has any event that reveals the recovery key at or after the given version.
-    ///
-    /// Events that reveal recovery keys (rec/ror/dec/cnt) require dual signatures and
-    /// prove ownership of both signing and recovery keys. Once such an event exists,
-    /// single-signature events cannot supersede the dual-signature proof at earlier versions.
-    /// Recovery-revealing events (rec, cnt, ror, dec) are still allowed via the
-    /// `!new_reveals_recovery` check in merge().
+    /// Dual-signature events protect against re-divergence at earlier versions.
     pub fn reveals_recovery_at_or_after(&self, version: u64) -> bool {
         self.0
             .iter()
             .any(|e| e.event.version >= version && e.event.reveals_recovery_key())
     }
 
-    /// Extract builder state from this KEL, handling divergence correctly.
-    ///
-    /// For normal KELs: returns the last event, last establishment event, and full length as cursor.
-    /// For divergent KELs: returns the last non-divergent event/establishment and divergence index.
-    ///
-    /// This method consolidates the logic for computing state that `KeyEventBuilder` needs,
-    /// whether loading from storage or updating after divergence detection.
     pub fn builder_state(&self) -> KelBuilderState {
         if let Some(divergence) = self.find_divergence() {
             let divergence_version = divergence.diverged_at_version;
@@ -453,38 +349,7 @@ impl Kel {
         }
     }
 
-    /// Merge submitted events into this KEL.
-    ///
-    /// Returns `(diverged_at, accepted)` compatible with `BatchSubmitResponse`:
-    /// - `(None, true)` = success, all events accepted
-    /// - `(Some(said), true)` = divergence detected and recovered
-    /// - `(Some(said), false)` = divergence, not recovered (contested or needs rec event)
-    /// - `(None, false)` = validation error
-    ///
-    /// # Divergence Recovery Algorithm
-    ///
-    /// Given existing events [0..n] and new events [m..m+c] where m <= n:
-    /// 1. Find minimal position y where SAIDs differ (first divergence point)
-    /// 2. Check: adversary did NOT reveal recovery key (no rec/ror in existing[y..n])
-    /// 3. Check: owner has recovery event in new[y..m+c] (proves recovery key ownership)
-    /// 4. If both conditions met: truncate existing at y, append new[y..m+c], verify
-    /// 5. If BOTH have revealed recovery keys → contested KEL (unrecoverable)
-    ///
-    /// # Arguments
-    ///
-    /// * `events` - Events to merge (may overlap with existing events)
-    ///
-    /// # Returns
-    ///
-    ///
-    /// Merge submitted events into this KEL.
-    ///
-    /// Returns a tuple of (old_events_removed, result):
-    /// - `old_events_removed`: Events that were removed from the existing KEL (for archiving)
-    /// - `result`: The merge result (Verified, Contested, Recoverable, Unrecoverable)
-    ///
-    /// For normal appends (no divergence), `old_events_removed` is empty.
-    /// For divergence recovery, `old_events_removed` contains the adversary's events that were replaced.
+    /// Returns `(archived_events, KelMergeResult)`.
     pub fn merge(
         &mut self,
         events: Vec<SignedKeyEvent>,
@@ -649,32 +514,7 @@ impl Kel {
         Ok((old_events_removed, result))
     }
 
-    /// Verify the structural integrity and signatures of this KEL.
-    ///
-    /// This method checks:
-    /// 1. The KEL is non-empty
-    /// 2. The first event is an inception event (icp or dip)
-    /// 3. Each event's `previous` field references the prior event's SAID
-    /// 4. Each event's SAID matches its content (self-addressing verification)
-    /// 5. All events share the same prefix
-    /// 6. Pre-rotation commitments are honored
-    /// 7. Signatures are valid
-    ///
-    /// # Divergent KELs
-    ///
-    /// If the KEL contains divergent events (multiple events at the same version),
-    /// verification proceeds as follows:
-    /// 1. The non-divergent prefix is verified normally
-    /// 2. Each divergent event is verified against the key state from the common prefix
-    /// 3. Only events that are properly signed and chained are considered valid divergence
-    /// 4. Returns `Ok(Some(DivergenceInfo))` if valid divergence is detected
-    /// 5. Invalid divergent events (bad signature, bad chain) are ignored
-    ///
-    /// # Note
-    ///
-    /// For delegated KELs, this method does NOT verify that the delegation is
-    /// anchored in the delegating KEL. The caller should verify that separately
-    /// by fetching the delegating KEL and checking for the anchor.
+    /// Does NOT verify delegation anchoring for delegated KELs.
     pub fn verify(&self) -> Result<Option<DivergenceInfo>, KelsError> {
         if self.0.is_empty() {
             return Err(KelsError::InvalidKel("KEL is empty".to_string()));
@@ -726,7 +566,6 @@ impl Kel {
         Ok(divergence_info)
     }
 
-    /// Walk backward from a tail event, verifying the cryptographic chain.
     fn verify_branch_from_tail(
         &self,
         tail_said: &str,
@@ -922,7 +761,6 @@ impl Kel {
         Ok(())
     }
 
-    /// Verify recovery key revelation for rec/ror/cnt/dec events.
     fn verify_recovery_key_revelation(
         &self,
         event: &KeyEvent,
@@ -944,7 +782,6 @@ impl Kel {
         Ok(())
     }
 
-    /// Verify signatures on an event.
     fn verify_signatures(
         &self,
         signed_event: &SignedKeyEvent,

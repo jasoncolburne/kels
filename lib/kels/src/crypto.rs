@@ -1,8 +1,4 @@
 //! Cryptographic Key Provider
-//!
-//! Provides a unified `KeyProvider` enum that abstracts over software and hardware
-//! key storage. Business logic (slot management, rotation flow) lives in the enum,
-//! while only primitive operations are delegated to the underlying implementations.
 
 use crate::error::KelsError;
 use cesr::{PrivateKey, PublicKey, Signature, generate_secp256r1};
@@ -15,8 +11,6 @@ use std::sync::Arc;
 ))]
 use crate::hardware::HardwareKeyProvider;
 
-/// Trait for external key providers (HSM, etc.) that can be used with KeyProvider.
-/// Only available on native platforms (requires tokio).
 #[cfg(feature = "native")]
 #[async_trait::async_trait]
 pub trait ExternalKeyProvider: Send + Sync {
@@ -34,65 +28,32 @@ pub trait ExternalKeyProvider: Send + Sync {
     async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError>;
     async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError>;
 
-    /// Prepare recovery key rotation - generates new key but doesn't replace yet.
-    /// Returns (current_recovery_pub, new_recovery_pub).
     async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError>;
-
-    /// Commit the prepared rotation - replaces current recovery key with new.
     async fn commit_recovery_rotation(&mut self);
-
-    /// Rollback a prepared recovery key rotation (if KELS rejects).
     async fn rollback_recovery_rotation(&mut self);
-
-    /// Prepare signing key rotation - stages next→current and generates new next.
-    /// Returns the new current public key.
     async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError>;
-
-    /// Get the pending next public key (after prepare_rotation).
     async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError>;
-
-    /// Sign with the pending current key (after prepare_rotation).
     async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError>;
-
-    /// Commit the prepared signing key rotation.
     async fn commit_rotation(&mut self);
-
-    /// Rollback a prepared signing key rotation (if KELS rejects).
     async fn rollback_rotation(&mut self);
 
-    // Handle/label methods for persistence (HSM, Secure Enclave)
-    // Default implementations return None/empty for software-like providers
-
-    /// Get all signing key labels (for persistence).
     async fn signing_labels(&self) -> Vec<String> {
         vec![]
     }
-
-    /// Get the current key handle/label (for persistence).
     async fn current_handle(&self) -> Option<String> {
         None
     }
-
-    /// Get the next key handle/label (for persistence).
     async fn next_handle(&self) -> Option<String> {
         None
     }
-
-    /// Get the recovery key handle/label (for persistence).
     async fn recovery_handle(&self) -> Option<String> {
         None
     }
-
-    /// Get the next label generation counter (for persistence).
     async fn next_label_generation(&self) -> u64 {
         0
     }
 }
 
-/// Unified key provider supporting software, hardware, and external key storage.
-///
-/// The enum contains business logic for key management while delegating
-/// primitive operations (key generation, signing) to the underlying storage.
 pub enum KeyProvider {
     Software(Box<SoftwareKeyProvider>),
     #[cfg(all(
@@ -113,7 +74,6 @@ impl KeyProvider {
         Self::Software(Box::new(SoftwareKeyProvider::with_keys(current, next)))
     }
 
-    /// Create with all software keys (for full restoration).
     pub fn with_all_software_keys(
         current: Option<PrivateKey>,
         next: Option<PrivateKey>,
@@ -156,13 +116,6 @@ impl KeyProvider {
         Self::External(Arc::new(tokio::sync::Mutex::new(provider)))
     }
 
-    /// Try to clone this key provider.
-    ///
-    /// Only works for Software providers. Hardware and External providers
-    /// cannot be cloned (returns None).
-    ///
-    /// Useful for creating independent key provider instances for testing
-    /// (e.g., simulating an adversary with the same keys).
     pub async fn try_clone(&self) -> Option<Self> {
         match self {
             Self::Software(p) => Some(Self::Software(p.clone())),
@@ -176,8 +129,6 @@ impl KeyProvider {
         }
     }
 
-    /// Delete all keys (for decommission/reset).
-    /// Only has effect for hardware keys - software keys are just dropped.
     pub async fn delete_all_keys(&mut self) {
         match self {
             Self::Software(_) => {
@@ -197,8 +148,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the current label generation (for cleanup tracking).
-    /// Only meaningful for hardware keys.
     pub async fn current_generation(&self) -> u64 {
         match self {
             Self::Software(_) => 0,
@@ -212,8 +161,6 @@ impl KeyProvider {
         }
     }
 
-    /// Delete keys created from start_generation up to current generation.
-    /// Used to clean up keys created during adversarial injection.
     #[allow(unused_variables)]
     pub async fn delete_keys_from_generation(&self, start_generation: u64) {
         match self {
@@ -234,9 +181,6 @@ impl KeyProvider {
         }
     }
 
-    // === Business Logic (common across providers) ===
-
-    /// Generate a new keypair, storing it in the first empty slot (current, then next).
     pub async fn generate_keypair(&mut self) -> Result<PublicKey, KelsError> {
         if !self.has_current().await {
             self.generate_into_current().await
@@ -245,7 +189,6 @@ impl KeyProvider {
         }
     }
 
-    /// Rotate keys: move next to current, generate new next.
     pub async fn rotate(&mut self) -> Result<PublicKey, KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
@@ -258,7 +201,6 @@ impl KeyProvider {
         self.current_public_key().await
     }
 
-    /// Generate a recovery key (called during inception).
     pub async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.generate_recovery_key(),
@@ -272,7 +214,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the current public key.
     pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.current_public_key_sync(),
@@ -286,7 +227,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the next public key.
     pub async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.next_public_key_sync(),
@@ -300,7 +240,6 @@ impl KeyProvider {
         }
     }
 
-    /// Sign data with the current key.
     pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
         match self {
             Self::Software(p) => p.sign_sync(data),
@@ -314,7 +253,6 @@ impl KeyProvider {
         }
     }
 
-    /// Sign data with the recovery key (for dual signatures during recovery events).
     pub async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
         match self {
             Self::Software(p) => p.sign_with_recovery_sync(data),
@@ -328,7 +266,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the recovery public key.
     pub async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.recovery_public_key_sync(),
@@ -342,10 +279,6 @@ impl KeyProvider {
         }
     }
 
-    /// Prepare recovery key rotation - generates new key but doesn't replace yet.
-    /// Returns (current_recovery_pub, new_recovery_pub).
-    /// - current_recovery_pub goes in event's recovery_key field (revealed)
-    /// - hash(new_recovery_pub) goes in event's recovery_hash field
     pub async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
         match self {
             Self::Software(p) => p.prepare_recovery_rotation_sync(),
@@ -359,8 +292,6 @@ impl KeyProvider {
         }
     }
 
-    /// Commit the prepared recovery rotation - replaces current recovery key with new.
-    /// Must be called after prepare_recovery_rotation() and signing.
     pub async fn commit_recovery_rotation(&mut self) {
         match self {
             Self::Software(p) => p.commit_recovery_rotation(),
@@ -374,7 +305,6 @@ impl KeyProvider {
         }
     }
 
-    /// Rollback a prepared recovery key rotation (if KELS rejects).
     pub async fn rollback_recovery_rotation(&mut self) {
         match self {
             Self::Software(p) => p.rollback_recovery_rotation(),
@@ -388,11 +318,6 @@ impl KeyProvider {
         }
     }
 
-    /// Prepare signing key rotation - stages next→current and generates new next.
-    /// Returns the new current public key.
-    ///
-    /// Does NOT modify the actual key state - call `commit_rotation()` after
-    /// successful KELS submission, or call `rollback_rotation()` on failure.
     pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.prepare_rotation_sync(),
@@ -406,7 +331,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the pending next public key (after prepare_rotation).
     pub async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
         match self {
             Self::Software(p) => p.pending_next_public_key_sync(),
@@ -420,7 +344,6 @@ impl KeyProvider {
         }
     }
 
-    /// Sign with the pending current key (after prepare_rotation).
     pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
         match self {
             Self::Software(p) => p.sign_with_pending_sync(data),
@@ -434,7 +357,6 @@ impl KeyProvider {
         }
     }
 
-    /// Commit the prepared signing key rotation.
     pub async fn commit_rotation(&mut self) {
         match self {
             Self::Software(p) => p.commit_rotation(),
@@ -448,7 +370,6 @@ impl KeyProvider {
         }
     }
 
-    /// Rollback a prepared signing key rotation (if KELS rejects).
     pub async fn rollback_rotation(&mut self) {
         match self {
             Self::Software(p) => p.rollback_rotation(),
@@ -462,7 +383,6 @@ impl KeyProvider {
         }
     }
 
-    /// Verify a signature using the current key.
     pub async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
         match self {
             Self::Software(p) => p.verify_sync(data, signature),
@@ -475,8 +395,6 @@ impl KeyProvider {
             Self::External(p) => p.lock().await.verify(data, signature).await,
         }
     }
-
-    // === Primitive Operations (delegated to providers) ===
 
     async fn has_current(&self) -> bool {
         match self {
@@ -543,8 +461,6 @@ impl KeyProvider {
         }
     }
 
-    // === Accessors for provider-specific state ===
-
     #[allow(unreachable_patterns)]
     pub fn as_software(&self) -> Option<&SoftwareKeyProvider> {
         match self {
@@ -565,9 +481,6 @@ impl KeyProvider {
         }
     }
 
-    // === Handle/label accessors for persistence ===
-
-    /// Get the current key handle/label (for persistence).
     pub async fn current_handle(&self) -> Option<String> {
         match self {
             Self::Software(_) => None,
@@ -581,7 +494,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the next key handle/label (for persistence).
     pub async fn next_handle(&self) -> Option<String> {
         match self {
             Self::Software(_) => None,
@@ -595,7 +507,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the recovery key handle/label (for persistence).
     pub async fn recovery_handle(&self) -> Option<String> {
         match self {
             Self::Software(_) => None,
@@ -609,7 +520,6 @@ impl KeyProvider {
         }
     }
 
-    /// Get the next label generation counter (for persistence).
     pub async fn next_label_generation(&self) -> u64 {
         match self {
             Self::Software(_) => 0,
@@ -624,16 +534,6 @@ impl KeyProvider {
     }
 }
 
-/// Software-based key provider using in-memory keys.
-///
-/// Key structure:
-/// - `current_key`: Current signing key
-/// - `next_key`: Next key (pre-committed, hash revealed in events)
-/// - `recovery_key`: Recovery key (hash in recovery_hash, never revealed except in rec/ror)
-///
-/// Transient keys for two-phase rotation:
-/// - `pending_next_key`: New next key being staged during rotation
-/// - `pending_recovery_key`: New recovery key being staged during recovery rotation
 #[derive(Debug, Clone)]
 pub struct SoftwareKeyProvider {
     current_key: Option<PrivateKey>,
@@ -670,7 +570,6 @@ impl SoftwareKeyProvider {
         }
     }
 
-    /// Create with current, next, and optional recovery key (for restoration).
     pub fn with_all_keys(
         current: Option<PrivateKey>,
         next: Option<PrivateKey>,
