@@ -6,30 +6,20 @@ use std::fmt;
 use std::str::FromStr;
 use verifiable_storage::{SelfAddressed, StorageDatetime, Versioned};
 
-/// Key event types in the KEL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventKind {
-    /// Inception - creates a new KEL
-    Icp,
-    /// Delegated inception - creates a delegated KEL
-    Dip,
-    /// Rotation - rotates signing key only
-    Rot,
-    /// Interaction - anchors a SAID
-    Ixn,
-    /// Recovery - dual-sig recovery from divergence
-    Rec,
-    /// Recovery rotation - proactive dual-key rotation
-    Ror,
-    /// Decommission - voluntary KEL termination
-    Dec,
-    /// Contest - adversary revealed recovery key, KEL frozen
-    Cnt,
+    Icp, // Inception
+    Dip, // Delegated inception
+    Rot, // Rotation
+    Ixn, // Interaction (anchor)
+    Rec, // Recovery (dual-signed)
+    Ror, // Recovery rotation (dual-signed)
+    Dec, // Decommission (dual-signed)
+    Cnt, // Contest (dual-signed, freezes KEL)
 }
 
 impl EventKind {
-    /// Get the string representation
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Icp => "icp",
@@ -43,27 +33,23 @@ impl EventKind {
         }
     }
 
-    /// Returns true if this is an inception event (icp or dip)
     pub fn is_inception(&self) -> bool {
         matches!(self, Self::Icp | Self::Dip)
     }
 
-    /// Returns true if this is an establishment event (has public key)
+    /// Establishment events have a public key
     pub fn is_establishment(&self) -> bool {
         !matches!(self, Self::Ixn)
     }
 
-    /// Returns true if this event reveals a recovery key
     pub fn reveals_recovery_key(&self) -> bool {
         matches!(self, Self::Rec | Self::Ror | Self::Dec | Self::Cnt)
     }
 
-    /// Returns true if this event requires dual signatures
     pub fn requires_dual_signature(&self) -> bool {
         self.reveals_recovery_key()
     }
 
-    /// Returns true if this event decommissions the KEL
     pub fn decommissions(&self) -> bool {
         matches!(self, Self::Dec | Self::Cnt)
     }
@@ -96,86 +82,59 @@ impl FromStr for EventKind {
     }
 }
 
-/// Result of merging events into a KEL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
-    /// Events accepted (no divergence, or idempotent re-submission)
-    Verified,
-    /// Recovery succeeded - KEL continues or decommissioned by choice
-    Recovered,
-    /// Divergence with no establishments - user can recover with rec
-    Recoverable,
-    /// Adversary revealed recovery key - user SHOULD submit cnt to contest
-    Contestable,
-    /// Key compromise - both parties revealed recovery keys, KEL frozen
-    Contested,
+    Verified,          // Events accepted
+    Recovered,         // Recovery succeeded
+    Recoverable,       // Divergence - user can submit rec
+    Contestable,       // Adversary revealed recovery key - user should submit cnt
+    Contested,         // Both revealed recovery keys, KEL frozen
+    Frozen,            // Already divergent, only rec/cnt allowed
+    RecoveryProtected, // Recovery event protects this version
 }
 
-/// Outcome of a recovery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryOutcome {
-    /// Normal recovery - KEL continues with new keys
-    Recovered,
-    /// Adversary had recovery key - KEL frozen via contest event
-    Contested,
+    Recovered, // KEL continues with new keys
+    Contested, // KEL frozen via contest event
 }
 
-/// Error response from the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Key Event with SAID pattern.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "kels_key_events")]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEvent {
-    /// Self-Addressing IDentifier
     #[said]
     pub said: String,
-
-    /// Record lineage (groups all versions)
     #[prefix]
     pub prefix: String,
-
-    /// Previous version's SAID
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
-
-    /// Version counter
     #[version]
     pub version: u64,
-
-    /// Public key if this is an establishment event
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
-
-    /// Rotation hash (digest of next signing key)
+    /// Digest of next signing key
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation_hash: Option<String>,
-
-    /// Recovery key - revealed only in rec/ror/dec/cnt events
+    /// Revealed only in rec/ror/dec/cnt events
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_key: Option<String>,
-
-    /// Recovery hash (digest of next recovery key)
+    /// Digest of next recovery key
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_hash: Option<String>,
-
-    /// Event type
     pub kind: EventKind,
-
-    /// Anchor SAID for domains and records
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
-
-    /// Delegator's KEL prefix (only for dip events)
+    /// Only for dip events
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegating_prefix: Option<String>,
-
-    /// When this event was created
     #[created_at]
     pub created_at: StorageDatetime,
 }
@@ -228,7 +187,6 @@ impl KeyEvent {
         Ok(dip)
     }
 
-    /// Create a new rotation event from the previous event.
     pub fn create_rotation(
         previous_event: &Self,
         public_key: String,
@@ -246,7 +204,6 @@ impl KeyEvent {
         Ok(event)
     }
 
-    /// Create a new interaction event from the previous event.
     pub fn create_interaction(previous_event: &Self, anchor: String) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Ixn;
@@ -260,7 +217,6 @@ impl KeyEvent {
         Ok(event)
     }
 
-    /// Create a new recovery event from the previous event.
     pub fn create_recovery(
         previous_event: &Self,
         public_key: String,
@@ -280,7 +236,6 @@ impl KeyEvent {
         Ok(event)
     }
 
-    /// Create a new recovery rotation event.
     pub fn create_recovery_rotation(
         previous_event: &Self,
         public_key: String,
@@ -300,7 +255,6 @@ impl KeyEvent {
         Ok(event)
     }
 
-    /// Create a new decommission event.
     pub fn create_decommission(
         previous_event: &Self,
         public_key: String,
@@ -318,7 +272,6 @@ impl KeyEvent {
         Ok(event)
     }
 
-    /// Create a new contest event.
     pub fn create_contest(
         previous_event: &Self,
         public_key: String,
@@ -339,90 +292,70 @@ impl KeyEvent {
     pub fn is_inception(&self) -> bool {
         self.kind == EventKind::Icp
     }
-
     pub fn is_delegated_inception(&self) -> bool {
         self.kind == EventKind::Dip
     }
-
     pub fn is_rotation(&self) -> bool {
         self.kind == EventKind::Rot
     }
-
     pub fn is_recovery(&self) -> bool {
         self.kind == EventKind::Rec
     }
-
     pub fn is_recovery_rotation(&self) -> bool {
         self.kind == EventKind::Ror
     }
-
     pub fn is_decommission(&self) -> bool {
         self.kind == EventKind::Dec
     }
-
     pub fn is_contest(&self) -> bool {
         self.kind == EventKind::Cnt
     }
-
     pub fn is_interaction(&self) -> bool {
         self.kind == EventKind::Ixn
     }
-
     pub fn is_establishment(&self) -> bool {
         self.kind.is_establishment()
     }
-
     pub fn reveals_recovery_key(&self) -> bool {
         self.kind.reveals_recovery_key()
     }
-
+    pub fn has_recovery_hash(&self) -> bool {
+        self.recovery_hash.is_some()
+    }
     pub fn requires_dual_signature(&self) -> bool {
         self.kind.requires_dual_signature()
     }
-
     pub fn decommissions(&self) -> bool {
         self.kind.decommissions()
     }
 }
 
-/// Signature record for storage.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "kels_signatures")]
+#[storable(table = "kels_key_event_signatures")]
 #[serde(rename_all = "camelCase")]
 pub struct EventSignature {
-    /// Self-Addressing IDentifier
     #[said]
     pub said: String,
-    /// The SAID of the event this signature is for
     pub event_said: String,
-    /// The public key that created this signature (qb64 encoded)
-    pub public_key: String,
-    /// The signature (qb64 encoded)
-    pub signature: String,
+    pub public_key: String, // qb64
+    pub signature: String,  // qb64
 }
 
-/// Signature with its signing public key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEventSignature {
-    /// The public key that created this signature (qb64 encoded)
-    pub public_key: String,
-    /// The signature (qb64 encoded)
-    pub signature: String,
+    pub public_key: String, // qb64
+    pub signature: String,  // qb64
 }
 
-/// A key event paired with its signature(s).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedKeyEvent {
-    /// The key event
     pub event: KeyEvent,
-    /// Signatures over the event's SAID
     pub signatures: Vec<KeyEventSignature>,
 }
 
 impl SignedKeyEvent {
-    /// Create a SignedKeyEvent with a single signature.
     pub fn new(event: KeyEvent, public_key: String, signature: String) -> Self {
         Self {
             event,
@@ -433,7 +366,6 @@ impl SignedKeyEvent {
         }
     }
 
-    /// Create a SignedKeyEvent with dual signatures.
     pub fn new_recovery(
         event: KeyEvent,
         primary_public_key: String,
@@ -456,17 +388,14 @@ impl SignedKeyEvent {
         }
     }
 
-    /// Get signature by public key.
     pub fn signature(&self, public_key: &str) -> Option<&KeyEventSignature> {
         self.signatures.iter().find(|s| s.public_key == public_key)
     }
 
-    /// Check if this has dual signatures.
     pub fn has_dual_signatures(&self) -> bool {
         self.signatures.len() >= 2
     }
 
-    /// Create from a list of (public_key, signature) pairs.
     pub fn from_signatures(event: KeyEvent, sigs: Vec<(String, String)>) -> Self {
         Self {
             event,
@@ -494,122 +423,71 @@ impl SignedKeyEvent {
     }
 }
 
-/// Response from batch event submission to KELS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[must_use = "BatchSubmitResponse.accepted must be checked - events may be rejected"]
 pub struct BatchSubmitResponse {
-    /// SAID of first divergent event (None = no divergence)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<String>,
-    /// True if all events were accepted
     pub accepted: bool,
 }
 
-/// Kind of audited item in KELS.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum KelsAuditKind {
-    /// A signed key event was audited
-    SignedKeyEvent,
-}
-
-/// Type of audit event in KELS.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum KelsAuditEvent {
-    /// Events were removed during recovery
-    Recover,
-    /// KEL was contested
-    Contest,
-}
-
-/// KELS audit record for tracking deletions and contestations of key events.
+/// Audit record for tracking archived events during recovery/contest
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "kels_audit_records")]
 #[serde(rename_all = "camelCase")]
 pub struct KelsAuditRecord {
-    /// Self-Addressing IDentifier
     #[said]
     pub said: String,
-
-    /// The registrant/KEL prefix this audit record relates to
     pub kel_prefix: String,
-
-    /// Kind of item being audited
-    pub kind: KelsAuditKind,
-
-    /// Type of audit event
-    pub event: KelsAuditEvent,
-
-    /// Prefix of the deleted/contested item
-    pub data_prefix: String,
-
-    /// JSON-serialized data of the audited item(s)
+    pub kind: EventKind, // rec or cnt
     pub data_json: String,
-
-    /// When this audit record was created
     #[created_at]
     pub recorded_at: StorageDatetime,
 }
 
 impl KelsAuditRecord {
-    /// Create an audit record for events removed during recovery.
     pub fn for_recovery(
         kel_prefix: String,
         events: &[SignedKeyEvent],
     ) -> Result<Self, verifiable_storage::StorageError> {
-        let data_json = serde_json::to_string(events)?;
-        Self::create(
-            kel_prefix.clone(),
-            KelsAuditKind::SignedKeyEvent,
-            KelsAuditEvent::Recover,
-            kel_prefix,
-            data_json,
-        )
+        Self::create(kel_prefix, EventKind::Rec, serde_json::to_string(events)?)
     }
 
-    /// Create an audit record for a contested KEL.
     pub fn for_contest(
         kel_prefix: String,
         events: &[SignedKeyEvent],
     ) -> Result<Self, verifiable_storage::StorageError> {
-        let data_json = serde_json::to_string(events)?;
-        Self::create(
-            kel_prefix.clone(),
-            KelsAuditKind::SignedKeyEvent,
-            KelsAuditEvent::Contest,
-            kel_prefix,
-            data_json,
-        )
+        Self::create(kel_prefix, EventKind::Cnt, serde_json::to_string(events)?)
     }
 
-    /// Deserialize the stored data as signed key events.
     pub fn as_signed_key_events(&self) -> Result<Vec<SignedKeyEvent>, serde_json::Error> {
         serde_json::from_str(&self.data_json)
     }
 }
 
-/// Single prefix request for batch KEL fetching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchKelPrefixRequest {
-    /// The KEL prefix to fetch
     pub prefix: String,
-    /// If provided, only return events with version > since
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<u64>,
+    pub since: Option<String>, // RFC3339 timestamp filter
 }
 
-/// Request to fetch multiple KELs in batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchKelsRequest {
-    /// Prefixes to fetch, with optional since values
     pub prefixes: Vec<BatchKelPrefixRequest>,
 }
 
-/// Cached Key Event Log for KELS service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KelResponse {
+    pub events: Vec<SignedKeyEvent>, // May include divergent events at same version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_records: Option<Vec<KelsAuditRecord>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
 #[cfg_attr(feature = "server-caching", cache(prefix = "kels:kel", ttl = 3600))]
@@ -620,7 +498,6 @@ pub struct CachedKel {
     pub events: Vec<SignedKeyEvent>,
 }
 
-/// Cached contested KEL prefix for fast exists check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
 #[cfg_attr(
@@ -662,16 +539,13 @@ mod tests {
         assert!(EventKind::Icp.is_inception());
         assert!(EventKind::Dip.is_inception());
         assert!(!EventKind::Rot.is_inception());
-
         assert!(EventKind::Icp.is_establishment());
         assert!(!EventKind::Ixn.is_establishment());
-
         assert!(EventKind::Rec.reveals_recovery_key());
         assert!(EventKind::Ror.reveals_recovery_key());
         assert!(EventKind::Dec.reveals_recovery_key());
         assert!(EventKind::Cnt.reveals_recovery_key());
         assert!(!EventKind::Rot.reveals_recovery_key());
-
         assert!(EventKind::Dec.decommissions());
         assert!(EventKind::Cnt.decommissions());
         assert!(!EventKind::Rec.decommissions());
@@ -681,7 +555,6 @@ mod tests {
     fn test_event_kind_json() {
         let json = serde_json::to_string(&EventKind::Icp).unwrap();
         assert_eq!(json, "\"icp\"");
-
         let parsed: EventKind = serde_json::from_str("\"rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
     }

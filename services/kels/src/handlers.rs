@@ -1,24 +1,22 @@
 //! KELS REST API Handlers
-//!
-//! Provides endpoints for storing and retrieving key events.
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use cesr::{Matter, Signature};
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, Kel, KelMergeResult, KelsAuditRecord,
-    KelsError, SerializedKel, ServerKelCache, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, Kel, KelMergeResult, KelResponse,
+    KelsAuditRecord, KelsError, ServerKelCache, SignedKeyEvent,
 };
+use serde::Deserialize;
 use std::sync::Arc;
-use verifiable_storage::{UnversionedRepository, VersionedRepository};
+use verifiable_storage::VersionedRepository;
 
 use crate::repository::KelsRepository;
 
-/// Response type for pre-serialized JSON bytes
 pub struct PreSerializedJson(pub Arc<Vec<u8>>);
 
 impl IntoResponse for PreSerializedJson {
@@ -32,10 +30,8 @@ impl IntoResponse for PreSerializedJson {
     }
 }
 
-/// Shared application state
 pub struct AppState {
     pub repo: Arc<KelsRepository>,
-    /// Server-side KEL cache (Redis + local LRU)
     pub kel_cache: ServerKelCache,
 }
 
@@ -72,8 +68,6 @@ impl ApiError {
         )
     }
 
-    /// KEL is contested - both parties have revealed recovery keys (rec/ror events).
-    /// This indicates recovery key compromise and the KEL is permanently frozen.
     pub fn contested(msg: impl Into<String>) -> Self {
         ApiError(StatusCode::GONE, Json(ErrorResponse { error: msg.into() }))
     }
@@ -152,211 +146,135 @@ pub async fn submit_events(
             Signature::from_qb64(&sig.signature)
                 .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
         }
+        // Validate dual signature requirement
+        if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
+            return Err(ApiError::bad_request(
+                "Dual signatures required for recovery event",
+            ));
+        }
     }
 
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
 
-    // Check if KEL is already contested
-    if state.repo.audit_records.is_contested(&prefix).await? {
-        return Err(ApiError::contested(format!(
-            "KEL {} is contested and permanently frozen",
-            prefix
-        )));
-    }
+    // Begin transaction with advisory lock - serializes all operations on this prefix
+    let mut tx = state
+        .repo
+        .key_events
+        .begin_locked_transaction(&prefix)
+        .await?;
 
-    // Fetch existing KEL (empty if new)
-    let existing_events = state.repo.key_events.get_signed_history(&prefix).await?;
-    let mut kel = Kel::from_events(existing_events, true)?; // skip_verify: DB is trusted
+    // Load existing KEL within transaction (sees latest committed state)
+    let existing_events = tx.load_signed_events().await?;
+    let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
     // Merge submitted events into KEL
-    // Returns (old_events_removed, result) - old_events_removed are adversary events to archive
     let (events_to_remove, result) = kel
         .merge(events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
-    let (diverged_at, accepted) = match result {
+    // Handle merge result within transaction
+    let (diverged_at, accepted, should_clear_cache) = match result {
         KelMergeResult::Verified => {
-            if !events_to_remove.is_empty() {
-                return Err(ApiError::conflict(
-                    "Event to remove but merge successful, aborting",
-                ));
-            }
-
+            // Normal append - just insert new events
             for signed_event in &events {
-                if state
-                    .repo
-                    .key_events
-                    .get_by_said(&signed_event.event.said)
-                    .await?
-                    .is_none()
-                {
-                    if signed_event.signatures.is_empty() {
-                        return Err(ApiError::bad_request("Event missing signature"));
-                    }
-
-                    state
-                        .repo
-                        .key_events
-                        .create_with_signatures(
-                            signed_event.event.clone(),
-                            signed_event.event_signatures(),
-                        )
-                        .await?;
-                }
+                tx.insert_signed_event(signed_event).await?;
             }
-
-            // Update cache with full KEL
-            let full_kel = state.repo.key_events.get_signed_history(&prefix).await?;
-            if let Err(e) = state.kel_cache.store(&prefix, &full_kel).await {
-                tracing::warn!("Failed to update cache: {}", e);
+            (None, true, false)
+        }
+        KelMergeResult::Recovered => {
+            // Recovery: archive adversary events, delete them from DB, insert recovery events
+            if !events_to_remove.is_empty() {
+                let audit_record =
+                    KelsAuditRecord::for_recovery(prefix.clone(), &events_to_remove)?;
+                tx.insert_audit_record(&audit_record).await?;
+                let saids: Vec<String> = events_to_remove
+                    .iter()
+                    .map(|e| e.event.said.clone())
+                    .collect();
+                tx.delete_events_by_said(saids).await?;
             }
-            (None, true)
+            for signed_event in &events {
+                tx.insert_signed_event(signed_event).await?;
+            }
+            (None, true, true) // Clear cache on recovery
         }
         KelMergeResult::Contested => {
-            if events.len() != 1 {
+            // Contest: just append cnt event. KEL stays divergent but is frozen.
+            // No archiving - all events remain visible to show contested state.
+            if events.len() != 1 || !events[0].event.is_contest() {
+                // Rollback happens automatically when tx is dropped
                 return Err(ApiError::conflict(
                     "Must submit single cnt (contest) event to freeze contested KEL",
                 ));
             }
-
-            if !events_to_remove.is_empty() {
-                let from_version = events_to_remove[0].event.version;
-
-                let audit_record = KelsAuditRecord::for_contest(prefix.clone(), &events_to_remove)?;
-                state.repo.audit_records.insert(audit_record).await?;
-
-                state
-                    .repo
-                    .key_events
-                    .delete_events_from_version(&prefix, from_version)
-                    .await?;
-            } else {
-                return Err(ApiError::conflict(
-                    "Merge result is contested, but no events to remove",
-                ));
+            // Insert the contest event (divergence remains, KEL is frozen)
+            tx.insert_signed_event(&events[0]).await?;
+            (None, true, true) // Clear cache on contest
+        }
+        KelMergeResult::Recoverable | KelMergeResult::Contestable => {
+            // Divergence detected - store the divergent event to freeze the KEL
+            // events_to_remove contains the divergent event that was added
+            if let Some(divergent_event) = events_to_remove.first() {
+                tx.insert_signed_event(divergent_event).await?;
             }
+            tx.commit().await?;
 
-            for signed_event in events {
-                if !signed_event.event.is_contest() {
-                    return Err(ApiError::conflict(
-                        "Wrong type of event to decommission contested KEL (expected cnt)",
-                    ));
-                }
-
-                if state
-                    .repo
-                    .key_events
-                    .get_by_said(&signed_event.event.said)
-                    .await?
-                    .is_none()
-                {
-                    if signed_event.signatures.is_empty() {
-                        return Err(ApiError::bad_request("Event missing signature"));
-                    }
-                    if signed_event.event.requires_dual_signature()
-                        && signed_event.signatures.len() < 2
-                    {
-                        return Err(ApiError::bad_request(
-                            "Dual signatures required for recovery event",
-                        ));
-                    }
-
-                    state
-                        .repo
-                        .key_events
-                        .create_with_signatures(
-                            signed_event.event.clone(),
-                            signed_event.event_signatures(),
-                        )
-                        .await?;
-                }
-            }
-
-            // Delete cache (contest truncates the KEL)
+            // Clear cache since KEL is now divergent
             if let Err(e) = state.kel_cache.delete(&prefix).await {
-                tracing::warn!("Failed to delete cache on contest: {}", e);
+                tracing::warn!("Failed to clear cache: {}", e);
             }
 
-            let said = events_to_remove[0].event.said.clone();
-            (Some(said), true)
+            let said = events_to_remove
+                .first()
+                .map(|e| e.event.said.clone())
+                .unwrap_or_default();
+            return Ok(Json(BatchSubmitResponse {
+                diverged_at: Some(said),
+                accepted: true, // Event was accepted (stored), but KEL is now frozen
+            }));
         }
-        KelMergeResult::Recoverable => {
-            if events_to_remove.is_empty() {
-                return Err(ApiError::conflict(
-                    "Programmer error, recoverable with no events.",
-                ));
-            }
+        KelMergeResult::Frozen => {
+            // KEL is already divergent - return response so client can sync
+            // Get the SAID at the divergence point
+            let diverged_at = kel
+                .find_divergence()
+                .and_then(|d| {
+                    kel.events()
+                        .iter()
+                        .find(|e| e.event.version == d.diverged_at_version)
+                        .map(|e| e.event.said.clone())
+                })
+                .unwrap_or_default();
 
-            let said = events_to_remove[0].event.said.clone();
-            (Some(said), false)
+            return Ok(Json(BatchSubmitResponse {
+                diverged_at: Some(diverged_at),
+                accepted: false, // Event was NOT stored - KEL already frozen
+            }));
         }
-        KelMergeResult::Contestable => {
-            if events_to_remove.is_empty() {
-                return Err(ApiError::conflict(
-                    "Programmer error, contestable with no events.",
-                ));
-            }
-
-            let said = events_to_remove[0].event.said.clone();
-            (Some(said), false)
-        }
-        KelMergeResult::Recovered => {
-            // Handle recovery: archive old events and store new ones
-            if !events_to_remove.is_empty() {
-                let from_version = events_to_remove[0].event.version;
-
-                // Archive the removed events before deletion
-                let audit_record =
-                    KelsAuditRecord::for_recovery(prefix.clone(), &events_to_remove)?;
-                state.repo.audit_records.insert(audit_record).await?;
-
-                // Delete events from the divergence point onwards
-                state
-                    .repo
-                    .key_events
-                    .delete_events_from_version(&prefix, from_version)
-                    .await?;
-            }
-
-            // Store all new events and collect secondary signatures
-            for signed_event in events {
-                if state
-                    .repo
-                    .key_events
-                    .get_by_said(&signed_event.event.said)
-                    .await?
-                    .is_none()
-                {
-                    if signed_event.signatures.is_empty() {
-                        return Err(ApiError::bad_request("Event missing signature"));
-                    }
-                    if signed_event.event.requires_dual_signature()
-                        && signed_event.signatures.len() < 2
-                    {
-                        return Err(ApiError::bad_request(
-                            "Dual signatures required for recovery event",
-                        ));
-                    }
-
-                    state
-                        .repo
-                        .key_events
-                        .create_with_signatures(
-                            signed_event.event.clone(),
-                            signed_event.event_signatures(),
-                        )
-                        .await?;
-                }
-            }
-
-            // Delete cache (recovery truncates the KEL)
-            if let Err(e) = state.kel_cache.delete(&prefix).await {
-                tracing::warn!("Failed to delete cache on recovery: {}", e);
-            }
-            (None, true)
+        KelMergeResult::RecoveryProtected => {
+            // Can't introduce divergence after recovery event
+            return Err(ApiError::conflict(
+                "Cannot submit event at this version - KEL has recovery event protecting this position.",
+            ));
         }
     };
+
+    // Commit the transaction - this releases the advisory lock
+    tx.commit().await?;
+
+    // Update cache outside transaction
+    if should_clear_cache {
+        if let Err(e) = state.kel_cache.delete(&prefix).await {
+            tracing::warn!("Failed to clear cache: {}", e);
+        }
+    } else if accepted {
+        // Fetch updated KEL and store in cache
+        let full_kel = state.repo.key_events.get_signed_history(&prefix).await?;
+        if let Err(e) = state.kel_cache.store(&prefix, &full_kel).await {
+            tracing::warn!("Failed to update cache: {}", e);
+        }
+    }
 
     Ok(Json(BatchSubmitResponse {
         diverged_at,
@@ -364,12 +282,43 @@ pub async fn submit_events(
     }))
 }
 
-/// Get the full KEL with signatures for a prefix (returns pre-serialized JSON)
+#[derive(Debug, Deserialize)]
+pub struct GetKelParams {
+    #[serde(default)]
+    pub audit: bool,
+}
+
 pub async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
+    Query(params): Query<GetKelParams>,
 ) -> Result<Response, ApiError> {
-    // Try pre-serialized cache first
+    // If audit requested, skip cache and return full KelResponse
+    if params.audit {
+        let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
+
+        if signed_events.is_empty() {
+            return Err(ApiError::not_found(format!(
+                "No KEL found for prefix {}",
+                prefix
+            )));
+        }
+
+        let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
+
+        let response = KelResponse {
+            events: signed_events,
+            audit_records: if audit_records.is_empty() {
+                None
+            } else {
+                Some(audit_records)
+            },
+        };
+
+        return Ok(Json(response).into_response());
+    }
+
+    // Try pre-serialized cache first (non-audit path)
     if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
         return Ok(PreSerializedJson(bytes).into_response());
     }
@@ -392,56 +341,31 @@ pub async fn get_kel(
     Ok(Json(signed_events).into_response())
 }
 
-/// Get KEL events since a given version (for incremental client updates).
-///
-/// Returns only events with version > since_version.
-/// If since_version equals the latest version, returns an empty list.
-/// This enables efficient client-side caching with differential sync.
+/// Returns events with created_at > since_timestamp (RFC3339 format).
 pub async fn get_kel_since(
     State(state): State<Arc<AppState>>,
-    Path((prefix, since_version)): Path<(String, u64)>,
+    Path((prefix, since_timestamp)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    // Try pre-serialized cache (returns pre-serialized for recent tails)
-    match state
-        .kel_cache
-        .get_since_serialized(&prefix, since_version)
-        .await
-    {
-        Ok(Some(SerializedKel::Bytes(bytes))) => {
-            return Ok(PreSerializedJson(bytes).into_response());
-        }
-        Ok(Some(SerializedKel::NeedsProcessing(events))) => {
-            return Ok(Json(events).into_response());
-        }
-        Ok(None) => {} // Cache miss, fall through to DB
-        Err(e) => tracing::warn!("Cache error for prefix {}: {}", prefix, e),
-    }
+    use chrono::{DateTime, Utc};
+    use verifiable_storage::StorageDatetime;
 
-    // Cache miss - query database for full KEL
-    let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
+    // Parse the timestamp (RFC3339/ISO8601 format)
+    let chrono_dt: DateTime<Utc> = DateTime::parse_from_rfc3339(&since_timestamp)
+        .map_err(|e| ApiError::bad_request(format!("Invalid timestamp format: {}", e)))?
+        .with_timezone(&Utc);
+    let since_dt = StorageDatetime::from(chrono_dt);
 
-    if signed_events.is_empty() {
-        return Err(ApiError::not_found(format!(
-            "No KEL found for prefix {}",
-            prefix
-        )));
-    }
+    // Query database for events since timestamp
+    let signed_events: Vec<SignedKeyEvent> = state
+        .repo
+        .key_events
+        .get_signed_history_since(&prefix, &since_dt)
+        .await?;
 
-    // Store in cache
-    if let Err(e) = state.kel_cache.store(&prefix, &signed_events).await {
-        tracing::warn!("Failed to cache KEL: {}", e);
-    }
-
-    // Filter to events since the requested version
-    let filtered: Vec<_> = signed_events
-        .into_iter()
-        .filter(|e| e.event.version > since_version)
-        .collect();
-
-    Ok(Json(filtered).into_response())
+    // Note: We don't error if empty - an empty list means no new events since the timestamp
+    Ok(Json(signed_events).into_response())
 }
 
-/// Get a single event by its SAID
 pub async fn get_event(
     State(state): State<Arc<AppState>>,
     Path(said): Path<String>,
@@ -482,26 +406,14 @@ pub async fn get_event(
 
 // ==================== Batch Handlers ====================
 
-/// Get multiple KELs in a single request.
-///
-/// Supports incremental updates: each prefix can include a `since` version
-/// to only return events newer than the client's cached version.
-///
-/// Returns a map of prefix -> KEL. Missing prefixes have empty arrays.
-/// Uses parallel lookups and manual JSON concatenation for performance.
+/// Batch fetch KELs with optional `since` filtering per prefix. Returns map of prefix -> events.
 pub async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Response, ApiError> {
+    use chrono::{DateTime, Utc};
     use futures_util::future::join_all;
-    use std::collections::HashMap;
-
-    // Build since map for filtering
-    let since_map: HashMap<&str, u64> = request
-        .prefixes
-        .iter()
-        .filter_map(|r| r.since.map(|s| (r.prefix.as_str(), s)))
-        .collect();
+    use verifiable_storage::StorageDatetime;
 
     // Fetch all KELs in parallel
     let futures: Vec<_> = request
@@ -509,51 +421,46 @@ pub async fn get_kels_batch(
         .iter()
         .map(|req| {
             let prefix = req.prefix.clone();
-            let since_version = since_map.get(prefix.as_str()).copied();
+            let since_timestamp = req.since.clone();
             let state = Arc::clone(&state);
 
             async move {
-                // Try to get pre-serialized bytes from cache
-                let cached_bytes = if let Some(since) = since_version {
-                    match state.kel_cache.get_since_serialized(&prefix, since).await {
-                        Ok(Some(SerializedKel::Bytes(b))) => Some((*b).clone()),
-                        Ok(Some(SerializedKel::NeedsProcessing(events))) => {
-                            Some(serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec()))
-                        }
-                        _ => None,
-                    }
+                // Parse timestamp filter if provided
+                let since_dt = if let Some(ref ts) = since_timestamp {
+                    let chrono_dt: DateTime<Utc> = DateTime::parse_from_rfc3339(ts)
+                        .map_err(|e| ApiError::bad_request(format!("Invalid timestamp: {}", e)))?
+                        .with_timezone(&Utc);
+                    Some(StorageDatetime::from(chrono_dt))
                 } else {
-                    match state.kel_cache.get_full_serialized(&prefix).await {
-                        Ok(Some(b)) => Some((*b).clone()),
-                        _ => None,
-                    }
+                    None
                 };
 
-                if let Some(b) = cached_bytes {
-                    return Ok::<_, ApiError>((prefix, b));
+                // Fast path: no filtering needed, return cached bytes directly
+                if since_dt.is_none()
+                    && let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
+                {
+                    return Ok((prefix, (*bytes).clone()));
                 }
 
-                // Cache miss - fetch from DB
-                let full_kel = state.repo.key_events.get_signed_history(&prefix).await?;
+                // Cache miss or filtering needed - fetch from DB
+                let events = state.repo.key_events.get_signed_history(&prefix).await?;
 
-                if full_kel.is_empty() {
-                    return Ok((prefix, b"[]".to_vec()));
-                }
-
-                // Store in cache
-                if let Err(e) = state.kel_cache.store(&prefix, &full_kel).await {
+                // Store in cache (full KEL)
+                if !events.is_empty()
+                    && let Err(e) = state.kel_cache.store(&prefix, &events).await
+                {
                     tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
                 }
 
-                // Filter by since version if specified and serialize
-                let bytes = if let Some(since) = since_version {
-                    let filtered: Vec<_> = full_kel
+                // Filter by timestamp if specified
+                let bytes = if let Some(ref dt) = since_dt {
+                    let filtered: Vec<_> = events
                         .into_iter()
-                        .filter(|e| e.event.version > since)
+                        .filter(|e| e.event.created_at > *dt)
                         .collect();
                     serde_json::to_vec(&filtered).unwrap_or_else(|_| b"[]".to_vec())
                 } else {
-                    serde_json::to_vec(&full_kel).unwrap_or_else(|_| b"[]".to_vec())
+                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec())
                 };
 
                 Ok((prefix, bytes))

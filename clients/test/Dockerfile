@@ -1,21 +1,31 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build for test client with vdig and vreg
+# Multi-stage build for test client with kels-bench and kels-cli
 
-# Stage 1: Build vdig and vreg
+# Stage 1: Build kels-bench and kels-cli
 FROM rust:bookworm AS builder
 
 WORKDIR /app
 
 # Copy all source code
+COPY clients/test/Cargo.toml /app/
 COPY lib/kels /app/lib/kels
+COPY lib/kels-derive /app/lib/kels-derive
 COPY clients/kels-bench /app/clients/kels-bench
+COPY clients/kels-cli /app/clients/kels-cli
 
-# Build kels-bench with BuildKit cache mounts
+# Build kels-bench
 WORKDIR /app/clients/kels-bench
 RUN --mount=type=cache,id=kels-bench-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=kels-bench-target,target=/app/clients/kels-bench/target \
+    --mount=type=cache,id=kels-bench-target,target=/app/target \
     cargo build --release && \
-    cp /app/clients/kels-bench/target/release/kels-bench /app/kels-bench
+    cp /app/target/release/kels-bench /app/kels-bench
+
+# Build kels-cli with dev-tools for adversarial testing
+WORKDIR /app/clients/kels-cli
+RUN --mount=type=cache,id=kels-cli-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=kels-cli-target,target=/app/target \
+    cargo build --release --features dev-tools && \
+    cp /app/target/release/kels-cli /app/kels-cli
 
 # Stage 2: Final test client image
 FROM debian:bookworm-slim
@@ -38,6 +48,7 @@ WORKDIR /tests
 
 # Copy binaries
 COPY --from=builder /app/kels-bench /usr/local/bin/kels-bench
+COPY --from=builder /app/kels-cli /usr/local/bin/kels-cli
 
 # Copy test scripts
 COPY clients/test/scripts/ /tests/

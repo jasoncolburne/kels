@@ -1,8 +1,4 @@
 //! KELS - Key Event Log Service
-//!
-//! Provides storage and retrieval of KERI-inspired Key Event Logs (KELs).
-//! Key events (icp, rot, ixn) are stored with their cryptographic signatures
-//! and can be retrieved by prefix or individual SAID.
 
 #![cfg_attr(
     test,

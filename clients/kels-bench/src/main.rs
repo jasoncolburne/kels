@@ -1,20 +1,4 @@
 //! kels-bench - KELS Load Testing Tool
-//!
-//! Measures end-to-end query latency and throughput against a running KELS server.
-//! Includes setup phase to create test KELs with various event types.
-//!
-//! # Examples
-//!
-//! ```bash
-//! # Run with default settings (creates test KELs, then benchmarks)
-//! kels-bench --url http://localhost:80
-//!
-//! # Run 10 concurrent workers for 30 seconds
-//! kels-bench --url http://localhost:80 --concurrency 10 --duration 30
-//!
-//! # Skip setup (use existing KELs)
-//! kels-bench --url http://localhost:80 --skip-setup --prefix <existing_prefix>
-//! ```
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -29,14 +13,12 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use verifiable_storage::compute_said;
 
-/// Generate a proper 44-character SAID for test data
 fn test_said(name: &str) -> String {
     compute_said(&name.to_string()).expect("valid said computation")
 }
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
 
-/// KELS Load Testing Tool
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -73,40 +55,54 @@ struct Args {
     throughput_only: bool,
 }
 
-/// Test KEL configuration
 struct TestKelConfig {
-    /// Number of events in the KEL
     event_count: usize,
-    /// The prefix after creation
     prefix: Option<String>,
 }
 
-/// Statistics collector using HDR histogram
 struct Stats {
     histogram: Mutex<Histogram<u64>>,
     success_count: AtomicU64,
     error_count: AtomicU64,
+    bytes_received: AtomicU64,
     throughput_only: bool,
+}
+
+fn format_throughput(bytes_per_sec: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    if bytes_per_sec >= GB {
+        format!("{:.2} GB/s", bytes_per_sec / GB)
+    } else if bytes_per_sec >= MB {
+        format!("{:.2} MB/s", bytes_per_sec / MB)
+    } else if bytes_per_sec >= KB {
+        format!("{:.2} KB/s", bytes_per_sec / KB)
+    } else {
+        format!("{:.0} B/s", bytes_per_sec)
+    }
 }
 
 impl Stats {
     fn new(throughput_only: bool) -> Self {
         Self {
-            // Track latencies from 1µs to 60s with 3 significant figures
             histogram: Mutex::new(
                 Histogram::new_with_bounds(1, 60_000_000, 3).expect("Failed to create histogram"),
             ),
             success_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
+            bytes_received: AtomicU64::new(0),
             throughput_only,
         }
     }
 
-    async fn record_success(&self, latency_us: u64) {
+    async fn record_success(&self, latency_us: u64, bytes: u64) {
         if !self.throughput_only {
             self.histogram.lock().await.record(latency_us).unwrap_or(());
         }
         self.success_count.fetch_add(1, Ordering::Relaxed);
+        self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn record_error(&self) {
@@ -118,6 +114,7 @@ impl Stats {
         histogram.reset();
         self.success_count.store(0, Ordering::Relaxed);
         self.error_count.store(0, Ordering::Relaxed);
+        self.bytes_received.store(0, Ordering::Relaxed);
     }
 
     async fn print_results(&self, elapsed: Duration, test_name: &str) {
@@ -126,6 +123,8 @@ impl Stats {
         let errors = self.error_count.load(Ordering::Relaxed);
         let total = success + errors;
         let throughput = success as f64 / elapsed.as_secs_f64();
+        let bytes = self.bytes_received.load(Ordering::Relaxed);
+        let bytes_per_sec = bytes as f64 / elapsed.as_secs_f64();
 
         println!();
         println!("{}", format!("=== {} Results ===", test_name).cyan().bold());
@@ -138,6 +137,7 @@ impl Stats {
         println!("  Successes:   {:>10}", success);
         println!("  Errors:      {:>10}", errors);
         println!("  Throughput:  {:>10.2} req/s", throughput);
+        println!("  Data:        {:>10}", format_throughput(bytes_per_sec));
         println!();
 
         if success == 0 {
@@ -155,8 +155,6 @@ impl Stats {
         println!("  Max:         {:>10.0}", histogram.max() as f64);
         println!("  Std Dev:     {:>10.2}", histogram.stdev());
         println!();
-
-        // Percentiles
         println!("{}", "Percentiles (µs):".yellow().bold());
         println!("  p50:         {:>10}", histogram.value_at_quantile(0.50));
         println!("  p75:         {:>10}", histogram.value_at_quantile(0.75));
@@ -167,18 +165,14 @@ impl Stats {
     }
 }
 
-/// Create a test KEL with the specified number of events
 async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<String> {
     let mut builder = KeyEventBuilder::new(KeyProvider::software(), Some(client.clone()));
-
-    // Start with inception (auto-submitted to KELS)
     let (icp_event, _) = builder.incept().await?;
     let prefix = icp_event.prefix.clone();
 
-    // Add remaining events (event_count - 1 more events after inception)
     for i in 1..event_count {
-        // Choose event type: rotate every 5th event, otherwise interaction
         if i % 5 == 0 {
+            // rotate every 5th event
             builder.rotate().await?;
         } else {
             let anchor = test_said(&format!("test_anchor_{}", i));
@@ -189,7 +183,6 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
     Ok(prefix)
 }
 
-/// Setup test KELs
 async fn setup_test_kels(client: &KelsClient) -> Result<(TestKelConfig, Vec<TestKelConfig>)> {
     println!("{}", "Setting up test KELs...".green().bold());
 
@@ -236,21 +229,33 @@ async fn run_worker(
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
-        let result = match &benchmark_type {
-            BenchmarkType::Health => client.health().await.map(|_| ()),
+        let result: Result<u64, _> = match &benchmark_type {
+            BenchmarkType::Health => client.health().await.map(|_| 0),
             BenchmarkType::GetKel { prefix } => {
-                client.fetch_full_kel_unverified(prefix).await.map(|_| ())
+                client.fetch_full_kel_unverified(prefix).await.map(|kel| {
+                    serde_json::to_string(&kel)
+                        .map(|s| s.len() as u64)
+                        .unwrap_or(0)
+                })
             }
             BenchmarkType::GetKels { prefixes } => {
                 let prefix_refs: Vec<&str> = prefixes.iter().map(|s| s.as_str()).collect();
-                client.fetch_kels_unverified(&prefix_refs).await.map(|_| ())
+                client
+                    .fetch_kels_unverified(&prefix_refs)
+                    .await
+                    .map(|kels| {
+                        kels.iter()
+                            .filter_map(|kel| serde_json::to_string(kel).ok())
+                            .map(|s| s.len() as u64)
+                            .sum()
+                    })
             }
         };
 
         let latency_us = start.elapsed().as_micros() as u64;
 
         match result {
-            Ok(_) => stats.record_success(latency_us).await,
+            Ok(bytes) => stats.record_success(latency_us, bytes).await,
             Err(_) => stats.record_error(),
         }
     }
@@ -276,8 +281,6 @@ async fn run_benchmark(
     }
 
     let running = Arc::new(AtomicBool::new(true));
-
-    // Spawn worker tasks
     let mut tasks = JoinSet::new();
     for _ in 0..args.concurrency {
         let url = args.url.clone();
@@ -290,18 +293,14 @@ async fn run_benchmark(
         });
     }
 
-    // Warmup phase
     if args.warmup > 0 {
         println!("\n{}", "Warming up...".yellow());
         tokio::time::sleep(Duration::from_secs(args.warmup)).await;
         stats.reset().await;
     }
 
-    // Measurement phase
     println!("{}", "Running benchmark... (Ctrl+C to stop early)".green());
     let start = Instant::now();
-
-    // Wait for either duration to elapse or Ctrl+C
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(args.duration)) => {}
         _ = tokio::signal::ctrl_c() => {
@@ -309,14 +308,8 @@ async fn run_benchmark(
         }
     }
     let elapsed = start.elapsed();
-
-    // Stop workers
     running.store(false, Ordering::Relaxed);
-
-    // Wait for workers to finish
     while (tasks.join_next().await).is_some() {}
-
-    // Print results
     stats.print_results(elapsed, test_name).await;
 
     Ok(())
@@ -325,10 +318,7 @@ async fn run_benchmark(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
     let client = KelsClient::new(&args.url);
-
-    // Health check first
     println!("{}", "Checking KELS server health...".yellow());
     match client.health().await {
         Ok(_) => println!("{}", "KELS server is healthy!".green()),
@@ -338,7 +328,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Setup or use existing KELs
     let (large_kel, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
             println!("{}", "Skipping setup, using provided prefix...".yellow());
@@ -357,8 +346,6 @@ async fn main() -> Result<()> {
     };
 
     let stats = Arc::new(Stats::new(args.throughput_only));
-
-    // Benchmark 1: Health check (baseline)
     run_benchmark(
         &args,
         stats.clone(),
@@ -366,11 +353,8 @@ async fn main() -> Result<()> {
         "health (baseline)",
     )
     .await?;
-
-    // Reset stats between benchmarks
     stats.reset().await;
 
-    // Benchmark 2: Get single KEL (32 events)
     if let Some(prefix) = &large_kel.prefix {
         run_benchmark(
             &args,
@@ -382,11 +366,8 @@ async fn main() -> Result<()> {
         )
         .await?;
     }
-
-    // Reset stats between benchmarks
     stats.reset().await;
 
-    // Benchmark 3: Get multiple KELs (batch)
     if !batch_kels.is_empty() {
         let prefixes: Vec<String> = batch_kels.iter().filter_map(|k| k.prefix.clone()).collect();
 
