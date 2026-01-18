@@ -14,16 +14,16 @@ fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
 
 pub struct KeyEventBuilder {
     key_provider: KeyProvider,
-    #[allow(dead_code)] // Used only on native/mobile for auto-flush
+    #[allow(dead_code)]
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
     kel: Kel,
-    /// Tracks how many events have been confirmed by the server.
-    /// Events at indices >= confirmed_cursor are pending submission.
     confirmed_cursor: usize,
 }
 
 impl KeyEventBuilder {
+    // ==================== Constructors ====================
+
     pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
@@ -34,32 +34,16 @@ impl KeyEventBuilder {
         }
     }
 
-    pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: Kel) -> Self {
-        // For divergent KELs, cursor should be at the first divergent event
-        // For normal KELs, cursor is at the end (all events confirmed)
-        let confirmed_cursor = kel.confirmed_cursor();
-        Self {
-            key_provider,
-            kels_client,
-            kel_store: None,
-            kel,
-            confirmed_cursor,
-        }
-    }
-
     pub async fn with_dependencies(
         key_provider: KeyProvider,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         prefix: Option<&str>,
     ) -> Result<Self, KelsError> {
-        // Try to load existing KEL if store and prefix provided
         let kel = match (&kel_store, prefix) {
             (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
             _ => Kel::default(),
         };
-        // For divergent KELs, cursor should be at the first divergent event
-        // For normal KELs, cursor is at the end (all events confirmed)
         let confirmed_cursor = kel.confirmed_cursor();
 
         Ok(Self {
@@ -71,130 +55,84 @@ impl KeyEventBuilder {
         })
     }
 
+    pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: Kel) -> Self {
+        let confirmed_cursor = kel.confirmed_cursor();
+        Self {
+            key_provider,
+            kels_client,
+            kel_store: None,
+            kel,
+            confirmed_cursor,
+        }
+    }
+
+    // ==================== Accessors ====================
+
+    pub fn confirmed_count(&self) -> usize {
+        self.confirmed_cursor
+    }
+
+    pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+        self.key_provider.current_public_key().await
+    }
+
+    pub fn events(&self) -> &[SignedKeyEvent] {
+        self.kel.events()
+    }
+
     pub fn is_decommissioned(&self) -> bool {
         self.kel.is_decommissioned()
     }
 
-    async fn find_owner_tail_in<'a>(
-        &self,
-        kel: &'a Kel,
-    ) -> Result<Option<&'a SignedKeyEvent>, KelsError> {
-        let Some(ref store) = self.kel_store else {
-            return Ok(None);
-        };
-        let Some(prefix) = kel.prefix() else {
-            return Ok(None);
-        };
-        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
-            return Ok(None);
-        };
-        Ok(kel.iter().rfind(|e| e.event.said == tail_said))
+    pub fn is_fully_confirmed(&self) -> bool {
+        self.confirmed_cursor == self.kel.events().len()
     }
 
-    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        if let Some(event) = self.find_owner_tail_in(&self.kel).await? {
-            return Ok(event);
-        }
-        // Fall back to last event in local kel (for offline/test mode)
-        self.kel.last_event().ok_or(KelsError::NotIncepted)
+    pub fn kel(&self) -> &Kel {
+        &self.kel
     }
 
-    pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
-
-        let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
-            .await?;
-
-        Ok((event, signature))
+    pub fn key_provider(&self) -> &KeyProvider {
+        &self.key_provider
     }
 
-    pub async fn incept_delegated(
-        &mut self,
-        delegating_prefix: &str,
-    ) -> Result<(KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
-
-        let event = KeyEvent::create_delegated_inception(
-            current_key.qb64(),
-            rotation_hash,
-            recovery_hash,
-            delegating_prefix.to_string(),
-        )?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
-            .await?;
-
-        Ok((event, signature))
+    pub fn key_provider_mut(&mut self) -> &mut KeyProvider {
+        &mut self.key_provider
     }
 
-    /// Two-phase: key staged first, committed only if KELS accepts without divergence.
-    pub async fn rotate(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
-        let last_event = self.get_owner_tail().await?.event.clone();
-
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&new_next);
-
-        let event =
-            KeyEvent::create_rotation(&last_event, new_current.qb64(), Some(rotation_hash))?;
-        let signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
-
-        let flush_result = self
-            .add_and_flush(event.clone(), new_current.qb64(), signature.clone(), true)
-            .await;
-
-        match &flush_result {
-            Ok(()) => {
-                self.key_provider.commit_rotation().await;
-            }
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: true,
-                ..
-            }) => {
-                self.key_provider.commit_rotation().await;
-            }
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: false,
-                ..
-            }) => {
-                self.key_provider.rollback_rotation().await;
-            }
-            Err(_) => {
-                self.key_provider.rollback_rotation().await;
-            }
-        }
-
-        flush_result?;
-        Ok((event, signature))
+    pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
+        self.kel.last_establishment_event().map(|e| &e.event)
     }
 
-    /// Two-phase, dual-signature (signing + recovery).
+    pub fn last_event(&self) -> Option<&KeyEvent> {
+        self.kel.last_event().map(|e| &e.event)
+    }
+
+    pub fn last_said(&self) -> Option<&str> {
+        self.kel.last_said()
+    }
+
+    pub fn pending_events(&self) -> &[SignedKeyEvent] {
+        &self.kel.events()[self.confirmed_cursor..]
+    }
+
+    pub fn prefix(&self) -> Option<&str> {
+        self.kel.prefix()
+    }
+
+    pub fn version(&self) -> u64 {
+        self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
+    }
+
+    // ==================== Event Operations ====================
+
     pub async fn decommission(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-
         let new_current = self.key_provider.prepare_rotation().await?;
-
         let current_recovery_pub = self.key_provider.recovery_public_key().await?;
 
         let event = KeyEvent::create_decommission(
@@ -256,7 +194,150 @@ impl KeyEventBuilder {
         }
     }
 
-    /// Two-phase, dual-signature (signing + recovery).
+    pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+        let current_key = self.key_provider.generate_keypair().await?;
+        let next_key = self.key_provider.generate_keypair().await?;
+        let recovery_key = self.key_provider.generate_recovery_key().await?;
+        let rotation_hash = compute_rotation_hash_from_key(&next_key);
+        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
+
+        let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
+            .await?;
+
+        Ok((event, signature))
+    }
+
+    pub async fn incept_delegated(
+        &mut self,
+        delegating_prefix: &str,
+    ) -> Result<(KeyEvent, Signature), KelsError> {
+        let current_key = self.key_provider.generate_keypair().await?;
+        let next_key = self.key_provider.generate_keypair().await?;
+        let recovery_key = self.key_provider.generate_recovery_key().await?;
+        let rotation_hash = compute_rotation_hash_from_key(&next_key);
+        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
+
+        let event = KeyEvent::create_delegated_inception(
+            current_key.qb64(),
+            rotation_hash,
+            recovery_hash,
+            delegating_prefix.to_string(),
+        )?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
+            .await?;
+
+        Ok((event, signature))
+    }
+
+    pub async fn interact(&mut self, anchor: &str) -> Result<(KeyEvent, Signature), KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+        let current_key = self.key_provider.current_public_key().await?;
+
+        let event = KeyEvent::create_interaction(&last_event, anchor.to_string())?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), false)
+            .await?;
+
+        Ok((event, signature))
+    }
+
+    pub async fn recover(&mut self) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
+        let client = self
+            .kels_client
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("Cannot recover without KELS client".into()))?
+            .clone();
+
+        let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?.to_string();
+        let kels_kel = client.fetch_full_kel(&prefix).await?;
+
+        if kels_kel.is_empty() {
+            return Err(KelsError::InvalidKel(
+                "KELS returned empty KEL for existing prefix".into(),
+            ));
+        }
+
+        if kels_kel.is_contested() {
+            return Err(KelsError::ContestedKel("KEL already contested".to_string()));
+        }
+
+        let kels_events = kels_kel.events();
+        let owner_saids = self.build_owner_saids(&kels_kel).await?;
+
+        let adversary_recovery_revelation = kels_events
+            .iter()
+            .find(|e| e.event.reveals_recovery_key() && !owner_saids.contains(&e.event.said));
+
+        let divergence_info = kels_kel.find_divergence();
+
+        if adversary_recovery_revelation.is_none() && divergence_info.is_none() {
+            return Err(KelsError::NoRecoveryNeeded(
+                "No divergence or adversary recovery revelation detected".into(),
+            ));
+        }
+
+        if let Some(recovery_event) = adversary_recovery_revelation {
+            self.contest_at_version(&kels_kel, recovery_event.event.version, &client)
+                .await
+        } else {
+            self.recover_from_divergence(&kels_kel, &client).await
+        }
+    }
+
+    pub async fn rotate(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+
+        let new_current = self.key_provider.prepare_rotation().await?;
+        let new_next = self.key_provider.pending_next_public_key().await?;
+        let rotation_hash = compute_rotation_hash_from_key(&new_next);
+
+        let event =
+            KeyEvent::create_rotation(&last_event, new_current.qb64(), Some(rotation_hash))?;
+        let signature = self
+            .key_provider
+            .sign_with_pending(event.said.as_bytes())
+            .await?;
+
+        let flush_result = self
+            .add_and_flush(event.clone(), new_current.qb64(), signature.clone(), true)
+            .await;
+
+        match &flush_result {
+            Ok(()) => {
+                self.key_provider.commit_rotation().await;
+            }
+            Err(KelsError::DivergenceDetected {
+                submission_accepted: true,
+                ..
+            }) => {
+                self.key_provider.commit_rotation().await;
+            }
+            Err(KelsError::DivergenceDetected {
+                submission_accepted: false,
+                ..
+            }) => {
+                self.key_provider.rollback_rotation().await;
+            }
+            Err(_) => {
+                self.key_provider.rollback_rotation().await;
+            }
+        }
+
+        flush_result?;
+        Ok((event, signature))
+    }
+
     pub async fn rotate_recovery(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         let client = self
             .kels_client
@@ -342,48 +423,109 @@ impl KeyEventBuilder {
         }
     }
 
-    pub async fn recover(&mut self) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
-        let client = self
-            .kels_client
-            .as_ref()
-            .ok_or_else(|| KelsError::OfflineMode("Cannot recover without KELS client".into()))?
-            .clone();
+    // ==================== Operations ====================
 
-        let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?.to_string();
+    pub async fn flush(&mut self) -> Result<(), KelsError> {
+        let client = match &self.kels_client {
+            Some(c) => c.clone(),
+            None => return Ok(()),
+        };
 
-        let kels_kel = client.fetch_full_kel(&prefix).await?;
-
-        if kels_kel.is_empty() {
-            return Err(KelsError::InvalidKel(
-                "KELS returned empty KEL for existing prefix".into(),
-            ));
+        let pending: Vec<_> = self.pending_events().to_vec();
+        if pending.is_empty() {
+            return Ok(());
         }
 
-        if kels_kel.is_contested() {
-            return Err(KelsError::ContestedKel("KEL already contested".to_string()));
-        }
+        let response = client.submit_events(&pending).await?;
 
-        let kels_events = kels_kel.events();
-        let owner_saids = self.build_owner_saids(&kels_kel).await?;
+        if let Some(diverged_at) = response.diverged_at {
+            let prefix = self.kel.prefix().ok_or_else(|| KelsError::NotIncepted)?;
+            let server_kel = client.fetch_full_kel(prefix).await?;
 
-        let adversary_recovery_revelation = kels_events
-            .iter()
-            .find(|e| e.event.reveals_recovery_key() && !owner_saids.contains(&e.event.said));
+            if server_kel.find_divergence().is_none() {
+                return Err(KelsError::InvalidKel(
+                    "Server reported divergence but KEL has no divergent events".into(),
+                ));
+            }
 
-        let divergence_info = kels_kel.find_divergence();
+            self.confirmed_cursor = server_kel.confirmed_cursor();
+            self.kel = server_kel;
 
-        if adversary_recovery_revelation.is_none() && divergence_info.is_none() {
-            return Err(KelsError::NoRecoveryNeeded(
-                "No divergence or adversary recovery revelation detected".into(),
-            ));
-        }
-
-        if let Some(recovery_event) = adversary_recovery_revelation {
-            self.contest_at_version(&kels_kel, recovery_event.event.version, &client)
-                .await
+            Err(KelsError::DivergenceDetected {
+                diverged_at,
+                submission_accepted: response.accepted,
+            })
+        } else if response.accepted {
+            self.confirmed_cursor = self.kel.len();
+            Ok(())
         } else {
-            self.recover_from_divergence(&kels_kel, &client).await
+            Err(KelsError::InvalidKel(
+                "Rejected without divergence".to_string(),
+            ))
         }
+    }
+
+    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
+        self.key_provider.sign(data).await
+    }
+
+    // ==================== Private Helpers ====================
+
+    async fn add_and_flush(
+        &mut self,
+        event: KeyEvent,
+        public_key: String,
+        signature: Signature,
+        _is_establishment: bool,
+    ) -> Result<(), KelsError> {
+        self.kel.push(SignedKeyEvent::new(
+            event.clone(),
+            public_key,
+            signature.qb64(),
+        ));
+
+        let flush_result = if self.kels_client.is_some() {
+            self.flush().await
+        } else {
+            Ok(())
+        };
+
+        let event_accepted = matches!(
+            &flush_result,
+            Ok(())
+                | Err(KelsError::DivergenceDetected {
+                    submission_accepted: true,
+                    ..
+                })
+        );
+
+        if let Some(ref store) = self.kel_store {
+            store.save(self.kel()).await?;
+            if event_accepted {
+                store.save_owner_tail(&event.prefix, &event.said).await?;
+            }
+        }
+
+        flush_result
+    }
+
+    async fn build_owner_saids(
+        &self,
+        kels_kel: &Kel,
+    ) -> Result<std::collections::HashSet<String>, KelsError> {
+        let Some(ref store) = self.kel_store else {
+            return Ok(std::collections::HashSet::new());
+        };
+
+        let Some(prefix) = kels_kel.prefix() else {
+            return Ok(std::collections::HashSet::new());
+        };
+
+        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
+            return Ok(std::collections::HashSet::new());
+        };
+
+        Ok(kels_kel.trace_chain_saids(&tail_said))
     }
 
     async fn contest_at_version(
@@ -452,6 +594,29 @@ impl KeyEventBuilder {
                 "Contest event rejected by KELS".into(),
             ))
         }
+    }
+
+    async fn find_owner_tail_in<'a>(
+        &self,
+        kel: &'a Kel,
+    ) -> Result<Option<&'a SignedKeyEvent>, KelsError> {
+        let Some(ref store) = self.kel_store else {
+            return Ok(None);
+        };
+        let Some(prefix) = kel.prefix() else {
+            return Ok(None);
+        };
+        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
+            return Ok(None);
+        };
+        Ok(kel.iter().rfind(|e| e.event.said == tail_said))
+    }
+
+    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
+        if let Some(event) = self.find_owner_tail_in(&self.kel).await? {
+            return Ok(event);
+        }
+        self.kel.last_event().ok_or(KelsError::NotIncepted)
     }
 
     async fn recover_from_divergence(
@@ -587,177 +752,5 @@ impl KeyEventBuilder {
                 "Recovery event rejected by KELS".into(),
             ))
         }
-    }
-
-    async fn build_owner_saids(
-        &self,
-        kels_kel: &Kel,
-    ) -> Result<std::collections::HashSet<String>, KelsError> {
-        let Some(ref store) = self.kel_store else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        let Some(prefix) = kels_kel.prefix() else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        Ok(kels_kel.trace_chain_saids(&tail_said))
-    }
-
-    pub async fn interact(&mut self, anchor: &str) -> Result<(KeyEvent, Signature), KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
-        let last_event = self.get_owner_tail().await?.event.clone();
-        let current_key = self.key_provider.current_public_key().await?;
-
-        let event = KeyEvent::create_interaction(&last_event, anchor.to_string())?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), false)
-            .await?;
-
-        Ok((event, signature))
-    }
-
-    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        self.key_provider.sign(data).await
-    }
-
-    pub fn prefix(&self) -> Option<&str> {
-        self.kel.prefix()
-    }
-
-    pub fn version(&self) -> u64 {
-        self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
-    }
-
-    pub fn last_said(&self) -> Option<&str> {
-        self.kel.last_said()
-    }
-
-    pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.kel.last_event().map(|e| &e.event)
-    }
-
-    pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.kel.last_establishment_event().map(|e| &e.event)
-    }
-
-    pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        self.key_provider.current_public_key().await
-    }
-
-    pub fn key_provider(&self) -> &KeyProvider {
-        &self.key_provider
-    }
-
-    pub fn key_provider_mut(&mut self) -> &mut KeyProvider {
-        &mut self.key_provider
-    }
-
-    pub fn events(&self) -> &[SignedKeyEvent] {
-        self.kel.events()
-    }
-
-    pub fn kel(&self) -> &Kel {
-        &self.kel
-    }
-
-    pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.kel.events()[self.confirmed_cursor..]
-    }
-
-    pub fn confirmed_count(&self) -> usize {
-        self.confirmed_cursor
-    }
-
-    pub fn is_fully_confirmed(&self) -> bool {
-        self.confirmed_cursor == self.kel.events().len()
-    }
-
-    /// Returns `DivergenceDetected` error if divergence - use `recover()` to resolve.
-    pub async fn flush(&mut self) -> Result<(), KelsError> {
-        let client = match &self.kels_client {
-            Some(c) => c.clone(),
-            None => return Ok(()), // Offline mode
-        };
-
-        let pending: Vec<_> = self.pending_events().to_vec();
-        if pending.is_empty() {
-            return Ok(());
-        }
-
-        let response = client.submit_events(&pending).await?;
-
-        // Check diverged_at first - server now returns accepted=true with diverged_at
-        // when the event is stored but causes divergence
-        if let Some(diverged_at) = response.diverged_at {
-            let prefix = self.kel.prefix().ok_or_else(|| KelsError::NotIncepted)?;
-            let server_kel = client.fetch_full_kel(prefix).await?;
-
-            if server_kel.find_divergence().is_none() {
-                return Err(KelsError::InvalidKel(
-                    "Server reported divergence but KEL has no divergent events".into(),
-                ));
-            }
-
-            self.confirmed_cursor = server_kel.confirmed_cursor();
-            self.kel = server_kel;
-
-            Err(KelsError::DivergenceDetected {
-                diverged_at,
-                submission_accepted: response.accepted,
-            })
-        } else if response.accepted {
-            self.confirmed_cursor = self.kel.len();
-            Ok(())
-        } else {
-            Err(KelsError::InvalidKel(
-                "Rejected without divergence".to_string(),
-            ))
-        }
-    }
-
-    async fn add_and_flush(
-        &mut self,
-        event: KeyEvent,
-        public_key: String,
-        signature: Signature,
-        _is_establishment: bool,
-    ) -> Result<(), KelsError> {
-        self.kel.push(SignedKeyEvent::new(
-            event.clone(),
-            public_key,
-            signature.qb64(),
-        ));
-
-        let flush_result = if self.kels_client.is_some() {
-            self.flush().await
-        } else {
-            Ok(())
-        };
-
-        let event_accepted = matches!(
-            &flush_result,
-            Ok(())
-                | Err(KelsError::DivergenceDetected {
-                    submission_accepted: true,
-                    ..
-                })
-        );
-
-        if let Some(ref store) = self.kel_store {
-            store.save(self.kel()).await?;
-            if event_accepted {
-                store.save_owner_tail(&event.prefix, &event.said).await?;
-            }
-        }
-
-        flush_result
     }
 }
