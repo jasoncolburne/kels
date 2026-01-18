@@ -80,7 +80,6 @@ impl HardwareKeyProvider {
     ) -> Option<Self> {
         let enclave = DefaultSecureEnclave::new()?;
 
-        // Load current key if label provided
         let current_handle = if let Some(label) = current_label {
             match enclave.load_key(&label) {
                 Ok(Some(handle)) => Some(handle),
@@ -113,7 +112,6 @@ impl HardwareKeyProvider {
             None
         };
 
-        // Load recovery key if label provided
         let recovery_handle = if let Some(label) = recovery_label {
             match enclave.load_key(&label) {
                 Ok(Some(handle)) => Some(handle),
@@ -193,8 +191,6 @@ impl HardwareKeyProvider {
         format!("{}-{}", self.key_namespace, generation)
     }
 
-    // Primitive operations for KeyProvider enum delegation
-
     pub async fn has_current(&self) -> bool {
         self.current_handle.read().await.is_some()
     }
@@ -253,21 +249,17 @@ impl HardwareKeyProvider {
     }
 
     pub fn promote_next_to_current(&mut self) {
-        // Promote next → current (no previous key caching with dedicated recovery key)
         *self.current_handle.get_mut() = self.next_handle.get_mut().take();
     }
 
-    /// Prepare recovery key rotation - generates new key but doesn't replace yet.
     /// Returns (current_recovery_pub, new_recovery_pub).
     pub async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
-        // Get current recovery public key
         let current_recovery = {
             let recovery = self.recovery_handle.read().await;
             let handle = recovery.as_ref().ok_or(KelsError::NoRecoveryKey)?;
             self.enclave.get_public_key(handle)?
         };
 
-        // Generate new recovery key into pending slot
         let mut generation = self.next_label_generation.write().await;
         let label = self.generate_label(*generation);
         *generation += 1;
@@ -283,28 +275,18 @@ impl HardwareKeyProvider {
         Ok((current_recovery, new_recovery_pub))
     }
 
-    /// Commit the prepared rotation - replaces current recovery key with new.
     pub async fn commit_recovery_rotation(&mut self) {
-        // Move pending to recovery (old key is NOT deleted - will be cleaned up on decommission)
         *self.recovery_handle.write().await = self.pending_recovery_handle.write().await.take();
     }
 
-    /// Prepare signing key rotation - stages next→current and generates new next.
-    /// Returns the new current public key.
-    ///
-    /// Does NOT modify the actual key state - call `commit_rotation()` after
-    /// successful KELS submission, or the pending keys will be discarded.
-    /// Prepare signing key rotation - generates new next key.
     /// Returns the new current public key (what will be current after commit).
     pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        // Current next will become current after commit
         let new_current_pub = {
             let next_handle = self.next_handle.read().await;
             let handle = next_handle.as_ref().ok_or(KelsError::NoNextKey)?;
             self.enclave.get_public_key(handle)?
         };
 
-        // Generate new next key into pending slot
         let mut generation = self.next_label_generation.write().await;
         let label = self.generate_label(*generation);
         *generation += 1;
@@ -320,72 +302,51 @@ impl HardwareKeyProvider {
         Ok(new_current_pub)
     }
 
-    /// Get the pending next public key (after prepare_rotation).
     pub async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
         let pending_next = self.pending_next_handle.read().await;
         let handle = pending_next.as_ref().ok_or(KelsError::NoNextKey)?;
         self.enclave.get_public_key(handle)
     }
 
-    /// Sign with the pending current key (after prepare_rotation).
-    /// Sign with the pending current key (after prepare_rotation).
-    /// This signs with the current next key, which will become current after commit.
     pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        // The "pending current" is the current next key
         let next_handle = self.next_handle.read().await;
         let handle = next_handle.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.sign(handle, data)
     }
 
-    /// Commit the prepared signing key rotation.
-    /// Promotes next to current and moves pending_next to next.
     pub async fn commit_rotation(&mut self) {
         if let Some(pending_next) = self.pending_next_handle.write().await.take() {
-            // next → current, pending_next → next
             *self.current_handle.write().await = self.next_handle.write().await.take();
             *self.next_handle.write().await = Some(pending_next);
         }
     }
 
-    /// Rollback a prepared signing key rotation (if KELS rejects).
     pub async fn rollback_rotation(&mut self) {
-        // Delete the newly generated pending next key
         if let Some(ref handle) = *self.pending_next_handle.read().await
             && let Err(e) = self.enclave.delete_key(handle)
         {
             eprintln!("Warning: Failed to delete pending next key: {}", e);
         }
-
-        // Clear pending next - next_handle wasn't modified
         *self.pending_next_handle.write().await = None;
     }
 
-    /// Rollback a prepared recovery key rotation (if KELS rejects).
-    /// Deletes the pending recovery key.
     pub async fn rollback_recovery_rotation(&mut self) {
-        // Delete the newly generated pending recovery key
         if let Some(ref handle) = *self.pending_recovery_handle.read().await
             && let Err(e) = self.enclave.delete_key(handle)
         {
             eprintln!("Warning: Failed to delete pending recovery key: {}", e);
         }
-
-        // Clear pending
         *self.pending_recovery_handle.write().await = None;
     }
 
-    /// Delete all keys from the Secure Enclave (for decommission).
-    /// Walks through all generated labels from 0 to current generation.
     pub async fn delete_all_keys(&mut self) {
         let generation = *self.next_label_generation.read().await;
 
-        // Delete all keys by walking through label history
         for i in 0..generation {
             let label = self.generate_label(i);
             let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle { label });
         }
 
-        // Clear all handles
         *self.current_handle.write().await = None;
         *self.next_handle.write().await = None;
         *self.recovery_handle.write().await = None;
@@ -393,13 +354,10 @@ impl HardwareKeyProvider {
         *self.pending_recovery_handle.write().await = None;
     }
 
-    /// Get the current label generation (for cleanup tracking).
     pub async fn current_generation(&self) -> u64 {
         *self.next_label_generation.read().await
     }
 
-    /// Delete keys created from start_generation up to (but not including) current generation.
-    /// Used to clean up keys created during adversarial injection.
     pub async fn delete_keys_from_generation(&self, start_generation: u64) {
         let current_generation = *self.next_label_generation.read().await;
 

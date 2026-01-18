@@ -213,7 +213,6 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
     let next_path = key_dir.join("next.key");
     let recovery_path = key_dir.join("recovery.key");
 
-    // Load current key if present
     let current = if current_path.exists() {
         let qb64 = std::fs::read_to_string(&current_path).context("Failed to read current key")?;
         Some(
@@ -224,7 +223,6 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
         None
     };
 
-    // Load next key if present
     let next = if next_path.exists() {
         let qb64 = std::fs::read_to_string(&next_path).context("Failed to read next key")?;
         Some(
@@ -235,7 +233,6 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
         None
     };
 
-    // Load recovery key if present
     let recovery = if recovery_path.exists() {
         let qb64 =
             std::fs::read_to_string(&recovery_path).context("Failed to read recovery key")?;
@@ -247,7 +244,6 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
         None
     };
 
-    // If no keys exist, return fresh provider
     if current.is_none() && next.is_none() {
         return Ok(KeyProvider::software());
     }
@@ -264,25 +260,20 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
         .as_software()
         .ok_or_else(|| anyhow::anyhow!("Cannot save non-software key provider"))?;
 
-    // Save current key
     if let Some(current) = software.current_private_key() {
         let path = key_dir.join("current.key");
         std::fs::write(&path, current.qb64()).context("Failed to write current key")?;
     }
 
-    // Save next key
     if let Some(next) = software.next_private_key() {
         let path = key_dir.join("next.key");
         std::fs::write(&path, next.qb64()).context("Failed to write next key")?;
     }
 
-    // Save recovery key
     if let Some(recovery) = software.recovery_private_key() {
         let path = key_dir.join("recovery.key");
         std::fs::write(&path, recovery.qb64()).context("Failed to write recovery key")?;
     }
-
-    // Clean up legacy files if present
     for i in 0.. {
         let path = key_dir.join(format!("signing_{}.key", i));
         if path.exists() {

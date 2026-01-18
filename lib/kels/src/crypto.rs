@@ -193,9 +193,7 @@ impl KeyProvider {
             return Err(KelsError::NoNextKey);
         }
 
-        // Promote: next → current
         self.promote_next_to_current().await;
-        // Generate new next key
         self.generate_into_next().await?;
         self.current_public_key().await
     }
@@ -633,10 +631,7 @@ impl SoftwareKeyProvider {
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))
     }
 
-    /// Prepare recovery key rotation - generates new key but doesn't replace yet.
     /// Returns (current_recovery_pub, new_recovery_pub).
-    /// - current_recovery_pub goes in event's recovery_key field (revealed)
-    /// - hash(new_recovery_pub) goes in event's recovery_hash field
     pub fn prepare_recovery_rotation_sync(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
         let current_recovery = self
             .recovery_key
@@ -650,36 +645,29 @@ impl SoftwareKeyProvider {
         Ok((current_recovery, new_recovery_pub))
     }
 
-    /// Commit the prepared rotation - replaces current recovery key with new.
-    /// Must be called after prepare_recovery_rotation() and signing.
     pub fn commit_recovery_rotation(&mut self) {
         if let Some(pending) = self.pending_recovery_key.take() {
             self.recovery_key = Some(pending);
         }
     }
 
-    /// Rollback a prepared recovery key rotation (if KELS rejects).
     pub fn rollback_recovery_rotation(&mut self) {
         self.pending_recovery_key = None;
     }
 
-    /// Prepare signing key rotation - generates new next key.
     /// Returns the new current public key (what will be current after commit).
     pub fn prepare_rotation_sync(&mut self) -> Result<PublicKey, KelsError> {
-        // Current next will become current after commit
         let new_current_pub = self
             .next_private_key()
             .ok_or(KelsError::NoNextKey)?
             .public_key();
 
-        // Generate new next key into pending slot
         let (_new_next_pub, new_next_priv) = generate_secp256r1()?;
         self.pending_next_key = Some(new_next_priv);
 
         Ok(new_current_pub)
     }
 
-    /// Get the pending next public key (after prepare_rotation).
     pub fn pending_next_public_key_sync(&self) -> Result<PublicKey, KelsError> {
         self.pending_next_key
             .as_ref()
@@ -687,38 +675,28 @@ impl SoftwareKeyProvider {
             .ok_or(KelsError::NoNextKey)
     }
 
-    /// Sign with the pending current key (after prepare_rotation).
-    /// This signs with the current next key, which will become current after commit.
     pub fn sign_with_pending_sync(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        // The "pending current" is the current next key
         let key = self.next_private_key().ok_or(KelsError::NoCurrentKey)?;
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
     }
 
-    /// Commit the prepared signing key rotation.
-    /// Promotes next to current and moves pending_next to next.
     pub fn commit_rotation(&mut self) {
         if let Some(pending_next) = self.pending_next_key.take() {
-            // next → current, pending_next → next
             self.current_key = self.next_key.take();
             self.next_key = Some(pending_next);
         }
     }
 
-    /// Rollback a prepared signing key rotation (if KELS rejects).
     pub fn rollback_rotation(&mut self) {
         self.pending_next_key = None;
     }
 
-    /// Generate a recovery key (called during inception).
     pub fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
         let (public, private) = generate_secp256r1()?;
         self.recovery_key = Some(private);
         Ok(public)
     }
-
-    // Primitive operations for KeyProvider enum delegation
 
     fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
         let (public, private) = generate_secp256r1()?;
