@@ -41,7 +41,7 @@ deny:
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for client in kels-bench; do \
+	@for client in kels-cli kels-bench; do \
 		echo "Checking clients/$$client..."; \
 		(cd $(CLIENTS_DIR)/$$client && cargo deny check -A no-license-field) || exit 1; \
 	done
