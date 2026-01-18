@@ -760,10 +760,10 @@ impl Kel {
                     self.verify_establishment_security(event, &next_est.event)?;
                 }
 
-                if event.has_recovery_hash() {
-                    if let Some(recovery_key) = revealed_recovery_key {
-                        self.verify_recovery_key_revelation(event, recovery_key)?;
-                    }
+                if event.has_recovery_hash()
+                    && let Some(recovery_key) = revealed_recovery_key
+                {
+                    self.verify_recovery_key_revelation(event, recovery_key)?;
                 }
 
                 if event.reveals_recovery_key() {

@@ -984,14 +984,14 @@ impl KeyEventBuilder {
         };
 
         // Determine if event was accepted (success or divergence with accepted=true)
-        let event_accepted = match &flush_result {
-            Ok(()) => true,
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: true,
-                ..
-            }) => true,
-            _ => false,
-        };
+        let event_accepted = matches!(
+            &flush_result,
+            Ok(())
+                | Err(KelsError::DivergenceDetected {
+                    submission_accepted: true,
+                    ..
+                })
+        );
 
         // Save to local store if configured
         // Do this even on divergence - flush() syncs self.events with server state
