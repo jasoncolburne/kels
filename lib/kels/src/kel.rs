@@ -19,8 +19,8 @@ use verifiable_storage::{StorageDatetime, Versioned};
 ///
 /// The rotation hash is a Blake3 digest of the public key's raw bytes,
 /// encoded in CESR qb64 format.
-pub fn compute_rotation_hash(public_key: &PublicKey) -> String {
-    let digest = Digest::blake3_256(public_key.raw());
+pub fn compute_rotation_hash(public_key: &str) -> String {
+    let digest = Digest::blake3_256(public_key.as_bytes());
     digest.qb64()
 }
 
@@ -911,8 +911,7 @@ impl Kel {
                     "Establishment event missing public key".to_string(),
                 ));
             };
-            let next_pubkey = PublicKey::from_qb64(next_pubkey_qb64)?;
-            let computed = compute_rotation_hash(&next_pubkey);
+            let computed = compute_rotation_hash(next_pubkey_qb64);
             if computed != rotation_hash {
                 return Err(KelsError::InvalidKel(
                     "Public key does not match previous rotation hash".to_string(),
@@ -929,8 +928,7 @@ impl Kel {
         event: &KeyEvent,
         recovery_key: &str,
     ) -> Result<(), KelsError> {
-        let key = PublicKey::from_qb64(recovery_key)?;
-        let hash = compute_rotation_hash(&key);
+        let hash = compute_rotation_hash(recovery_key);
         let Some(event_hash) = event.recovery_hash.clone() else {
             return Err(KelsError::InvalidKel(
                 "Event expected to contain recovery hash".to_string(),
@@ -1124,7 +1122,7 @@ mod tests {
         assert_ne!(original_public_key.qb64(), new_public_key.qb64());
 
         let rotation_hash = icp_event.rotation_hash.unwrap();
-        let expected_hash = compute_rotation_hash(&new_public_key);
+        let expected_hash = compute_rotation_hash(&new_public_key.qb64());
         assert_eq!(rotation_hash, expected_hash);
 
         assert!(

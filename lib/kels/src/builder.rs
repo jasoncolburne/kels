@@ -10,6 +10,10 @@ use crate::store::KelStore;
 use crate::types::{KeyEvent, RecoveryOutcome, SignedKeyEvent};
 use cesr::{Matter, PublicKey, Signature};
 
+fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
+    compute_rotation_hash(&key.qb64())
+}
+
 /// Builder for creating key events with auto-flush to KELS.
 ///
 /// When created with a KelsClient, events are automatically submitted to KELS
@@ -132,8 +136,8 @@ impl KeyEventBuilder {
         let current_key = self.key_provider.generate_keypair().await?;
         let next_key = self.key_provider.generate_keypair().await?;
         let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash(&next_key);
-        let recovery_hash = compute_rotation_hash(&recovery_key);
+        let rotation_hash = compute_rotation_hash_from_key(&next_key);
+        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
 
         let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
@@ -154,8 +158,8 @@ impl KeyEventBuilder {
         let current_key = self.key_provider.generate_keypair().await?;
         let next_key = self.key_provider.generate_keypair().await?;
         let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash(&next_key);
-        let recovery_hash = compute_rotation_hash(&recovery_key);
+        let rotation_hash = compute_rotation_hash_from_key(&next_key);
+        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
 
         let event = KeyEvent::create_delegated_inception(
             current_key.qb64(),
@@ -190,7 +194,7 @@ impl KeyEventBuilder {
         // PHASE 1: Prepare rotation (stage keys, don't commit yet)
         let new_current = self.key_provider.prepare_rotation().await?;
         let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash(&new_next);
+        let rotation_hash = compute_rotation_hash_from_key(&new_next);
 
         let event = KeyEvent::create_rotation(last_event, new_current.qb64(), Some(rotation_hash))?;
         let signature = self
@@ -358,12 +362,12 @@ impl KeyEventBuilder {
         // Prepare signing key rotation (stages next→current, generates new next)
         let new_current = self.key_provider.prepare_rotation().await?;
         let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash(&new_next);
+        let rotation_hash = compute_rotation_hash_from_key(&new_next);
 
         // Prepare recovery key rotation
         let (current_recovery_pub, new_recovery_pub) =
             self.key_provider.prepare_recovery_rotation().await?;
-        let new_recovery_hash = compute_rotation_hash(&new_recovery_pub);
+        let new_recovery_hash = compute_rotation_hash_from_key(&new_recovery_pub);
 
         // Create ror event
         let event = KeyEvent::create_recovery_rotation(
@@ -649,9 +653,9 @@ impl KeyEventBuilder {
         let rec_event = KeyEvent::create_recovery(
             &chain_from_event.event,
             rotation_key.qb64(),
-            compute_rotation_hash(&new_next),
+            compute_rotation_hash_from_key(&new_next),
             current_recovery_pub.qb64(),
-            compute_rotation_hash(&new_recovery_pub),
+            compute_rotation_hash_from_key(&new_recovery_pub),
         )?;
 
         // Sign with current rotation key (proves we have the pre-committed key)
@@ -696,7 +700,7 @@ impl KeyEventBuilder {
             let rot_event = KeyEvent::create_rotation(
                 &rec_event,
                 post_rec_current.qb64(),
-                Some(compute_rotation_hash(&post_rec_next)),
+                Some(compute_rotation_hash_from_key(&post_rec_next)),
             )?;
 
             let rot_signature = self.key_provider.sign(rot_event.said.as_bytes()).await?;
