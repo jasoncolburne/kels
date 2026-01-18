@@ -86,7 +86,25 @@ struct Stats {
     histogram: Mutex<Histogram<u64>>,
     success_count: AtomicU64,
     error_count: AtomicU64,
+    bytes_received: AtomicU64,
     throughput_only: bool,
+}
+
+/// Format bytes per second in human-readable form
+fn format_throughput(bytes_per_sec: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    if bytes_per_sec >= GB {
+        format!("{:.2} GB/s", bytes_per_sec / GB)
+    } else if bytes_per_sec >= MB {
+        format!("{:.2} MB/s", bytes_per_sec / MB)
+    } else if bytes_per_sec >= KB {
+        format!("{:.2} KB/s", bytes_per_sec / KB)
+    } else {
+        format!("{:.0} B/s", bytes_per_sec)
+    }
 }
 
 impl Stats {
@@ -98,15 +116,17 @@ impl Stats {
             ),
             success_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
+            bytes_received: AtomicU64::new(0),
             throughput_only,
         }
     }
 
-    async fn record_success(&self, latency_us: u64) {
+    async fn record_success(&self, latency_us: u64, bytes: u64) {
         if !self.throughput_only {
             self.histogram.lock().await.record(latency_us).unwrap_or(());
         }
         self.success_count.fetch_add(1, Ordering::Relaxed);
+        self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn record_error(&self) {
@@ -118,6 +138,7 @@ impl Stats {
         histogram.reset();
         self.success_count.store(0, Ordering::Relaxed);
         self.error_count.store(0, Ordering::Relaxed);
+        self.bytes_received.store(0, Ordering::Relaxed);
     }
 
     async fn print_results(&self, elapsed: Duration, test_name: &str) {
@@ -126,6 +147,8 @@ impl Stats {
         let errors = self.error_count.load(Ordering::Relaxed);
         let total = success + errors;
         let throughput = success as f64 / elapsed.as_secs_f64();
+        let bytes = self.bytes_received.load(Ordering::Relaxed);
+        let bytes_per_sec = bytes as f64 / elapsed.as_secs_f64();
 
         println!();
         println!("{}", format!("=== {} Results ===", test_name).cyan().bold());
@@ -138,6 +161,7 @@ impl Stats {
         println!("  Successes:   {:>10}", success);
         println!("  Errors:      {:>10}", errors);
         println!("  Throughput:  {:>10.2} req/s", throughput);
+        println!("  Data:        {:>10}", format_throughput(bytes_per_sec));
         println!();
 
         if success == 0 {
@@ -236,21 +260,33 @@ async fn run_worker(
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
-        let result = match &benchmark_type {
-            BenchmarkType::Health => client.health().await.map(|_| ()),
+        let result: Result<u64, _> = match &benchmark_type {
+            BenchmarkType::Health => client.health().await.map(|_| 0),
             BenchmarkType::GetKel { prefix } => {
-                client.fetch_full_kel_unverified(prefix).await.map(|_| ())
+                client.fetch_full_kel_unverified(prefix).await.map(|kel| {
+                    serde_json::to_string(&kel)
+                        .map(|s| s.len() as u64)
+                        .unwrap_or(0)
+                })
             }
             BenchmarkType::GetKels { prefixes } => {
                 let prefix_refs: Vec<&str> = prefixes.iter().map(|s| s.as_str()).collect();
-                client.fetch_kels_unverified(&prefix_refs).await.map(|_| ())
+                client
+                    .fetch_kels_unverified(&prefix_refs)
+                    .await
+                    .map(|kels| {
+                        kels.iter()
+                            .filter_map(|kel| serde_json::to_string(kel).ok())
+                            .map(|s| s.len() as u64)
+                            .sum()
+                    })
             }
         };
 
         let latency_us = start.elapsed().as_micros() as u64;
 
         match result {
-            Ok(_) => stats.record_success(latency_us).await,
+            Ok(bytes) => stats.record_success(latency_us, bytes).await,
             Err(_) => stats.record_error(),
         }
     }
