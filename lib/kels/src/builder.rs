@@ -75,13 +75,24 @@ impl KeyEventBuilder {
         self.kel.is_decommissioned()
     }
 
+    async fn find_owner_tail_in<'a>(
+        &self,
+        kel: &'a Kel,
+    ) -> Result<Option<&'a SignedKeyEvent>, KelsError> {
+        let Some(ref store) = self.kel_store else {
+            return Ok(None);
+        };
+        let Some(prefix) = kel.prefix() else {
+            return Ok(None);
+        };
+        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
+            return Ok(None);
+        };
+        Ok(kel.iter().rfind(|e| e.event.said == tail_said))
+    }
+
     async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        // If we have a store, use the tracked owner tail
-        if let Some(store) = self.kel_store.as_ref()
-            && let Some(prefix) = self.kel.prefix()
-            && let Some(tail_said) = store.load_owner_tail(prefix).await?
-            && let Some(event) = self.kel.iter().find(|e| e.event.said == tail_said)
-        {
+        if let Some(event) = self.find_owner_tail_in(&self.kel).await? {
             return Ok(event);
         }
         // Fall back to last event in local kel (for offline/test mode)
@@ -521,7 +532,7 @@ impl KeyEventBuilder {
         // Get owner's tail event - this is what we chain from since it has the
         // correct rotation_hash for the owner's current key
         let chain_from_event = self
-            .get_owner_tail_event(kels_kel)
+            .find_owner_tail_in(kels_kel)
             .await?
             .unwrap_or(last_agreed_event);
 
@@ -684,25 +695,6 @@ impl KeyEventBuilder {
         };
 
         Ok(kels_kel.trace_chain_saids(&tail_said))
-    }
-
-    async fn get_owner_tail_event<'a>(
-        &self,
-        kels_kel: &'a Kel,
-    ) -> Result<Option<&'a SignedKeyEvent>, KelsError> {
-        let Some(ref store) = self.kel_store else {
-            return Ok(None);
-        };
-
-        let Some(prefix) = kels_kel.prefix() else {
-            return Ok(None);
-        };
-
-        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
-            return Ok(None);
-        };
-
-        Ok(kels_kel.events().iter().find(|e| e.event.said == tail_said))
     }
 
     pub async fn interact(&mut self, anchor: &str) -> Result<(KeyEvent, Signature), KelsError> {
