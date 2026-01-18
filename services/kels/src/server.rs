@@ -21,7 +21,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/events/:said", get(handlers::get_event))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
-        .route("/api/kels/kel/:prefix/since/:since_timestamp", get(handlers::get_kel_since))
+        .route(
+            "/api/kels/kel/:prefix/since/:since_timestamp",
+            get(handlers::get_kel_since),
+        )
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .with_state(state)
 }
@@ -31,22 +34,29 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
 
     tracing::info!("Connecting to database");
-    let repo = KelsRepository::connect(&database_url).await
+    let repo = KelsRepository::connect(&database_url)
+        .await
         .map_err(|e| format!("Failed to connect to database: {}", e))?;
     tracing::info!("Running migrations");
-    repo.initialize().await.map_err(|e| format!("Failed to run migrations: {}", e))?;
+    repo.initialize()
+        .await
+        .map_err(|e| format!("Failed to run migrations: {}", e))?;
     tracing::info!("Database connected");
 
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
     tracing::info!("Connecting to Redis at {}", redis_url);
     let redis_client = RedisClient::open(redis_url.as_str())
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
-    let redis_conn = redis::aio::ConnectionManager::new(redis_client).await
+    let redis_conn = redis::aio::ConnectionManager::new(redis_client)
+        .await
         .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
     tracing::info!("Connected to Redis");
 
     let kel_cache = ServerKelCache::new(redis_conn, "kels:kel");
-    let state = Arc::new(AppState { repo: Arc::new(repo), kel_cache });
+    let state = Arc::new(AppState {
+        repo: Arc::new(repo),
+        kel_cache,
+    });
 
     let local_cache = state.kel_cache.local_cache();
     tokio::spawn(cache_sync_subscriber(redis_url.clone(), local_cache));

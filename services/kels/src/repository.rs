@@ -177,7 +177,9 @@ impl KelTransaction {
             .order_by("version", Order::Asc);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
 
-        if events.is_empty() { return Ok(vec![]); }
+        if events.is_empty() {
+            return Ok(vec![]);
+        }
 
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
         let query = Query::<EventSignature>::for_table("kels_key_event_signatures")
@@ -210,12 +212,17 @@ impl KelTransaction {
     }
 
     pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {
-        if saids.is_empty() { return Ok(0); }
+        if saids.is_empty() {
+            return Ok(0);
+        }
         let delete = Delete::<KeyEvent>::new().r#in("said", saids);
         self.tx.delete(delete).await
     }
 
-    pub async fn insert_signed_event(&mut self, signed_event: &SignedKeyEvent) -> Result<(), StorageError> {
+    pub async fn insert_signed_event(
+        &mut self,
+        signed_event: &SignedKeyEvent,
+    ) -> Result<(), StorageError> {
         self.tx.insert(&signed_event.event).await?;
         for sig in signed_event.event_signatures() {
             let mut event_sig: EventSignature = sig;
@@ -226,12 +233,17 @@ impl KelTransaction {
         Ok(())
     }
 
-    pub async fn insert_audit_record(&mut self, record: &KelsAuditRecord) -> Result<(), StorageError> {
+    pub async fn insert_audit_record(
+        &mut self,
+        record: &KelsAuditRecord,
+    ) -> Result<(), StorageError> {
         self.tx.insert(record).await?;
         Ok(())
     }
 
-    pub async fn commit(self) -> Result<(), StorageError> { self.tx.commit().await }
+    pub async fn commit(self) -> Result<(), StorageError> {
+        self.tx.commit().await
+    }
     pub async fn rollback(self) -> Result<(), StorageError> {
         self.tx.rollback().await
     }

@@ -10,7 +10,9 @@ use crate::kel::Kel;
 #[async_trait]
 pub trait KelStore: Send + Sync {
     /// Owner's prefix. When set, `cache()` skips saving KELs with this prefix.
-    fn owner_prefix(&self) -> Option<String> { None }
+    fn owner_prefix(&self) -> Option<String> {
+        None
+    }
 
     /// Set/clear owner prefix after enrollment.
     fn set_owner_prefix(&self, _prefix: Option<&str>) {}

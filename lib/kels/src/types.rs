@@ -74,19 +74,22 @@ impl FromStr for EventKind {
             "ror" => Ok(Self::Ror),
             "dec" => Ok(Self::Dec),
             "cnt" => Ok(Self::Cnt),
-            _ => Err(KelsError::InvalidKeyEvent(format!("Unknown event kind: {}", s))),
+            _ => Err(KelsError::InvalidKeyEvent(format!(
+                "Unknown event kind: {}",
+                s
+            ))),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
-    Verified,         // Events accepted
-    Recovered,        // Recovery succeeded
-    Recoverable,      // Divergence - user can submit rec
-    Contestable,      // Adversary revealed recovery key - user should submit cnt
-    Contested,        // Both revealed recovery keys, KEL frozen
-    Frozen,           // Already divergent, only rec/cnt allowed
+    Verified,          // Events accepted
+    Recovered,         // Recovery succeeded
+    Recoverable,       // Divergence - user can submit rec
+    Contestable,       // Adversary revealed recovery key - user should submit cnt
+    Contested,         // Both revealed recovery keys, KEL frozen
+    Frozen,            // Already divergent, only rec/cnt allowed
     RecoveryProtected, // Recovery event protects this version
 }
 
@@ -286,19 +289,45 @@ impl KeyEvent {
         Ok(event)
     }
 
-    pub fn is_inception(&self) -> bool { self.kind == EventKind::Icp }
-    pub fn is_delegated_inception(&self) -> bool { self.kind == EventKind::Dip }
-    pub fn is_rotation(&self) -> bool { self.kind == EventKind::Rot }
-    pub fn is_recovery(&self) -> bool { self.kind == EventKind::Rec }
-    pub fn is_recovery_rotation(&self) -> bool { self.kind == EventKind::Ror }
-    pub fn is_decommission(&self) -> bool { self.kind == EventKind::Dec }
-    pub fn is_contest(&self) -> bool { self.kind == EventKind::Cnt }
-    pub fn is_interaction(&self) -> bool { self.kind == EventKind::Ixn }
-    pub fn is_establishment(&self) -> bool { self.kind.is_establishment() }
-    pub fn reveals_recovery_key(&self) -> bool { self.kind.reveals_recovery_key() }
-    pub fn has_recovery_hash(&self) -> bool { self.recovery_hash.is_some() }
-    pub fn requires_dual_signature(&self) -> bool { self.kind.requires_dual_signature() }
-    pub fn decommissions(&self) -> bool { self.kind.decommissions() }
+    pub fn is_inception(&self) -> bool {
+        self.kind == EventKind::Icp
+    }
+    pub fn is_delegated_inception(&self) -> bool {
+        self.kind == EventKind::Dip
+    }
+    pub fn is_rotation(&self) -> bool {
+        self.kind == EventKind::Rot
+    }
+    pub fn is_recovery(&self) -> bool {
+        self.kind == EventKind::Rec
+    }
+    pub fn is_recovery_rotation(&self) -> bool {
+        self.kind == EventKind::Ror
+    }
+    pub fn is_decommission(&self) -> bool {
+        self.kind == EventKind::Dec
+    }
+    pub fn is_contest(&self) -> bool {
+        self.kind == EventKind::Cnt
+    }
+    pub fn is_interaction(&self) -> bool {
+        self.kind == EventKind::Ixn
+    }
+    pub fn is_establishment(&self) -> bool {
+        self.kind.is_establishment()
+    }
+    pub fn reveals_recovery_key(&self) -> bool {
+        self.kind.reveals_recovery_key()
+    }
+    pub fn has_recovery_hash(&self) -> bool {
+        self.recovery_hash.is_some()
+    }
+    pub fn requires_dual_signature(&self) -> bool {
+        self.kind.requires_dual_signature()
+    }
+    pub fn decommissions(&self) -> bool {
+        self.kind.decommissions()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -330,7 +359,10 @@ impl SignedKeyEvent {
     pub fn new(event: KeyEvent, public_key: String, signature: String) -> Self {
         Self {
             event,
-            signatures: vec![KeyEventSignature { public_key, signature }],
+            signatures: vec![KeyEventSignature {
+                public_key,
+                signature,
+            }],
         }
     }
 
@@ -344,8 +376,14 @@ impl SignedKeyEvent {
         Self {
             event,
             signatures: vec![
-                KeyEventSignature { public_key: primary_public_key, signature: primary_signature },
-                KeyEventSignature { public_key: secondary_public_key, signature: secondary_signature },
+                KeyEventSignature {
+                    public_key: primary_public_key,
+                    signature: primary_signature,
+                },
+                KeyEventSignature {
+                    public_key: secondary_public_key,
+                    signature: secondary_signature,
+                },
             ],
         }
     }
@@ -363,7 +401,10 @@ impl SignedKeyEvent {
             event,
             signatures: sigs
                 .into_iter()
-                .map(|(public_key, signature)| KeyEventSignature { public_key, signature })
+                .map(|(public_key, signature)| KeyEventSignature {
+                    public_key,
+                    signature,
+                })
                 .collect(),
         }
     }
@@ -371,7 +412,13 @@ impl SignedKeyEvent {
     pub fn event_signatures(&self) -> Vec<EventSignature> {
         self.signatures
             .iter()
-            .map(|s| EventSignature::new(self.event.said.clone(), s.public_key.clone(), s.signature.clone()))
+            .map(|s| {
+                EventSignature::new(
+                    self.event.said.clone(),
+                    s.public_key.clone(),
+                    s.signature.clone(),
+                )
+            })
             .collect()
     }
 }
@@ -453,7 +500,10 @@ pub struct CachedKel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
-#[cfg_attr(feature = "server-caching", cache(prefix = "kels:contested", ttl = 3600))]
+#[cfg_attr(
+    feature = "server-caching",
+    cache(prefix = "kels:contested", ttl = 3600)
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ContestedPrefix {
     #[cfg_attr(feature = "server-caching", cache_key(primary))]

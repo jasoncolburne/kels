@@ -171,7 +171,8 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
     let prefix = icp_event.prefix.clone();
 
     for i in 1..event_count {
-        if i % 5 == 0 { // rotate every 5th event
+        if i % 5 == 0 {
+            // rotate every 5th event
             builder.rotate().await?;
         } else {
             let anchor = test_said(&format!("test_anchor_{}", i));
