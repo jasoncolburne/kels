@@ -1,22 +1,4 @@
 //! kels-cli - KELS Command Line Interface
-//!
-//! A command-line client for managing Key Event Logs (KELs) via the KELS service.
-//!
-//! # Usage
-//!
-//! ```bash
-//! # Create a new KEL (inception)
-//! kels-cli incept
-//!
-//! # Rotate signing key
-//! kels-cli rotate --prefix <prefix>
-//!
-//! # Anchor a SAID in the KEL
-//! kels-cli anchor --prefix <prefix> --said <said>
-//!
-//! # Fetch a KEL
-//! kels-cli get <prefix>
-//! ```
 
 use std::path::PathBuf;
 
@@ -31,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://localhost:8091";
 
-/// KELS Command Line Interface
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -77,10 +58,7 @@ enum Commands {
         said: String,
     },
 
-    /// Recover from divergence (submits rec or cnt event automatically).
-    ///
-    /// If adversary only has signing key: submits rec, KEL recovers.
-    /// If adversary revealed recovery key: submits cnt, KEL is contested (frozen).
+    /// Recover from divergence. Submits rec (recovers) or cnt (contests if adversary has recovery key).
     Recover {
         /// KEL prefix to recover
         #[arg(long)]
@@ -129,7 +107,6 @@ enum Commands {
     Adversary(AdversaryCommands),
 }
 
-/// Development commands (only available with dev-tools feature)
 #[cfg(feature = "dev-tools")]
 #[derive(Subcommand, Debug)]
 enum DevCommands {
@@ -152,7 +129,6 @@ enum DevCommands {
     },
 }
 
-/// Adversary simulation commands (only available with dev-tools feature)
 #[cfg(feature = "dev-tools")]
 #[derive(Subcommand, Debug)]
 enum AdversaryCommands {
@@ -179,17 +155,13 @@ enum AdversaryCommands {
     },
 }
 
-/// CLI configuration stored in config.toml
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Config {
-    /// Default KELS server URL
     default_url: Option<String>,
-    /// Default prefix for commands that don't specify one
     default_prefix: Option<String>,
 }
 
-/// Get the config directory path
 fn config_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(ref dir) = cli.config_dir {
         return Ok(dir.clone());
@@ -199,12 +171,10 @@ fn config_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(home.join(".kels-cli"))
 }
 
-/// Get the KEL storage directory for a prefix
 fn kel_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("kels"))
 }
 
-/// Load or create a KeyProvider for the given prefix
 async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     std::fs::create_dir_all(&key_dir)?;
@@ -251,7 +221,6 @@ async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
     Ok(KeyProvider::with_all_software_keys(current, next, recovery))
 }
 
-/// Save KeyProvider keys to files
 fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<()> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     std::fs::create_dir_all(&key_dir)?;
@@ -294,12 +263,10 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
     Ok(())
 }
 
-/// Create a KelsClient
 fn create_client(cli: &Cli) -> KelsClient {
     KelsClient::new(&cli.url)
 }
 
-/// Create a FileKelStore for the given prefix
 fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
     if let Some(p) = prefix {
@@ -327,11 +294,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     .await?;
 
     let (event, _sig) = builder.incept().await.context("Inception failed")?;
-
-    // Save the keys
     save_key_provider(cli, &event.prefix, builder.key_provider())?;
-
-    // Update the store's owner prefix now that we know it
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
     kel_store.save(builder.kel()).await?;
 
@@ -404,8 +367,6 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         .rotate_recovery()
         .await
         .context("Recovery rotation failed")?;
-
-    // Save updated keys
     save_key_provider(cli, prefix, builder.key_provider())?;
 
     println!("{}", "Recovery rotation successful!".green().bold());
@@ -454,8 +415,6 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     .await?;
 
     let (outcome, event, _sig) = builder.recover().await.context("Recovery failed")?;
-
-    // Save updated keys
     save_key_provider(cli, prefix, builder.key_provider())?;
 
     match outcome {
@@ -514,7 +473,6 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> Result<()> {
     let client = create_client(cli);
 
-    // Handle audit mode - returns full response with audit records
     if audit {
         println!(
             "{}",
@@ -525,8 +483,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
         println!();
         println!("{}", format!("KEL: {}", prefix).cyan().bold());
         println!("  Events: {}", response.events.len());
-
-        // Build Kel from events for status checks
         let kel = kels::Kel::from_events(response.events.clone(), true)?;
 
         if let Some(last) = kel.last() {
@@ -545,7 +501,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
             println!("  Status: {}", "OK".green());
         }
 
-        // Print events
         println!();
         println!("{}", "Events:".yellow().bold());
         for (i, signed_event) in response.events.iter().enumerate() {
@@ -582,8 +537,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     }
 
     let kel = if let Some(since_ts) = since {
-        // Incremental fetch - for now just fetch full KEL
-        // TODO: implement since-based fetch when KelsClient supports it with timestamp
         println!(
             "{}",
             format!("Fetching KEL {} since {}...", prefix, since_ts).green()
@@ -602,8 +555,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
         println!("  Latest SAID: {}", last.event.said);
         println!("  Latest Type: {}", last.event.kind);
     }
-
-    // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
     if kel.find_divergence().is_some() {
         println!("  Status: {}", "DIVERGENT".yellow());
     } else if kel.is_contested() {
@@ -613,8 +564,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     } else {
         println!("  Status: {}", "OK".green());
     }
-
-    // Print events
     println!();
     println!("{}", "Events:".yellow().bold());
     for (i, signed_event) in kel.events().iter().enumerate() {
@@ -680,8 +629,6 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Latest Type:  {}", last.event.kind);
         println!("  Created At:   {}", last.event.created_at);
     }
-
-    // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
     if let Some(div) = kel.find_divergence() {
         println!("  Status:       {}", "DIVERGENT".yellow());
         println!("  Diverged At:  v{}", div.diverged_at_version);
@@ -692,8 +639,6 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     } else {
         println!("  Status:       {}", "OK".green());
     }
-
-    // Check key files
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     let has_keys = key_dir.join("current.key").exists();
     println!(
@@ -871,8 +816,6 @@ async fn cmd_adversary_inject(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    // Ensure config directory exists
     let config_dir = config_dir(&cli)?;
     std::fs::create_dir_all(&config_dir)?;
 

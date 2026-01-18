@@ -1,12 +1,9 @@
 //! KELS - Key Event Log Service
-//!
-//! Storage service for KERI-inspired key event logs.
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

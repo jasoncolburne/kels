@@ -1,6 +1,4 @@
 //! KELS HTTP Client
-//!
-//! Provides async client for interacting with the KELS server.
 
 use crate::error::KelsError;
 use crate::kel::Kel;
@@ -88,10 +86,7 @@ impl KelCacheInner {
     }
 }
 
-/// Redis-backed KEL cache
-///
-/// Note: No local caching here - anchor verification in KelsClient requires
-/// seeing the latest KEL state from Redis to detect missing anchors.
+/// Redis-backed KEL cache. No local caching - must see latest state from Redis for anchor verification.
 #[cfg(feature = "redis")]
 #[derive(Clone)]
 pub struct RedisKelCache {
@@ -101,9 +96,7 @@ pub struct RedisKelCache {
 
 #[cfg(feature = "redis")]
 impl RedisKelCache {
-    /// Create a new Redis cache with connection manager.
-    ///
-    /// Entries never expire - eviction is handled by Redis's `maxmemory-policy`.
+    /// Entries never expire - eviction handled by Redis's maxmemory-policy.
     pub fn new(conn: ConnectionManager, key_prefix: &str) -> Self {
         Self {
             conn,
@@ -196,10 +189,7 @@ impl Default for KelCacheConfig {
     }
 }
 
-/// KELS (Key Event Log Service) API Client
-///
-/// Provides methods for interacting with the key event log service,
-/// which stores and retrieves key events (icp, rot, ixn) with their signatures.
+/// KELS API Client - fetches/submits key events, caches KELs for anchor verification
 #[derive(Clone)]
 pub struct KelsClient {
     base_url: String,
@@ -208,7 +198,6 @@ pub struct KelsClient {
 }
 
 impl KelsClient {
-    /// Create a new KELS client without caching
     pub fn new(base_url: &str) -> Self {
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -217,12 +206,10 @@ impl KelsClient {
         }
     }
 
-    /// Create a new KELS client with default in-memory caching (256 KELs max)
     pub fn with_caching(base_url: &str) -> Self {
         Self::with_cache_config(base_url, KelCacheConfig::default())
     }
 
-    /// Create a new KELS client with custom cache configuration (in-memory)
     pub fn with_cache_config(base_url: &str, config: KelCacheConfig) -> Self {
         let cache = if config.enabled {
             Some(KelCache::InMemory(Arc::new(RwLock::new(
@@ -239,7 +226,6 @@ impl KelsClient {
         }
     }
 
-    /// Create a new KELS client with Redis-backed caching
     #[cfg(feature = "redis")]
     pub fn with_redis_cache(base_url: &str, redis_cache: RedisKelCache) -> Self {
         KelsClient {
@@ -249,12 +235,7 @@ impl KelsClient {
         }
     }
 
-    /// Create a new KELS client with caching loaded from a file.
-    ///
-    /// The `max_entries` parameter controls the maximum cache size. This value
-    /// takes precedence over any size stored in the cache file, allowing the
-    /// cache size to be reconfigured. If the loaded cache exceeds this size,
-    /// LRU entries are evicted.
+    /// Load cache from file. max_entries takes precedence over stored size, evicting LRU if needed.
     pub fn with_cache_file(base_url: &str, cache_path: &Path, max_entries: usize) -> Self {
         let mut inner = if cache_path.exists() {
             std::fs::read_to_string(cache_path)
@@ -274,7 +255,6 @@ impl KelsClient {
         }
     }
 
-    /// Save the cache to a file.
     pub fn save_cache(&self, cache_path: &Path) {
         if let Some(KelCache::InMemory(cache)) = &self.cache
             && let Ok(cache) = cache.read()
@@ -490,7 +470,6 @@ impl KelsClient {
         Ok(kel)
     }
 
-    /// Fetch full KEL from server (no caching)
     pub async fn fetch_full_kel(&self, prefix: &str) -> Result<Kel, KelsError> {
         let resp = self
             .client
@@ -509,7 +488,6 @@ impl KelsClient {
         }
     }
 
-    /// Fetch full KEL with audit records from server
     pub async fn fetch_kel_with_audit(&self, prefix: &str) -> Result<KelResponse, KelsError> {
         let resp = self
             .client
@@ -530,10 +508,7 @@ impl KelsClient {
         }
     }
 
-    /// Fetch full KEL from server without verification (dev-tools only)
-    ///
-    /// # Safety
-    /// This skips signature verification - only use for benchmarking/testing!
+    /// Skips signature verification - only for benchmarking/testing
     #[cfg(feature = "dev-tools")]
     pub async fn fetch_full_kel_unverified(&self, prefix: &str) -> Result<Kel, KelsError> {
         let resp = self
@@ -763,10 +738,7 @@ impl KelsClient {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    /// Fetch multiple KELs without caching or verification (dev-tools only)
-    ///
-    /// # Safety
-    /// This skips signature verification - only use for benchmarking/testing!
+    /// Skips signature verification - only for benchmarking/testing
     #[cfg(feature = "dev-tools")]
     pub async fn fetch_kels_unverified(&self, prefixes: &[&str]) -> Result<Vec<Kel>, KelsError> {
         if prefixes.is_empty() {

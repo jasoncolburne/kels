@@ -1,8 +1,4 @@
-//! Key Event Log (KEL)
-//!
-//! This module provides the `Kel` struct for storing, verifying, and merging
-//! key event logs. A KEL is a cryptographically linked chain of key events
-//! that establishes an identity's key state over time.
+//! Key Event Log (KEL) - cryptographically linked chain of key events
 
 use crate::error::KelsError;
 use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
@@ -299,9 +295,7 @@ impl Kel {
         }
 
         if first.event.version > usize::MAX as u64 {
-            return Err(KelsError::InvalidKel(
-                "This is one huge KEL. One may even say: That's a hell of a KEL.".to_string(),
-            ));
+            return Err(KelsError::InvalidKel("Version exceeds maximum".to_string()));
         }
 
         let index = first.event.version as usize;

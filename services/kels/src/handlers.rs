@@ -1,6 +1,4 @@
 //! KELS REST API Handlers
-//!
-//! Provides endpoints for storing and retrieving key events.
 
 use axum::{
     Json,
@@ -19,7 +17,6 @@ use verifiable_storage::VersionedRepository;
 
 use crate::repository::KelsRepository;
 
-/// Response type for pre-serialized JSON bytes
 pub struct PreSerializedJson(pub Arc<Vec<u8>>);
 
 impl IntoResponse for PreSerializedJson {
@@ -33,10 +30,8 @@ impl IntoResponse for PreSerializedJson {
     }
 }
 
-/// Shared application state
 pub struct AppState {
     pub repo: Arc<KelsRepository>,
-    /// Server-side KEL cache (Redis + local LRU)
     pub kel_cache: ServerKelCache,
 }
 
@@ -73,8 +68,6 @@ impl ApiError {
         )
     }
 
-    /// KEL is contested - both parties have revealed recovery keys (rec/ror events).
-    /// This indicates recovery key compromise and the KEL is permanently frozen.
     pub fn contested(msg: impl Into<String>) -> Self {
         ApiError(StatusCode::GONE, Json(ErrorResponse { error: msg.into() }))
     }
@@ -289,10 +282,8 @@ pub async fn submit_events(
     }))
 }
 
-/// Query parameters for KEL fetch
 #[derive(Debug, Deserialize)]
 pub struct GetKelParams {
-    /// Include audit records in response
     #[serde(default)]
     pub audit: bool,
 }
@@ -350,14 +341,7 @@ pub async fn get_kel(
     Ok(Json(signed_events).into_response())
 }
 
-/// Get KEL events since a given timestamp (for incremental client updates).
-///
-/// Returns only events with created_at > since_timestamp.
-/// The timestamp should be in RFC3339/ISO8601 format (e.g., "2024-01-15T10:30:00Z").
-/// This enables efficient client-side caching with differential sync.
-///
-/// Note: Timestamp-based queries ensure divergent events at earlier versions
-/// are still returned if they were created after the client's last sync.
+/// Returns events with created_at > since_timestamp (RFC3339 format).
 pub async fn get_kel_since(
     State(state): State<Arc<AppState>>,
     Path((prefix, since_timestamp)): Path<(String, String)>,
@@ -422,16 +406,7 @@ pub async fn get_event(
 
 // ==================== Batch Handlers ====================
 
-/// Get multiple KELs in a single request.
-///
-/// Supports incremental updates: each prefix can include a `since` timestamp
-/// to only return events created after that time.
-///
-/// Returns a map of prefix -> KEL. Missing prefixes have empty arrays.
-/// Uses parallel lookups and manual JSON concatenation for performance.
-///
-/// Note: Timestamp-based queries ensure divergent events at earlier versions
-/// are still returned if they were created after the client's last sync.
+/// Batch fetch KELs with optional `since` filtering per prefix. Returns map of prefix -> events.
 pub async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,

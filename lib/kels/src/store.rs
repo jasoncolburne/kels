@@ -1,80 +1,30 @@
-//! KEL Storage trait
-//!
-//! Defines the `KelStore` trait for persisting Key Event Logs.
+//! KEL Storage trait - persisting Key Event Logs locally
 
 use async_trait::async_trait;
 
 use crate::error::KelsError;
 use crate::kel::Kel;
 
-/// Trait for persisting Key Event Logs locally.
-///
-/// Implementations can store KELs in files, databases, or other storage backends.
-/// The `KeyEventBuilder` uses this trait to automatically persist KELs after
-/// each successful operation.
-///
-/// # Owner Protection
-///
-/// When an `owner_prefix` is set, the `cache()` method will refuse to overwrite
-/// KELs with that prefix. This protects the owner's authoritative local state
-/// from being overwritten by data fetched from a server (which might include
-/// adversary-injected events).
-///
-/// # Example
-///
-/// ```ignore
-/// use kels::{FileKelStore, KelStore};
-///
-/// let store = FileKelStore::new("/path/to/kels")?;
-///
-/// // Save a KEL
-/// store.save(&kel).await?;
-///
-/// // Load it back
-/// if let Some(loaded) = store.load("prefix123").await? {
-///     println!("Loaded KEL with {} events", loaded.len());
-/// }
-/// ```
+/// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
+/// authoritative state from being overwritten by server-fetched data.
 #[async_trait]
 pub trait KelStore: Send + Sync {
-    /// The owner's prefix, if set.
-    ///
-    /// When set, the `cache()` method will skip saving KELs with this prefix
-    /// to protect the owner's authoritative state from being overwritten by
-    /// server fetches.
-    fn owner_prefix(&self) -> Option<String> {
-        None
-    }
+    /// Owner's prefix. When set, `cache()` skips saving KELs with this prefix.
+    fn owner_prefix(&self) -> Option<String> { None }
 
-    /// Set or clear the owner prefix.
-    ///
-    /// Called after enrollment when the prefix becomes known, or on reset to clear it.
-    /// Default implementation is a no-op for stores that don't support owner prefix.
+    /// Set/clear owner prefix after enrollment.
     fn set_owner_prefix(&self, _prefix: Option<&str>) {}
 
-    /// Load a KEL by its prefix.
-    ///
-    /// Returns `Ok(None)` if no KEL exists for the given prefix.
-    /// The implementation should skip verification (pass `skip_verify: true` to
-    /// `Kel::from_events`) since KELs are verified on save.
+    /// Load a KEL by prefix. Returns None if not found. Skip verification on load (verified on save).
     async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError>;
 
-    /// Save/persist a KEL.
-    ///
-    /// The KEL's prefix is used as the storage key.
-    /// This should overwrite any existing KEL with the same prefix.
+    /// Save a KEL, overwriting any existing one with the same prefix.
     async fn save(&self, kel: &Kel) -> Result<(), KelsError>;
 
-    /// Delete a KEL by its prefix.
-    ///
-    /// Does nothing if the KEL doesn't exist.
+    /// Delete a KEL by prefix. No-op if not found.
     async fn delete(&self, prefix: &str) -> Result<(), KelsError>;
 
-    /// Cache a KEL fetched from a server.
-    ///
-    /// If the KEL's prefix matches the owner prefix, this is a no-op to protect
-    /// the owner's authoritative local state from being overwritten by server data.
-    /// For other prefixes, this behaves like `save()`.
+    /// Cache server-fetched KEL. Skips owner prefix to protect authoritative local state.
     async fn cache(&self, kel: &Kel) -> Result<(), KelsError> {
         if let Some(owner) = self.owner_prefix()
             && kel.prefix() == Some(owner.as_str())
@@ -84,11 +34,9 @@ pub trait KelStore: Send + Sync {
         self.save(kel).await
     }
 
-    /// Save the SAID of the last event the owner created.
-    /// Used during recovery to identify which events in the divergent portion are ours
-    /// vs the adversary's. Must be called before syncing with server.
+    /// Save owner's tail SAID for recovery (identifies our events vs adversary's).
     async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError>;
 
-    /// Load the owner's tail SAID for tracing back through the owner's event chain.
+    /// Load owner's tail SAID for tracing through event chain.
     async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError>;
 }

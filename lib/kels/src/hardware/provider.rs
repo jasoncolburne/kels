@@ -1,6 +1,4 @@
-//! Hardware Key Provider
-//!
-//! Provides Secure Enclave-backed key storage for the KeyProvider enum.
+//! Hardware Key Provider - Secure Enclave backed key storage
 
 use crate::error::KelsError;
 use cesr::{PublicKey, Signature};
@@ -11,15 +9,7 @@ use super::secure_enclave::{
     DefaultSecureEnclave, SecureEnclaveKeyHandle, SecureEnclaveOperations,
 };
 
-/// Hardware-backed key provider using macOS Secure Enclave.
-///
-/// Keys are stored persistently in the Secure Enclave and identified by labels.
-/// The provider manages current, next, and recovery keys.
-/// The recovery key is a dedicated key for recovery events (rec/ror).
-///
-/// Two-phase rotation support:
-/// - `pending_next_handle`: Staged next key during rotation
-/// - `pending_recovery_handle`: Staged recovery key rotation
+/// Secure Enclave backed keys. Manages current, next, recovery keys with two-phase rotation.
 pub struct HardwareKeyProvider {
     enclave: Arc<dyn SecureEnclaveOperations>,
     key_namespace: String,

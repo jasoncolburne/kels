@@ -1,7 +1,4 @@
-//! Secure Enclave Operations
-//!
-//! Low-level interface to macOS Secure Enclave for key generation,
-//! signing, and verification using secp256r1 (P-256) keys.
+//! Secure Enclave Operations - low-level secp256r1 key operations
 
 use crate::error::KelsError;
 use cesr::{KeyCode, PublicKey, Signature, SignatureCode};

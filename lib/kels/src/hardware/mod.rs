@@ -1,7 +1,4 @@
-//! Hardware Key Provider Module
-//!
-//! Provides hardware-backed key operations using macOS Secure Enclave.
-//! Only available on macOS with the `secure-enclave` feature enabled.
+//! Hardware Key Provider - macOS/iOS Secure Enclave backed keys
 
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),

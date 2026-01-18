@@ -15,69 +15,42 @@ use verifiable_storage_postgres::RepositoryConnection;
 use crate::handlers::{self, AppState};
 use crate::repository::KelsRepository;
 
-/// Create and configure the Axum router
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
-        // Health
         .route("/health", get(handlers::health))
-        // Event operations
         .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/events/:said", get(handlers::get_event))
-        // KEL operations
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
-        .route(
-            "/api/kels/kel/:prefix/since/:since_timestamp",
-            get(handlers::get_kel_since),
-        )
-        // Batch operations
+        .route("/api/kels/kel/:prefix/since/:since_timestamp", get(handlers::get_kel_since))
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .with_state(state)
 }
 
-/// Run the HTTP server
 pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    // Get database URL from environment
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
 
-    // Connect to database
     tracing::info!("Connecting to database");
-    let repo = KelsRepository::connect(&database_url)
-        .await
+    let repo = KelsRepository::connect(&database_url).await
         .map_err(|e| format!("Failed to connect to database: {}", e))?;
-
-    // Run migrations
     tracing::info!("Running migrations");
-    repo.initialize()
-        .await
-        .map_err(|e| format!("Failed to run migrations: {}", e))?;
+    repo.initialize().await.map_err(|e| format!("Failed to run migrations: {}", e))?;
     tracing::info!("Database connected");
 
-    // Initialize Redis connection for stream cache
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
     tracing::info!("Connecting to Redis at {}", redis_url);
-
     let redis_client = RedisClient::open(redis_url.as_str())
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
-    let redis_conn = redis::aio::ConnectionManager::new(redis_client)
-        .await
+    let redis_conn = redis::aio::ConnectionManager::new(redis_client).await
         .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
     tracing::info!("Connected to Redis");
 
-    // Create server-side KEL cache (Redis + local LRU)
     let kel_cache = ServerKelCache::new(redis_conn, "kels:kel");
+    let state = Arc::new(AppState { repo: Arc::new(repo), kel_cache });
 
-    // Create app state
-    let state = Arc::new(AppState {
-        repo: Arc::new(repo),
-        kel_cache,
-    });
-
-    // Spawn the pub/sub subscriber task for cache sync
     let local_cache = state.kel_cache.local_cache();
     tokio::spawn(cache_sync_subscriber(redis_url.clone(), local_cache));
 
-    // Create router
     let app = create_router(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -92,8 +65,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Background task that subscribes to cache update notifications
-/// and invalidates local cache when SAIDs don't match
+/// Subscribes to cache updates and invalidates local cache on prefix changes.
 async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalCache>>) {
     use futures_util::StreamExt;
 
@@ -125,7 +97,6 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
     tracing::warn!("Cache sync: Subscriber stream ended");
 }
 
-/// Wait for SIGTERM or SIGINT signal
 async fn shutdown_signal() {
     use tokio::signal;
 

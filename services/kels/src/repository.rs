@@ -1,6 +1,4 @@
 //! PostgreSQL Repository for KELS
-//!
-//! Implements CRUD operations for Key Event Logs with separate signature storage.
 
 use kels::{EventSignature, KelsAuditRecord, KeyEvent, SignedKeyEvent};
 use libkels_derive::SignedEvents;
@@ -31,14 +29,7 @@ pub struct KelsRepository {
 }
 
 impl KeyEventRepository {
-    /// Get multiple KELs by prefix in batch (2 DB calls total).
-    ///
-    /// Supports incremental updates via `since_map`: for each prefix with a since value,
-    /// only events with version > since are returned. Signatures are only fetched for
-    /// the filtered events.
-    ///
-    /// Returns a map of prefix -> Vec<SignedKeyEvent>, ordered by version.
-    /// Prefixes not found (or fully cached) will have empty vectors.
+    /// Batch fetch KELs. For each prefix with since value, returns events with version > since.
     pub async fn get_signed_histories_since(
         &self,
         prefixes: &[&str],
@@ -101,10 +92,7 @@ impl KeyEventRepository {
         Ok(result)
     }
 
-    /// Delete events from a prefix starting at a given version.
-    ///
-    /// Note: Signatures are NOT deleted - they remain in the signatures table
-    /// for audit purposes and can be queried by event SAID.
+    /// Delete events >= version. Signatures remain for audit purposes.
     pub async fn delete_events_from_version(
         &self,
         prefix: &str,
@@ -119,11 +107,7 @@ impl KeyEventRepository {
         Ok(())
     }
 
-    /// Get signed events for a prefix created after a given timestamp.
-    ///
-    /// Used for timestamp-based incremental sync. Returns events where
-    /// `created_at > since_timestamp`, ensuring divergent events at earlier
-    /// versions are returned if they were created recently.
+    /// Timestamp-based incremental sync: returns events where created_at > since_timestamp.
     pub async fn get_signed_history_since(
         &self,
         prefix: &str,
@@ -166,15 +150,7 @@ impl KeyEventRepository {
         Ok(result)
     }
 
-    /// Begin a transaction with advisory lock on the prefix.
-    ///
-    /// The advisory lock serializes all operations on this prefix across all
-    /// concurrent connections. The lock is automatically released when the
-    /// transaction commits or rolls back.
-    ///
-    /// # Error handling
-    /// If the returned `KelTransaction` is dropped without calling `commit()`,
-    /// the transaction is automatically rolled back and the lock is released.
+    /// Begin transaction with advisory lock on prefix. Serializes all operations on this prefix.
     pub async fn begin_locked_transaction(
         &self,
         prefix: &str,
@@ -188,42 +164,29 @@ impl KeyEventRepository {
     }
 }
 
-/// A transaction handle for KEL operations with advisory lock.
-///
-/// Provides transactional versions of load, delete, and insert operations.
-/// The advisory lock is held until `commit()` or `rollback()` is called,
-/// or the transaction is dropped (which triggers automatic rollback).
+/// Transaction with advisory lock. Lock held until commit/rollback/drop.
 pub struct KelTransaction {
     tx: <PgPool as QueryExecutor>::Transaction,
     prefix: String,
 }
 
 impl KelTransaction {
-    /// Load all signed events for this KEL within the transaction.
     pub async fn load_signed_events(&mut self) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        // Fetch all events for this prefix
         let query = Query::<KeyEvent>::new()
             .eq("prefix", &self.prefix)
             .order_by("version", Order::Asc);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
 
-        if events.is_empty() {
-            return Ok(vec![]);
-        }
+        if events.is_empty() { return Ok(vec![]); }
 
-        // Fetch signatures for all events
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
         let query = Query::<EventSignature>::for_table("kels_key_event_signatures")
             .r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-
-        // Group signatures by event SAID
         let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
             sig_map.entry(sig.event_said.clone()).or_default().push(sig);
         }
-
-        // Build signed events
         let mut result = Vec::with_capacity(events.len());
         for event in events {
             let sigs = sig_map.remove(&event.said).unwrap_or_default();
@@ -239,7 +202,6 @@ impl KelTransaction {
         Ok(result)
     }
 
-    /// Delete events from this KEL starting at a given version.
     pub async fn delete_from_version(&mut self, from_version: u64) -> Result<u64, StorageError> {
         let delete = Delete::<KeyEvent>::new()
             .eq("prefix", &self.prefix)
@@ -247,24 +209,14 @@ impl KelTransaction {
         self.tx.delete(delete).await
     }
 
-    /// Delete specific events by their SAIDs.
     pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {
-        if saids.is_empty() {
-            return Ok(0);
-        }
+        if saids.is_empty() { return Ok(0); }
         let delete = Delete::<KeyEvent>::new().r#in("said", saids);
         self.tx.delete(delete).await
     }
 
-    /// Insert a signed event within the transaction.
-    pub async fn insert_signed_event(
-        &mut self,
-        signed_event: &SignedKeyEvent,
-    ) -> Result<(), StorageError> {
-        // Insert the key event
+    pub async fn insert_signed_event(&mut self, signed_event: &SignedKeyEvent) -> Result<(), StorageError> {
         self.tx.insert(&signed_event.event).await?;
-
-        // Insert all signatures
         for sig in signed_event.event_signatures() {
             let mut event_sig: EventSignature = sig;
             event_sig.derive_said()?;
@@ -274,28 +226,18 @@ impl KelTransaction {
         Ok(())
     }
 
-    /// Insert an audit record within the transaction.
-    pub async fn insert_audit_record(
-        &mut self,
-        record: &KelsAuditRecord,
-    ) -> Result<(), StorageError> {
+    pub async fn insert_audit_record(&mut self, record: &KelsAuditRecord) -> Result<(), StorageError> {
         self.tx.insert(record).await?;
         Ok(())
     }
 
-    /// Commit the transaction, releasing the advisory lock.
-    pub async fn commit(self) -> Result<(), StorageError> {
-        self.tx.commit().await
-    }
-
-    /// Rollback the transaction, releasing the advisory lock.
+    pub async fn commit(self) -> Result<(), StorageError> { self.tx.commit().await }
     pub async fn rollback(self) -> Result<(), StorageError> {
         self.tx.rollback().await
     }
 }
 
 impl AuditRecordRepository {
-    /// Get all audit records for a KEL prefix.
     pub async fn get_by_kel_prefix(
         &self,
         kel_prefix: &str,
