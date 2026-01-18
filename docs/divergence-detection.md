@@ -284,10 +284,10 @@ Once divergence is detected, the KEL is frozen:
 ### Recovery Protection
 
 Any recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at version N protects version N and all earlier versions:
-- Non-recovery events at version <= N are rejected with `RecoveryProtected`
+- All events except `cnt` at version <= N are rejected with `RecoveryProtected`
 - Prevents re-divergence at the recovery version
 - Enables proactive protection: rotating recovery key (`ror`) prevents adversary from injecting events at earlier versions
-- Recovery-revealing events (like `cnt` to contest) are still allowed through
+- Only contest (`cnt`) events are allowed through - once anyone reveals recovery, the only valid response is to contest
 
 ### Contest Finality
 

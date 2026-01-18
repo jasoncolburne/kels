@@ -332,14 +332,12 @@ impl Kel {
                         let divergent_new_events = &events[i..];
                         let divergent_old_events = self.0[offset..].to_vec();
 
-                        // Check if new event reveals recovery key (rec/ror/dec/cnt)
-                        let new_reveals_recovery = new_event.event.reveals_recovery_key();
-
                         // Check if existing KEL has any recovery-revealing event at or after this version.
                         // Such events require dual signatures and protect this version from re-divergence.
-                        // Recovery-revealing events are allowed through via `!new_reveals_recovery`.
+                        // Only contest (cnt) events are allowed through - once anyone reveals recovery,
+                        // the only valid response is to contest, not attempt another recovery.
                         if self.reveals_recovery_at_or_after(old_event.event.version)
-                            && !new_reveals_recovery
+                            && !new_event.event.is_contest()
                         {
                             return Ok((vec![], KelMergeResult::RecoveryProtected));
                         }
