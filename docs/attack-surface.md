@@ -1,6 +1,8 @@
 # KELS Attack Surface
 
-Compromise of a kels service doesn't gain you much, it has no identity or signing authority.
+Compromise of a kels service doesn't gain you much, it has no identity or signing authority. Since
+all data is tamper evident, signed and end-verifiable, DOS attacks are probably the thing to watch
+out for.
 
 A controller of an identity has 3 keys to protect. It's advised that clients only be deployed to
 mobile with hardware-backed keys, or services with HSM-backed keys. Integrations already exist
@@ -34,3 +36,10 @@ key is made. These events are only valid in combination with a standard rotation
 rotation key as current and establishing a new rotation hash). These two actions happen within the same
 recovery event. Recovery prior to an existing recovery event is not allowed. Contest is the ultimate
 recovery event, and no change to the kel is possible if contest is submitted successfully.
+
+## Proactive Protection
+
+The signing algorithm is Secp256r1 throughout, meaning you have 128bits of security to work with.
+You probably want to rotate your signing key every 1-3 months and your recovery key each 3-12 months.
+But, I just kind of pulled those numbers out of the air. They are probably reasonable, but with
+advances in computing you should do the assessment yourself for the current point in time.
