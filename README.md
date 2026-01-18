@@ -1,6 +1,6 @@
 # KELS - Key Event Log Storage
 
-A Rust implementation of a Key Event Log Service with pre-rotation key commitment, divergence detection, and recovery mechanisms. KELS provides cryptographically verifiable identity management with protection against key compromise.
+A Rust implementation of a Key Event Log Storage service and client with pre-rotation key commitment, divergence detection, and recovery mechanisms. KELS provides cryptographically verifiable identity management with protection against key compromise.
 
 ## Overview
 
@@ -20,10 +20,10 @@ can be requested alongside the recovered KEL in the form of an audit query.
 **caveat: this is a work in progress, and needs to be audited by another**
 
 1. Introduce gossip protocol between deployments
-1. Add FFI bindings
-1. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-1. Build simple iOS App that can interact with kels like kels-cli
-1. Build a complete example with a use case that kels solves
+2. Add FFI bindings
+3. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+4. Build simple iOS App that can interact with kels like kels-cli
+5. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
