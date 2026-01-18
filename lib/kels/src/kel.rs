@@ -52,14 +52,12 @@ impl KelBuilderState {
         if let Some(div_ver) = divergence_version {
             let last_event = events
                 .iter()
-                .filter(|e| e.event.version < div_ver)
-                .next_back()
+                .rfind(|e| e.event.version < div_ver)
                 .map(|s| s.event.clone());
 
             let last_establishment_event = events
                 .iter()
-                .filter(|e| e.event.version < div_ver && e.event.is_establishment())
-                .next_back()
+                .rfind(|e| e.event.version < div_ver && e.event.is_establishment())
                 .map(|s| s.event.clone());
 
             let confirmed_cursor = events
@@ -316,15 +314,13 @@ impl Kel {
             let last_event = self
                 .0
                 .iter()
-                .filter(|e| e.event.version < divergence_version)
-                .next_back()
+                .rfind(|e| e.event.version < divergence_version)
                 .map(|s| s.event.clone());
 
             let last_establishment_event = self
                 .0
                 .iter()
-                .filter(|e| e.event.version < divergence_version && e.event.is_establishment())
-                .next_back()
+                .rfind(|e| e.event.version < divergence_version && e.event.is_establishment())
                 .map(|s| s.event.clone());
 
             let confirmed_cursor = self
