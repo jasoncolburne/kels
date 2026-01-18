@@ -15,10 +15,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 all: fmt-check deny clippy test build
 
 build:
-	@for pkg in $(PACKAGES); do \
-		echo "Building $$pkg..."; \
-		cargo build -p $$pkg --release || exit 1; \
-	done
+	cargo build --workspace --all-features
 
 clean:
 	@echo "Cleaning workspace..."
@@ -26,7 +23,7 @@ clean:
 	find . -type d -name "target" -exec rm -rf {} +
 
 clippy:
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 deny:
 	@if ! command -v cargo-deny &> /dev/null; then \

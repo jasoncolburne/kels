@@ -550,8 +550,8 @@ impl KeyEventBuilder {
         // Prepare recovery key rotation for forward security
         let (_, new_recovery_pub) = self.key_provider.prepare_recovery_rotation().await?;
 
-        // Prepare signing key rotation - stages next→current and generates new next
-        // After this: pending_current = rotation_key, pending_next = new key
+        // Prepare signing key rotation - generates new pending_next key
+        // After commit: next → current, pending_next → next
         self.key_provider.prepare_rotation().await?;
         let new_next = self.key_provider.pending_next_public_key().await?;
 

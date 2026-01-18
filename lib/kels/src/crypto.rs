@@ -37,9 +37,6 @@ pub trait ExternalKeyProvider: Send + Sync {
     async fn commit_rotation(&mut self);
     async fn rollback_rotation(&mut self);
 
-    async fn signing_labels(&self) -> Vec<String> {
-        vec![]
-    }
     async fn current_handle(&self) -> Option<String> {
         None
     }

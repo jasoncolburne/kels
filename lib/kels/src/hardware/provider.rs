@@ -18,7 +18,7 @@ use super::secure_enclave::{
 /// The recovery key is a dedicated key for recovery events (rec/ror).
 ///
 /// Two-phase rotation support:
-/// - `pending_current_handle` / `pending_next_handle`: Staged signing key rotation
+/// - `pending_next_handle`: Staged next key during rotation
 /// - `pending_recovery_handle`: Staged recovery key rotation
 pub struct HardwareKeyProvider {
     enclave: Arc<dyn SecureEnclaveOperations>,
@@ -28,7 +28,6 @@ pub struct HardwareKeyProvider {
     next_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     recovery_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     // Pending handles for two-phase rotation
-    pending_current_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     pending_next_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
     pending_recovery_handle: RwLock<Option<SecureEnclaveKeyHandle>>,
 }
@@ -46,7 +45,6 @@ impl HardwareKeyProvider {
             current_handle: RwLock::new(None),
             next_handle: RwLock::new(None),
             recovery_handle: RwLock::new(None),
-            pending_current_handle: RwLock::new(None),
             pending_next_handle: RwLock::new(None),
             pending_recovery_handle: RwLock::new(None),
         })
@@ -139,7 +137,6 @@ impl HardwareKeyProvider {
             current_handle: RwLock::new(current_handle),
             next_handle: RwLock::new(next_handle),
             recovery_handle: RwLock::new(recovery_handle),
-            pending_current_handle: RwLock::new(None),
             pending_next_handle: RwLock::new(None),
             pending_recovery_handle: RwLock::new(None),
         })
@@ -155,7 +152,6 @@ impl HardwareKeyProvider {
             current_handle: RwLock::new(self.current_handle.read().await.clone()),
             next_handle: RwLock::new(self.next_handle.read().await.clone()),
             recovery_handle: RwLock::new(self.recovery_handle.read().await.clone()),
-            pending_current_handle: RwLock::new(self.pending_current_handle.read().await.clone()),
             pending_next_handle: RwLock::new(self.pending_next_handle.read().await.clone()),
             pending_recovery_handle: RwLock::new(self.pending_recovery_handle.read().await.clone()),
         }
@@ -298,16 +294,15 @@ impl HardwareKeyProvider {
     ///
     /// Does NOT modify the actual key state - call `commit_rotation()` after
     /// successful KELS submission, or the pending keys will be discarded.
+    /// Prepare signing key rotation - generates new next key.
+    /// Returns the new current public key (what will be current after commit).
     pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        // Take the next handle and stage it as pending current
-        let next_handle = self.next_handle.write().await.take();
-        let next_handle = next_handle.ok_or(KelsError::NoNextKey)?;
-
-        // Get the public key before staging
-        let new_current_pub = self.enclave.get_public_key(&next_handle)?;
-
-        // Stage it as pending current
-        *self.pending_current_handle.write().await = Some(next_handle);
+        // Current next will become current after commit
+        let new_current_pub = {
+            let next_handle = self.next_handle.read().await;
+            let handle = next_handle.as_ref().ok_or(KelsError::NoNextKey)?;
+            self.enclave.get_public_key(handle)?
+        };
 
         // Generate new next key into pending slot
         let mut generation = self.next_label_generation.write().await;
@@ -333,23 +328,26 @@ impl HardwareKeyProvider {
     }
 
     /// Sign with the pending current key (after prepare_rotation).
+    /// Sign with the pending current key (after prepare_rotation).
+    /// This signs with the current next key, which will become current after commit.
     pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let pending_current = self.pending_current_handle.read().await;
-        let handle = pending_current.as_ref().ok_or(KelsError::NoCurrentKey)?;
+        // The "pending current" is the current next key
+        let next_handle = self.next_handle.read().await;
+        let handle = next_handle.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.sign(handle, data)
     }
 
     /// Commit the prepared signing key rotation.
+    /// Promotes next to current and moves pending_next to next.
     pub async fn commit_rotation(&mut self) {
-        // Move pending current → current (old key is NOT deleted - will be cleaned up on decommission)
-        *self.current_handle.write().await = self.pending_current_handle.write().await.take();
-
-        // Move pending next → next
-        *self.next_handle.write().await = self.pending_next_handle.write().await.take();
+        if let Some(pending_next) = self.pending_next_handle.write().await.take() {
+            // next → current, pending_next → next
+            *self.current_handle.write().await = self.next_handle.write().await.take();
+            *self.next_handle.write().await = Some(pending_next);
+        }
     }
 
     /// Rollback a prepared signing key rotation (if KELS rejects).
-    /// Deletes the pending next key and restores next_handle.
     pub async fn rollback_rotation(&mut self) {
         // Delete the newly generated pending next key
         if let Some(ref handle) = *self.pending_next_handle.read().await
@@ -358,10 +356,7 @@ impl HardwareKeyProvider {
             eprintln!("Warning: Failed to delete pending next key: {}", e);
         }
 
-        // Move pending current back to next (it was the original next)
-        *self.next_handle.write().await = self.pending_current_handle.write().await.take();
-
-        // Clear pending next
+        // Clear pending next - next_handle wasn't modified
         *self.pending_next_handle.write().await = None;
     }
 
@@ -394,7 +389,6 @@ impl HardwareKeyProvider {
         *self.current_handle.write().await = None;
         *self.next_handle.write().await = None;
         *self.recovery_handle.write().await = None;
-        *self.pending_current_handle.write().await = None;
         *self.pending_next_handle.write().await = None;
         *self.pending_recovery_handle.write().await = None;
     }
