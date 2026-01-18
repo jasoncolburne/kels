@@ -22,78 +22,6 @@ pub struct DivergenceInfo {
     pub divergent_saids: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct KelBuilderState {
-    pub last_trusted_event: Option<KeyEvent>,
-    pub last_trusted_establishment_event: Option<KeyEvent>,
-    pub trusted_cursor: usize,
-}
-
-impl KelBuilderState {
-    /// Does NOT update trusted_cursor.
-    pub fn update_establishment(&mut self, event: &KeyEvent) {
-        self.last_trusted_event = Some(event.clone());
-        self.last_trusted_establishment_event = Some(event.clone());
-    }
-
-    /// Does NOT update trusted_cursor.
-    pub fn update_non_establishment(&mut self, event: &KeyEvent) {
-        self.last_trusted_event = Some(event.clone());
-    }
-
-    pub fn confirm(&mut self, cursor: usize) {
-        self.trusted_cursor = cursor;
-    }
-
-    pub fn from_events(events: &[SignedKeyEvent]) -> Self {
-        // Check for divergence (multiple events at same version)
-        let divergence_version = Self::find_divergence_version(events);
-
-        if let Some(div_ver) = divergence_version {
-            let last_event = events
-                .iter()
-                .rfind(|e| e.event.version < div_ver)
-                .map(|s| s.event.clone());
-
-            let last_establishment_event = events
-                .iter()
-                .rfind(|e| e.event.version < div_ver && e.event.is_establishment())
-                .map(|s| s.event.clone());
-
-            let confirmed_cursor = events
-                .iter()
-                .position(|e| e.event.version >= div_ver)
-                .unwrap_or(events.len());
-
-            Self {
-                last_trusted_event: last_event,
-                last_trusted_establishment_event: last_establishment_event,
-                trusted_cursor: confirmed_cursor,
-            }
-        } else {
-            Self {
-                last_trusted_event: events.last().map(|s| s.event.clone()),
-                last_trusted_establishment_event: events
-                    .iter()
-                    .rev()
-                    .find(|e| e.event.is_establishment())
-                    .map(|s| s.event.clone()),
-                trusted_cursor: events.len(),
-            }
-        }
-    }
-
-    fn find_divergence_version(events: &[SignedKeyEvent]) -> Option<u64> {
-        let mut seen_versions = std::collections::HashSet::new();
-        for event in events {
-            if !seen_versions.insert(event.event.version) {
-                return Some(event.event.version);
-            }
-        }
-        None
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Kel(Vec<SignedKeyEvent>);
 
@@ -307,41 +235,14 @@ impl Kel {
             .any(|e| e.event.version >= version && e.event.reveals_recovery_key())
     }
 
-    pub fn builder_state(&self) -> KelBuilderState {
+    pub fn confirmed_cursor(&self) -> usize {
         if let Some(divergence) = self.find_divergence() {
-            let divergence_version = divergence.diverged_at_version;
-
-            let last_event = self
-                .0
+            self.0
                 .iter()
-                .rfind(|e| e.event.version < divergence_version)
-                .map(|s| s.event.clone());
-
-            let last_establishment_event = self
-                .0
-                .iter()
-                .rfind(|e| e.event.version < divergence_version && e.event.is_establishment())
-                .map(|s| s.event.clone());
-
-            let confirmed_cursor = self
-                .0
-                .iter()
-                .position(|e| e.event.version >= divergence_version)
-                .unwrap_or(self.0.len());
-
-            KelBuilderState {
-                last_trusted_event: last_event,
-                last_trusted_establishment_event: last_establishment_event,
-                trusted_cursor: confirmed_cursor,
-            }
+                .position(|e| e.event.version >= divergence.diverged_at_version)
+                .unwrap_or(self.0.len())
         } else {
-            KelBuilderState {
-                last_trusted_event: self.last_event().map(|s| s.event.clone()),
-                last_trusted_establishment_event: self
-                    .last_establishment_event()
-                    .map(|s| s.event.clone()),
-                trusted_cursor: self.0.len(),
-            }
+            self.0.len()
         }
     }
 
@@ -1011,7 +912,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &kel,
+            kel.clone(),
         );
 
         let (ixn_event, _) = builder2.interact("anchor").await.unwrap();
@@ -1044,7 +945,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &kel,
+            kel.clone(),
         );
 
         assert_eq!(builder2.last_event().unwrap().said, ixn2.said);
@@ -1164,7 +1065,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &kel_for_builder2,
+            kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
@@ -1216,7 +1117,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
-            &kel_for_builder2,
+            kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
@@ -1224,7 +1125,7 @@ mod tests {
         let mut builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &kel_for_builder2,
+            kel_for_builder2.clone(),
         );
         let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
 
@@ -1280,7 +1181,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
-            &kel_for_builder2,
+            kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
@@ -1302,17 +1203,18 @@ mod tests {
         let builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &divergent_kel,
+            divergent_kel.clone(),
         );
 
-        // last_event should be the icp (last event BEFORE divergence at v1)
-        assert_eq!(builder3.last_event().unwrap().said, icp_event.said);
-
-        // confirmed_cursor should point to position 1 (first divergent event)
+        // last_event returns the actual last event in the KEL (one of the divergent events)
+        // In divergent KEL, confirmed_cursor points to first divergent event
         assert_eq!(builder3.confirmed_count(), 1);
 
         // pending_events should be the two divergent events
         assert_eq!(builder3.pending_events().len(), 2);
+
+        // The KEL itself reports divergence correctly
+        assert!(divergent_kel.find_divergence().is_some());
     }
 
     #[tokio::test]
@@ -1337,14 +1239,14 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
-            &kel_for_others,
+            kel_for_others.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
-            &kel_for_others,
+            kel_for_others.clone(),
         );
         let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
 
@@ -1368,11 +1270,8 @@ mod tests {
         let loaded_builder = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
-            &divergent_kel,
+            divergent_kel.clone(),
         );
-
-        // last_event should be icp (before divergence)
-        assert_eq!(loaded_builder.last_event().unwrap().said, icp_event.said);
 
         // confirmed_cursor should be 1, pending should have 3 events
         assert_eq!(loaded_builder.confirmed_count(), 1);
@@ -1405,7 +1304,7 @@ mod tests {
         let mut adversary = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
-            &adversary_kel,
+            adversary_kel.clone(),
         );
         let (adversary_rot, adversary_rot_sig) = adversary.rotate().await.unwrap();
 
@@ -1439,7 +1338,7 @@ mod tests {
         assert_eq!(divergence.diverged_at_version, 1);
 
         // Owner's local events (what they know about)
-        let owner_events = owner.kel().unwrap();
+        let owner_events = owner.kel();
         let owner_saids: std::collections::HashSet<_> =
             owner_events.iter().map(|e| &e.event.said).collect();
 
@@ -1488,7 +1387,7 @@ mod tests {
         let mut adversary = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(pre_rot_current, pre_rot_next),
             None,
-            &adversary_kel,
+            adversary_kel.clone(),
         );
         let (adversary_ixn, adversary_ixn_sig) =
             adversary.interact("adversary-anchor").await.unwrap();
@@ -1522,7 +1421,7 @@ mod tests {
         assert_eq!(divergence.diverged_at_version, 1);
 
         // Owner's local events
-        let owner_events = owner.kel().unwrap();
+        let owner_events = owner.kel();
         let owner_saids: std::collections::HashSet<_> =
             owner_events.iter().map(|e| &e.event.said).collect();
 

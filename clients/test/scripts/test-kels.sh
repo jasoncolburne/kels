@@ -127,21 +127,9 @@ run_test_expect_fail "Reject rotate on decommissioned KEL" kels-cli -u "$KELS_UR
 run_test_expect_fail "Reject rotate-recovery on decommissioned KEL" kels-cli -u "$KELS_URL" rotate-recovery --prefix "$PREFIX"
 run_test_expect_fail "Reject decommission on decommissioned KEL" kels-cli -u "$KELS_URL" decommission --prefix "$PREFIX"
 
-# Test 14: Recover on decommissioned KEL contests (dec reveals recovery key)
-# With simplified model, recover detects adversary revealed recovery and auto-contests
-run_test "Recover on decommissioned KEL contests" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
-
-# Test 15: Verify cnt event is present in KEL after contest
-echo -e "${YELLOW}Testing: Verify cnt event present after contest${NC}"
-KEL_OUTPUT=$(kels-cli -u "$KELS_URL" get "$PREFIX" 2>&1)
-if echo "$KEL_OUTPUT" | grep -q 'CNT'; then
-    echo -e "${GREEN}PASSED: cnt event found in KEL${NC}"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "${RED}FAILED: cnt event not found in KEL${NC}"
-    echo "KEL output: $KEL_OUTPUT"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
+# Test 14: Recover on self-decommissioned KEL should fail (no adversary to contest)
+# Recovery is for adversarial situations, not for undoing your own decommission
+run_test_expect_fail "Reject recover on self-decommissioned KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
 
 # Print summary
 echo ""

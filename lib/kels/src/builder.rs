@@ -3,7 +3,7 @@
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
 use crate::error::KelsError;
-use crate::kel::{Kel, KelBuilderState, compute_rotation_hash};
+use crate::kel::{Kel, compute_rotation_hash};
 use crate::store::KelStore;
 use crate::types::{KeyEvent, RecoveryOutcome, SignedKeyEvent};
 use cesr::{Matter, PublicKey, Signature};
@@ -14,38 +14,36 @@ fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
 
 pub struct KeyEventBuilder {
     key_provider: KeyProvider,
-    state: KelBuilderState,
     #[allow(dead_code)] // Used only on native/mobile for auto-flush
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
-    events: Vec<SignedKeyEvent>,
+    kel: Kel,
+    /// Tracks how many events have been confirmed by the server.
+    /// Events at indices >= confirmed_cursor are pending submission.
+    confirmed_cursor: usize,
 }
 
 impl KeyEventBuilder {
     pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
-            state: KelBuilderState {
-                last_trusted_event: None,
-                last_trusted_establishment_event: None,
-                trusted_cursor: 0,
-            },
             kels_client,
             kel_store: None,
-            events: Vec::new(),
+            kel: Kel::default(),
+            confirmed_cursor: 0,
         }
     }
 
-    pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: &Kel) -> Self {
-        let events: Vec<SignedKeyEvent> = kel.iter().cloned().collect();
-        let state = kel.builder_state();
-
+    pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: Kel) -> Self {
+        // For divergent KELs, cursor should be at the first divergent event
+        // For normal KELs, cursor is at the end (all events confirmed)
+        let confirmed_cursor = kel.confirmed_cursor();
         Self {
             key_provider,
-            state,
             kels_client,
             kel_store: None,
-            events,
+            kel,
+            confirmed_cursor,
         }
     }
 
@@ -57,48 +55,37 @@ impl KeyEventBuilder {
     ) -> Result<Self, KelsError> {
         // Try to load existing KEL if store and prefix provided
         let kel = match (&kel_store, prefix) {
-            (Some(store), Some(p)) => store.load(p).await?,
-            _ => None,
+            (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
+            _ => Kel::default(),
         };
+        // For divergent KELs, cursor should be at the first divergent event
+        // For normal KELs, cursor is at the end (all events confirmed)
+        let confirmed_cursor = kel.confirmed_cursor();
 
-        if let Some(kel) = kel {
-            let events: Vec<SignedKeyEvent> = kel.iter().cloned().collect();
-            let state = kel.builder_state();
-
-            Ok(Self {
-                key_provider,
-                state,
-                kels_client,
-                kel_store,
-                events,
-            })
-        } else {
-            Ok(Self {
-                key_provider,
-                state: KelBuilderState {
-                    last_trusted_event: None,
-                    last_trusted_establishment_event: None,
-                    trusted_cursor: 0,
-                },
-                kels_client,
-                kel_store,
-                events: Vec::new(),
-            })
-        }
-    }
-
-    fn set_events(&mut self, events: Vec<SignedKeyEvent>) {
-        self.events = events;
-        self.state = KelBuilderState::from_events(&self.events);
+        Ok(Self {
+            key_provider,
+            kels_client,
+            kel_store,
+            kel,
+            confirmed_cursor,
+        })
     }
 
     pub fn is_decommissioned(&self) -> bool {
-        self.state
-            .last_trusted_establishment_event
-            .as_ref()
-            .map(|e| e.is_decommission())
-            .unwrap_or(false)
-            || self.events.iter().any(|e| e.event.is_contest())
+        self.kel.is_decommissioned()
+    }
+
+    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
+        // If we have a store, use the tracked owner tail
+        if let Some(store) = self.kel_store.as_ref()
+            && let Some(prefix) = self.kel.prefix()
+            && let Some(tail_said) = store.load_owner_tail(prefix).await?
+            && let Some(event) = self.kel.iter().find(|e| e.event.said == tail_said)
+        {
+            return Ok(event);
+        }
+        // Fall back to last event in local kel (for offline/test mode)
+        self.kel.last_event().ok_or(KelsError::NotIncepted)
     }
 
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
@@ -145,18 +132,15 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or(KelsError::NotIncepted)?;
+        let last_event = self.get_owner_tail().await?.event.clone();
 
         // PHASE 1: Prepare rotation (stage keys, don't commit yet)
         let new_current = self.key_provider.prepare_rotation().await?;
         let new_next = self.key_provider.pending_next_public_key().await?;
         let rotation_hash = compute_rotation_hash_from_key(&new_next);
 
-        let event = KeyEvent::create_rotation(last_event, new_current.qb64(), Some(rotation_hash))?;
+        let event =
+            KeyEvent::create_rotation(&last_event, new_current.qb64(), Some(rotation_hash))?;
         let signature = self
             .key_provider
             .sign_with_pending(event.said.as_bytes())
@@ -202,11 +186,7 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or(KelsError::NotIncepted)?;
+        let last_event = self.get_owner_tail().await?.event.clone();
 
         // Prepare signing key rotation (to access pre-committed next key)
         let new_current = self.key_provider.prepare_rotation().await?;
@@ -216,7 +196,7 @@ impl KeyEventBuilder {
 
         // Create dec event (voluntary decommission)
         let event = KeyEvent::create_decommission(
-            last_event,
+            &last_event,
             new_current.qb64(),
             current_recovery_pub.qb64(),
         )?;
@@ -242,8 +222,7 @@ impl KeyEventBuilder {
         // If no KELS client, commit and return (offline mode for tests)
         let Some(client) = self.kels_client.as_ref().cloned() else {
             self.key_provider.commit_rotation().await;
-            self.events.push(signed_event);
-            self.state.update_establishment(&event);
+            self.kel.push(signed_event);
             return Ok((event, primary_signature));
         };
 
@@ -258,12 +237,13 @@ impl KeyEventBuilder {
                 self.key_provider.commit_rotation().await;
 
                 // Update local state
-                self.events.push(signed_event);
-                self.state.update_establishment(&event);
+                self.kel.push(signed_event);
+                self.confirmed_cursor = self.kel.len();
 
                 // Save to local store if configured
                 if let Some(ref store) = self.kel_store {
-                    store.save(&self.kel()?).await?;
+                    store.save(self.kel()).await?;
+                    store.save_owner_tail(&event.prefix, &event.said).await?;
                 }
 
                 Ok((event, primary_signature))
@@ -297,11 +277,7 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or(KelsError::NotIncepted)?;
+        let last_event = self.get_owner_tail().await?.event.clone();
 
         // PHASE 1: Prepare both rotations (staging only, no commit)
 
@@ -317,7 +293,7 @@ impl KeyEventBuilder {
 
         // Create ror event
         let event = KeyEvent::create_recovery_rotation(
-            last_event,
+            &last_event,
             new_current.qb64(),
             rotation_hash,
             current_recovery_pub.qb64(),
@@ -354,12 +330,13 @@ impl KeyEventBuilder {
                 self.key_provider.commit_recovery_rotation().await;
 
                 // Update local state
-                self.events.push(signed_event);
-                self.state.update_establishment(&event);
+                self.kel.push(signed_event);
+                self.confirmed_cursor = self.kel.len();
 
                 // Save to local store if configured
                 if let Some(ref store) = self.kel_store {
-                    store.save(&self.kel()?).await?;
+                    store.save(self.kel()).await?;
+                    store.save_owner_tail(&event.prefix, &event.said).await?;
                 }
 
                 Ok((event, primary_signature))
@@ -391,13 +368,7 @@ impl KeyEventBuilder {
             .ok_or_else(|| KelsError::OfflineMode("Cannot recover without KELS client".into()))?
             .clone();
 
-        let prefix = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or(KelsError::NotIncepted)?
-            .prefix
-            .clone();
+        let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?.to_string();
 
         // Fetch actual KEL state from KELS
         let kels_kel = client.fetch_full_kel(&prefix).await?;
@@ -501,12 +472,17 @@ impl KeyEventBuilder {
 
         if response.accepted {
             // Update local state - set to agreed events plus contest
-            self.set_events(agreed_events);
-            self.events.push(signed_cnt_event);
+            self.kel = Kel::from_events(agreed_events, false)?;
+            self.kel.push(signed_cnt_event);
+            // All events are now confirmed
+            self.confirmed_cursor = self.kel.len();
 
             // Save to local store if configured
             if let Some(ref store) = self.kel_store {
-                store.save(&self.kel()?).await?;
+                store.save(self.kel()).await?;
+                store
+                    .save_owner_tail(&cnt_event.prefix, &cnt_event.said)
+                    .await?;
             }
 
             Ok((RecoveryOutcome::Contested, cnt_event, cnt_primary_signature))
@@ -666,15 +642,19 @@ impl KeyEventBuilder {
             self.key_provider.commit_recovery_rotation().await;
 
             // Update local state to agreed events plus submitted events
-            self.set_events(agreed_events);
+            self.kel = Kel::from_events(agreed_events, false)?;
             for event in &events_to_submit {
-                self.events.push(event.clone());
+                self.kel.push(event.clone());
             }
-            self.state = KelBuilderState::from_events(&self.events);
+            // All events are now confirmed
+            self.confirmed_cursor = self.kel.len();
 
             // Save to local store if configured
             if let Some(ref store) = self.kel_store {
-                store.save(&self.kel()?).await?;
+                store.save(self.kel()).await?;
+                store
+                    .save_owner_tail(&final_event.prefix, &final_event.said)
+                    .await?;
             }
 
             Ok((RecoveryOutcome::Recovered, final_event, final_signature))
@@ -730,14 +710,10 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let last_event = self
-            .state
-            .last_trusted_event
-            .as_ref()
-            .ok_or(KelsError::NotIncepted)?;
+        let last_event = self.get_owner_tail().await?.event.clone();
         let current_key = self.key_provider.current_public_key().await?;
 
-        let event = KeyEvent::create_interaction(last_event, anchor.to_string())?;
+        let event = KeyEvent::create_interaction(&last_event, anchor.to_string())?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
         self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), false)
             .await?;
@@ -750,33 +726,23 @@ impl KeyEventBuilder {
     }
 
     pub fn prefix(&self) -> Option<&str> {
-        self.state
-            .last_trusted_event
-            .as_ref()
-            .map(|e| e.prefix.as_str())
+        self.kel.prefix()
     }
 
     pub fn version(&self) -> u64 {
-        self.state
-            .last_trusted_event
-            .as_ref()
-            .map(|e| e.version)
-            .unwrap_or(0)
+        self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
     }
 
     pub fn last_said(&self) -> Option<&str> {
-        self.state
-            .last_trusted_event
-            .as_ref()
-            .map(|e| e.said.as_str())
+        self.kel.last_said()
     }
 
     pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.state.last_trusted_event.as_ref()
+        self.kel.last_event().map(|e| &e.event)
     }
 
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.state.last_trusted_establishment_event.as_ref()
+        self.kel.last_establishment_event().map(|e| &e.event)
     }
 
     pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
@@ -792,23 +758,23 @@ impl KeyEventBuilder {
     }
 
     pub fn events(&self) -> &[SignedKeyEvent] {
-        &self.events
+        self.kel.events()
     }
 
-    pub fn kel(&self) -> Result<Kel, KelsError> {
-        Kel::from_events(self.events.clone(), true)
+    pub fn kel(&self) -> &Kel {
+        &self.kel
     }
 
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.events[self.state.trusted_cursor..]
+        &self.kel.events()[self.confirmed_cursor..]
     }
 
     pub fn confirmed_count(&self) -> usize {
-        self.state.trusted_cursor
+        self.confirmed_cursor
     }
 
     pub fn is_fully_confirmed(&self) -> bool {
-        self.state.trusted_cursor == self.events.len()
+        self.confirmed_cursor == self.kel.events().len()
     }
 
     /// Returns `DivergenceDetected` error if divergence - use `recover()` to resolve.
@@ -829,13 +795,9 @@ impl KeyEventBuilder {
         // when the event is stored but causes divergence
         if let Some(diverged_at) = response.diverged_at {
             // Divergence detected - fetch full KEL from server to get all divergent events
-            let prefix = self
-                .events
-                .first()
-                .map(|e| e.event.prefix.clone())
-                .ok_or_else(|| KelsError::NotIncepted)?;
+            let prefix = self.kel.prefix().ok_or_else(|| KelsError::NotIncepted)?;
 
-            let server_kel = client.fetch_full_kel(&prefix).await?;
+            let server_kel = client.fetch_full_kel(prefix).await?;
 
             // Verify server reports divergence
             if server_kel.find_divergence().is_none() {
@@ -844,16 +806,17 @@ impl KeyEventBuilder {
                 ));
             }
 
-            // Extract builder state before consuming the KEL
-            self.state = server_kel.builder_state();
-            self.events = server_kel.into_inner();
+            // Sync local state with server - use derived cursor for divergent KEL
+            self.confirmed_cursor = server_kel.confirmed_cursor();
+            self.kel = server_kel;
 
             Err(KelsError::DivergenceDetected {
                 diverged_at,
                 submission_accepted: response.accepted,
             })
         } else if response.accepted {
-            self.state.confirm(self.events.len());
+            // Events confirmed - cursor advances to include them
+            self.confirmed_cursor = self.kel.len();
             Ok(())
         } else {
             Err(KelsError::InvalidKel(
@@ -867,18 +830,13 @@ impl KeyEventBuilder {
         event: KeyEvent,
         public_key: String,
         signature: Signature,
-        is_establishment: bool,
+        _is_establishment: bool,
     ) -> Result<(), KelsError> {
-        self.events.push(SignedKeyEvent::new(
+        self.kel.push(SignedKeyEvent::new(
             event.clone(),
             public_key,
             signature.qb64(),
         ));
-        if is_establishment {
-            self.state.update_establishment(&event);
-        } else {
-            self.state.update_non_establishment(&event);
-        }
 
         let flush_result = if self.kels_client.is_some() {
             self.flush().await
@@ -899,7 +857,7 @@ impl KeyEventBuilder {
         // Save to local store if configured
         // Do this even on divergence - flush() syncs self.events with server state
         if let Some(ref store) = self.kel_store {
-            store.save(&self.kel()?).await?;
+            store.save(self.kel()).await?;
 
             // Only save owner_tail if event was accepted
             if event_accepted {

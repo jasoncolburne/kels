@@ -342,7 +342,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
 
     // Update the store's owner prefix now that we know it
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
-    kel_store.save(&builder.kel()?).await?;
+    kel_store.save(builder.kel()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
     println!("  Prefix: {}", event.prefix.cyan());
@@ -824,7 +824,7 @@ async fn cmd_adversary_inject(
     // Create adversary builder WITH KELS client but NO kel_store
     // Events submit to KELS but don't save locally (simulating adversary)
     let client = create_client(cli);
-    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), &kel);
+    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), kel);
 
     let mut saids = Vec::new();
     let mut counter = 0u32;

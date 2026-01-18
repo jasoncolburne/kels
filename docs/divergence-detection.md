@@ -31,26 +31,15 @@ Divergent KEL:  v0 → v1 → v2 → v3(owner)
 
 The `Kel::find_divergence()` method returns the first version with multiple SAIDs.
 
-### Trusted State
-
-`KelBuilderState` tracks the last trusted position in a KEL:
-
-| Field | Purpose |
-|-------|---------|
-| `last_trusted_event` | Event to chain new events from |
-| `last_trusted_establishment_event` | Last establishment event for key validation |
-| `trusted_cursor` | Index where trust ends (divergence point or event count) |
-
-For a divergent KEL, these point to the last event **before** the divergence point, ensuring new events chain from the valid portion.
-
 ### Owner Tail Tracking
 
 The `KelStore` tracks the owner's tail SAID via `save_owner_tail()` / `load_owner_tail()`. This is updated whenever an event is successfully accepted by KELS (including when divergence is detected but the event was still stored).
 
-During recovery, this allows the builder to:
-1. Identify which events in the divergent KEL belong to the owner
-2. Chain the recovery event from the owner's actual tail (not just the last agreed event)
-3. Determine if the owner has rotated since divergence began
+The owner's tail is the **source of truth** for chaining all events:
+1. Normal operations (rotate, interact, etc.) chain from the owner's tail
+2. Recovery operations chain from the owner's tail
+3. The tail identifies which events belong to the owner in a divergent KEL
+4. Determines if the owner has rotated since divergence began
 
 ### Event Flow
 
