@@ -1,0 +1,30 @@
+kind: Build
+name: kels-gossip
+type: container
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/kels-derive/**/*
+  - services/kels-gossip/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/kels-gossip/Dockerfile
+
+---
+
+kind: Deploy
+name: kels-gossip
+type: kubernetes
+
+dependencies:
+  - build.kels-gossip
+  - deploy.kels
+  - deploy.redis
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

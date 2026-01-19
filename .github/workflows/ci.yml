@@ -36,6 +36,7 @@ jobs:
             lib/kels \
             lib/kels-derive \
             services/kels \
+            services/kels-gossip \
             clients/kels-cli \
             clients/kels-bench
           do

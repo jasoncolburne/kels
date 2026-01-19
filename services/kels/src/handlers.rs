@@ -168,19 +168,49 @@ pub async fn submit_events(
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
-    // Merge submitted events into KEL
+    tracing::info!(
+        "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
+        prefix,
+        events.len(),
+        existing_events.len(),
+        kel.find_divergence()
+    );
+
+    // Build set of existing SAIDs to filter duplicates before merge
+    let existing_saids: std::collections::HashSet<String> = existing_events
+        .iter()
+        .map(|e| e.event.said.clone())
+        .collect();
+
+    // Filter out events we already have before merging
+    // This ensures recovery events are seen as "first" when syncing a full KEL
+    let new_events: Vec<SignedKeyEvent> = events
+        .iter()
+        .filter(|e| !existing_saids.contains(&e.event.said))
+        .cloned()
+        .collect();
+
+    tracing::info!(
+        "submit_events: new_events={} (kinds: {:?})",
+        new_events.len(),
+        new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
+    );
+
+    // Merge only new events into KEL
     let (events_to_remove, result) = kel
-        .merge(events.clone())
+        .merge(new_events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
+    tracing::info!("submit_events: merge result={:?}", result);
+
     // Handle merge result within transaction
-    let (diverged_at, accepted, should_clear_cache) = match result {
+    let (diverged_at, accepted) = match result {
         KelMergeResult::Verified => {
-            // Normal append - just insert new events
-            for signed_event in &events {
+            // Normal append - insert new events
+            for signed_event in &new_events {
                 tx.insert_signed_event(signed_event).await?;
             }
-            (None, true, false)
+            (None, true)
         }
         KelMergeResult::Recovered => {
             // Recovery: archive adversary events, delete them from DB, insert recovery events
@@ -194,23 +224,24 @@ pub async fn submit_events(
                     .collect();
                 tx.delete_events_by_said(saids).await?;
             }
-            for signed_event in &events {
+            // Insert new events
+            for signed_event in &new_events {
                 tx.insert_signed_event(signed_event).await?;
             }
-            (None, true, true) // Clear cache on recovery
+            (None, true)
         }
         KelMergeResult::Contested => {
             // Contest: just append cnt event. KEL stays divergent but is frozen.
             // No archiving - all events remain visible to show contested state.
-            if events.len() != 1 || !events[0].event.is_contest() {
+            if new_events.len() != 1 || !new_events[0].event.is_contest() {
                 // Rollback happens automatically when tx is dropped
                 return Err(ApiError::conflict(
                     "Must submit single cnt (contest) event to freeze contested KEL",
                 ));
             }
             // Insert the contest event (divergence remains, KEL is frozen)
-            tx.insert_signed_event(&events[0]).await?;
-            (None, true, true) // Clear cache on contest
+            tx.insert_signed_event(&new_events[0]).await?;
+            (None, true)
         }
         KelMergeResult::Recoverable | KelMergeResult::Contestable => {
             // Divergence detected - store the divergent event to freeze the KEL
@@ -220,9 +251,10 @@ pub async fn submit_events(
             }
             tx.commit().await?;
 
-            // Clear cache since KEL is now divergent
-            if let Err(e) = state.kel_cache.delete(&prefix).await {
-                tracing::warn!("Failed to clear cache: {}", e);
+            // Store the divergent KEL so gossip can propagate it with correct SAID
+            let full_kel = state.repo.key_events.get_signed_history(&prefix).await?;
+            if let Err(e) = state.kel_cache.store(&prefix, &full_kel).await {
+                tracing::warn!("Failed to update cache: {}", e);
             }
 
             let said = events_to_remove
@@ -264,12 +296,9 @@ pub async fn submit_events(
     tx.commit().await?;
 
     // Update cache outside transaction
-    if should_clear_cache {
-        if let Err(e) = state.kel_cache.delete(&prefix).await {
-            tracing::warn!("Failed to clear cache: {}", e);
-        }
-    } else if accepted {
-        // Fetch updated KEL and store in cache
+    if accepted {
+        // Always fetch and store the updated KEL (including after recovery/contest)
+        // This publishes the correct SAID for gossip synchronization
         let full_kel = state.repo.key_events.get_signed_history(&prefix).await?;
         if let Err(e) = state.kel_cache.store(&prefix, &full_kel).await {
             tracing::warn!("Failed to update cache: {}", e);
@@ -319,8 +348,14 @@ pub async fn get_kel(
     }
 
     // Try pre-serialized cache first (non-audit path)
-    if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
-        return Ok(PreSerializedJson(bytes).into_response());
+    match state.kel_cache.get_full_serialized(&prefix).await {
+        Ok(Some(bytes)) => {
+            return Ok(PreSerializedJson(bytes).into_response());
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("Cache error for prefix {}: {}", prefix, e);
+        }
     }
 
     // Cache miss - query database

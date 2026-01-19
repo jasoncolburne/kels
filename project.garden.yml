@@ -8,10 +8,14 @@ environments:
     defaultNamespace: kels-node-a
     variables:
       nodeId: "a"
+      # Bootstrap with node-b's gossip service
+      gossipBootstrapPeers: "/dns4/kels-gossip.kels-node-b.svc.cluster.local/tcp/4001"
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       nodeId: "b"
+      # Bootstrap with node-a's gossip service
+      gossipBootstrapPeers: "/dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001"
 
 providers:
   - name: local-kubernetes
@@ -39,3 +43,12 @@ variables:
     host: kels
     port: "80"
     url: http://${var.kels.host}:${var.kels.port}
+  gossip:
+    replicas: 1
+    port: 4001
+    topic: "kels/events/v1"
+    # Each node bootstraps with the other node's gossip service
+    bootstrapPeers: "${environment.name == 'node-a' ? '/dns4/kels-gossip.kels-node-b.svc.cluster.local/tcp/4001' : '/dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001'}"
+    # Test-only: delay in ms before broadcasting announcements.
+    # Set to "0" for production. Use higher values (e.g., "5000") for adversarial testing.
+    testPropagationDelayMs: "0"

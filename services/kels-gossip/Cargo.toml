@@ -1,0 +1,64 @@
+[package]
+name = "kels-gossip"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Gossip Protocol - Synchronizes KELs between KELS deployments using libp2p"
+
+[[bin]]
+name = "kels-gossip"
+path = "src/main.rs"
+
+[lib]
+name = "kels_gossip"
+path = "src/lib.rs"
+
+[dependencies]
+# libp2p for peer-to-peer networking
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "gossipsub",
+    "request-response",
+    "noise",
+    "yamux",
+    "tcp",
+    "identify",
+    "macros",
+    "dns",
+] }
+
+# KELS library for types
+libkels = { path = "../../lib/kels" }
+
+# Redis for pub/sub
+redis = { version = "0.27", features = ["tokio-comp"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async utilities
+futures = "0.3"
+
+# HTTP client for KELS API
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling
+thiserror = "1"
+
+# Async trait support
+async-trait = "0.1"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

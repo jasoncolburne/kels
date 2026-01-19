@@ -24,7 +24,7 @@ pub mod types;
 
 pub use builder::KeyEventBuilder;
 #[cfg(feature = "redis")]
-pub use cache::{LocalCache, SerializedKel, ServerKelCache, parse_pubsub_message, pubsub_channel};
+pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
 #[cfg(feature = "redis")]
 pub use client::RedisKelCache;
 pub use client::{KelCache, KelCacheConfig, KelsClient};
