@@ -19,10 +19,8 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Add FFI bindings
-2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-3. Build simple iOS App that can interact with kels like kels-cli
-4. Build a complete example with a use case that kels solves
+1. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+2. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
@@ -134,6 +132,19 @@ kels-cli -u http://localhost:8091 decommission --prefix <prefix>
 ### Deploying with Garden
 
 Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
+
+#### Host Configuration
+
+First, add the following entries to `/etc/hosts` to enable local hostname resolution:
+
+```
+127.0.0.1 kels.kels-node-a.local
+127.0.0.1 kels.kels-node-b.local
+```
+
+This allows the CLI and iOS app to connect to the local KELS nodes using their service names.
+
+#### Deployment
 
 ```bash
 # Set up a local Kubernetes environment (e.g., Docker Desktop, minikube, kind), then:
