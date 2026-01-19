@@ -99,10 +99,24 @@ pub enum RecoveryOutcome {
     Contested, // KEL frozen via contest event
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    BadRequest,
+    NotFound,
+    Conflict,
+    Unauthorized,
+    Gone,
+    RecoveryProtected,
+    InternalError,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
+    #[serde(default)]
+    pub code: Option<ErrorCode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
