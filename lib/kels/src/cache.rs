@@ -4,7 +4,7 @@
 //!
 //! - **Redis**: Pre-serialized JSON stored for full KEL + last 2 tails
 //! - **Local LRU**: Caches pre-serialized bytes to avoid Redis round trips
-//! - **Redis Pub/Sub**: Publishes `{prefix}:{version}` on changes for cross-replica invalidation
+//! - **Redis Pub/Sub**: Publishes `{prefix}:{said}` on changes for cross-replica invalidation
 //!
 //! # Cache Keys
 //!
@@ -131,9 +131,9 @@ impl ServerKelCache {
         format!("{}:tail:{}", prefix, size)
     }
 
-    async fn publish_update(&self, prefix: &str, version: u64) -> Result<(), KelsError> {
+    async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
-        let message = format!("{}:{}", prefix, version);
+        let message = format!("{}:{}", prefix, said);
         let _: () = conn
             .publish(PUBSUB_CHANNEL, &message)
             .await
@@ -147,7 +147,12 @@ impl ServerKelCache {
             return Ok(());
         }
 
-        let latest_version = events.last().map(|e| e.event.version).unwrap_or(0);
+        let latest_event = match events.last() {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+        let latest_version = latest_event.event.version;
+        let latest_said = &latest_event.event.said;
 
         // Serialize full KEL
         let full_json = serde_json::to_vec(events)?;
@@ -182,7 +187,7 @@ impl ServerKelCache {
         }
 
         // Publish for other replicas
-        self.publish_update(prefix, latest_version).await?;
+        self.publish_update(prefix, latest_said).await?;
 
         Ok(())
     }
@@ -336,7 +341,7 @@ impl ServerKelCache {
             local.clear(prefix);
         }
 
-        self.publish_update(prefix, 0).await?;
+        self.publish_update(prefix, "").await?;
         Ok(())
     }
 }

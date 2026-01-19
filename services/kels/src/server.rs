@@ -82,7 +82,7 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
     let mut pubsub = match create_pubsub_subscriber(&redis_url, pubsub_channel()).await {
         Ok(ps) => ps,
         Err(e) => {
-            tracing::error!("Cache sync: {}", e);
+            tracing::error!("Failed to subscribe to cache sync channel: {}", e);
             return;
         }
     };
@@ -92,19 +92,18 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
         let payload: String = match msg.get_payload() {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!("Cache sync: Failed to get message payload: {}", e);
+                tracing::warn!("Failed to get cache sync message payload: {}", e);
                 continue;
             }
         };
 
-        if let Some((prefix, _version)) = parse_pubsub_message(&payload) {
-            // Invalidate local cache for this prefix
+        if let Some((prefix, _said)) = parse_pubsub_message(&payload) {
             let mut cache = local_cache.write().await;
             cache.clear(prefix);
         }
     }
 
-    tracing::warn!("Cache sync: Subscriber stream ended");
+    tracing::warn!("Cache sync subscriber ended unexpectedly");
 }
 
 async fn shutdown_signal() {

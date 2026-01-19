@@ -22,6 +22,9 @@ kind: Deploy
 name: test-client
 type: kubernetes
 
+# Only deploy test-client in node-a environment
+disabled: ${environment.name != "node-a"}
+
 dependencies:
   - build.test-client
   - deploy.kels
