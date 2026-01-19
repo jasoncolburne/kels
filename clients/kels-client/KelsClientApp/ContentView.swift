@@ -393,7 +393,21 @@ struct KeysTab: View {
                             .foregroundColor(viewModel.useHardware ? .green : .secondary)
                     }
 
-                    if viewModel.needsRecovery {
+                    if viewModel.isContested {
+                        HStack {
+                            Image(systemName: "xmark.shield.fill")
+                                .foregroundColor(.red)
+                            Text("Contested")
+                                .foregroundColor(.red)
+                        }
+                    } else if viewModel.needsContest {
+                        HStack {
+                            Image(systemName: "exclamationmark.shield.fill")
+                                .foregroundColor(.red)
+                            Text("Contest Required")
+                                .foregroundColor(.red)
+                        }
+                    } else if viewModel.needsRecovery {
                         HStack {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.orange)
@@ -401,20 +415,11 @@ struct KeysTab: View {
                                 .foregroundColor(.orange)
                         }
                     }
-
-                    if viewModel.needsContest {
-                        HStack {
-                            Image(systemName: "exclamationmark.shield.fill")
-                                .foregroundColor(.red)
-                            Text("Contest Required")
-                                .foregroundColor(.red)
-                        }
-                    }
                 }
 
                 // Key Operations
                 Section("Key Operations") {
-                    if viewModel.needsContest {
+                    if viewModel.needsContest && !viewModel.isContested {
                         Button(action: {
                             Task {
                                 await viewModel.recover()
@@ -430,7 +435,7 @@ struct KeysTab: View {
                             .foregroundColor(.red)
                         }
                         .disabled(viewModel.isLoading)
-                    } else if viewModel.needsRecovery {
+                    } else if viewModel.needsRecovery && !viewModel.isContested {
                         Button(action: {
                             Task {
                                 await viewModel.recover()
@@ -446,6 +451,14 @@ struct KeysTab: View {
                             .foregroundColor(.orange)
                         }
                         .disabled(viewModel.isLoading)
+                    } else if viewModel.isContested {
+                        // Show disabled recovery button for contested KEL
+                        HStack {
+                            Image(systemName: "exclamationmark.arrow.circlepath")
+                            Text("Recover")
+                        }
+                        .foregroundColor(.secondary)
+                        .opacity(0.4)
                     } else {
                         Button(action: {
                             Task {
