@@ -10,10 +10,10 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
                     KELS Namespace A
 ┌──────────────────────────────────────────────────────────┐
 │                                                          │
-│   ┌──────────┐   publish    ┌───────┐   subscribe       │
-│   │   KELS   │ ──────────▶  │ Redis │  ◀────────────┐   │
-│   │  (HTTP)  │              │pub/sub│               │   │
-│   └──────────┘              └───────┘               │   │
+│   ┌──────────┐   publish    ┌───────┐   subscribe        │
+│   │   KELS   │ ──────────▶  │ Redis │  ◀────────────┐    │
+│   │  (HTTP)  │              │pub/sub│               │    │
+│   └──────────┘              └───────┘               │    │
 │        ▲                                    ┌───────┴───┐│
 │        │ HTTP POST /api/kels/events         │kels-gossip││
 │        └────────────────────────────────────│ (libp2p)  ││
@@ -28,10 +28,10 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 │        ┌────────────────────────────────────│kels-gossip││
 │        │ HTTP POST /api/kels/events         │ (libp2p)  ││
 │        ▼                                    └───────┬───┘│
-│   ┌──────────┐              ┌───────┐               │   │
-│   │   KELS   │ ──────────▶  │ Redis │  ◀────────────┘   │
-│   │  (HTTP)  │   publish    │pub/sub│   subscribe       │
-│   └──────────┘              └───────┘                   │
+│   ┌──────────┐              ┌───────┐               │    │
+│   │   KELS   │ ──────────▶  │ Redis │  ◀────────────┘    │
+│   │  (HTTP)  │   publish    │pub/sub│   subscribe        │
+│   └──────────┘              └───────┘                    │
 │                                                          │
 │                    KELS Namespace B                      │
 └──────────────────────────────────────────────────────────┘
