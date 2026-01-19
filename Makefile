@@ -1,6 +1,6 @@
-LIBS_PACKAGES := libkels libkels-derive
+LIBS_PACKAGES := libkels libkels-derive libkels-ffi
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive
+LIBS_SUBDIRS := kels kels-derive kels-ffi
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
@@ -10,7 +10,7 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
-.PHONY: all build clean clippy deny fmt fmt-check install-deny test
+.PHONY: all build clean clippy deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
 
@@ -53,3 +53,6 @@ install-deny:
 
 test:
 	cargo test --workspace
+
+kels-client-simulator:
+	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1

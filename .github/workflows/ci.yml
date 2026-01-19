@@ -35,6 +35,7 @@ jobs:
           for dir in \
             lib/kels \
             lib/kels-derive \
+            lib/kels-ffi \
             services/kels \
             services/kels-gossip \
             clients/kels-cli \

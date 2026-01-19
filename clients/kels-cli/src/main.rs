@@ -490,13 +490,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
             println!("  Latest Type: {}", last.event.kind);
         }
 
-        // Check divergence FIRST - a divergent KEL needs recovery regardless of event types
-        if kel.find_divergence().is_some() {
-            println!("  Status: {}", "DIVERGENT".yellow());
-        } else if kel.is_contested() {
+        // Check contested/decommissioned first since they take precedence over divergent
+        if kel.is_contested() {
             println!("  Status: {}", "CONTESTED".red());
         } else if kel.is_decommissioned() {
             println!("  Status: {}", "DECOMMISSIONED".red());
+        } else if kel.find_divergence().is_some() {
+            println!("  Status: {}", "DIVERGENT".yellow());
         } else {
             println!("  Status: {}", "OK".green());
         }
@@ -555,12 +555,12 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
         println!("  Latest SAID: {}", last.event.said);
         println!("  Latest Type: {}", last.event.kind);
     }
-    if kel.find_divergence().is_some() {
-        println!("  Status: {}", "DIVERGENT".yellow());
-    } else if kel.is_contested() {
+    if kel.is_contested() {
         println!("  Status: {}", "CONTESTED".red());
     } else if kel.is_decommissioned() {
         println!("  Status: {}", "DECOMMISSIONED".red());
+    } else if kel.find_divergence().is_some() {
+        println!("  Status: {}", "DIVERGENT".yellow());
     } else {
         println!("  Status: {}", "OK".green());
     }
@@ -629,13 +629,13 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Latest Type:  {}", last.event.kind);
         println!("  Created At:   {}", last.event.created_at);
     }
-    if let Some(div) = kel.find_divergence() {
-        println!("  Status:       {}", "DIVERGENT".yellow());
-        println!("  Diverged At:  v{}", div.diverged_at_version);
-    } else if kel.is_contested() {
+    if kel.is_contested() {
         println!("  Status:       {}", "CONTESTED".red());
     } else if kel.is_decommissioned() {
         println!("  Status:       {}", "DECOMMISSIONED".red());
+    } else if let Some(div) = kel.find_divergence() {
+        println!("  Status:       {}", "DIVERGENT".yellow());
+        println!("  Diverged At:  v{}", div.diverged_at_version);
     } else {
         println!("  Status:       {}", "OK".green());
     }

@@ -20,3 +20,7 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Swift/iOS
+clients/kels-client/.build/
+clients/kels-client/KelsClientApp/Generated.swift

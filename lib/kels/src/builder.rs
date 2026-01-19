@@ -577,8 +577,9 @@ impl KeyEventBuilder {
             .await?;
 
         if response.accepted {
-            self.kel = Kel::from_events(agreed_events, false)?;
-            self.kel.push(signed_cnt_event);
+            // Fetch the full KEL from server to get the complete authoritative record
+            let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?;
+            self.kel = client.fetch_full_kel(prefix).await?;
             self.confirmed_cursor = self.kel.len();
 
             if let Some(ref store) = self.kel_store {
@@ -732,10 +733,10 @@ impl KeyEventBuilder {
         if response.accepted {
             self.key_provider.commit_recovery_rotation().await;
 
-            self.kel = Kel::from_events(agreed_events, false)?;
-            for event in &events_to_submit {
-                self.kel.push(event.clone());
-            }
+            // Fetch the full KEL from server to get the complete authoritative record
+            // including all branches (adversary events + recovery)
+            let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?;
+            self.kel = client.fetch_full_kel(prefix).await?;
             self.confirmed_cursor = self.kel.len();
 
             if let Some(ref store) = self.kel_store {

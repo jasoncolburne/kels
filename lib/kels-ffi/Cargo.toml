@@ -1,0 +1,32 @@
+[package]
+name = "libkels-ffi"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS FFI bindings for iOS/macOS"
+
+[lib]
+name = "kels_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[features]
+default = ["native"]
+native = ["kels/native"]
+secure-enclave = ["kels/secure-enclave"]
+dev-tools = ["kels/dev-tools"]
+
+[dependencies]
+kels = { path = "../kels", package = "libkels", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

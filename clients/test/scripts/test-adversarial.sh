@@ -84,14 +84,14 @@ run_test_expect_divergence() {
     fi
 }
 
-# Test that expects recovery protection (returns error with "recovery event protecting" message)
+# Test that expects recovery protection (adversary used recovery key)
 run_test_expect_recovery_protected() {
     local name="$1"
     shift
     echo -e "${YELLOW}Testing (expect recovery protected): ${name}${NC}"
     local output
     output=$("$@" 2>&1) || true  # Don't fail on non-zero exit
-    if echo "$output" | grep -q "recovery event protecting"; then
+    if echo "$output" | grep -q "adversary used recovery key"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         ((TESTS_PASSED++))
         return 0
