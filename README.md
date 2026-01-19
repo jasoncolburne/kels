@@ -19,11 +19,10 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Introduce gossip protocol between deployments
-2. Add FFI bindings
-3. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-4. Build simple iOS App that can interact with kels like kels-cli
-5. Build a complete example with a use case that kels solves
+1. Add FFI bindings
+2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+3. Build simple iOS App that can interact with kels like kels-cli
+4. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
@@ -33,7 +32,8 @@ kels/
 │   ├── kels/           # Core library (libkels)
 │   └── kels-derive/    # Derive macros for storage traits
 ├── services/
-│   └── kels/           # HTTP API server
+│   ├── kels/           # HTTP API server
+│   └── kels-gossip/    # Gossip protocol for cross-deployment sync
 ├── clients/
 │   ├── kels-cli/       # Command-line interface
 │   ├── kels-bench/     # Benchmarking tool
@@ -53,6 +53,8 @@ kels/
   - WebAssembly (browser/wasm targets)
 
 - **Server-side caching**: Optional Redis + Local LRU caching for high-throughput deployments (enabled by default for the garden example)
+
+- **Cross-deployment gossip**: libp2p-based gossip protocol synchronizes KELs between independent deployments for high availability
 
 ## Event Types
 
@@ -138,8 +140,13 @@ Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
 garden deploy                  # Deploy node-a (default)
 garden deploy --env=node-b     # Deploy node-b (separate namespace)
 
+# Both deployments include kels-gossip for cross-deployment KEL synchronization
+
 # Run the full test suite
 kubectl exec -n kels-node-a -it test-client -- /tests/run-all-tests.sh
+
+# Run gossip synchronization tests (requires both nodes deployed)
+kubectl exec -n kels-node-a -it test-client -- /tests/test-gossip.sh
 
 # Run benchmarks (40 concurrent connections, 10 second duration)
 kubectl exec -n kels-node-a -it test-client -- /tests/bench-kels.sh 40 10
@@ -226,6 +233,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 
 - [Divergence Detection and Recovery](docs/divergence-detection.md) - Detailed protocol documentation
 - [Attack Surface](docs/attack-surface.md) - Security analysis
+- [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
 
 ## License
 
