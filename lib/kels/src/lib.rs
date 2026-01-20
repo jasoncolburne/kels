@@ -43,5 +43,7 @@ pub use store::KelStore;
 pub use types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,
     ErrorCode, ErrorResponse, EventKind, EventSignature, KelMergeResult, KelResponse,
-    KelsAuditRecord, KeyEvent, KeyEventSignature, RecoveryOutcome, SignedKeyEvent,
+    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus,
+    PrefixListResponse, PrefixState, RecoveryOutcome, RegisterNodeRequest, SignedKeyEvent,
+    StatusUpdateRequest,
 };

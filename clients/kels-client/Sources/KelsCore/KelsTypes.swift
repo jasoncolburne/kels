@@ -97,7 +97,7 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
 
 // MARK: - KELS Node
 
-/// Available KELS server nodes
+/// Available KELS server nodes (static configuration)
 public enum KelsNode: String, CaseIterable, Identifiable, Sendable {
     case nodeA = "http://kels.kels-node-a.local"
     case nodeB = "http://kels.kels-node-b.local"
@@ -109,5 +109,107 @@ public enum KelsNode: String, CaseIterable, Identifiable, Sendable {
         case .nodeA: return "Node A"
         case .nodeB: return "Node B"
         }
+    }
+}
+
+// MARK: - Node Discovery
+
+/// Node status from registry
+public enum RegistryNodeStatus: String, Codable, Sendable {
+    case bootstrapping
+    case ready
+    case unhealthy
+}
+
+/// Information about a registered KELS node
+public struct RegistryNode: Codable, Identifiable, Sendable {
+    public let nodeId: String
+    public let kelsUrl: String
+    public let gossipMultiaddr: String
+    public let status: RegistryNodeStatus
+    public var latencyMs: UInt64?
+
+    public var id: String { nodeId }
+
+    public var displayName: String { nodeId }
+
+    public var statusColor: String {
+        switch status {
+        case .ready: return "green"
+        case .bootstrapping: return "yellow"
+        case .unhealthy: return "red"
+        }
+    }
+}
+
+/// Node discovery from registry
+public struct NodeDiscovery {
+    /// Discover nodes from registry and test latency
+    /// - Parameter registryUrl: URL of the registry service
+    /// - Returns: Array of nodes sorted by latency (fastest first)
+    public static func discoverNodes(registryUrl: String) async throws -> [RegistryNode] {
+        let url = URL(string: "\(registryUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/nodes")!
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw KelsClientError.networkError("Failed to fetch nodes from registry")
+        }
+
+        var nodes = try JSONDecoder().decode([RegistryNode].self, from: data)
+
+        // Test latency to each ready node
+        for i in nodes.indices where nodes[i].status == .ready {
+            if let latency = await testLatency(to: nodes[i].kelsUrl) {
+                nodes[i].latencyMs = latency
+            }
+        }
+
+        // Sort by latency (ready nodes with latency first)
+        nodes.sort { a, b in
+            if a.status == .ready && b.status == .ready {
+                switch (a.latencyMs, b.latencyMs) {
+                case (let aLat?, let bLat?): return aLat < bLat
+                case (.some, .none): return true
+                case (.none, .some): return false
+                case (.none, .none): return false
+                }
+            }
+            if a.status == .ready { return true }
+            if b.status == .ready { return false }
+            return false
+        }
+
+        return nodes
+    }
+
+    /// Test latency to a KELS node
+    private static func testLatency(to kelsUrl: String) async -> UInt64? {
+        guard let url = URL(string: "\(kelsUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/health") else {
+            return nil
+        }
+
+        let start = DispatchTime.now()
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return nil
+            }
+            let end = DispatchTime.now()
+            let nanos = end.uptimeNanoseconds - start.uptimeNanoseconds
+            return nanos / 1_000_000 // Convert to milliseconds
+        } catch {
+            return nil
+        }
+    }
+
+    /// Get the fastest ready node from registry
+    /// - Parameter registryUrl: URL of the registry service
+    /// - Returns: The fastest ready node, or nil if none available
+    public static func fastestNode(registryUrl: String) async throws -> RegistryNode? {
+        let nodes = try await discoverNodes(registryUrl: registryUrl)
+        return nodes.first { $0.status == .ready && $0.latencyMs != nil }
     }
 }

@@ -182,7 +182,7 @@ pub struct KelsBehaviour {
 /// Build and run the libp2p swarm
 pub async fn run_swarm(
     listen_addr: Multiaddr,
-    bootstrap_peers: Vec<Multiaddr>,
+    peer_addrs: Vec<Multiaddr>,
     topic_name: &str,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
@@ -195,9 +195,9 @@ pub async fn run_swarm(
         .map_err(|e| GossipError::Transport(e.to_string()))?;
     info!("Listening on {}", listen_addr);
 
-    // Connect to bootstrap peers
-    for addr in bootstrap_peers {
-        info!("Dialing bootstrap peer: {}", addr);
+    // Connect to peers from registry
+    for addr in peer_addrs {
+        info!("Dialing peer: {}", addr);
         if let Err(e) = swarm.dial(addr.clone()) {
             warn!("Failed to dial {}: {}", addr, e);
         }

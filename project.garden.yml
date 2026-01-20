@@ -4,22 +4,16 @@ name: kels
 defaultEnvironment: node-a
 
 environments:
+  - name: registry
+    defaultNamespace: kels-registry
   - name: node-a
     defaultNamespace: kels-node-a
-    variables:
-      nodeId: "a"
-      # Bootstrap with node-b's gossip service
-      gossipBootstrapPeers: "/dns4/kels-gossip.kels-node-b.svc.cluster.local/tcp/4001"
   - name: node-b
     defaultNamespace: kels-node-b
-    variables:
-      nodeId: "b"
-      # Bootstrap with node-a's gossip service
-      gossipBootstrapPeers: "/dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001"
 
 providers:
   - name: local-kubernetes
-    environments: [node-a, node-b]
+    environments: [registry, node-a, node-b]
     namespace:
       name: ${environment.namespace}
     setupIngressController: nginx
@@ -27,6 +21,7 @@ providers:
     buildMode: local-docker
 
 variables:
+  registryUrl: "http://kels-registry.kels-registry.svc.cluster.local:80"
   rustLogLevel: info
   postgres:
     user: kels_admin
@@ -47,8 +42,11 @@ variables:
     replicas: 1
     port: 4001
     topic: "kels/events/v1"
-    # Each node bootstraps with the other node's gossip service
-    bootstrapPeers: "${environment.name == 'node-a' ? '/dns4/kels-gossip.kels-node-b.svc.cluster.local/tcp/4001' : '/dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001'}"
+    listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
     # Test-only: delay in ms before broadcasting announcements.
     # Set to "0" for production. Use higher values (e.g., "5000") for adversarial testing.
     testPropagationDelayMs: "0"
+  registry:
+    replicas: 2
+    port: "80"
+    heartbeatTimeoutSecs: "60"

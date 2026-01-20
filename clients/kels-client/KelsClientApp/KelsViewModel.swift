@@ -23,6 +23,20 @@ class KelsViewModel: ObservableObject {
         }
     }
 
+    // Registry-based discovery
+    @Published var registryUrl: String = "" {
+        didSet {
+            UserDefaults.standard.set(registryUrl, forKey: registryUrlKey)
+        }
+    }
+    @Published var discoveredNodes: [RegistryNode] = []
+    @Published var selectedDiscoveredNode: RegistryNode?
+    @Published var useRegistryDiscovery: Bool = false {
+        didSet {
+            UserDefaults.standard.set(useRegistryDiscovery, forKey: useRegistryKey)
+        }
+    }
+
     // KEL list
     @Published var kelPrefixes: [String] = []
 
@@ -32,6 +46,8 @@ class KelsViewModel: ObservableObject {
     private var client: KelsClient?
     private let nodeKey = "com.kels.selectedNode"
     private let prefixKey = "com.kels.currentPrefix"
+    private let registryUrlKey = "com.kels.registryUrl"
+    private let useRegistryKey = "com.kels.useRegistry"
 
     // Developer tools logging
     #if DEV_TOOLS
@@ -40,17 +56,24 @@ class KelsViewModel: ObservableObject {
 
     init() {
         log("KELS iOS app initialized")
-        loadSavedNode()
+        loadSavedSettings()
         initializeClient()
     }
 
     // MARK: - Persistence
 
-    private func loadSavedNode() {
+    private func loadSavedSettings() {
+        // Load static node selection
         if let savedNode = UserDefaults.standard.string(forKey: nodeKey),
            let node = KelsNode(rawValue: savedNode) {
             selectedNode = node
         }
+
+        // Load registry settings
+        if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey) {
+            registryUrl = savedRegistryUrl
+        }
+        useRegistryDiscovery = UserDefaults.standard.bool(forKey: useRegistryKey)
     }
 
     private func savePrefix(_ prefix: String?) {
@@ -74,6 +97,77 @@ class KelsViewModel: ObservableObject {
         } catch {
             log("ERROR: Failed to switch node: \(error.localizedDescription)")
             errorMessage = "Failed to switch node: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Registry Discovery
+
+    /// Discover nodes from the configured registry
+    func discoverNodes() async {
+        guard !registryUrl.isEmpty else {
+            log("ERROR: Registry URL not configured")
+            errorMessage = "Registry URL not configured"
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        log("Discovering nodes from \(registryUrl)...")
+
+        do {
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
+            log("Found \(discoveredNodes.count) nodes")
+
+            for node in discoveredNodes {
+                let latencyStr = node.latencyMs.map { "\($0)ms" } ?? "-"
+                log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
+            }
+        } catch {
+            log("ERROR: Node discovery failed: \(error.localizedDescription)")
+            errorMessage = "Node discovery failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Select a discovered node and update the client
+    func selectNode(_ node: RegistryNode) {
+        guard let client = client else { return }
+
+        selectedDiscoveredNode = node
+        do {
+            try client.setURL(node.kelsUrl)
+            log("Switched to \(node.displayName) (\(node.kelsUrl))")
+            Task { await refreshStatus() }
+        } catch {
+            log("ERROR: Failed to switch to node: \(error.localizedDescription)")
+            errorMessage = "Failed to switch node: \(error.localizedDescription)"
+        }
+    }
+
+    /// Auto-select the fastest available node from registry
+    func autoSelectNode() async {
+        guard !registryUrl.isEmpty else {
+            log("ERROR: Registry URL not configured")
+            errorMessage = "Registry URL not configured"
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        log("Auto-selecting fastest node...")
+
+        do {
+            if let fastestNode = try await NodeDiscovery.fastestNode(registryUrl: registryUrl) {
+                selectNode(fastestNode)
+                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+            } else {
+                log("ERROR: No ready nodes available")
+                errorMessage = "No ready nodes available"
+            }
+        } catch {
+            log("ERROR: Auto-select failed: \(error.localizedDescription)")
+            errorMessage = "Auto-select failed: \(error.localizedDescription)"
         }
     }
 

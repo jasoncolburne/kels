@@ -114,10 +114,11 @@ struct KelResponse {
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `NODE_ID` | Unique node identifier | `node-unknown` |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
+| `REGISTRY_URL` | Registry service URL for bootstrap sync | (optional) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
-| `GOSSIP_BOOTSTRAP_PEERS` | Comma-separated peer multiaddrs | (none) |
 | `GOSSIP_TOPIC` | Gossipsub topic name | `kels/events/v1` |
 | `GOSSIP_TEST_PROPAGATION_DELAY_MS` | Test-only delay before announcing | `0` |
 
@@ -145,26 +146,19 @@ The gossip layer is **pure transport** with no cryptographic identity requiremen
 - Works correctly with divergence scenarios
 - Bandwidth overhead acceptable for typical KEL sizes
 
-### Bootstrap peers (not Kademlia DHT)
+### Registry-based discovery (not hardcoded bootstrap peers)
 
-- Simpler deployment - no DHT state to manage
-- Explicit peer configuration via environment variable
-- Cross-namespace DNS for Kubernetes deployments
-- Sufficient for typical deployment topologies
+- Nodes register with the `kels-registry` service on startup
+- New nodes query the registry for existing peers and bootstrap sync
+- Peers discover each other dynamically via gossipsub mesh
+- No hardcoded peer addresses needed in configuration
+- See [registry.md](registry.md) for details on the registration protocol
 
 ## Kubernetes Deployment
 
 ### Cross-namespace communication
 
-Gossip nodes in different namespaces connect via fully-qualified DNS:
-
-```yaml
-# node-a environment
-GOSSIP_BOOTSTRAP_PEERS: "/dns4/kels-gossip.kels-node-b.svc.cluster.local/tcp/4001"
-
-# node-b environment
-GOSSIP_BOOTSTRAP_PEERS: "/dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001"
-```
+Gossip nodes in different namespaces connect via the registry service. The registry runs in its own namespace and nodes register with it on startup.
 
 ### Services
 

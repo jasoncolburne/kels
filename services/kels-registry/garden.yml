@@ -1,0 +1,33 @@
+kind: Build
+name: kels-registry
+type: container
+
+disabled: ${environment.name != 'registry'}
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/kels-derive/**/*
+  - services/kels-registry/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/kels-registry/Dockerfile
+
+---
+
+kind: Deploy
+name: kels-registry
+type: kubernetes
+
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - build.kels-registry
+  - deploy.redis
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

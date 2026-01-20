@@ -44,6 +44,16 @@ else
 fi
 echo ""
 
+# Run bootstrap sync tests
+echo -e "${CYAN}Running: test-bootstrap.sh${NC}"
+if "$SCRIPT_DIR/test-bootstrap.sh"; then
+    echo -e "${GREEN}test-bootstrap.sh PASSED${NC}"
+else
+    echo -e "${RED}test-bootstrap.sh FAILED${NC}"
+    FAILED=1
+fi
+echo ""
+
 # Final summary
 echo -e "${CYAN}=========================================${NC}"
 if [ $FAILED -eq 0 ]; then

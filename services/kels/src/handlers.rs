@@ -9,7 +9,7 @@ use axum::{
 use cesr::{Matter, Signature};
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-    KelResponse, KelsAuditRecord, KelsError, ServerKelCache, SignedKeyEvent,
+    KelResponse, KelsAuditRecord, KelsError, PrefixListResponse, ServerKelCache, SignedKeyEvent,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -467,6 +467,38 @@ pub async fn get_event(
         .find(|e| e.event.said == said)
         .map(Json)
         .ok_or_else(|| ApiError::not_found(format!("Event {} not found", said)))
+}
+
+// ==================== Prefix Listing ====================
+
+#[derive(Debug, Deserialize)]
+pub struct ListPrefixesParams {
+    /// Cursor to start after (prefix string)
+    pub since: Option<String>,
+    /// Maximum prefixes to return (default: 100, max: 1000)
+    #[serde(default = "default_prefix_limit")]
+    pub limit: usize,
+}
+
+fn default_prefix_limit() -> usize {
+    100
+}
+
+/// List all unique prefixes with their latest SAIDs for bootstrap sync.
+pub async fn list_prefixes(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListPrefixesParams>,
+) -> Result<Json<PrefixListResponse>, ApiError> {
+    // Validate and clamp limit
+    let limit = params.limit.clamp(1, 1000);
+
+    let result = state
+        .repo
+        .key_events
+        .list_prefixes(params.since.as_deref(), limit)
+        .await?;
+
+    Ok(Json(result))
 }
 
 // ==================== Batch Handlers ====================

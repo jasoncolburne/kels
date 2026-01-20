@@ -15,6 +15,17 @@ spec:
         app: kels-gossip
     spec:
       initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "Waiting for postgres...";
+                sleep 2;
+              done;
+              echo "Postgres is ready!";
         - name: wait-for-kels
           image: busybox:1.36
           command:
@@ -46,14 +57,22 @@ spec:
           env:
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
+            - name: NODE_ID
+              value: "${environment.name}"
             - name: KELS_URL
               value: "${var.kels.url}"
+            - name: KELS_ADVERTISE_URL
+              value: "${var.kelsAdvertiseUrl}"
             - name: REDIS_URL
               value: "${var.redis.url}"
+            - name: DATABASE_URL
+              value: "${var.kelsDatabaseUrl}"
+            - name: REGISTRY_URL
+              value: "${var.registryUrl}"
             - name: GOSSIP_LISTEN_ADDR
-              value: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
-            - name: GOSSIP_BOOTSTRAP_PEERS
-              value: "${var.gossip.bootstrapPeers}"
+              value: "${var.gossip.listenAddress}"
+            - name: GOSSIP_ADVERTISE_ADDR
+              value: "${var.gossipAdvertiseAddress}"
             - name: GOSSIP_TOPIC
               value: "${var.gossip.topic}"
             - name: GOSSIP_TEST_PROPAGATION_DELAY_MS

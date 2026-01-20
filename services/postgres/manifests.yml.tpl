@@ -8,6 +8,7 @@ data:
   init.sql: |
     -- Create databases only (schemas will be managed by SQLx migrations in each service)
     SELECT 'CREATE DATABASE kels' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kels')\gexec
+    SELECT 'CREATE DATABASE kels_gossip' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kels_gossip')\gexec
 
 ---
 

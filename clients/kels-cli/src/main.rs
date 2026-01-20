@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use cesr::PrivateKey;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use kels::{FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, RecoveryOutcome};
+use kels::{
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, NodeStatus, RecoveryOutcome,
+};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://localhost:8091";
@@ -16,9 +18,17 @@ const DEFAULT_KELS_URL: &str = "http://localhost:8091";
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// KELS server URL
+    /// KELS server URL (ignored if --auto-select is used)
     #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
     url: String,
+
+    /// Registry URL for node discovery
+    #[arg(long, env = "KELS_REGISTRY_URL")]
+    registry: Option<String>,
+
+    /// Auto-select the fastest available node from registry (requires --registry)
+    #[arg(long)]
+    auto_select: bool,
 
     /// Config directory (default: ~/.kels-cli)
     #[arg(long, env = "KELS_CLI_HOME")]
@@ -88,6 +98,9 @@ enum Commands {
 
     /// List all local KELs
     List,
+
+    /// List registered nodes from registry (requires --registry)
+    ListNodes,
 
     /// Show status of a local KEL
     Status {
@@ -263,8 +276,18 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
     Ok(())
 }
 
-fn create_client(cli: &Cli) -> KelsClient {
-    KelsClient::new(&cli.url)
+async fn create_client(cli: &Cli) -> Result<KelsClient> {
+    if cli.auto_select {
+        let registry_url = cli
+            .registry
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--auto-select requires --registry"))?;
+        KelsClient::with_discovery(registry_url)
+            .await
+            .context("Failed to discover nodes from registry")
+    } else {
+        Ok(KelsClient::new(&cli.url))
+    }
 }
 
 fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
@@ -278,10 +301,52 @@ fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
 
 // ==================== Command Handlers ====================
 
+async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
+    let registry_url = cli
+        .registry
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--registry is required for list-nodes"))?;
+
+    println!(
+        "{}",
+        format!("Discovering nodes from {}...", registry_url).green()
+    );
+
+    let nodes = KelsClient::discover_nodes(registry_url).await?;
+
+    if nodes.is_empty() {
+        println!("{}", "No nodes registered.".yellow());
+        return Ok(());
+    }
+
+    println!();
+    println!("{}", "Registered Nodes:".cyan().bold());
+
+    for node in &nodes {
+        let status_str = match node.status {
+            NodeStatus::Ready => "READY".green(),
+            NodeStatus::Bootstrapping => "BOOTSTRAPPING".yellow(),
+            NodeStatus::Unhealthy => "UNHEALTHY".red(),
+        };
+
+        let latency_str = node
+            .latency_ms
+            .map(|ms| format!("{}ms", ms))
+            .unwrap_or_else(|| "-".to_string());
+
+        println!(
+            "  {} [{}] - {} (latency: {})",
+            node.node_id, status_str, node.kels_url, latency_str
+        );
+    }
+
+    Ok(())
+}
+
 async fn cmd_incept(cli: &Cli) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = KeyProvider::software();
     let kel_store = create_kel_store(cli, None)?;
 
@@ -311,7 +376,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating signing key for {}...", prefix).green()
     );
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = load_key_provider(cli, prefix).await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
@@ -351,7 +416,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating recovery key for {}...", prefix).green()
     );
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = load_key_provider(cli, prefix).await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
@@ -378,7 +443,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
 async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = load_key_provider(cli, prefix).await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
@@ -402,7 +467,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
 async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     println!("{}", format!("Recovering KEL {}...", prefix).yellow());
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = load_key_provider(cli, prefix).await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
@@ -447,7 +512,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
         "WARNING: This is permanent. No further events can be added.".red()
     );
 
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let key_provider = load_key_provider(cli, prefix).await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
@@ -471,7 +536,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> Result<()> {
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
 
     if audit {
         println!(
@@ -759,7 +824,7 @@ async fn cmd_adversary_inject(
 
     // Create adversary builder WITH KELS client but NO kel_store
     // Events submit to KELS but don't save locally (simulating adversary)
-    let client = create_client(cli);
+    let client = create_client(cli).await?;
     let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), kel);
 
     let mut saids = Vec::new();
@@ -832,6 +897,7 @@ async fn main() -> Result<()> {
             since,
         } => cmd_get(&cli, prefix, *audit, since.as_deref()).await,
         Commands::List => cmd_list(&cli).await,
+        Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
 
         #[cfg(feature = "dev-tools")]

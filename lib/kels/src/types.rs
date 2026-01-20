@@ -502,6 +502,74 @@ pub struct KelResponse {
     pub audit_records: Option<Vec<KelsAuditRecord>>,
 }
 
+/// Response for paginated prefix listing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefixListResponse {
+    pub prefixes: Vec<PrefixState>,
+    pub next_cursor: Option<String>,
+}
+
+/// A prefix with its latest SAID, used for bootstrap sync
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefixState {
+    pub prefix: String,
+    pub said: String,
+}
+
+/// Node status in the registry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    /// Node is syncing, not ready for queries
+    Bootstrapping,
+    /// Node is fully synced and accepting requests
+    Ready,
+    /// Missed heartbeats
+    Unhealthy,
+}
+
+/// Node registration data stored in the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRegistration {
+    pub node_id: String,
+    pub kels_url: String,
+    pub gossip_multiaddr: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+    pub last_heartbeat: chrono::DateTime<chrono::Utc>,
+    pub status: NodeStatus,
+}
+
+/// Request to register a node with the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterNodeRequest {
+    pub node_id: String,
+    pub kels_url: String,
+    pub gossip_multiaddr: String,
+    pub status: NodeStatus,
+}
+
+/// Request to update node status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusUpdateRequest {
+    pub status: NodeStatus,
+}
+
+/// Information about a registered KELS node (with client-computed fields)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeInfo {
+    pub node_id: String,
+    pub kels_url: String,
+    pub gossip_multiaddr: String,
+    pub status: NodeStatus,
+    /// Measured latency in milliseconds (populated by discovery)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
 #[cfg_attr(feature = "server-caching", cache(prefix = "kels:kel", ttl = 3600))]

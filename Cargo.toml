@@ -7,6 +7,7 @@ members = [
     "lib/kels-ffi",
     "services/kels",
     "services/kels-gossip",
+    "services/kels-registry",
     "clients/kels-bench",
     "clients/kels-cli",
 ]

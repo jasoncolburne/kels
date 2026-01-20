@@ -2,6 +2,9 @@ kind: Deploy
 name: postgres
 type: kubernetes
 
+# Postgres is not needed in the registry environment
+disabled: ${environment.name == 'registry'}
+
 spec:
   manifestTemplates:
     - manifests.yml.tpl
