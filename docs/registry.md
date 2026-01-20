@@ -137,12 +137,17 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `HEARTBEAT_TIMEOUT_SECS` | Seconds before node marked unhealthy | `30` |
 | `RUST_LOG` | Log level | `kels_registry=info` |
 
-### Gossip Service (New Variables)
+### Gossip Service
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REGISTRY_URL` | Registry HTTP endpoint | (required) |
+| `REGISTRY_URL` | Registry HTTP endpoint | (optional) |
 | `NODE_ID` | Unique node identifier | (required) |
+| `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
+| `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
+| `KELS_ADVERTISE_URL` | Advertised KELS URL for other nodes | (required) |
+| `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
+| `GOSSIP_ADVERTISE_ADDR` | libp2p advertised address | (required) |
 
 ## Design Decisions
 
@@ -190,10 +195,16 @@ kels-registry/     # Shared registry service + Redis
   └── redis (Deployment)
 
 kels-node-a/       # Node A deployment
-  └── postgres, redis, kels, kels-gossip
+  └── postgres (databases: kels, kels_gossip)
+  └── redis
+  └── kels
+  └── kels-gossip
 
 kels-node-b/       # Node B deployment
-  └── postgres, redis, kels, kels-gossip
+  └── postgres (databases: kels, kels_gossip)
+  └── redis
+  └── kels
+  └── kels-gossip
 ```
 
 ### Garden environments
@@ -227,10 +238,23 @@ garden deploy --env=node-b      # Bootstrap syncs from node-a
 
 ### Node resilience
 
-- If registry unavailable at startup, retry with exponential backoff
+- If registry unavailable at startup, fallback to cached peers from previous connections
+- Peer cache stored in PostgreSQL (`kels_gossip` database) for persistence across restarts
 - Once bootstrapped, node operates via gossip mesh independently
 - If heartbeat fails, node periodically re-registers
 - Node continues normal gossip during re-registration attempts
+- Gossip mesh handles discovery of stale/unavailable cached peers
+
+#### Registry fallback algorithm
+
+1. Try to connect to registry
+2. If registry available:
+   - Fetch bootstrap peers
+   - Sync peer cache to database
+3. If registry unavailable:
+   - Load cached peers from database
+   - Use cached peers for bootstrap sync
+4. Continue attempting registry connection for heartbeats and discovery
 
 ### Client resilience
 
