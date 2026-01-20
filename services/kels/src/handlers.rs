@@ -8,8 +8,8 @@ use axum::{
 };
 use cesr::{Matter, Signature};
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, Kel, KelMergeResult, KelResponse,
-    KelsAuditRecord, KelsError, ServerKelCache, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
+    KelResponse, KelsAuditRecord, KelsError, ServerKelCache, SignedKeyEvent,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -43,33 +43,61 @@ impl ApiError {
     pub fn not_found(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::NotFound),
+            }),
         )
     }
 
     pub fn conflict(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::CONFLICT,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::Conflict),
+            }),
         )
     }
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::BadRequest),
+            }),
         )
     }
 
     pub fn unauthorized(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::Unauthorized),
+            }),
         )
     }
 
     pub fn contested(msg: impl Into<String>) -> Self {
-        ApiError(StatusCode::GONE, Json(ErrorResponse { error: msg.into() }))
+        ApiError(
+            StatusCode::GONE,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::Gone),
+            }),
+        )
+    }
+
+    pub fn recovery_protected(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: Some(ErrorCode::RecoveryProtected),
+            }),
+        )
     }
 }
 
@@ -79,6 +107,7 @@ impl From<KelsError> for ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: e.to_string(),
+                code: Some(ErrorCode::InternalError),
             }),
         )
     }
@@ -90,6 +119,7 @@ impl From<verifiable_storage::StorageError> for ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: e.to_string(),
+                code: Some(ErrorCode::InternalError),
             }),
         )
     }
@@ -285,9 +315,9 @@ pub async fn submit_events(
             }));
         }
         KelMergeResult::RecoveryProtected => {
-            // Can't introduce divergence after recovery event
-            return Err(ApiError::conflict(
-                "Cannot submit event at this version - KEL has recovery event protecting this position.",
+            // Adversary used recovery key - owner should contest
+            return Err(ApiError::recovery_protected(
+                "Cannot submit event - adversary used recovery key. Use contest to freeze the KEL.",
             ));
         }
     };

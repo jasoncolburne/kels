@@ -380,7 +380,11 @@ impl KelsClient {
             Err(KelsError::ContestedKel(err.error))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
+            if err.code == Some(crate::types::ErrorCode::RecoveryProtected) {
+                Err(KelsError::RecoveryProtected)
+            } else {
+                Err(KelsError::ServerError(err.error))
+            }
         }
     }
 

@@ -85,6 +85,9 @@ pub enum KelsError {
     #[error("Contested KEL: {0}")]
     ContestedKel(String),
 
+    #[error("Recovery protected: adversary used recovery key")]
+    RecoveryProtected,
+
     #[error("KEL diverged at: {0}")]
     Diverged(String),
 
