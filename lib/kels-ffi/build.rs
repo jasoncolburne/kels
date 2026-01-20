@@ -22,4 +22,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
+    // Rerun if the header doesn't exist (e.g., after git clean or deletion)
+    println!("cargo:rerun-if-changed=include/libkels.h");
 }
