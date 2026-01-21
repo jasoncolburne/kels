@@ -228,17 +228,18 @@ struct KelsTab: View {
                     if !viewModel.isContested && !viewModel.isDecommissioned {
                         Section("Anchor Data") {
                             HStack {
-                                TextField("Data to anchor (e.g., hash)", text: $anchorText)
+                                TextField("CESR Blake3 digest (E...)", text: $anchorText)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
+                                    .font(.system(.body, design: .monospaced))
 
                                 Button(action: createInteraction) {
                                     Image(systemName: "plus.circle.fill")
                                 }
-                                .disabled(anchorText.isEmpty || viewModel.isLoading)
+                                .disabled(!isValidCesrBlake3Digest(anchorText.trimmingCharacters(in: .whitespaces)) || viewModel.isLoading)
                             }
 
-                            Text("Create an interaction event to anchor data to your KEL")
+                            Text("44-char CESR-encoded Blake3-256 digest (starts with E)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -319,11 +320,20 @@ struct KelsTab: View {
 
     private func createInteraction() {
         let anchor = anchorText.trimmingCharacters(in: .whitespaces)
-        guard !anchor.isEmpty else { return }
+        guard isValidCesrBlake3Digest(anchor) else { return }
         Task {
             await viewModel.interact(anchor: anchor)
             anchorText = ""
         }
+    }
+
+    /// Validates that a string is a CESR-encoded Blake3-256 digest
+    /// Format: 'E' prefix + 43 base64url characters = 44 total
+    private func isValidCesrBlake3Digest(_ text: String) -> Bool {
+        guard text.count == 44, text.hasPrefix("E") else { return false }
+        let base64urlChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        let suffix = text.dropFirst()
+        return suffix.unicodeScalars.allSatisfy { base64urlChars.contains($0) }
     }
 
     private func showCopied(_ what: String) {
