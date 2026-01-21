@@ -19,8 +19,10 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-2. Build a complete example with a use case that kels solves
+1. Think about security surrounding registration of nodes. Right now, anyone could poison the pool
+by posing as a ready node and serving no prefixes in a system with many prefixes.
+2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+3. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
