@@ -315,16 +315,17 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             return Err(anyhow::anyhow!("No ready nodes available in registry"));
         }
 
-        let min_latency = ready_nodes.iter().filter_map(|n| n.latency_ms).min().unwrap();
+        let min_latency = ready_nodes
+            .iter()
+            .filter_map(|n| n.latency_ms)
+            .min()
+            .unwrap();
         let best_nodes: Vec<_> = ready_nodes
             .into_iter()
             .filter(|n| n.latency_ms == Some(min_latency))
             .collect();
 
-        let best_node = best_nodes
-            .choose(&mut rand::thread_rng())
-            .unwrap()
-            .clone();
+        let best_node = best_nodes.choose(&mut rand::thread_rng()).unwrap().clone();
 
         println!(
             "{} {} ({}ms)",
