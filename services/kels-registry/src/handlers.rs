@@ -69,10 +69,50 @@ impl IntoResponse for ApiError {
 
 // ==================== Query Parameters ====================
 
+/// Maximum number of nodes allowed per page
+const MAX_PAGE_SIZE: usize = 1000;
+/// Default page size
+const DEFAULT_PAGE_SIZE: usize = 100;
+
+#[derive(Debug, Deserialize)]
+pub struct PaginationQuery {
+    /// Cursor for pagination (node_id to start after)
+    pub cursor: Option<String>,
+    /// Number of items per page (default: 100, max: 1000)
+    pub limit: Option<usize>,
+}
+
+impl PaginationQuery {
+    fn effective_limit(&self) -> usize {
+        self.limit
+            .map(|l| l.min(MAX_PAGE_SIZE))
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct BootstrapQuery {
     /// Node ID to exclude from bootstrap list (the caller)
     pub exclude: Option<String>,
+    /// Cursor for pagination (node_id to start after)
+    pub cursor: Option<String>,
+    /// Number of items per page (default: 100, max: 1000)
+    pub limit: Option<usize>,
+}
+
+impl BootstrapQuery {
+    fn effective_limit(&self) -> usize {
+        self.limit
+            .map(|l| l.min(MAX_PAGE_SIZE))
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+    }
+}
+
+/// Paginated response for node listings
+#[derive(Debug, Serialize)]
+pub struct NodesResponse {
+    pub nodes: Vec<NodeRegistration>,
+    pub next_cursor: Option<String>,
 }
 
 // ==================== Health Check ====================
@@ -111,24 +151,30 @@ pub async fn deregister_node(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// List all registered nodes
+/// List registered nodes with pagination
 pub async fn list_nodes(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<NodeRegistration>>, ApiError> {
-    let nodes = state.store.list().await?;
-    Ok(Json(nodes))
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<NodesResponse>, ApiError> {
+    let limit = query.effective_limit();
+    let (nodes, next_cursor) = state
+        .store
+        .list_paginated(query.cursor.as_deref(), limit)
+        .await?;
+    Ok(Json(NodesResponse { nodes, next_cursor }))
 }
 
-/// Get bootstrap nodes for a new node joining the network
+/// Get bootstrap nodes for a new node joining the network with pagination
 pub async fn get_bootstrap_nodes(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BootstrapQuery>,
-) -> Result<Json<Vec<NodeRegistration>>, ApiError> {
-    let nodes = state
+) -> Result<Json<NodesResponse>, ApiError> {
+    let limit = query.effective_limit();
+    let (nodes, next_cursor) = state
         .store
-        .get_bootstrap_nodes(query.exclude.as_deref())
+        .get_bootstrap_nodes_paginated(query.exclude.as_deref(), query.cursor.as_deref(), limit)
         .await?;
-    Ok(Json(nodes))
+    Ok(Json(NodesResponse { nodes, next_cursor }))
 }
 
 /// Heartbeat to keep node registration alive

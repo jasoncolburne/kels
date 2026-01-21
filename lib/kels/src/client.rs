@@ -4,7 +4,7 @@ use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult,
-    KelResponse, KeyEvent, NodeInfo, NodeStatus, SignedKeyEvent,
+    KelResponse, KeyEvent, NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -395,17 +395,36 @@ impl KelsClient {
             .build()
             .map_err(|e| KelsError::ServerError(format!("Failed to create HTTP client: {}", e)))?;
 
-        let url = format!("{}/api/nodes", registry_url.trim_end_matches('/'));
-        let resp = client.get(&url).send().await?;
+        // Paginate through all nodes
+        let base_url = registry_url.trim_end_matches('/');
+        let mut all_nodes: Vec<NodeInfo> = Vec::new();
+        let mut cursor: Option<String> = None;
 
-        if !resp.status().is_success() {
-            return Err(KelsError::ServerError(format!(
-                "Failed to fetch nodes from registry: {}",
-                resp.status()
-            )));
+        loop {
+            let mut url = format!("{}/api/nodes?limit=100", base_url);
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
+
+            let resp = client.get(&url).send().await?;
+
+            if !resp.status().is_success() {
+                return Err(KelsError::ServerError(format!(
+                    "Failed to fetch nodes from registry: {}",
+                    resp.status()
+                )));
+            }
+
+            let page: NodesResponse = resp.json().await?;
+            all_nodes.extend(page.nodes.into_iter().map(NodeInfo::from));
+
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
         }
 
-        let mut nodes: Vec<NodeInfo> = resp.json().await?;
+        let mut nodes = all_nodes;
 
         // Test latency to each Ready node concurrently (with short timeout)
         let latency_futures: Vec<_> = nodes

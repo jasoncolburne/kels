@@ -1,4 +1,5 @@
 import Foundation
+import LibKels
 
 // MARK: - KEL Event
 
@@ -125,67 +126,54 @@ public struct RegistryNode: Codable, Identifiable, Sendable {
     }
 }
 
-/// Node discovery from registry
+/// FFI response node (matches FFI's NodeInfoJson with camelCase)
+private struct FFINode: Codable {
+    let nodeId: String
+    let kelsUrl: String
+    let status: String
+    let latencyMs: UInt64?
+}
+
+/// Node discovery from registry using FFI
 public struct NodeDiscovery {
     /// Discover nodes from registry and test latency
     /// - Parameter registryUrl: URL of the registry service
     /// - Returns: Array of nodes sorted by latency (fastest first)
     public static func discoverNodes(registryUrl: String) async throws -> [RegistryNode] {
-        let url = URL(string: "\(registryUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/nodes")!
+        // Run FFI call on a background thread since it's blocking
+        return try await Task.detached {
+            var result = KelsNodesResult()
+            kels_discover_nodes(registryUrl, &result)
+            defer { kels_nodes_result_free(&result) }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw KelsClientError.networkError("Failed to fetch nodes from registry")
-        }
-
-        var nodes = try JSONDecoder().decode([RegistryNode].self, from: data)
-
-        // Test latency to each ready node
-        for i in nodes.indices where nodes[i].status == .ready {
-            if let latency = await testLatency(to: nodes[i].kelsUrl) {
-                nodes[i].latencyMs = latency
+            if result.status != KELS_STATUS_OK {
+                let errorMsg = result.error.map { String(cString: $0) }
+                throw KelsClientError.networkError(errorMsg)
             }
-        }
 
-        // Sort by latency (ready nodes with latency first)
-        nodes.sort { a, b in
-            if a.status == .ready && b.status == .ready {
-                switch (a.latencyMs, b.latencyMs) {
-                case (let aLat?, let bLat?): return aLat < bLat
-                case (.some, .none): return true
-                case (.none, .some): return false
-                case (.none, .none): return false
-                }
+            guard let nodesJson = result.nodes_json else {
+                return []
             }
-            if a.status == .ready { return true }
-            if b.status == .ready { return false }
-            return false
-        }
 
-        return nodes
-    }
-
-    /// Test latency to a KELS node
-    private static func testLatency(to kelsUrl: String) async -> UInt64? {
-        guard let url = URL(string: "\(kelsUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/health") else {
-            return nil
-        }
-
-        let start = DispatchTime.now()
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                return nil
+            let jsonString = String(cString: nodesJson)
+            guard let data = jsonString.data(using: .utf8) else {
+                return []
             }
-            let end = DispatchTime.now()
-            let nanos = end.uptimeNanoseconds - start.uptimeNanoseconds
-            return nanos / 1_000_000 // Convert to milliseconds
-        } catch {
-            return nil
-        }
+
+            let ffiNodes = try JSONDecoder().decode([FFINode].self, from: data)
+
+            // Convert to RegistryNode
+            return ffiNodes.map { ffi in
+                var node = RegistryNode(
+                    nodeId: ffi.nodeId,
+                    kelsUrl: ffi.kelsUrl,
+                    gossipMultiaddr: "",  // Not provided by FFI, not needed for UI
+                    status: RegistryNodeStatus(rawValue: ffi.status) ?? .unhealthy
+                )
+                node.latencyMs = ffi.latencyMs
+                return node
+            }
+        }.value
     }
 
     /// Get the fastest ready node from registry

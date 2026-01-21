@@ -503,6 +503,9 @@ pub async fn list_prefixes(
 
 // ==================== Batch Handlers ====================
 
+/// Maximum number of prefixes allowed in a single batch request.
+const MAX_BATCH_PREFIXES: usize = 50;
+
 /// Batch fetch KELs with optional `since` filtering per prefix. Returns map of prefix -> events.
 pub async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
@@ -511,6 +514,13 @@ pub async fn get_kels_batch(
     use chrono::{DateTime, Utc};
     use futures_util::future::join_all;
     use verifiable_storage::StorageDatetime;
+
+    if request.prefixes.len() > MAX_BATCH_PREFIXES {
+        return Err(ApiError::bad_request(format!(
+            "Batch request exceeds maximum of {} prefixes",
+            MAX_BATCH_PREFIXES
+        )));
+    }
 
     // Fetch all KELs in parallel
     let futures: Vec<_> = request

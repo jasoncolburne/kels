@@ -64,6 +64,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Async trait support
 async-trait = "0.1"
 
+# Random selection
+rand = "0.8"
+
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

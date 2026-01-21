@@ -119,19 +119,42 @@ impl RegistryStore {
         }
     }
 
-    /// List all registered nodes
-    pub async fn list(&self) -> Result<Vec<NodeRegistration>, StoreError> {
+    /// List registered nodes with pagination
+    /// Returns (nodes, next_cursor) where next_cursor is the last node_id if there are more results
+    pub async fn list_paginated(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<NodeRegistration>, Option<String>), StoreError> {
         let mut conn = self.conn.clone();
 
-        // Get all node IDs
-        let node_ids: Vec<String> = conn.smembers(self.nodes_set_key()).await?;
+        // Get all node IDs sorted
+        let mut node_ids: Vec<String> = conn.smembers(self.nodes_set_key()).await?;
+        node_ids.sort();
 
         if node_ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
 
-        // Get all node data
-        let keys: Vec<String> = node_ids.iter().map(|id| self.node_key(id)).collect();
+        // Apply cursor - skip nodes up to and including cursor
+        let start_idx = if let Some(cursor_id) = cursor {
+            node_ids
+                .iter()
+                .position(|id| id.as_str() > cursor_id)
+                .unwrap_or(node_ids.len())
+        } else {
+            0
+        };
+
+        // Take limit + 1 to check if there are more
+        let page_ids: Vec<&String> = node_ids.iter().skip(start_idx).take(limit + 1).collect();
+
+        if page_ids.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+
+        // Fetch node data
+        let keys: Vec<String> = page_ids.iter().map(|id| self.node_key(id)).collect();
         let values: Vec<Option<String>> = conn.mget(&keys).await?;
 
         let mut registrations = Vec::new();
@@ -142,24 +165,92 @@ impl RegistryStore {
             }
         }
 
-        Ok(registrations)
+        // Determine next cursor
+        let has_more = registrations.len() > limit;
+        if has_more {
+            registrations.truncate(limit);
+        }
+
+        let next_cursor = if has_more {
+            registrations.last().map(|n| n.node_id.clone())
+        } else {
+            None
+        };
+
+        Ok((registrations, next_cursor))
     }
 
-    /// Get bootstrap nodes (excludes caller, only Ready nodes)
-    pub async fn get_bootstrap_nodes(
+    /// Get bootstrap nodes with pagination (excludes caller, only Ready nodes)
+    pub async fn get_bootstrap_nodes_paginated(
         &self,
         exclude_node_id: Option<&str>,
-    ) -> Result<Vec<NodeRegistration>, StoreError> {
-        let nodes = self.list().await?;
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<NodeRegistration>, Option<String>), StoreError> {
+        let mut conn = self.conn.clone();
 
-        let bootstrap_nodes: Vec<NodeRegistration> = nodes
-            .into_iter()
-            .filter(|n| {
-                n.status == NodeStatus::Ready && exclude_node_id.is_none_or(|id| n.node_id != id)
-            })
+        // Get all node IDs sorted
+        let mut node_ids: Vec<String> = conn.smembers(self.nodes_set_key()).await?;
+        node_ids.sort();
+
+        if node_ids.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+
+        // Apply cursor
+        let start_idx = if let Some(cursor_id) = cursor {
+            node_ids
+                .iter()
+                .position(|id| id.as_str() > cursor_id)
+                .unwrap_or(node_ids.len())
+        } else {
+            0
+        };
+
+        // Filter out excluded node
+        let candidate_ids: Vec<&String> = node_ids
+            .iter()
+            .skip(start_idx)
+            .filter(|id| exclude_node_id.is_none_or(|ex| *id != ex))
             .collect();
 
-        Ok(bootstrap_nodes)
+        if candidate_ids.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+
+        // Fetch more than limit to filter by Ready status
+        let fetch_limit = (limit + 1) * 2; // Fetch extra to account for non-Ready nodes
+        let fetch_ids: Vec<&String> = candidate_ids.iter().take(fetch_limit).copied().collect();
+
+        let keys: Vec<String> = fetch_ids.iter().map(|id| self.node_key(id)).collect();
+        let values: Vec<Option<String>> = conn.mget(&keys).await?;
+
+        let mut registrations = Vec::new();
+        for json_opt in values.into_iter().flatten() {
+            if let Ok(mut registration) = serde_json::from_str::<NodeRegistration>(&json_opt) {
+                self.check_health(&mut registration);
+                if registration.status == NodeStatus::Ready {
+                    registrations.push(registration);
+                    if registrations.len() > limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Determine next cursor
+        let has_more = registrations.len() > limit;
+        if has_more {
+            registrations.truncate(limit);
+        }
+
+        let next_cursor = if has_more {
+            registrations.last().map(|n| n.node_id.clone())
+        } else {
+            None
+        };
+
+        Ok((registrations, next_cursor))
     }
 
     /// Update heartbeat for a node

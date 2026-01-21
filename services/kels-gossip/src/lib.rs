@@ -31,7 +31,6 @@ pub mod bootstrap;
 pub mod gossip;
 pub mod peer_store;
 pub mod protocol;
-pub mod registry_client;
 pub mod sync;
 
 use bootstrap::{BootstrapConfig, BootstrapSync};

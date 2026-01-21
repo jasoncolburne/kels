@@ -10,10 +10,12 @@ environments:
     defaultNamespace: kels-node-a
   - name: node-b
     defaultNamespace: kels-node-b
+  - name: node-c
+    defaultNamespace: kels-node-c
 
 providers:
   - name: local-kubernetes
-    environments: [registry, node-a, node-b]
+    environments: [registry, node-a, node-b, node-c]
     namespace:
       name: ${environment.namespace}
     setupIngressController: nginx

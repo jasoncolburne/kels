@@ -6,7 +6,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider, RecoveryOutcome,
+    FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
+    KeyProvider, NodeStatus, RecoveryOutcome,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -1483,4 +1484,201 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
     }
 
     if error_count > 0 { -1 } else { 0 }
+}
+
+// ==================== Registry Operations ====================
+
+/// Node status for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KelsNodeStatus {
+    Bootstrapping = 0,
+    Ready = 1,
+    Unhealthy = 2,
+}
+
+impl From<NodeStatus> for KelsNodeStatus {
+    fn from(status: NodeStatus) -> Self {
+        match status {
+            NodeStatus::Bootstrapping => KelsNodeStatus::Bootstrapping,
+            NodeStatus::Ready => KelsNodeStatus::Ready,
+            NodeStatus::Unhealthy => KelsNodeStatus::Unhealthy,
+        }
+    }
+}
+
+/// Result from discover nodes operation
+#[repr(C)]
+pub struct KelsNodesResult {
+    pub status: KelsStatus,
+    /// JSON array of node objects (owned, must be freed with kels_free_string)
+    pub nodes_json: *mut c_char,
+    /// Number of nodes
+    pub count: u32,
+    /// Error message if status != Ok (owned, must be freed with kels_free_string)
+    pub error: *mut c_char,
+}
+
+impl Default for KelsNodesResult {
+    fn default() -> Self {
+        Self {
+            status: KelsStatus::Error,
+            nodes_json: std::ptr::null_mut(),
+            count: 0,
+            error: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Node info for JSON serialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NodeInfoJson {
+    node_id: String,
+    kels_url: String,
+    status: String,
+    latency_ms: Option<u64>,
+}
+
+/// Discover nodes from the registry and test latency
+///
+/// Returns a JSON array of node objects with status and latency info.
+/// Nodes are sorted by latency (fastest first), with Ready nodes prioritized.
+///
+/// # Arguments
+/// * `registry_url` - URL of the kels-registry service
+///
+/// # Safety
+/// - `registry_url` must be a valid C string
+/// - `result` must be a valid pointer to a KelsNodesResult
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_discover_nodes(
+    registry_url: *const c_char,
+    result: *mut KelsNodesResult,
+) {
+    clear_last_error();
+
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+    *result = KelsNodesResult::default();
+
+    let Some(url) = from_c_string(registry_url) else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Invalid registry URL");
+        return;
+    };
+
+    // Create runtime for async operations
+    let Ok(runtime) = Runtime::new() else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to create async runtime");
+        return;
+    };
+
+    let discover_result = runtime.block_on(async {
+        let client = KelsRegistryClient::new(&url);
+
+        // Fetch all nodes (paginated)
+        let nodes = client.list_nodes().await?;
+
+        // Test latency to each Ready node
+        let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());
+
+        for node in nodes {
+            let latency_ms = if node.status == NodeStatus::Ready {
+                // Test latency with short timeout
+                let kels_client =
+                    KelsClient::with_timeout(&node.kels_url, std::time::Duration::from_millis(500));
+                kels_client
+                    .test_latency()
+                    .await
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            } else {
+                None
+            };
+
+            node_infos.push(NodeInfoJson {
+                node_id: node.node_id,
+                kels_url: node.kels_url,
+                status: match node.status {
+                    NodeStatus::Bootstrapping => "bootstrapping".to_string(),
+                    NodeStatus::Ready => "ready".to_string(),
+                    NodeStatus::Unhealthy => "unhealthy".to_string(),
+                },
+                latency_ms,
+            });
+        }
+
+        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
+        node_infos.sort_by(|a, b| {
+            let a_ready = a.status == "ready";
+            let b_ready = b.status == "ready";
+
+            match (a_ready, b_ready) {
+                (true, true) => match (&a.latency_ms, &b.latency_ms) {
+                    (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        Ok::<Vec<NodeInfoJson>, KelsError>(node_infos)
+    });
+
+    match discover_result {
+        Ok(nodes) => {
+            result.count = nodes.len() as u32;
+            match serde_json::to_string(&nodes) {
+                Ok(json) => {
+                    result.status = KelsStatus::Ok;
+                    result.nodes_json = to_c_string(&json);
+                }
+                Err(e) => {
+                    result.status = KelsStatus::Error;
+                    result.error = to_c_string(&format!("Failed to serialize nodes: {}", e));
+                }
+            }
+        }
+        Err(e) => {
+            result.status = map_error_to_status(&e);
+            result.error = to_c_string(&e.to_string());
+            set_last_error(&e.to_string());
+        }
+    }
+}
+
+/// Free a KelsNodesResult's allocated strings
+///
+/// # Safety
+/// The result must have been populated by kels_discover_nodes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+
+    if !result.nodes_json.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.nodes_json));
+        }
+        result.nodes_json = std::ptr::null_mut();
+    }
+
+    if !result.error.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.error));
+        }
+        result.error = std::ptr::null_mut();
+    }
 }

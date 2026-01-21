@@ -338,13 +338,16 @@ async fn handle_swarm_event(
             ..
         })) => match serde_json::from_slice::<KelAnnouncement>(&message.data) {
             Ok(announcement) => {
+                // Use message.source (original publisher) not propagation_source (forwarder)
+                // This ensures we fetch the KEL from the peer that actually has it
+                let source_peer = message.source.unwrap_or(propagation_source);
                 debug!(
-                    "Received announcement from {}: prefix={}, said={}",
-                    propagation_source, announcement.prefix, announcement.said
+                    "Received announcement from {} (via {}): prefix={}, said={}",
+                    source_peer, propagation_source, announcement.prefix, announcement.said
                 );
                 event_tx
                     .send(GossipEvent::AnnouncementReceived {
-                        peer_id: propagation_source,
+                        peer_id: source_peer,
                         announcement,
                     })
                     .await

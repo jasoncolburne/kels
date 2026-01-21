@@ -64,16 +64,16 @@ check_registry_health() {
 }
 
 get_node_count() {
-    curl -s "$REGISTRY_URL/api/nodes" | jq 'length'
+    curl -s "$REGISTRY_URL/api/nodes" | jq '.nodes | length'
 }
 
 get_ready_node_count() {
-    curl -s "$REGISTRY_URL/api/nodes" | jq '[.[] | select(.status == "ready")] | length'
+    curl -s "$REGISTRY_URL/api/nodes" | jq '[.nodes[] | select(.status == "ready")] | length'
 }
 
 node_is_registered() {
     local node_id="$1"
-    curl -s "$REGISTRY_URL/api/nodes" | jq -e ".[] | select(.nodeId == \"$node_id\")" > /dev/null
+    curl -s "$REGISTRY_URL/api/nodes" | jq -e ".nodes[] | select(.nodeId == \"$node_id\")" > /dev/null
 }
 
 get_prefix_count() {
@@ -160,7 +160,7 @@ if check_registry_health; then
     # List all nodes
     echo ""
     echo "Registered nodes:"
-    curl -s "$REGISTRY_URL/api/nodes" | jq -r '.[] | "  \(.nodeId) [\(.status)] - \(.kelsUrl)"'
+    curl -s "$REGISTRY_URL/api/nodes" | jq -r '.nodes[] | "  \(.nodeId) [\(.status)] - \(.kelsUrl)"'
     echo ""
 fi
 

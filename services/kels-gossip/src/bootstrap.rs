@@ -12,8 +12,12 @@
 //! preventing race conditions where events could be missed.
 
 use crate::peer_store::PeerRepository;
-use crate::registry_client::{NodeRegistration, NodeStatus, RegistryClient, RegistryError};
-use kels::{KelsClient, KelsError, PrefixListResponse, PrefixState};
+use kels::{
+    BatchKelPrefixRequest, BatchKelsRequest, KelsClient, KelsError, KelsRegistryClient,
+    NodeRegistration, NodeStatus, PrefixListResponse, PrefixState, SignedKeyEvent,
+};
+use rand::seq::SliceRandom;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::time::{interval, Duration};
@@ -21,9 +25,7 @@ use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
 pub enum BootstrapError {
-    #[error("Registry error: {0}")]
-    Registry(#[from] RegistryError),
-    #[error("KELS client error: {0}")]
+    #[error("KELS/Registry error: {0}")]
     Kels(#[from] KelsError),
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
@@ -76,14 +78,14 @@ pub struct DiscoveryResult {
 /// Handles bootstrap synchronization from existing peers.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    registry: RegistryClient,
+    registry: KelsRegistryClient,
     peer_repo: Arc<PeerRepository>,
     http_client: reqwest::Client,
 }
 
 impl BootstrapSync {
     pub fn new(config: BootstrapConfig, peer_repo: Arc<PeerRepository>) -> Self {
-        let registry = RegistryClient::new(&config.registry_url);
+        let registry = KelsRegistryClient::new(&config.registry_url);
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -227,123 +229,240 @@ impl BootstrapSync {
         peer.kels_url_internal.as_deref().unwrap_or(&peer.kels_url)
     }
 
-    /// Sync KELs from a single bootstrap peer using streaming pagination.
-    /// Fetches pages of prefix states and syncs KELs concurrently.
-    async fn sync_from_peer(
-        &self,
-        peer: &NodeRegistration,
-    ) -> Result<(usize, usize), BootstrapError> {
-        let local_client = KelsClient::new(&self.config.kels_url);
-        let peer_url = Self::get_sync_url(peer);
-        let mut cursor: Option<String> = None;
-        let mut pending_prefixes: Vec<String> = Vec::new();
-        let mut synced_count = 0;
-        let mut error_count = 0;
-        let mut page_num = 0;
-
-        loop {
-            page_num += 1;
-            // Take current batch to process
-            let prefixes_to_sync = std::mem::take(&mut pending_prefixes);
-
-            info!(
-                "Bootstrap page {}: syncing {} prefixes, fetching with cursor={:?}",
-                page_num,
-                prefixes_to_sync.len(),
-                cursor
-            );
-
-            // Concurrently: fetch next page AND sync current batch
-            let (page_result, sync_results) = tokio::join!(
-                self.fetch_prefix_page(peer_url, cursor.as_deref()),
-                self.sync_prefixes(&prefixes_to_sync, peer, &local_client)
-            );
-
-            // Process sync results
-            for (i, result) in sync_results.into_iter().enumerate() {
-                match result {
-                    Ok(true) => synced_count += 1,
-                    Ok(false) => {} // Already in sync or peer doesn't have it
-                    Err(e) => {
-                        let prefix = prefixes_to_sync.get(i).map(|s| s.as_str()).unwrap_or("?");
-                        warn!("Failed to sync prefix {}: {}", prefix, e);
-                        error_count += 1;
-                    }
-                }
-            }
-
-            // Process page result
-            match page_result {
-                Ok(page) => {
-                    let page_size = page.prefixes.len();
-                    let mut needs_sync_count = 0;
-
-                    // Filter to prefixes that need syncing
-                    for state in page.prefixes {
-                        if self.needs_sync(&state, &local_client).await {
-                            needs_sync_count += 1;
-                            pending_prefixes.push(state.prefix);
-                        }
-                    }
-
-                    info!(
-                        "Bootstrap page {}: fetched {} prefixes, {} need sync, next_cursor={:?}",
-                        page_num, page_size, needs_sync_count, page.next_cursor
-                    );
-
-                    cursor = page.next_cursor;
-
-                    // If no more pages and no pending work, we're done
-                    if cursor.is_none() && pending_prefixes.is_empty() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to fetch page from {}: {}", peer.node_id, e);
-                    // Process remaining pending prefixes then exit
-                    if pending_prefixes.is_empty() {
-                        break;
-                    }
-                }
-            }
+    /// Sync KELs from bootstrap peers.
+    ///
+    /// This collects all unique prefixes from all peers, randomly assigns each
+    /// prefix to one peer, then batch-fetches KELs (50 at a time) from each peer.
+    async fn sync_from_peers(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
+        if peers.is_empty() {
+            return Ok(());
         }
 
-        info!(
-            "Bootstrap sync from {} complete: {} synced, {} errors",
-            peer.node_id, synced_count, error_count
-        );
+        let local_client = KelsClient::new(&self.config.kels_url);
 
-        Ok((synced_count, error_count))
-    }
-
-    /// Sync KELs from bootstrap peers.
-    async fn sync_from_peers(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
-        let mut total_synced = 0;
-        let mut total_errors = 0;
+        // Step 1: Collect all unique prefixes from all peers that need syncing
+        info!("Collecting prefixes from {} peer(s)...", peers.len());
+        let mut all_prefixes: HashSet<String> = HashSet::new();
 
         for peer in peers {
-            info!("Syncing from peer {}", peer.node_id);
-            match self.sync_from_peer(peer).await {
-                Ok((synced, errors)) => {
-                    total_synced += synced;
-                    total_errors += errors;
-                    info!(
-                        "Peer {}: {} synced, {} errors",
-                        peer.node_id, synced, errors
-                    );
+            let peer_url = Self::get_sync_url(peer);
+            let mut cursor: Option<String> = None;
+            let mut peer_prefix_count = 0;
+            let mut peer_page_count = 0;
+
+            loop {
+                match self.fetch_prefix_page(peer_url, cursor.as_deref()).await {
+                    Ok(page) => {
+                        peer_page_count += 1;
+                        let page_prefix_count = page.prefixes.len();
+                        info!(
+                            "DEBUG: Peer {} page {}: {} prefixes, next_cursor: {:?}",
+                            peer.node_id, peer_page_count, page_prefix_count, page.next_cursor
+                        );
+
+                        for state in &page.prefixes {
+                            peer_prefix_count += 1;
+                            let needs = self.needs_sync(state, &local_client).await;
+                            if needs {
+                                all_prefixes.insert(state.prefix.clone());
+                            }
+                        }
+                        cursor = page.next_cursor;
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch prefixes from {}: {}", peer.node_id, e);
+                        break;
+                    }
                 }
-                Err(e) => {
-                    warn!("Failed to sync from peer {}: {}", peer.node_id, e);
+            }
+            info!(
+                "DEBUG: Peer {} total: {} prefixes across {} pages",
+                peer.node_id, peer_prefix_count, peer_page_count
+            );
+        }
+
+        let prefix_count = all_prefixes.len();
+        if prefix_count == 0 {
+            info!("No prefixes need syncing");
+            return Ok(());
+        }
+
+        info!("Found {} unique prefixes needing sync", prefix_count);
+
+        // Step 2: Randomly assign each prefix to one peer
+        let mut rng = rand::thread_rng();
+        let mut peer_assignments: HashMap<String, Vec<String>> = HashMap::new();
+
+        for prefix in all_prefixes {
+            let peer = peers.choose(&mut rng).expect("peers is non-empty");
+            let peer_url = Self::get_sync_url(peer).to_string();
+            peer_assignments.entry(peer_url).or_default().push(prefix);
+        }
+
+        info!("Assigned prefixes to {} peer(s)", peer_assignments.len());
+
+        // Step 3: Batch fetch KELs from each peer (50 at a time) - all peers in parallel
+        const BATCH_SIZE: usize = 50;
+
+        // Build all batch tasks across all peers
+        let mut batch_tasks = Vec::new();
+        for (peer_url, prefixes) in peer_assignments {
+            info!("Syncing {} prefixes from {}", prefixes.len(), peer_url);
+
+            for chunk in prefixes.chunks(BATCH_SIZE) {
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                batch_tasks.push((peer_url.clone(), chunk_vec));
+            }
+        }
+
+        // Run all batch fetches in parallel
+        let batch_futures: Vec<_> = batch_tasks
+            .iter()
+            .map(|(peer_url, chunk)| self.batch_fetch_and_submit(peer_url, chunk, &local_client))
+            .collect();
+
+        let all_results = futures::future::join_all(batch_futures).await;
+
+        // Process results
+        let mut total_synced = 0;
+        let mut total_errors = 0;
+        let mut total_not_found = 0;
+
+        for (batch_idx, results) in all_results.into_iter().enumerate() {
+            let (peer_url, chunk) = &batch_tasks[batch_idx];
+            for (i, result) in results.into_iter().enumerate() {
+                match result {
+                    Ok(true) => total_synced += 1,
+                    Ok(false) => {
+                        let prefix = chunk.get(i).map(|s| s.as_str()).unwrap_or("?");
+                        info!("DEBUG: Prefix {} not found on peer {}", prefix, peer_url);
+                        total_not_found += 1;
+                    }
+                    Err(e) => {
+                        let prefix = chunk.get(i).map(|s| s.as_str()).unwrap_or("?");
+                        warn!("Failed to sync prefix {}: {}", prefix, e);
+                        total_errors += 1;
+                    }
                 }
             }
         }
 
         info!(
-            "Bootstrap sync complete: {} KELs synced, {} errors",
-            total_synced, total_errors
+            "Bootstrap sync complete: {} KELs synced, {} not found, {} errors",
+            total_synced, total_not_found, total_errors
         );
 
         Ok(())
+    }
+
+    /// Batch fetch KELs from a peer using the batch endpoint and submit to local KELS.
+    /// Makes a single HTTP request to fetch all prefixes, then submits each KEL individually.
+    async fn batch_fetch_and_submit(
+        &self,
+        peer_url: &str,
+        prefixes: &[String],
+        local_client: &KelsClient,
+    ) -> Vec<Result<bool, BootstrapError>> {
+        if prefixes.is_empty() {
+            return vec![];
+        }
+
+        // Build batch request
+        let request = BatchKelsRequest {
+            prefixes: prefixes
+                .iter()
+                .map(|p| BatchKelPrefixRequest {
+                    prefix: p.clone(),
+                    since: None,
+                })
+                .collect(),
+        };
+
+        // Fetch all KELs in a single request
+        let url = format!("{}/api/kels/kels", peer_url.trim_end_matches('/'));
+        let response = match self.http_client.post(&url).json(&request).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let err_msg = format!("HTTP request failed: {}", e);
+                return prefixes
+                    .iter()
+                    .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
+                    .collect();
+            }
+        };
+
+        if !response.status().is_success() {
+            let err_msg = format!("Batch fetch failed: {}", response.status());
+            return prefixes
+                .iter()
+                .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
+                .collect();
+        }
+
+        let events_map: HashMap<String, Vec<SignedKeyEvent>> = match response.json().await {
+            Ok(map) => map,
+            Err(e) => {
+                let err_msg = format!("Failed to parse response: {}", e);
+                return prefixes
+                    .iter()
+                    .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
+                    .collect();
+            }
+        };
+
+        info!(
+            "DEBUG: Batch fetch from {} requested {} prefixes, got {} in response",
+            peer_url,
+            prefixes.len(),
+            events_map.len()
+        );
+
+        // Log any prefixes with empty events
+        for prefix in prefixes {
+            if let Some(events) = events_map.get(prefix) {
+                if events.is_empty() {
+                    info!(
+                        "DEBUG: Prefix {} has empty events array in response",
+                        prefix
+                    );
+                }
+            } else {
+                info!("DEBUG: Prefix {} missing from response map", prefix);
+            }
+        }
+
+        // Submit each KEL to local KELS
+        let mut results = Vec::with_capacity(prefixes.len());
+        for prefix in prefixes {
+            let result = match events_map.get(prefix) {
+                Some(events) if !events.is_empty() => {
+                    debug!("Fetched {} events for {} from peer", events.len(), prefix);
+                    match local_client.submit_events(events).await {
+                        Ok(submit_result) => {
+                            if submit_result.accepted {
+                                info!("Synced KEL for {} ({} events)", prefix, events.len());
+                                Ok(true)
+                            } else {
+                                warn!(
+                                    "KEL for {} not accepted: diverged_at={:?}",
+                                    prefix, submit_result.diverged_at
+                                );
+                                // Still consider it synced - divergence will be handled by gossip protocol
+                                Ok(true)
+                            }
+                        }
+                        Err(e) => Err(BootstrapError::Kels(e)),
+                    }
+                }
+                Some(_) | None => Ok(false), // Peer doesn't have it or empty
+            };
+            results.push(result);
+        }
+
+        results
     }
 
     /// Fetch a single page of prefix states.
@@ -380,69 +499,13 @@ impl BootstrapSync {
             Err(_) => true, // On error, try to sync anyway
         }
     }
-
-    /// Sync a batch of prefixes concurrently.
-    async fn sync_prefixes(
-        &self,
-        prefixes: &[String],
-        peer: &NodeRegistration,
-        local_client: &KelsClient,
-    ) -> Vec<Result<bool, BootstrapError>> {
-        let peer_url = Self::get_sync_url(peer);
-        let futures: Vec<_> = prefixes
-            .iter()
-            .map(|prefix| self.fetch_and_submit_kel(peer_url, prefix, local_client))
-            .collect();
-
-        futures::future::join_all(futures).await
-    }
-
-    /// Fetch a KEL from a peer and submit to local KELS.
-    /// Returns Ok(true) if successfully synced, Ok(false) if peer doesn't have it.
-    async fn fetch_and_submit_kel(
-        &self,
-        peer_kels_url: &str,
-        prefix: &str,
-        local_client: &KelsClient,
-    ) -> Result<bool, BootstrapError> {
-        let peer_client = KelsClient::new(peer_kels_url);
-
-        let kel = match peer_client.fetch_full_kel(prefix).await {
-            Ok(kel) => kel,
-            Err(KelsError::KeyNotFound(_)) => return Ok(false),
-            Err(e) => return Err(BootstrapError::Kels(e)),
-        };
-
-        if kel.events().is_empty() {
-            return Ok(false);
-        }
-
-        debug!(
-            "Fetched {} events for {} from peer",
-            kel.events().len(),
-            prefix
-        );
-
-        let result = local_client.submit_events(kel.events()).await?;
-        if result.accepted {
-            info!("Synced KEL for {} ({} events)", prefix, kel.events().len());
-            Ok(true)
-        } else {
-            warn!(
-                "KEL for {} not accepted: diverged_at={:?}",
-                prefix, result.diverged_at
-            );
-            // Still consider it synced - divergence will be handled by gossip protocol
-            Ok(true)
-        }
-    }
 }
 
 /// Run heartbeat loop in the background.
 /// This keeps the node registered as healthy in the registry.
 /// If the node is not found, it will re-register with the provided config.
 pub async fn run_heartbeat_loop(config: BootstrapConfig) {
-    let client = RegistryClient::new(&config.registry_url);
+    let client = KelsRegistryClient::new(&config.registry_url);
     let mut ticker = interval(Duration::from_secs(config.heartbeat_interval_secs));
 
     info!(
@@ -457,7 +520,7 @@ pub async fn run_heartbeat_loop(config: BootstrapConfig) {
             Ok(_) => {
                 info!("Heartbeat sent successfully");
             }
-            Err(RegistryError::NotFound(_)) => {
+            Err(KelsError::KeyNotFound(_)) => {
                 // Node was removed from registry, re-register
                 warn!("Node not found in registry, re-registering");
                 match client

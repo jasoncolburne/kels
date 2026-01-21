@@ -49,6 +49,11 @@ class KelsViewModel: ObservableObject {
         log("KELS iOS app initialized")
         loadSavedSettings()
         initializeClient()
+
+        // Always refresh nodes from registry on startup
+        Task {
+            await discoverNodes()
+        }
     }
 
     // MARK: - Persistence

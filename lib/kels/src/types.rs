@@ -582,6 +582,27 @@ pub struct NodeInfo {
     pub latency_ms: Option<u64>,
 }
 
+impl From<NodeRegistration> for NodeInfo {
+    fn from(reg: NodeRegistration) -> Self {
+        Self {
+            node_id: reg.node_id,
+            kels_url: reg.kels_url,
+            kels_url_internal: reg.kels_url_internal,
+            gossip_multiaddr: reg.gossip_multiaddr,
+            status: reg.status,
+            latency_ms: None,
+        }
+    }
+}
+
+/// Paginated response for node listings from the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodesResponse {
+    pub nodes: Vec<NodeRegistration>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
 #[cfg_attr(feature = "server-caching", cache(prefix = "kels:kel", ttl = 3600))]
