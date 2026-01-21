@@ -247,21 +247,11 @@ impl BootstrapSync {
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
             let mut cursor: Option<String> = None;
-            let mut peer_prefix_count = 0;
-            let mut peer_page_count = 0;
 
             loop {
                 match self.fetch_prefix_page(peer_url, cursor.as_deref()).await {
                     Ok(page) => {
-                        peer_page_count += 1;
-                        let page_prefix_count = page.prefixes.len();
-                        info!(
-                            "DEBUG: Peer {} page {}: {} prefixes, next_cursor: {:?}",
-                            peer.node_id, peer_page_count, page_prefix_count, page.next_cursor
-                        );
-
                         for state in &page.prefixes {
-                            peer_prefix_count += 1;
                             let needs = self.needs_sync(state, &local_client).await;
                             if needs {
                                 all_prefixes.insert(state.prefix.clone());
@@ -278,10 +268,6 @@ impl BootstrapSync {
                     }
                 }
             }
-            info!(
-                "DEBUG: Peer {} total: {} prefixes across {} pages",
-                peer.node_id, peer_prefix_count, peer_page_count
-            );
         }
 
         let prefix_count = all_prefixes.len();
@@ -336,13 +322,11 @@ impl BootstrapSync {
         let mut total_not_found = 0;
 
         for (batch_idx, results) in all_results.into_iter().enumerate() {
-            let (peer_url, chunk) = &batch_tasks[batch_idx];
+            let (_peer_url, chunk) = &batch_tasks[batch_idx];
             for (i, result) in results.into_iter().enumerate() {
                 match result {
                     Ok(true) => total_synced += 1,
                     Ok(false) => {
-                        let prefix = chunk.get(i).map(|s| s.as_str()).unwrap_or("?");
-                        info!("DEBUG: Prefix {} not found on peer {}", prefix, peer_url);
                         total_not_found += 1;
                     }
                     Err(e) => {
@@ -416,27 +400,6 @@ impl BootstrapSync {
                     .collect();
             }
         };
-
-        info!(
-            "DEBUG: Batch fetch from {} requested {} prefixes, got {} in response",
-            peer_url,
-            prefixes.len(),
-            events_map.len()
-        );
-
-        // Log any prefixes with empty events
-        for prefix in prefixes {
-            if let Some(events) = events_map.get(prefix) {
-                if events.is_empty() {
-                    info!(
-                        "DEBUG: Prefix {} has empty events array in response",
-                        prefix
-                    );
-                }
-            } else {
-                info!("DEBUG: Prefix {} missing from response map", prefix);
-            }
-        }
 
         // Submit each KEL to local KELS
         let mut results = Vec::with_capacity(prefixes.len());
