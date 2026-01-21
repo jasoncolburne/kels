@@ -825,7 +825,7 @@ struct DeveloperTab: View {
                 Section("Adversary Injection") {
                     // Event type buttons
                     HStack(spacing: 8) {
-                        ForEach(["ixn", "rot", "rec", "ror"], id: \.self) { eventType in
+                        ForEach(["ixn", "rot", "dec", "rec", "ror"], id: \.self) { eventType in
                             Button(eventType.uppercased()) {
                                 if !adversaryEvents.isEmpty {
                                     adversaryEvents += ","
@@ -833,7 +833,7 @@ struct DeveloperTab: View {
                                 adversaryEvents += eventType
                             }
                             .buttonStyle(.bordered)
-                            .tint(eventType == "rec" || eventType == "ror" ? .red : .accentColor)
+                            .tint(["rec", "ror", "dec"].contains(eventType) ? .red : .accentColor)
                         }
                     }
                     .disabled(!viewModel.isIncepted || viewModel.isLoading)
