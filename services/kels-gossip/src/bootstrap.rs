@@ -297,9 +297,13 @@ impl BootstrapSync {
         let mut peer_assignments: HashMap<String, Vec<String>> = HashMap::new();
 
         for prefix in all_prefixes {
-            let peer = peers.choose(&mut rng).expect("peers is non-empty");
-            let peer_url = Self::get_sync_url(peer).to_string();
-            peer_assignments.entry(peer_url).or_default().push(prefix);
+            let peer_option = peers.choose(&mut rng);
+            if let Some(peer) = peer_option {
+                let peer_url = Self::get_sync_url(peer).to_string();
+                peer_assignments.entry(peer_url).or_default().push(prefix);
+            } else {
+                unreachable!("Inconsistent: found prefixes but have no peers?")
+            }
         }
 
         info!("Assigned prefixes to {} peer(s)", peer_assignments.len());
