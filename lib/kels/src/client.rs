@@ -200,9 +200,26 @@ pub struct KelsClient {
 
 impl KelsClient {
     pub fn new(base_url: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client,
+            cache: None,
+        }
+    }
+
+    /// Create a client with a custom timeout (useful for latency testing).
+    pub fn with_timeout(base_url: &str, timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        KelsClient {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
             cache: None,
         }
     }
@@ -391,13 +408,31 @@ impl KelsClient {
 
         let mut nodes: Vec<NodeInfo> = resp.json().await?;
 
-        // Test latency to each Ready node
-        for node in &mut nodes {
-            if node.status == NodeStatus::Ready {
-                let kels_client = KelsClient::new(&node.kels_url);
-                if let Ok(latency) = kels_client.test_latency().await {
-                    node.latency_ms = Some(latency.as_millis() as u64);
+        // Test latency to each Ready node concurrently (with short timeout)
+        let latency_futures: Vec<_> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == NodeStatus::Ready)
+            .map(|(i, n)| {
+                let url = n.kels_url.clone();
+                let node_id = n.node_id.clone();
+                async move {
+                    let client = KelsClient::with_timeout(&url, Duration::from_millis(500));
+                    let latency = client.test_latency().await.ok();
+                    if let Some(ref lat) = latency {
+                        tracing::info!("Node {} latency: {}ms", node_id, lat.as_millis());
+                    } else {
+                        tracing::warn!("Node {} latency test failed/timed out", node_id);
+                    }
+                    (i, latency)
                 }
+            })
+            .collect();
+
+        let results = futures::future::join_all(latency_futures).await;
+        for (i, latency) in results {
+            if let Some(lat) = latency {
+                nodes[i].latency_ms = Some(lat.as_millis() as u64);
             }
         }
 

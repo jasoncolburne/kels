@@ -33,8 +33,10 @@ pub struct BootstrapConfig {
     pub node_id: String,
     /// Local KELS URL (for this node to use)
     pub kels_url: String,
-    /// Advertised KELS URL (for other nodes to reach this node's KELS)
+    /// Advertised KELS URL for external clients
     pub kels_advertise_url: String,
+    /// Advertised KELS URL for internal node-to-node sync (defaults to external if not set)
+    pub kels_advertise_url_internal: Option<String>,
     /// Gossip multiaddr for registration
     pub gossip_multiaddr: String,
     /// Registry service URL
@@ -51,6 +53,7 @@ impl Default for BootstrapConfig {
             node_id: String::new(),
             kels_url: String::new(),
             kels_advertise_url: String::new(),
+            kels_advertise_url_internal: None,
             gossip_multiaddr: String::new(),
             registry_url: String::new(),
             page_size: 100,
@@ -117,6 +120,7 @@ impl BootstrapSync {
                             .map(|p| NodeRegistration {
                                 node_id: p.node_id,
                                 kels_url: String::new(), // Not needed for gossip
+                                kels_url_internal: None,
                                 gossip_multiaddr: p.gossip_multiaddr,
                                 registered_at: chrono::Utc::now(),
                                 last_heartbeat: chrono::Utc::now(),
@@ -146,6 +150,7 @@ impl BootstrapSync {
                     .register(
                         &self.config.node_id,
                         &self.config.kels_advertise_url,
+                        self.config.kels_advertise_url_internal.as_deref(),
                         &self.config.gossip_multiaddr,
                         NodeStatus::Ready,
                     )
@@ -170,6 +175,7 @@ impl BootstrapSync {
                 .register(
                     &self.config.node_id,
                     &self.config.kels_advertise_url,
+                    self.config.kels_advertise_url_internal.as_deref(),
                     &self.config.gossip_multiaddr,
                     NodeStatus::Bootstrapping,
                 )
@@ -199,6 +205,11 @@ impl BootstrapSync {
         Ok(bootstrap_nodes)
     }
 
+    /// Get the URL to use for node-to-node sync (internal if available, else external).
+    fn get_sync_url(peer: &NodeRegistration) -> &str {
+        peer.kels_url_internal.as_deref().unwrap_or(&peer.kels_url)
+    }
+
     /// Sync KELs from a single bootstrap peer using streaming pagination.
     /// Fetches pages of prefix states and syncs KELs concurrently.
     async fn sync_from_peer(
@@ -206,6 +217,7 @@ impl BootstrapSync {
         peer: &NodeRegistration,
     ) -> Result<(usize, usize), BootstrapError> {
         let local_client = KelsClient::new(&self.config.kels_url);
+        let peer_url = Self::get_sync_url(peer);
         let mut cursor: Option<String> = None;
         let mut pending_prefixes: Vec<String> = Vec::new();
         let mut synced_count = 0;
@@ -226,7 +238,7 @@ impl BootstrapSync {
 
             // Concurrently: fetch next page AND sync current batch
             let (page_result, sync_results) = tokio::join!(
-                self.fetch_prefix_page(&peer.kels_url, cursor.as_deref()),
+                self.fetch_prefix_page(peer_url, cursor.as_deref()),
                 self.sync_prefixes(&prefixes_to_sync, peer, &local_client)
             );
 
@@ -359,9 +371,10 @@ impl BootstrapSync {
         peer: &NodeRegistration,
         local_client: &KelsClient,
     ) -> Vec<Result<bool, BootstrapError>> {
+        let peer_url = Self::get_sync_url(peer);
         let futures: Vec<_> = prefixes
             .iter()
-            .map(|prefix| self.fetch_and_submit_kel(&peer.kels_url, prefix, local_client))
+            .map(|prefix| self.fetch_and_submit_kel(peer_url, prefix, local_client))
             .collect();
 
         futures::future::join_all(futures).await
@@ -437,6 +450,7 @@ pub async fn run_heartbeat_loop(config: BootstrapConfig) {
                     .register(
                         &config.node_id,
                         &config.kels_advertise_url,
+                        config.kels_advertise_url_internal.as_deref(),
                         &config.gossip_multiaddr,
                         NodeStatus::Ready,
                     )

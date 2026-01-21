@@ -32,8 +32,9 @@ dependencies:
   - deploy.redis
 
 variables:
-  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
-  kelsDatabaseUrl: ${var.postgres.url}/kels_gossip
+  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.local:80"
+  kelsAdvertiseUrlInternal: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
+  kelsGossipDatabaseUrl: ${var.postgres.url}/kels_gossip
   gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.svc.cluster.local/tcp/${var.gossip.port}"
 
 spec:

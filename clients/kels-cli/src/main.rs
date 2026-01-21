@@ -282,9 +282,59 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             .registry
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("--auto-select requires --registry"))?;
-        KelsClient::with_discovery(registry_url)
+
+        // Discover nodes and display latency stats
+        let nodes = KelsClient::discover_nodes(registry_url)
             .await
-            .context("Failed to discover nodes from registry")
+            .context("Failed to discover nodes from registry")?;
+
+        // Display latency stats
+        println!("{}", "Node Latencies:".cyan());
+        for node in &nodes {
+            let status_str = match node.status {
+                NodeStatus::Ready => "READY".green(),
+                NodeStatus::Bootstrapping => "BOOTSTRAPPING".yellow(),
+                NodeStatus::Unhealthy => "UNHEALTHY".red(),
+            };
+            let latency_str = node
+                .latency_ms
+                .map(|ms| format!("{}ms", ms))
+                .unwrap_or_else(|| "timeout".to_string());
+            println!("  {} [{}] - {}", node.node_id, status_str, latency_str);
+        }
+
+        // Select best node (randomly among ties)
+        use rand::seq::SliceRandom;
+
+        let ready_nodes: Vec<_> = nodes
+            .into_iter()
+            .filter(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
+            .collect();
+
+        if ready_nodes.is_empty() {
+            return Err(anyhow::anyhow!("No ready nodes available in registry"));
+        }
+
+        let min_latency = ready_nodes.iter().filter_map(|n| n.latency_ms).min().unwrap();
+        let best_nodes: Vec<_> = ready_nodes
+            .into_iter()
+            .filter(|n| n.latency_ms == Some(min_latency))
+            .collect();
+
+        let best_node = best_nodes
+            .choose(&mut rand::thread_rng())
+            .unwrap()
+            .clone();
+
+        println!(
+            "{} {} ({}ms)",
+            "Selected:".green().bold(),
+            best_node.node_id,
+            best_node.latency_ms.unwrap_or(0)
+        );
+        println!();
+
+        Ok(KelsClient::new(&best_node.kels_url))
     } else {
         Ok(KelsClient::new(&cli.url))
     }

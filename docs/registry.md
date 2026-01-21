@@ -145,7 +145,8 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `NODE_ID` | Unique node identifier | (required) |
 | `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
-| `KELS_ADVERTISE_URL` | Advertised KELS URL for other nodes | (required) |
+| `KELS_ADVERTISE_URL` | Advertised KELS URL for external clients | (required) |
+| `KELS_ADVERTISE_URL_INTERNAL` | Advertised KELS URL for node-to-node sync | (optional, defaults to external) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
 | `GOSSIP_ADVERTISE_ADDR` | libp2p advertised address | (required) |
 

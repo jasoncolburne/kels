@@ -534,7 +534,11 @@ pub enum NodeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct NodeRegistration {
     pub node_id: String,
+    /// External KELS URL for clients outside the cluster
     pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub last_heartbeat: chrono::DateTime<chrono::Utc>,
@@ -546,7 +550,11 @@ pub struct NodeRegistration {
 #[serde(rename_all = "camelCase")]
 pub struct RegisterNodeRequest {
     pub node_id: String,
+    /// External KELS URL for clients outside the cluster
     pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub status: NodeStatus,
 }
@@ -562,7 +570,11 @@ pub struct StatusUpdateRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
     pub node_id: String,
+    /// External KELS URL for clients outside the cluster
     pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub status: NodeStatus,
     /// Measured latency in milliseconds (populated by discovery)

@@ -95,23 +95,6 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
     }
 }
 
-// MARK: - KELS Node
-
-/// Available KELS server nodes (static configuration)
-public enum KelsNode: String, CaseIterable, Identifiable, Sendable {
-    case nodeA = "http://kels.kels-node-a.local"
-    case nodeB = "http://kels.kels-node-b.local"
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .nodeA: return "Node A"
-        case .nodeB: return "Node B"
-        }
-    }
-}
-
 // MARK: - Node Discovery
 
 /// Node status from registry

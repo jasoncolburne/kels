@@ -43,12 +43,14 @@ impl RegistryClient {
         &self,
         node_id: &str,
         kels_url: &str,
+        kels_url_internal: Option<&str>,
         gossip_multiaddr: &str,
         status: NodeStatus,
     ) -> Result<NodeRegistration, RegistryError> {
         let request = RegisterNodeRequest {
             node_id: node_id.to_string(),
             kels_url: kels_url.to_string(),
+            kels_url_internal: kels_url_internal.map(|s| s.to_string()),
             gossip_multiaddr: gossip_multiaddr.to_string(),
             status,
         };

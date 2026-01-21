@@ -57,6 +57,7 @@ impl RegistryStore {
         let registration = NodeRegistration {
             node_id: request.node_id.clone(),
             kels_url: request.kels_url,
+            kels_url_internal: request.kels_url_internal,
             gossip_multiaddr: request.gossip_multiaddr,
             registered_at: now,
             last_heartbeat: now,

@@ -557,25 +557,127 @@ struct KeysTab: View {
 struct SettingsTab: View {
     @ObservedObject var viewModel: KelsViewModel
     @State private var copiedMessage: String?
+    @State private var isDiscovering = false
+
+    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local:80"
 
     var body: some View {
         NavigationStack {
             List {
-                // Node Selection
-                Section("KELS Server") {
-                    Picker("Server Node", selection: $viewModel.selectedNode) {
-                        ForEach(KelsNode.allCases) { node in
-                            Text(node.displayName).tag(node)
+                // Registry Configuration
+                Section("Node Registry") {
+                    TextField("Registry URL", text: $viewModel.registryUrl)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onAppear {
+                            if viewModel.registryUrl.isEmpty {
+                                viewModel.registryUrl = defaultRegistryUrl
+                            }
+                        }
+
+                    HStack {
+                        Button(action: {
+                            isDiscovering = true
+                            Task {
+                                await viewModel.discoverNodes()
+                                isDiscovering = false
+                            }
+                        }) {
+                            HStack {
+                                if isDiscovering {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                Text("Discover")
+                            }
+                        }
+                        .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
+
+                        Spacer()
+
+                        Button(action: {
+                            isDiscovering = true
+                            Task {
+                                await viewModel.autoSelectNode()
+                                isDiscovering = false
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: "bolt.fill")
+                                Text("Auto-Select")
+                            }
+                        }
+                        .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
+                    }
+                }
+
+                // Discovered Nodes
+                Section("KELS Nodes") {
+                    if viewModel.discoveredNodes.isEmpty {
+                        Text("Tap 'Discover' to find nodes")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(viewModel.discoveredNodes) { node in
+                            Button {
+                                viewModel.selectNode(node)
+                            } label: {
+                                HStack {
+                                    // Selection indicator
+                                    if viewModel.selectedDiscoveredNode?.nodeId == node.nodeId {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.green)
+                                    } else {
+                                        Image(systemName: "circle")
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(node.displayName)
+                                            .foregroundColor(.primary)
+                                        Text(node.kelsUrl)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    // Status badge
+                                    statusBadge(for: node.status)
+
+                                    // Latency
+                                    if let latency = node.latencyMs {
+                                        Text("\(latency)ms")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    } else if node.status == .ready {
+                                        Text("-")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(node.status != .ready)
+                            .opacity(node.status == .ready ? 1.0 : 0.5)
                         }
                     }
-
-                    Text(viewModel.selectedNode.rawValue)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 // Status
                 Section("Status") {
+                    HStack {
+                        Text("Connected To")
+                        Spacer()
+                        Text(viewModel.currentNodeUrl)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundColor(.secondary)
+                    }
+
                     HStack {
                         Text("Secure Enclave")
                         Spacer()
@@ -675,6 +777,36 @@ struct SettingsTab: View {
         copiedMessage = what
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             copiedMessage = nil
+        }
+    }
+
+    @ViewBuilder
+    private func statusBadge(for status: RegistryNodeStatus) -> some View {
+        switch status {
+        case .ready:
+            Text("READY")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green.opacity(0.2))
+                .foregroundColor(.green)
+                .cornerRadius(4)
+        case .bootstrapping:
+            Text("SYNC")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.yellow.opacity(0.2))
+                .foregroundColor(.orange)
+                .cornerRadius(4)
+        case .unhealthy:
+            Text("DOWN")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.2))
+                .foregroundColor(.red)
+                .cornerRadius(4)
         }
     }
 }

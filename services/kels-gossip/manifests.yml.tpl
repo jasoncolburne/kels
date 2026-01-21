@@ -63,10 +63,12 @@ spec:
               value: "${var.kels.url}"
             - name: KELS_ADVERTISE_URL
               value: "${var.kelsAdvertiseUrl}"
+            - name: KELS_ADVERTISE_URL_INTERNAL
+              value: "${var.kelsAdvertiseUrlInternal}"
             - name: REDIS_URL
               value: "${var.redis.url}"
             - name: DATABASE_URL
-              value: "${var.kelsDatabaseUrl}"
+              value: "${var.kelsGossipDatabaseUrl}"
             - name: REGISTRY_URL
               value: "${var.registryUrl}"
             - name: GOSSIP_LISTEN_ADDR

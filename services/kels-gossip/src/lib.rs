@@ -67,8 +67,10 @@ pub struct Config {
     pub node_id: String,
     /// Local KELS HTTP endpoint (for this service to use)
     pub kels_url: String,
-    /// Advertised KELS HTTP endpoint (for other nodes to reach us)
+    /// Advertised KELS HTTP endpoint for external clients
     pub kels_advertise_url: String,
+    /// Advertised KELS HTTP endpoint for internal node-to-node sync (defaults to external)
+    pub kels_advertise_url_internal: Option<String>,
     /// Redis URL for pub/sub
     pub redis_url: String,
     /// Database URL for peer storage
@@ -96,8 +98,10 @@ impl Config {
 
         let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels:80".to_string());
 
-        let kels_advertise_url =
-            std::env::var("KELS_ADVERTISE_URL").unwrap_or_else(|_| kels_url.clone());
+        let kels_advertise_url = std::env::var("KELS_ADVERTISE_URL")
+            .map_err(|_| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
+
+        let kels_advertise_url_internal = std::env::var("KELS_ADVERTISE_URL_INTERNAL").ok();
 
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
@@ -134,6 +138,7 @@ impl Config {
             node_id,
             kels_url,
             kels_advertise_url,
+            kels_advertise_url_internal,
             redis_url,
             database_url,
             registry_url,
@@ -179,6 +184,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             node_id: config.node_id.clone(),
             kels_url: config.kels_url.clone(),
             kels_advertise_url: config.kels_advertise_url.clone(),
+            kels_advertise_url_internal: config.kels_advertise_url_internal.clone(),
             gossip_multiaddr: config.advertise_addr.to_string(),
             registry_url: registry_url.clone(),
             page_size: 100,

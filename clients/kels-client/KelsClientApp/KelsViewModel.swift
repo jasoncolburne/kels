@@ -15,14 +15,6 @@ class KelsViewModel: ObservableObject {
     @Published var needsRecovery = false
     @Published var needsContest = false
 
-    // Configuration
-    @Published var selectedNode: KelsNode = .nodeA {
-        didSet {
-            UserDefaults.standard.set(selectedNode.rawValue, forKey: nodeKey)
-            updateClientURL()
-        }
-    }
-
     // Registry-based discovery
     @Published var registryUrl: String = "" {
         didSet {
@@ -31,23 +23,22 @@ class KelsViewModel: ObservableObject {
     }
     @Published var discoveredNodes: [RegistryNode] = []
     @Published var selectedDiscoveredNode: RegistryNode?
-    @Published var useRegistryDiscovery: Bool = false {
-        didSet {
-            UserDefaults.standard.set(useRegistryDiscovery, forKey: useRegistryKey)
-        }
-    }
 
     // KEL list
     @Published var kelPrefixes: [String] = []
+
+    // Current node URL
+    @Published var currentNodeUrl: String = ""
 
     // Error alert
     @Published var errorMessage: String?
 
     private var client: KelsClient?
-    private let nodeKey = "com.kels.selectedNode"
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
-    private let useRegistryKey = "com.kels.useRegistry"
+    private let nodeUrlKey = "com.kels.nodeUrl"
+    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local:80"
+    private let defaultNodeUrl = "http://kels.kels-node-a.local"
 
     // Developer tools logging
     #if DEV_TOOLS
@@ -63,17 +54,22 @@ class KelsViewModel: ObservableObject {
     // MARK: - Persistence
 
     private func loadSavedSettings() {
-        // Load static node selection
-        if let savedNode = UserDefaults.standard.string(forKey: nodeKey),
-           let node = KelsNode(rawValue: savedNode) {
-            selectedNode = node
+        // Load registry URL
+        if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey), !savedRegistryUrl.isEmpty {
+            registryUrl = savedRegistryUrl
+        } else {
+            registryUrl = defaultRegistryUrl
         }
 
-        // Load registry settings
-        if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey) {
-            registryUrl = savedRegistryUrl
+        // Load saved node URL
+        if let savedNodeUrl = UserDefaults.standard.string(forKey: nodeUrlKey), !savedNodeUrl.isEmpty {
+            currentNodeUrl = savedNodeUrl
+        } else {
+            currentNodeUrl = defaultNodeUrl
         }
-        useRegistryDiscovery = UserDefaults.standard.bool(forKey: useRegistryKey)
+
+        // Load cached nodes
+        loadCachedNodes()
     }
 
     private func savePrefix(_ prefix: String?) {
@@ -88,16 +84,28 @@ class KelsViewModel: ObservableObject {
         return UserDefaults.standard.string(forKey: prefixKey)
     }
 
-    private func updateClientURL() {
-        guard let client = client else { return }
-        do {
-            try client.setURL(selectedNode.rawValue)
-            log("Switched to \(selectedNode.displayName)")
-            Task { await refreshStatus() }
-        } catch {
-            log("ERROR: Failed to switch node: \(error.localizedDescription)")
-            errorMessage = "Failed to switch node: \(error.localizedDescription)"
+    private func saveNodeUrl(_ url: String) {
+        UserDefaults.standard.set(url, forKey: nodeUrlKey)
+        currentNodeUrl = url
+    }
+
+    // MARK: - Node Caching
+
+    private let cachedNodesKey = "com.kels.cachedNodes"
+
+    private func loadCachedNodes() {
+        guard let data = UserDefaults.standard.data(forKey: cachedNodesKey),
+              let nodes = try? JSONDecoder().decode([RegistryNode].self, from: data) else {
+            return
         }
+        discoveredNodes = nodes
+        log("Loaded \(nodes.count) cached nodes")
+    }
+
+    private func saveCachedNodes(_ nodes: [RegistryNode]) {
+        guard let data = try? JSONEncoder().encode(nodes) else { return }
+        UserDefaults.standard.set(data, forKey: cachedNodesKey)
+        log("Cached \(nodes.count) nodes")
     }
 
     // MARK: - Registry Discovery
@@ -119,13 +127,22 @@ class KelsViewModel: ObservableObject {
             discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
             log("Found \(discoveredNodes.count) nodes")
 
+            // Cache nodes for fallback
+            saveCachedNodes(discoveredNodes)
+
             for node in discoveredNodes {
                 let latencyStr = node.latencyMs.map { "\($0)ms" } ?? "-"
                 log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
             }
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")
-            errorMessage = "Node discovery failed: \(error.localizedDescription)"
+
+            // Fall back to cached nodes if available
+            if !discoveredNodes.isEmpty {
+                log("Using \(discoveredNodes.count) cached nodes")
+            } else {
+                errorMessage = "Node discovery failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -136,6 +153,7 @@ class KelsViewModel: ObservableObject {
         selectedDiscoveredNode = node
         do {
             try client.setURL(node.kelsUrl)
+            saveNodeUrl(node.kelsUrl)
             log("Switched to \(node.displayName) (\(node.kelsUrl))")
             Task { await refreshStatus() }
         } catch {
@@ -158,7 +176,12 @@ class KelsViewModel: ObservableObject {
         log("Auto-selecting fastest node...")
 
         do {
-            if let fastestNode = try await NodeDiscovery.fastestNode(registryUrl: registryUrl) {
+            // Discover nodes (this will also cache them)
+            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
+            discoveredNodes = nodes
+            saveCachedNodes(nodes)
+
+            if let fastestNode = nodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
                 selectNode(fastestNode)
                 log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
             } else {
@@ -166,17 +189,60 @@ class KelsViewModel: ObservableObject {
                 errorMessage = "No ready nodes available"
             }
         } catch {
-            log("ERROR: Auto-select failed: \(error.localizedDescription)")
-            errorMessage = "Auto-select failed: \(error.localizedDescription)"
+            log("ERROR: Registry unavailable: \(error.localizedDescription)")
+
+            // Try to use cached nodes
+            if !discoveredNodes.isEmpty {
+                log("Falling back to cached nodes...")
+                // Re-test latency on cached nodes
+                var updatedNodes = discoveredNodes
+                for i in updatedNodes.indices where updatedNodes[i].status == .ready {
+                    if let latency = await testLatency(to: updatedNodes[i].kelsUrl) {
+                        updatedNodes[i].latencyMs = latency
+                    }
+                }
+                discoveredNodes = updatedNodes
+
+                if let fastestNode = updatedNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
+                    selectNode(fastestNode)
+                    log("Auto-selected from cache: \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+                } else {
+                    errorMessage = "No reachable nodes available"
+                }
+            } else {
+                errorMessage = "Auto-select failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Test latency to a KELS node
+    private func testLatency(to kelsUrl: String) async -> UInt64? {
+        guard let url = URL(string: "\(kelsUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/health") else {
+            return nil
+        }
+
+        let start = DispatchTime.now()
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return nil
+            }
+            let end = DispatchTime.now()
+            let nanos = end.uptimeNanoseconds - start.uptimeNanoseconds
+            return nanos / 1_000_000 // Convert to milliseconds
+        } catch {
+            return nil
         }
     }
 
     private func initializeClient() {
         let savedPrefix = loadSavedPrefix()
         log("Loading with prefix: \(savedPrefix ?? "none")")
+        log("Connecting to: \(currentNodeUrl)")
 
         do {
-            client = try KelsClient(kelsURL: selectedNode.rawValue, prefix: savedPrefix)
+            client = try KelsClient(kelsURL: currentNodeUrl, prefix: savedPrefix)
             log("Client initialized successfully")
             Task {
                 await refreshStatus()
