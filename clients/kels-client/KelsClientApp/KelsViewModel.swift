@@ -136,6 +136,12 @@ class KelsViewModel: ObservableObject {
                 let latencyStr = node.latencyMs.map { "\($0)ms" } ?? "-"
                 log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
             }
+
+            // Auto-select the fastest ready node
+            if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
+                selectNode(fastestNode)
+                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+            }
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")
 

@@ -904,6 +904,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
+            None,
             kel.clone(),
         );
 
@@ -936,6 +937,7 @@ mod tests {
         let next_key = software.next_private_key().unwrap().clone();
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
+            None,
             None,
             kel.clone(),
         );
@@ -1057,6 +1059,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
             None,
+            None,
             kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
@@ -1109,6 +1112,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
+            None,
             kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
@@ -1116,6 +1120,7 @@ mod tests {
         // Create third divergent event
         let mut builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
+            None,
             None,
             kel_for_builder2.clone(),
         );
@@ -1173,6 +1178,7 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
+            None,
             kel_for_builder2.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
@@ -1194,6 +1200,7 @@ mod tests {
         // Load with with_kel
         let builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
+            None,
             None,
             divergent_kel.clone(),
         );
@@ -1231,12 +1238,14 @@ mod tests {
         let mut builder2 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
             None,
+            None,
             kel_for_others.clone(),
         );
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            None,
             None,
             kel_for_others.clone(),
         );
@@ -1261,6 +1270,7 @@ mod tests {
         // Load with with_kel
         let loaded_builder = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key, next_key),
+            None,
             None,
             divergent_kel.clone(),
         );
@@ -1295,6 +1305,7 @@ mod tests {
 
         let mut adversary = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            None,
             None,
             adversary_kel.clone(),
         );
@@ -1378,6 +1389,7 @@ mod tests {
 
         let mut adversary = KeyEventBuilder::with_kel(
             KeyProvider::with_software_keys(pre_rot_current, pre_rot_next),
+            None,
             None,
             adversary_kel.clone(),
         );

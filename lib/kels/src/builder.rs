@@ -55,12 +55,17 @@ impl KeyEventBuilder {
         })
     }
 
-    pub fn with_kel(key_provider: KeyProvider, kels_client: Option<KelsClient>, kel: Kel) -> Self {
+    pub fn with_kel(
+        key_provider: KeyProvider,
+        kels_client: Option<KelsClient>,
+        kel_store: Option<std::sync::Arc<dyn KelStore>>,
+        kel: Kel,
+    ) -> Self {
         let confirmed_cursor = kel.confirmed_cursor();
         Self {
             key_provider,
             kels_client,
-            kel_store: None,
+            kel_store,
             kel,
             confirmed_cursor,
         }

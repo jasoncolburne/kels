@@ -482,8 +482,9 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
         return -1;
     };
 
-    // Create new builder with same state but new client
-    let new_builder = KeyEventBuilder::with_kel(key_provider, Some(client), kel);
+    // Create new builder with same state but new client, preserving store
+    let new_builder =
+        KeyEventBuilder::with_kel(key_provider, Some(client), Some(ctx.store.clone()), kel);
     *builder_guard = new_builder;
 
     // Preserve store owner prefix
@@ -1276,7 +1277,8 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         // Create adversary builder WITH KELS client but NO kel_store
         // Events submit to KELS but don't save locally (simulating adversary)
         let client = KelsClient::new(&kels_url);
-        let mut adversary_builder = KeyEventBuilder::with_kel(adversary_keys, Some(client), kel);
+        let mut adversary_builder =
+            KeyEventBuilder::with_kel(adversary_keys, Some(client), None, kel);
 
         let mut counter = 0u32;
 
