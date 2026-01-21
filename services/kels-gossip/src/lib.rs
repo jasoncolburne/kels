@@ -175,7 +175,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let peer_repo = Arc::new(gossip_repo.peers);
     info!("Peer cache database ready");
 
+    // Phase 1: Discover peers and register (before starting gossip)
     let mut peer_multiaddrs: Vec<Multiaddr> = Vec::new();
+    let mut bootstrap_state: Option<(BootstrapSync, bootstrap::DiscoveryResult, BootstrapConfig)> =
+        None;
 
     if let Some(ref registry_url) = config.registry_url {
         let bootstrap_config = BootstrapConfig {
@@ -189,11 +192,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             heartbeat_interval_secs: config.heartbeat_interval_secs,
         };
 
-        let heartbeat_config = bootstrap_config.clone();
-        let bootstrap = BootstrapSync::new(bootstrap_config, peer_repo.clone());
-        let peers = bootstrap.run().await?;
+        let bootstrap = BootstrapSync::new(bootstrap_config.clone(), peer_repo.clone());
+        let discovery = bootstrap.discover_peers().await?;
 
-        for peer in peers {
+        for peer in &discovery.peers {
             match Multiaddr::from_str(&peer.gossip_multiaddr) {
                 Ok(addr) => {
                     info!("Will connect to peer {} at {}", peer.node_id, addr);
@@ -208,9 +210,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             }
         }
 
-        tokio::spawn(async move {
-            bootstrap::run_heartbeat_loop(heartbeat_config).await;
-        });
+        bootstrap_state = Some((bootstrap, discovery, bootstrap_config));
     } else {
         info!("No registry configured - skipping bootstrap sync");
     }
@@ -238,19 +238,41 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Run the gossip swarm (blocking)
-    let gossip_result = gossip::run_swarm(
-        config.listen_addr,
-        peer_multiaddrs,
-        &config.topic,
-        command_rx,
-        event_tx,
-    )
-    .await;
+    // Start gossip swarm in background so we receive events during KEL sync
+    let gossip_handle = tokio::spawn(async move {
+        gossip::run_swarm(
+            config.listen_addr,
+            peer_multiaddrs,
+            &config.topic,
+            command_rx,
+            event_tx,
+        )
+        .await
+    });
 
-    // If gossip ends, abort the other tasks
+    // Phase 2 & 3: Sync KELs and mark Ready (while gossip is running)
+    if let Some((bootstrap, discovery, heartbeat_config)) = bootstrap_state {
+        if !discovery.peers.is_empty() {
+            if let Err(e) = bootstrap.sync_kels(&discovery.peers).await {
+                error!("KEL sync failed: {}", e);
+            }
+        }
+        bootstrap.mark_ready(discovery.registry_available).await;
+
+        tokio::spawn(async move {
+            bootstrap::run_heartbeat_loop(heartbeat_config).await;
+        });
+    }
+
+    // Wait for gossip swarm to complete (blocking)
+    let gossip_result = gossip_handle.await;
+
     redis_handle.abort();
     sync_handle.abort();
 
-    gossip_result.map_err(ServiceError::Gossip)
+    match gossip_result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(ServiceError::Gossip(e)),
+        Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
+    }
 }

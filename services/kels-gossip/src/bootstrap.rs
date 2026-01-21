@@ -1,10 +1,15 @@
 //! Bootstrap synchronization for new gossip nodes.
 //!
 //! When a new node joins the network, it needs to sync existing KELs from peers.
-//! The bootstrap process:
-//! 1. Query registry for existing ready nodes
-//! 2. If no nodes exist, register immediately as Ready
-//! 3. If nodes exist, register as Bootstrapping, sync from peers, then update to Ready
+//! The bootstrap process is split into phases to avoid missing events:
+//!
+//! 1. **discover_peers()**: Query registry, register as Bootstrapping, return peer list
+//! 2. Start gossip swarm with discovered peers (now receiving events)
+//! 3. **sync_kels()**: Fetch and submit KELs from peers (events arriving during sync are handled)
+//! 4. **mark_ready()**: Update status to Ready
+//!
+//! This ordering ensures we're listening for gossip updates before and during KEL sync,
+//! preventing race conditions where events could be missed.
 
 use crate::peer_store::PeerRepository;
 use crate::registry_client::{NodeRegistration, NodeStatus, RegistryClient, RegistryError};
@@ -62,6 +67,12 @@ impl Default for BootstrapConfig {
     }
 }
 
+/// Result of peer discovery phase.
+pub struct DiscoveryResult {
+    pub peers: Vec<NodeRegistration>,
+    pub registry_available: bool,
+}
+
 /// Handles bootstrap synchronization from existing peers.
 pub struct BootstrapSync {
     config: BootstrapConfig,
@@ -86,25 +97,23 @@ impl BootstrapSync {
         }
     }
 
-    /// Run the bootstrap process.
-    /// Returns the list of peer nodes to connect to for gossip.
+    /// Phase 1: Discover peers and register as Bootstrapping.
+    /// Returns peers to connect to for gossip. Call this BEFORE starting the gossip swarm.
     ///
     /// Fallback logic:
     /// 1. Try to connect to registry
     /// 2. If registry unavailable, fall back to cached peers
     /// 3. Continue without bootstrap if no peers available (first node)
-    pub async fn run(&self) -> Result<Vec<NodeRegistration>, BootstrapError> {
-        info!("Starting bootstrap sync for node {}", self.config.node_id);
+    pub async fn discover_peers(&self) -> Result<DiscoveryResult, BootstrapError> {
+        info!("Discovering peers for node {}", self.config.node_id);
 
-        // Try to get bootstrap nodes from registry
-        let (bootstrap_nodes, registry_available) = match self
+        let (peers, registry_available) = match self
             .registry
             .get_bootstrap_nodes(Some(&self.config.node_id))
             .await
         {
             Ok(nodes) => {
                 info!("Registry available, found {} node(s)", nodes.len());
-                // Sync registry data to peer cache
                 self.peer_repo
                     .try_sync_from_registry(&nodes, &self.config.node_id)
                     .await;
@@ -112,14 +121,13 @@ impl BootstrapSync {
             }
             Err(e) => {
                 warn!("Registry unavailable: {}. Falling back to cached peers.", e);
-                // Fall back to cached peers
                 match self.peer_repo.get_active_peers().await {
-                    Ok(peers) => {
-                        let nodes: Vec<NodeRegistration> = peers
+                    Ok(cached) => {
+                        let nodes: Vec<NodeRegistration> = cached
                             .into_iter()
                             .map(|p| NodeRegistration {
                                 node_id: p.node_id,
-                                kels_url: String::new(), // Not needed for gossip
+                                kels_url: String::new(),
                                 kels_url_internal: None,
                                 gossip_multiaddr: p.gossip_multiaddr,
                                 registered_at: chrono::Utc::now(),
@@ -141,9 +149,8 @@ impl BootstrapSync {
             }
         };
 
-        if bootstrap_nodes.is_empty() {
+        if peers.is_empty() {
             info!("No existing nodes found - this is the first node");
-            // Try to register as Ready if registry is available
             if registry_available {
                 if let Err(e) = self
                     .registry
@@ -160,37 +167,49 @@ impl BootstrapSync {
                 }
             }
             info!("Registered as Ready (first node)");
-            return Ok(Vec::new());
-        }
-
-        info!(
-            "Found {} bootstrap node(s), starting sync",
-            bootstrap_nodes.len()
-        );
-
-        // Register as Bootstrapping if registry available
-        if registry_available {
-            if let Err(e) = self
-                .registry
-                .register(
-                    &self.config.node_id,
-                    &self.config.kels_advertise_url,
-                    self.config.kels_advertise_url_internal.as_deref(),
-                    &self.config.gossip_multiaddr,
-                    NodeStatus::Bootstrapping,
-                )
-                .await
-            {
-                warn!("Failed to register as Bootstrapping: {}", e);
-            } else {
-                info!("Registered as Bootstrapping");
+        } else {
+            info!("Found {} bootstrap node(s)", peers.len());
+            if registry_available {
+                if let Err(e) = self
+                    .registry
+                    .register(
+                        &self.config.node_id,
+                        &self.config.kels_advertise_url,
+                        self.config.kels_advertise_url_internal.as_deref(),
+                        &self.config.gossip_multiaddr,
+                        NodeStatus::Bootstrapping,
+                    )
+                    .await
+                {
+                    warn!("Failed to register as Bootstrapping: {}", e);
+                } else {
+                    info!("Registered as Bootstrapping");
+                }
             }
         }
 
-        // Sync from all bootstrap nodes
-        self.sync_from_peers(&bootstrap_nodes).await?;
+        Ok(DiscoveryResult {
+            peers,
+            registry_available,
+        })
+    }
 
-        // Update status to Ready if registry available
+    /// Phase 2: Sync KELs from discovered peers.
+    /// Call this AFTER the gossip swarm is running so we receive events during sync.
+    pub async fn sync_kels(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
+        if peers.is_empty() {
+            return Ok(());
+        }
+
+        info!("Starting KEL sync from {} peer(s)", peers.len());
+        self.sync_from_peers(peers).await?;
+        info!("KEL sync complete");
+
+        Ok(())
+    }
+
+    /// Phase 3: Mark node as Ready after sync completes.
+    pub async fn mark_ready(&self, registry_available: bool) {
         if registry_available {
             if let Err(e) = self
                 .registry
@@ -201,8 +220,6 @@ impl BootstrapSync {
             }
         }
         info!("Bootstrap complete - registered as Ready");
-
-        Ok(bootstrap_nodes)
     }
 
     /// Get the URL to use for node-to-node sync (internal if available, else external).
