@@ -1,12 +1,14 @@
 //! PostgreSQL Repository for KELS
 
-use kels::{EventSignature, KelsAuditRecord, KeyEvent, SignedKeyEvent};
+use kels::{
+    EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState, SignedKeyEvent,
+};
 use libkels_derive::SignedEvents;
 use std::collections::HashMap;
 use verifiable_storage::{
     SelfAddressed, StorageDatetime, StorageError, TransactionExecutor, Value,
 };
-use verifiable_storage_postgres::{Delete, Order, PgPool, Query, QueryExecutor, Stored};
+use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events")]
@@ -29,6 +31,54 @@ pub struct KelsRepository {
 }
 
 impl KeyEventRepository {
+    /// List unique prefixes with their latest SAIDs for bootstrap sync.
+    /// Returns prefixes in sorted order with cursor-based pagination.
+    /// Each entry includes the SAID of the latest event for that prefix.
+    pub async fn list_prefixes(
+        &self,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<PrefixListResponse, StorageError> {
+        // Use DISTINCT ON to get latest event per prefix
+        // Order by prefix ASC (for pagination), then version DESC (to get latest)
+        let mut query = Query::<KeyEvent>::new()
+            .distinct_on("prefix")
+            .order_by("prefix", Order::Asc)
+            .order_by("version", Order::Desc)
+            .limit(limit as u64 + 1);
+
+        if let Some(cursor) = since {
+            query = query.filter(Filter::Gt(
+                "prefix".to_string(),
+                Value::String(cursor.to_string()),
+            ));
+        }
+
+        let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
+
+        // Extract prefix and said from each event
+        let mut prefix_states: Vec<PrefixState> = events
+            .into_iter()
+            .map(|e| PrefixState {
+                prefix: e.prefix,
+                said: e.said,
+            })
+            .collect();
+
+        // Check if there are more results
+        let next_cursor = if prefix_states.len() > limit {
+            prefix_states.pop(); // Remove the extra item
+            prefix_states.last().map(|s| s.prefix.clone())
+        } else {
+            None
+        };
+
+        Ok(PrefixListResponse {
+            prefixes: prefix_states,
+            next_cursor,
+        })
+    }
+
     /// Batch fetch KELs. For each prefix with since value, returns events with version > since.
     pub async fn get_signed_histories_since(
         &self,

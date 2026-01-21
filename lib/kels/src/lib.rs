@@ -17,6 +17,7 @@ pub mod file_store;
 #[cfg(feature = "secure-enclave")]
 pub mod hardware;
 pub mod kel;
+pub mod registry_client;
 pub mod repository;
 pub mod repository_store;
 pub mod store;
@@ -37,11 +38,14 @@ pub use file_store::FileKelStore;
 pub use hardware::HardwareKeyProvider;
 pub use kel::Kel;
 pub use kel::compute_rotation_hash;
+pub use registry_client::KelsRegistryClient;
 pub use repository::SignedEventRepository;
 pub use repository_store::RepositoryKelStore;
 pub use store::KelStore;
 pub use types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,
     ErrorCode, ErrorResponse, EventKind, EventSignature, KelMergeResult, KelResponse,
-    KelsAuditRecord, KeyEvent, KeyEventSignature, RecoveryOutcome, SignedKeyEvent,
+    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus,
+    NodesResponse, PrefixListResponse, PrefixState, RecoveryOutcome, RegisterNodeRequest,
+    SignedKeyEvent, StatusUpdateRequest,
 };

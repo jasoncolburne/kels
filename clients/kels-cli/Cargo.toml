@@ -26,3 +26,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = "6"
 toml = "0.8"
+rand = "0.8"

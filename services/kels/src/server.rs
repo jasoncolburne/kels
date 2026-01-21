@@ -26,6 +26,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(handlers::get_kel_since),
         )
         .route("/api/kels/kels", post(handlers::get_kels_batch))
+        .route("/api/kels/prefixes", get(handlers::list_prefixes))
         .with_state(state)
 }
 

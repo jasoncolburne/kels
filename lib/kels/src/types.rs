@@ -502,6 +502,107 @@ pub struct KelResponse {
     pub audit_records: Option<Vec<KelsAuditRecord>>,
 }
 
+/// Response for paginated prefix listing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefixListResponse {
+    pub prefixes: Vec<PrefixState>,
+    pub next_cursor: Option<String>,
+}
+
+/// A prefix with its latest SAID, used for bootstrap sync
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefixState {
+    pub prefix: String,
+    pub said: String,
+}
+
+/// Node status in the registry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    /// Node is syncing, not ready for queries
+    Bootstrapping,
+    /// Node is fully synced and accepting requests
+    Ready,
+    /// Missed heartbeats
+    Unhealthy,
+}
+
+/// Node registration data stored in the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRegistration {
+    pub node_id: String,
+    /// External KELS URL for clients outside the cluster
+    pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
+    pub gossip_multiaddr: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+    pub last_heartbeat: chrono::DateTime<chrono::Utc>,
+    pub status: NodeStatus,
+}
+
+/// Request to register a node with the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterNodeRequest {
+    pub node_id: String,
+    /// External KELS URL for clients outside the cluster
+    pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
+    pub gossip_multiaddr: String,
+    pub status: NodeStatus,
+}
+
+/// Request to update node status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusUpdateRequest {
+    pub status: NodeStatus,
+}
+
+/// Information about a registered KELS node (with client-computed fields)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeInfo {
+    pub node_id: String,
+    /// External KELS URL for clients outside the cluster
+    pub kels_url: String,
+    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kels_url_internal: Option<String>,
+    pub gossip_multiaddr: String,
+    pub status: NodeStatus,
+    /// Measured latency in milliseconds (populated by discovery)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
+impl From<NodeRegistration> for NodeInfo {
+    fn from(reg: NodeRegistration) -> Self {
+        Self {
+            node_id: reg.node_id,
+            kels_url: reg.kels_url,
+            kels_url_internal: reg.kels_url_internal,
+            gossip_multiaddr: reg.gossip_multiaddr,
+            status: reg.status,
+            latency_ms: None,
+        }
+    }
+}
+
+/// Paginated response for node listings from the registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodesResponse {
+    pub nodes: Vec<NodeRegistration>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
 #[cfg_attr(feature = "server-caching", cache(prefix = "kels:kel", ttl = 3600))]

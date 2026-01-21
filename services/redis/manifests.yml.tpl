@@ -1,26 +1,10 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: redis-pvc
-  labels:
-    app: redis
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
-
----
-
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: redis
   labels:
     app: redis
 spec:
-  serviceName: redis
   replicas: 1
   selector:
     matchLabels:
@@ -46,9 +30,6 @@ spec:
             - "200mb"
             - --maxmemory-policy
             - "allkeys-lru"
-          volumeMounts:
-            - name: redis-storage
-              mountPath: /data
           resources:
             requests:
               cpu: 100m
@@ -70,10 +51,6 @@ spec:
                 - ping
             initialDelaySeconds: 5
             periodSeconds: 5
-      volumes:
-        - name: redis-storage
-          persistentVolumeClaim:
-            claimName: redis-pvc
 
 ---
 

@@ -1,0 +1,51 @@
+[package]
+name = "kels-registry"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Node Registry - Service discovery for KELS gossip nodes"
+
+[[bin]]
+name = "kels-registry"
+path = "src/main.rs"
+
+[lib]
+name = "kels_registry"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1"
+
+# Redis for storage
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+# Shared types
+libkels = { path = "../../lib/kels", default-features = false }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

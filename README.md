@@ -19,7 +19,8 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Create registry service for node discovery
+1. Think about security surrounding registration of nodes. Right now, anyone could poison the pool
+by posing as a ready node and serving no prefixes in a system with many prefixes.
 2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
 3. Build a complete example with a use case that kels solves
 
@@ -32,7 +33,8 @@ kels/
 │   └── kels-derive/    # Derive macros for storage traits
 ├── services/
 │   ├── kels/           # HTTP API server
-│   └── kels-gossip/    # Gossip protocol for cross-deployment sync
+│   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
+│   └── kels-registry/  # Node registration and discovery service
 ├── clients/
 │   ├── kels-cli/       # Command-line interface
 │   ├── kels-bench/     # Benchmarking tool
@@ -149,10 +151,12 @@ This allows the CLI and iOS app to connect to the local KELS nodes using their s
 
 ```bash
 # Set up a local Kubernetes environment (e.g., Docker Desktop, minikube, kind), then:
+garden deploy --env=registry   # Deploy shared registry service first
 garden deploy                  # Deploy node-a (default)
 garden deploy --env=node-b     # Deploy node-b (separate namespace)
 
-# Both deployments include kels-gossip for cross-deployment KEL synchronization
+# Both node deployments include kels-gossip for cross-deployment KEL synchronization
+# Nodes register with the registry and bootstrap sync from existing peers
 
 # Run the full test suite
 kubectl exec -n kels-node-a -it test-client -- /tests/run-all-tests.sh
@@ -160,12 +164,16 @@ kubectl exec -n kels-node-a -it test-client -- /tests/run-all-tests.sh
 # Run gossip synchronization tests (requires both nodes deployed)
 kubectl exec -n kels-node-a -it test-client -- /tests/test-gossip.sh
 
+# Run bootstrap sync tests (requires registry and both nodes)
+kubectl exec -n kels-node-a -it test-client -- /tests/test-bootstrap.sh
+
 # Run benchmarks (40 concurrent connections, 10 second duration)
 kubectl exec -n kels-node-a -it test-client -- /tests/bench-kels.sh 40 10
 
 # Clean up and start fresh
-garden cleanup deploy                  # Remove node-a deployment
 garden cleanup deploy --env=node-b     # Remove node-b deployment
+garden cleanup deploy                  # Remove node-a deployment
+garden cleanup deploy --env=registry   # Remove registry deployment last
 ```
 
 ## Security Model
@@ -246,6 +254,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Divergence Detection and Recovery](docs/divergence-detection.md) - Detailed protocol documentation
 - [Attack Surface](docs/attack-surface.md) - Security analysis
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
+- [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
 
 ## License
 

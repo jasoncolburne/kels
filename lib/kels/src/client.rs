@@ -4,11 +4,12 @@ use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult,
-    KelResponse, KeyEvent, SignedKeyEvent,
+    KelResponse, KeyEvent, NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use verifiable_storage::StorageDatetime;
 
 #[cfg(feature = "redis")]
@@ -199,9 +200,26 @@ pub struct KelsClient {
 
 impl KelsClient {
     pub fn new(base_url: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client,
+            cache: None,
+        }
+    }
+
+    /// Create a client with a custom timeout (useful for latency testing).
+    pub fn with_timeout(base_url: &str, timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        KelsClient {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
             cache: None,
         }
     }
@@ -360,6 +378,111 @@ impl KelsClient {
                 resp.status()
             )))
         }
+    }
+
+    /// Test latency to this node by measuring health check round-trip time.
+    pub async fn test_latency(&self) -> Result<Duration, KelsError> {
+        let start = Instant::now();
+        self.health().await?;
+        Ok(start.elapsed())
+    }
+
+    /// Discover nodes from registry and test latency to each.
+    /// Returns nodes sorted by latency (fastest first), with Ready nodes prioritized.
+    pub async fn discover_nodes(registry_url: &str) -> Result<Vec<NodeInfo>, KelsError> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| KelsError::ServerError(format!("Failed to create HTTP client: {}", e)))?;
+
+        // Paginate through all nodes
+        let base_url = registry_url.trim_end_matches('/');
+        let mut all_nodes: Vec<NodeInfo> = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut url = format!("{}/api/nodes?limit=100", base_url);
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
+
+            let resp = client.get(&url).send().await?;
+
+            if !resp.status().is_success() {
+                return Err(KelsError::ServerError(format!(
+                    "Failed to fetch nodes from registry: {}",
+                    resp.status()
+                )));
+            }
+
+            let page: NodesResponse = resp.json().await?;
+            all_nodes.extend(page.nodes.into_iter().map(NodeInfo::from));
+
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        let mut nodes = all_nodes;
+
+        // Test latency to each Ready node concurrently (with short timeout)
+        let latency_futures: Vec<_> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == NodeStatus::Ready)
+            .map(|(i, n)| {
+                let url = n.kels_url.clone();
+                let node_id = n.node_id.clone();
+                async move {
+                    let client = KelsClient::with_timeout(&url, Duration::from_millis(500));
+                    let latency = client.test_latency().await.ok();
+                    if let Some(ref lat) = latency {
+                        tracing::info!("Node {} latency: {}ms", node_id, lat.as_millis());
+                    } else {
+                        tracing::warn!("Node {} latency test failed/timed out", node_id);
+                    }
+                    (i, latency)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(latency_futures).await;
+        for (i, latency) in results {
+            if let Some(lat) = latency {
+                nodes[i].latency_ms = Some(lat.as_millis() as u64);
+            }
+        }
+
+        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
+        nodes.sort_by(|a, b| match (&a.status, &b.status) {
+            (NodeStatus::Ready, NodeStatus::Ready) => match (&a.latency_ms, &b.latency_ms) {
+                (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+            (NodeStatus::Ready, _) => std::cmp::Ordering::Less,
+            (_, NodeStatus::Ready) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        Ok(nodes)
+    }
+
+    /// Create a client connected to the fastest available node from the registry.
+    /// Only considers Ready nodes. Returns error if no Ready nodes are available.
+    pub async fn with_discovery(registry_url: &str) -> Result<Self, KelsError> {
+        let nodes = Self::discover_nodes(registry_url).await?;
+
+        let best_node = nodes
+            .into_iter()
+            .find(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
+            .ok_or_else(|| {
+                KelsError::ServerError("No ready nodes available in registry".to_string())
+            })?;
+
+        Ok(Self::new(&best_node.kels_url))
     }
 
     pub async fn submit_events(

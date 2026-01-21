@@ -54,6 +54,9 @@ tracing = "0.1"
 # Async traits
 async-trait = "0.1"
 
+# Async utilities
+futures = "0.3"
+
 # Base64 encoding
 base64 = "0.22"
 

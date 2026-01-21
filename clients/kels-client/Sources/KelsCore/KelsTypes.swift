@@ -1,4 +1,5 @@
 import Foundation
+import LibKels
 
 // MARK: - KEL Event
 
@@ -95,19 +96,91 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
     }
 }
 
-// MARK: - KELS Node
+// MARK: - Node Discovery
 
-/// Available KELS server nodes
-public enum KelsNode: String, CaseIterable, Identifiable, Sendable {
-    case nodeA = "http://kels.kels-node-a.local"
-    case nodeB = "http://kels.kels-node-b.local"
+/// Node status from registry
+public enum RegistryNodeStatus: String, Codable, Sendable {
+    case bootstrapping
+    case ready
+    case unhealthy
+}
 
-    public var id: String { rawValue }
+/// Information about a registered KELS node
+public struct RegistryNode: Codable, Identifiable, Sendable {
+    public let nodeId: String
+    public let kelsUrl: String
+    public let gossipMultiaddr: String
+    public let status: RegistryNodeStatus
+    public var latencyMs: UInt64?
 
-    public var displayName: String {
-        switch self {
-        case .nodeA: return "Node A"
-        case .nodeB: return "Node B"
+    public var id: String { nodeId }
+
+    public var displayName: String { nodeId }
+
+    public var statusColor: String {
+        switch status {
+        case .ready: return "green"
+        case .bootstrapping: return "yellow"
+        case .unhealthy: return "red"
         }
+    }
+}
+
+/// FFI response node (matches FFI's NodeInfoJson with camelCase)
+private struct FFINode: Codable {
+    let nodeId: String
+    let kelsUrl: String
+    let status: String
+    let latencyMs: UInt64?
+}
+
+/// Node discovery from registry using FFI
+public struct NodeDiscovery {
+    /// Discover nodes from registry and test latency
+    /// - Parameter registryUrl: URL of the registry service
+    /// - Returns: Array of nodes sorted by latency (fastest first)
+    public static func discoverNodes(registryUrl: String) async throws -> [RegistryNode] {
+        // Run FFI call on a background thread since it's blocking
+        return try await Task.detached {
+            var result = KelsNodesResult()
+            kels_discover_nodes(registryUrl, &result)
+            defer { kels_nodes_result_free(&result) }
+
+            if result.status != KELS_STATUS_OK {
+                let errorMsg = result.error.map { String(cString: $0) }
+                throw KelsClientError.networkError(errorMsg)
+            }
+
+            guard let nodesJson = result.nodes_json else {
+                return []
+            }
+
+            let jsonString = String(cString: nodesJson)
+            guard let data = jsonString.data(using: .utf8) else {
+                return []
+            }
+
+            let ffiNodes = try JSONDecoder().decode([FFINode].self, from: data)
+
+            // Convert to RegistryNode
+            return ffiNodes.map { ffi in
+                var node = RegistryNode(
+                    nodeId: ffi.nodeId,
+                    kelsUrl: ffi.kelsUrl,
+                    gossipMultiaddr: "",  // Not provided by FFI, not needed for UI
+                    status: RegistryNodeStatus(rawValue: ffi.status) ?? .unhealthy
+                )
+                node.latencyMs = ffi.latencyMs
+                return node
+            }
+        }.value
+    }
+
+    /// Get the fastest ready node from registry
+    /// - Parameter registryUrl: URL of the registry service
+    /// - Returns: The fastest ready node, or nil if none available
+    public static func fastestNode(registryUrl: String) async throws -> RegistryNode? {
+        let nodes = try await discoverNodes(registryUrl: registryUrl)
+        return nodes.first { $0.status == .ready && $0.latencyMs != nil }
     }
 }

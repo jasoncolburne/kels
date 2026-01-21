@@ -2,6 +2,9 @@ kind: Build
 name: kels-gossip
 type: container
 
+# Gossip service is not needed in the registry environment
+disabled: ${environment.name == 'registry'}
+
 source:
   path: ../..  # Set build context to repository root
 
@@ -20,10 +23,19 @@ kind: Deploy
 name: kels-gossip
 type: kubernetes
 
+# Gossip service is not needed in the registry environment
+disabled: ${environment.name == 'registry'}
+
 dependencies:
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
+
+variables:
+  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.local"
+  kelsAdvertiseUrlInternal: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
+  kelsGossipDatabaseUrl: ${var.postgres.url}/kels_gossip
+  gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.svc.cluster.local/tcp/${var.gossip.port}"
 
 spec:
   manifestTemplates:

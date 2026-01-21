@@ -228,17 +228,18 @@ struct KelsTab: View {
                     if !viewModel.isContested && !viewModel.isDecommissioned {
                         Section("Anchor Data") {
                             HStack {
-                                TextField("Data to anchor (e.g., hash)", text: $anchorText)
+                                TextField("CESR Blake3 digest (E...)", text: $anchorText)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
+                                    .font(.system(.body, design: .monospaced))
 
                                 Button(action: createInteraction) {
                                     Image(systemName: "plus.circle.fill")
                                 }
-                                .disabled(anchorText.isEmpty || viewModel.isLoading)
+                                .disabled(!isValidCesrBlake3Digest(anchorText.trimmingCharacters(in: .whitespaces)) || viewModel.isLoading)
                             }
 
-                            Text("Create an interaction event to anchor data to your KEL")
+                            Text("44-char CESR-encoded Blake3-256 digest (starts with E)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -319,11 +320,20 @@ struct KelsTab: View {
 
     private func createInteraction() {
         let anchor = anchorText.trimmingCharacters(in: .whitespaces)
-        guard !anchor.isEmpty else { return }
+        guard isValidCesrBlake3Digest(anchor) else { return }
         Task {
             await viewModel.interact(anchor: anchor)
             anchorText = ""
         }
+    }
+
+    /// Validates that a string is a CESR-encoded Blake3-256 digest
+    /// Format: 'E' prefix + 43 base64url characters = 44 total
+    private func isValidCesrBlake3Digest(_ text: String) -> Bool {
+        guard text.count == 44, text.hasPrefix("E") else { return false }
+        let base64urlChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        let suffix = text.dropFirst()
+        return suffix.unicodeScalars.allSatisfy { base64urlChars.contains($0) }
     }
 
     private func showCopied(_ what: String) {
@@ -557,25 +567,124 @@ struct KeysTab: View {
 struct SettingsTab: View {
     @ObservedObject var viewModel: KelsViewModel
     @State private var copiedMessage: String?
+    @State private var isDiscovering = false
+
+    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
 
     var body: some View {
         NavigationStack {
             List {
-                // Node Selection
-                Section("KELS Server") {
-                    Picker("Server Node", selection: $viewModel.selectedNode) {
-                        ForEach(KelsNode.allCases) { node in
-                            Text(node.displayName).tag(node)
+                // Registry Configuration
+                Section("Node Registry") {
+                    TextField("Registry URL", text: $viewModel.registryUrl)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onAppear {
+                            if viewModel.registryUrl.isEmpty {
+                                viewModel.registryUrl = defaultRegistryUrl
+                            }
+                        }
+
+                    HStack {
+                        Button(action: {
+                            isDiscovering = true
+                            Task {
+                                await viewModel.discoverNodes()
+                                isDiscovering = false
+                            }
+                        }) {
+                            HStack {
+                                if isDiscovering {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                Text("Discover")
+                            }
+                        }
+                        .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
+
+                        Spacer()
+
+                        Button(action: {
+                            isDiscovering = true
+                            Task {
+                                await viewModel.autoSelectNode()
+                                isDiscovering = false
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: "bolt.fill")
+                                Text("Auto-Select")
+                            }
+                        }
+                        .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
+                    }
+                }
+
+                // Discovered Nodes
+                Section("KELS Nodes") {
+                    if viewModel.discoveredNodes.isEmpty {
+                        Text("Tap 'Discover' to find nodes")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(viewModel.discoveredNodes) { node in
+                            Button {
+                                viewModel.selectNode(node)
+                            } label: {
+                                HStack {
+                                    if viewModel.selectedDiscoveredNode?.nodeId == node.nodeId {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.green)
+                                    } else {
+                                        Image(systemName: "circle")
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(node.displayName)
+                                            .foregroundColor(.primary)
+                                        Text(node.kelsUrl)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    statusBadge(for: node.status)
+
+                                    if let latency = node.latencyMs {
+                                        Text("\(latency)ms")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    } else if node.status == .ready {
+                                        Text("-")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(node.status != .ready)
+                            .opacity(node.status == .ready ? 1.0 : 0.5)
                         }
                     }
-
-                    Text(viewModel.selectedNode.rawValue)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 // Status
                 Section("Status") {
+                    HStack {
+                        Text("Connected To")
+                        Spacer()
+                        Text(viewModel.currentNodeUrl)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundColor(.secondary)
+                    }
+
                     HStack {
                         Text("Secure Enclave")
                         Spacer()
@@ -677,6 +786,36 @@ struct SettingsTab: View {
             copiedMessage = nil
         }
     }
+
+    @ViewBuilder
+    private func statusBadge(for status: RegistryNodeStatus) -> some View {
+        switch status {
+        case .ready:
+            Text("READY")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green.opacity(0.2))
+                .foregroundColor(.green)
+                .cornerRadius(4)
+        case .bootstrapping:
+            Text("SYNC")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.yellow.opacity(0.2))
+                .foregroundColor(.orange)
+                .cornerRadius(4)
+        case .unhealthy:
+            Text("DOWN")
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.2))
+                .foregroundColor(.red)
+                .cornerRadius(4)
+        }
+    }
 }
 
 // MARK: - Developer Tab
@@ -696,7 +835,7 @@ struct DeveloperTab: View {
                 Section("Adversary Injection") {
                     // Event type buttons
                     HStack(spacing: 8) {
-                        ForEach(["ixn", "rot", "rec", "ror"], id: \.self) { eventType in
+                        ForEach(["ixn", "rot", "dec", "rec", "ror"], id: \.self) { eventType in
                             Button(eventType.uppercased()) {
                                 if !adversaryEvents.isEmpty {
                                     adversaryEvents += ","
@@ -704,7 +843,7 @@ struct DeveloperTab: View {
                                 adversaryEvents += eventType
                             }
                             .buttonStyle(.bordered)
-                            .tint(eventType == "rec" || eventType == "ror" ? .red : .accentColor)
+                            .tint(["rec", "ror", "dec"].contains(eventType) ? .red : .accentColor)
                         }
                     }
                     .disabled(!viewModel.isIncepted || viewModel.isLoading)
