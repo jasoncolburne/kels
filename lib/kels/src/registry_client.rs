@@ -126,7 +126,7 @@ impl KelsRegistryClient {
 
     /// Get list of bootstrap nodes (excludes the calling node).
     /// Paginates through all available nodes.
-    pub async fn get_bootstrap_nodes(
+    pub async fn list_nodes(
         &self,
         exclude_node_id: Option<&str>,
     ) -> Result<Vec<NodeRegistration>, KelsError> {
@@ -149,28 +149,13 @@ impl KelsRegistryClient {
     }
 
     /// List all registered nodes with pagination.
-    pub async fn list_nodes(&self) -> Result<Vec<NodeRegistration>, KelsError> {
-        let mut all_nodes = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let page = self
-                .fetch_nodes_page(cursor.as_deref(), None, false)
-                .await?;
-            all_nodes.extend(page.nodes);
-
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-
-        Ok(all_nodes)
+    pub async fn list_all_nodes(&self) -> Result<Vec<NodeRegistration>, KelsError> {
+        self.list_nodes(None).await
     }
 
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
     pub async fn list_nodes_info(&self) -> Result<Vec<NodeInfo>, KelsError> {
-        let nodes = self.list_nodes().await?;
+        let nodes = self.list_all_nodes().await?;
         Ok(nodes.into_iter().map(NodeInfo::from).collect())
     }
 

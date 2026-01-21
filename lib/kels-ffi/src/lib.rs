@@ -1584,7 +1584,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let client = KelsRegistryClient::new(&url);
 
         // Fetch all nodes (paginated)
-        let nodes = client.list_nodes().await?;
+        let nodes = client.list_all_nodes().await?;
 
         // Test latency to each Ready node
         let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());

@@ -109,47 +109,44 @@ impl BootstrapSync {
     pub async fn discover_peers(&self) -> Result<DiscoveryResult, BootstrapError> {
         info!("Discovering peers for node {}", self.config.node_id);
 
-        let (peers, registry_available) = match self
-            .registry
-            .get_bootstrap_nodes(Some(&self.config.node_id))
-            .await
-        {
-            Ok(nodes) => {
-                info!("Registry available, found {} node(s)", nodes.len());
-                self.peer_repo
-                    .try_sync_from_registry(&nodes, &self.config.node_id)
-                    .await;
-                (nodes, true)
-            }
-            Err(e) => {
-                warn!("Registry unavailable: {}. Falling back to cached peers.", e);
-                match self.peer_repo.get_active_peers().await {
-                    Ok(cached) => {
-                        let nodes: Vec<NodeRegistration> = cached
-                            .into_iter()
-                            .map(|p| NodeRegistration {
-                                node_id: p.node_id,
-                                kels_url: String::new(),
-                                kels_url_internal: None,
-                                gossip_multiaddr: p.gossip_multiaddr,
-                                registered_at: chrono::Utc::now(),
-                                last_heartbeat: chrono::Utc::now(),
-                                status: NodeStatus::Ready,
-                            })
-                            .collect();
-                        info!("Loaded {} cached peer(s)", nodes.len());
-                        (nodes, false)
-                    }
-                    Err(cache_err) => {
-                        warn!(
-                            "Failed to load cached peers: {}. Starting as first node.",
-                            cache_err
-                        );
-                        (Vec::new(), false)
+        let (peers, registry_available) =
+            match self.registry.list_nodes(Some(&self.config.node_id)).await {
+                Ok(nodes) => {
+                    info!("Registry available, found {} node(s)", nodes.len());
+                    self.peer_repo
+                        .try_sync_from_registry(&nodes, &self.config.node_id)
+                        .await;
+                    (nodes, true)
+                }
+                Err(e) => {
+                    warn!("Registry unavailable: {}. Falling back to cached peers.", e);
+                    match self.peer_repo.get_active_peers().await {
+                        Ok(cached) => {
+                            let nodes: Vec<NodeRegistration> = cached
+                                .into_iter()
+                                .map(|p| NodeRegistration {
+                                    node_id: p.node_id,
+                                    kels_url: String::new(),
+                                    kels_url_internal: None,
+                                    gossip_multiaddr: p.gossip_multiaddr,
+                                    registered_at: chrono::Utc::now(),
+                                    last_heartbeat: chrono::Utc::now(),
+                                    status: NodeStatus::Ready,
+                                })
+                                .collect();
+                            info!("Loaded {} cached peer(s)", nodes.len());
+                            (nodes, false)
+                        }
+                        Err(cache_err) => {
+                            warn!(
+                                "Failed to load cached peers: {}. Starting as first node.",
+                                cache_err
+                            );
+                            (Vec::new(), false)
+                        }
                     }
                 }
-            }
-        };
+            };
 
         if peers.is_empty() {
             info!("No existing nodes found - this is the first node");
