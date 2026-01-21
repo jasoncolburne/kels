@@ -169,14 +169,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         );
     }
 
-    // Connect to database for peer cache
     info!("Connecting to database for peer cache...");
     let gossip_repo = KelsGossipRepository::connect(&config.database_url).await?;
     gossip_repo.initialize().await?;
     let peer_repo = Arc::new(gossip_repo.peers);
     info!("Peer cache database ready");
 
-    // Perform bootstrap sync if registry is configured, collect peer multiaddrs
     let mut peer_multiaddrs: Vec<Multiaddr> = Vec::new();
 
     if let Some(ref registry_url) = config.registry_url {
@@ -195,7 +193,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         let bootstrap = BootstrapSync::new(bootstrap_config, peer_repo.clone());
         let peers = bootstrap.run().await?;
 
-        // Collect gossip multiaddrs from peers
         for peer in peers {
             match Multiaddr::from_str(&peer.gossip_multiaddr) {
                 Ok(addr) => {
@@ -211,7 +208,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             }
         }
 
-        // Start heartbeat loop in background
         tokio::spawn(async move {
             bootstrap::run_heartbeat_loop(heartbeat_config).await;
         });
@@ -219,14 +215,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("No registry configured - skipping bootstrap sync");
     }
 
-    // Channels for communication between components
     let (command_tx, command_rx) = mpsc::channel::<GossipCommand>(100);
     let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(100);
 
-    // Clone for the Redis subscriber
     let redis_command_tx = command_tx.clone();
 
-    // Spawn the Redis subscriber
     let redis_url = config.redis_url.clone();
     let propagation_delay_ms = config.test_propagation_delay_ms;
     let redis_handle = tokio::spawn(async move {
@@ -237,7 +230,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Spawn the sync handler
     let kels_url = config.kels_url.clone();
     let sync_command_tx = command_tx.clone();
     let sync_handle = tokio::spawn(async move {

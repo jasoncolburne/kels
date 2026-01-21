@@ -54,21 +54,18 @@ class KelsViewModel: ObservableObject {
     // MARK: - Persistence
 
     private func loadSavedSettings() {
-        // Load registry URL
         if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey), !savedRegistryUrl.isEmpty {
             registryUrl = savedRegistryUrl
         } else {
             registryUrl = defaultRegistryUrl
         }
 
-        // Load saved node URL
         if let savedNodeUrl = UserDefaults.standard.string(forKey: nodeUrlKey), !savedNodeUrl.isEmpty {
             currentNodeUrl = savedNodeUrl
         } else {
             currentNodeUrl = defaultNodeUrl
         }
 
-        // Load cached nodes
         loadCachedNodes()
     }
 

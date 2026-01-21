@@ -125,17 +125,14 @@ impl PeerRepository {
         registry_peers: &[kels::NodeRegistration],
         our_node_id: &str,
     ) -> Result<(), StorageError> {
-        // Get current active peers
         let current_peers = self.get_active_peers().await?;
 
-        // Build set of registry node IDs (excluding ourselves)
         let registry_node_ids: std::collections::HashSet<&str> = registry_peers
             .iter()
             .filter(|p| p.node_id != our_node_id)
             .map(|p| p.node_id.as_str())
             .collect();
 
-        // Upsert all registry peers (excluding ourselves)
         for peer in registry_peers {
             if peer.node_id != our_node_id {
                 self.upsert(&peer.node_id, &peer.gossip_multiaddr, true)

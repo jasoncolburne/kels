@@ -388,10 +388,8 @@ impl BootstrapSync {
         prefix: &str,
         local_client: &KelsClient,
     ) -> Result<bool, BootstrapError> {
-        // Create a client for the peer
         let peer_client = KelsClient::new(peer_kels_url);
 
-        // Fetch the full KEL from peer
         let kel = match peer_client.fetch_full_kel(prefix).await {
             Ok(kel) => kel,
             Err(KelsError::KeyNotFound(_)) => return Ok(false),
@@ -408,7 +406,6 @@ impl BootstrapSync {
             prefix
         );
 
-        // Submit to local KELS
         let result = local_client.submit_events(kel.events()).await?;
         if result.accepted {
             info!("Synced KEL for {} ({} events)", prefix, kel.events().len());

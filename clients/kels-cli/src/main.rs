@@ -283,12 +283,10 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("--auto-select requires --registry"))?;
 
-        // Discover nodes and display latency stats
         let nodes = KelsClient::discover_nodes(registry_url)
             .await
             .context("Failed to discover nodes from registry")?;
 
-        // Display latency stats
         println!("{}", "Node Latencies:".cyan());
         for node in &nodes {
             let status_str = match node.status {

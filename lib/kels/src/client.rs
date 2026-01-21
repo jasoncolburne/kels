@@ -395,7 +395,6 @@ impl KelsClient {
             .build()
             .map_err(|e| KelsError::ServerError(format!("Failed to create HTTP client: {}", e)))?;
 
-        // Fetch nodes from registry
         let url = format!("{}/api/nodes", registry_url.trim_end_matches('/'));
         let resp = client.get(&url).send().await?;
 

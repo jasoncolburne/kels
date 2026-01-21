@@ -625,7 +625,6 @@ struct SettingsTab: View {
                                 viewModel.selectNode(node)
                             } label: {
                                 HStack {
-                                    // Selection indicator
                                     if viewModel.selectedDiscoveredNode?.nodeId == node.nodeId {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundColor(.green)
@@ -644,10 +643,8 @@ struct SettingsTab: View {
 
                                     Spacer()
 
-                                    // Status badge
                                     statusBadge(for: node.status)
 
-                                    // Latency
                                     if let latency = node.latencyMs {
                                         Text("\(latency)ms")
                                             .font(.caption)
