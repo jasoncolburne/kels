@@ -23,7 +23,7 @@ providers:
     buildMode: local-docker
 
 variables:
-  registryUrl: "http://kels-registry.kels-registry.svc.cluster.local:80"
+  registryUrl: "http://kels-registry.kels-registry.svc.cluster.local"
   rustLogLevel: info
   postgres:
     user: kels_admin

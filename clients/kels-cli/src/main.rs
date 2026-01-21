@@ -13,7 +13,7 @@ use kels::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local:80";
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

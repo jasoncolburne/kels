@@ -37,7 +37,7 @@ class KelsViewModel: ObservableObject {
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
     private let nodeUrlKey = "com.kels.nodeUrl"
-    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local:80"
+    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
     private let defaultNodeUrl = "http://kels.kels-node-a.local"
 
     // Developer tools logging

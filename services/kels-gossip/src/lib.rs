@@ -95,7 +95,7 @@ impl Config {
     pub fn from_env() -> Result<Self, ServiceError> {
         let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| "node-unknown".to_string());
 
-        let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels:80".to_string());
+        let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels".to_string());
 
         let kels_advertise_url = std::env::var("KELS_ADVERTISE_URL")
             .map_err(|_| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;

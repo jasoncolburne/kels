@@ -25,9 +25,9 @@ NC='\033[0m' # No Color
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
 NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.svc.cluster.local}"
 REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry.svc.cluster.local}"
-NODE_A_URL="http://${NODE_A_KELS_HOST}:80"
-NODE_B_URL="http://${NODE_B_KELS_HOST}:80"
-REGISTRY_URL="http://${REGISTRY_HOST}:80"
+NODE_A_URL="http://${NODE_A_KELS_HOST}"
+NODE_B_URL="http://${NODE_B_KELS_HOST}"
+REGISTRY_URL="http://${REGISTRY_HOST}"
 
 # Test state
 TESTS_PASSED=0

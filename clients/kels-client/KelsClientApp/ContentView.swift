@@ -559,7 +559,7 @@ struct SettingsTab: View {
     @State private var copiedMessage: String?
     @State private var isDiscovering = false
 
-    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local:80"
+    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
 
     var body: some View {
         NavigationStack {
