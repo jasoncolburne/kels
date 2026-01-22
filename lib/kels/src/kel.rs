@@ -251,6 +251,14 @@ impl Kel {
             return Err(KelsError::InvalidKel("No events to add".to_string()));
         }
 
+        // Validate event structure before processing
+        for signed_event in &events {
+            signed_event
+                .event
+                .validate_structure()
+                .map_err(KelsError::InvalidKel)?;
+        }
+
         if self.is_contested() {
             return Err(KelsError::ContestedKel(
                 "Kel is already contested".to_string(),

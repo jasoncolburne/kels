@@ -342,6 +342,182 @@ impl KeyEvent {
     pub fn decommissions(&self) -> bool {
         self.kind.decommissions()
     }
+
+    /// Validates that the event has the correct fields for its kind.
+    /// Returns Ok(()) if valid, Err with description if invalid.
+    pub fn validate_structure(&self) -> Result<(), String> {
+        use cesr::{Digest, DigestCode, KeyCode, Matter, PublicKey};
+
+        // Helper to check field presence
+        let require = |name: &str, present: bool| -> Result<(), String> {
+            if present {
+                Ok(())
+            } else {
+                Err(format!("{} event requires {}", self.kind, name))
+            }
+        };
+        let forbid = |name: &str, present: bool| -> Result<(), String> {
+            if present {
+                Err(format!("{} event must not have {}", self.kind, name))
+            } else {
+                Ok(())
+            }
+        };
+        let validate_blake3_said = |name: &str, value: &str| -> Result<(), String> {
+            let digest = Digest::from_qb64(value)
+                .map_err(|_| format!("{} is not a valid CESR digest", name))?;
+            if digest.algorithm() != DigestCode::Blake3 {
+                return Err(format!("{} must be a Blake3-256 digest", name));
+            }
+            Ok(())
+        };
+        let validate_secp256r1_key = |name: &str, value: &str| -> Result<(), String> {
+            let key = PublicKey::from_qb64(value)
+                .map_err(|_| format!("{} is not a valid CESR public key", name))?;
+            if key.algorithm() != KeyCode::Secp256r1 {
+                return Err(format!("{} must be a secp256r1 public key", name));
+            }
+            Ok(())
+        };
+
+        // Common: all events require said, prefix
+        require("said", !self.said.is_empty())?;
+        validate_blake3_said("said", &self.said)?;
+        require("prefix", !self.prefix.is_empty())?;
+        validate_blake3_said("prefix", &self.prefix)?;
+
+        // Validate optional SAID fields when present
+        if let Some(ref prev) = self.previous {
+            validate_blake3_said("previous", prev)?;
+        }
+        if let Some(ref hash) = self.rotation_hash {
+            validate_blake3_said("rotationHash", hash)?;
+        }
+        if let Some(ref hash) = self.recovery_hash {
+            validate_blake3_said("recoveryHash", hash)?;
+        }
+        if let Some(ref anchor) = self.anchor {
+            validate_blake3_said("anchor", anchor)?;
+        }
+
+        // Validate public key fields when present
+        if let Some(ref key) = self.public_key {
+            validate_secp256r1_key("publicKey", key)?;
+        }
+        if let Some(ref key) = self.recovery_key {
+            validate_secp256r1_key("recoveryKey", key)?;
+        }
+
+        match self.kind {
+            EventKind::Icp => {
+                // Inception: version=0, no previous, has public_key, rotation_hash, recovery_hash
+                if self.version != 0 {
+                    return Err("icp event must have version 0".to_string());
+                }
+                forbid("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("rotationHash", self.rotation_hash.is_some())?;
+                require("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("recoveryKey", self.recovery_key.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Dip => {
+                // Delegated inception: same as icp but requires delegatingPrefix
+                if self.version != 0 {
+                    return Err("dip event must have version 0".to_string());
+                }
+                forbid("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("rotationHash", self.rotation_hash.is_some())?;
+                require("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("recoveryKey", self.recovery_key.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                require("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Rot => {
+                // Rotation: version>0, has previous, public_key, rotation_hash
+                if self.version == 0 {
+                    return Err("rot event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("rotationHash", self.rotation_hash.is_some())?;
+                forbid("recoveryKey", self.recovery_key.is_some())?;
+                forbid("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Ixn => {
+                // Interaction: version>0, has previous and anchor, no keys
+                if self.version == 0 {
+                    return Err("ixn event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("anchor", self.anchor.is_some())?;
+                forbid("publicKey", self.public_key.is_some())?;
+                forbid("rotationHash", self.rotation_hash.is_some())?;
+                forbid("recoveryKey", self.recovery_key.is_some())?;
+                forbid("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Rec => {
+                // Recovery: version>0, has previous, all key fields
+                if self.version == 0 {
+                    return Err("rec event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("rotationHash", self.rotation_hash.is_some())?;
+                require("recoveryKey", self.recovery_key.is_some())?;
+                require("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Ror => {
+                // Recovery rotation: same as rec
+                if self.version == 0 {
+                    return Err("ror event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("rotationHash", self.rotation_hash.is_some())?;
+                require("recoveryKey", self.recovery_key.is_some())?;
+                require("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Dec => {
+                // Decommission: version>0, has previous, public_key, recovery_key
+                // No future keys (rotation_hash, recovery_hash) since KEL ends
+                if self.version == 0 {
+                    return Err("dec event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("recoveryKey", self.recovery_key.is_some())?;
+                forbid("rotationHash", self.rotation_hash.is_some())?;
+                forbid("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+            EventKind::Cnt => {
+                // Contest: same as dec
+                if self.version == 0 {
+                    return Err("cnt event must have version > 0".to_string());
+                }
+                require("previous", self.previous.is_some())?;
+                require("publicKey", self.public_key.is_some())?;
+                require("recoveryKey", self.recovery_key.is_some())?;
+                forbid("rotationHash", self.rotation_hash.is_some())?;
+                forbid("recoveryHash", self.recovery_hash.is_some())?;
+                forbid("anchor", self.anchor.is_some())?;
+                forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
