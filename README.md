@@ -62,12 +62,12 @@ kels/
 | Type | Description | Signatures Required |
 |------|-------------|---------------------|
 | `icp` | Inception - creates the KEL | Signing key |
-| `rot` | Rotation - rotates signing key | Signing key |
+| `rot` | Rotation - rotates signing key | Rotation key |
 | `ixn` | Interaction - anchors external data | Signing key |
-| `ror` | Recovery rotation - rotates recovery key | Signing + Recovery |
+| `ror` | Recovery rotation - rotates recovery key | Rotation + Recovery |
 | `rec` | Recovery - recovers from divergence | Rotation + Recovery |
 | `cnt` | Contest - freezes KEL permanently | Rotation + Recovery |
-| `dec` | Decommission - ends the KEL | Signing + Recovery |
+| `dec` | Decommission - ends the KEL | Rotation + Recovery |
 
 ## Quick Start
 
