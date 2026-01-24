@@ -16,19 +16,15 @@ use crate::repository::{
 use kels::{KelStore, RepositoryKelStore};
 use verifiable_storage::{RepositoryConnection, VersionedRepository};
 
-/// Create and configure the Axum router
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
-        // Health
         .route("/health", get(handlers::health))
-        // Identity operations
         .route("/api/identity", get(handlers::get_identity))
         .route("/api/identity/kel", get(handlers::get_kel))
         .route("/api/identity/anchor", post(handlers::anchor))
         .with_state(state)
 }
 
-/// Run the HTTP server
 pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     use crate::hsm::HsmKeyProvider;
     use kels::{KeyEventBuilder, KeyProvider};
@@ -36,8 +32,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
     let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
-
-    // Allows multiple identity services to share one HSM
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
 
@@ -60,7 +54,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     ));
     let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(kel_repo.clone()));
 
-    // Try to restore identity from authority marker + HSM binding, or auto-incept
     let builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
     {
         let prefix = mapping.kel_prefix.clone();
@@ -78,20 +71,19 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             binding.next_key_handle
         );
 
+        // next_label_generation = binding.version + 2 (keys 0..version+1 exist, next is version+2)
         let provider = HsmKeyProvider::with_handles(
             hsm.clone(),
             &key_handle_prefix,
-            binding.version + 2, // next generation
+            binding.version + 2,
             binding.current_key_handle.into(),
             binding.next_key_handle.into(),
         );
         let key_provider = KeyProvider::external(Box::new(provider));
 
-        // Create builder with store and prefix - auto-loads KEL
-        // No KelsClient - identity service is authoritative for its own KEL
         KeyEventBuilder::with_dependencies(
             key_provider,
-            None, // No KelsClient - we ARE the authority
+            None,
             Some(kel_store.clone()),
             Some(&prefix),
         )
@@ -100,21 +92,18 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("No existing identity - auto-incepting");
 
-        // Create HSM key provider for inception (will generate keys 0 and 1)
         let provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0);
         let key_provider = KeyProvider::external(Box::new(provider));
 
-        // Create builder with store, no prefix - ready for incept
         let mut builder = KeyEventBuilder::with_dependencies(
             key_provider,
-            None, // No KelsClient - we ARE the authority
+            None,
             Some(kel_store.clone()),
             None,
         )
         .await
         .map_err(|e| format!("Failed to create builder: {}", e))?;
 
-        // Incept - generates keys, creates event, signs, saves locally
         let (event, _signature) = builder
             .incept()
             .await
@@ -122,7 +111,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
         tracing::info!("Generated registry prefix: {}", event.prefix);
 
-        // Get key handles from the provider for HSM binding persistence
         let current_handle = builder
             .key_provider()
             .current_handle()
@@ -176,7 +164,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Wait for SIGTERM or SIGINT signal
 async fn shutdown_signal() {
     use tokio::signal;
 
@@ -196,7 +183,6 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::error!("Failed to install SIGTERM handler: {}", e);
-                // Wait forever since we can't receive SIGTERM
                 std::future::pending::<()>().await;
             }
         }

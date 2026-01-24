@@ -112,8 +112,6 @@ pub struct ListKeysResponse {
     pub keys: Vec<String>,
 }
 
-// ==================== Error Handling ====================
-
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
 impl ApiError {
@@ -153,8 +151,6 @@ impl IntoResponse for ApiError {
         (self.0, self.1).into_response()
     }
 }
-
-// ==================== Handlers ====================
 
 /// Health check
 pub async fn health() -> StatusCode {

@@ -193,8 +193,6 @@ impl NetworkBehaviour for AllowlistBehaviour {
     }
 }
 
-// ==================== Allowlist Refresh ====================
-
 #[derive(Error, Debug)]
 pub enum AllowlistRefreshError {
     #[error("HTTP error: {0}")]

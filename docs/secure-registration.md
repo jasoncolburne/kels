@@ -13,14 +13,21 @@ Each node has a persistent secp256r1 identity stored in an HSM (the example impl
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         kels-registry                               │
-│  ┌─────────────────┐    ┌──────────────────────────────────────┐    │
-│  │  Peer Allowlist │    │  Registration Verification           │    │
-│  │  (PostgreSQL)   │───>│  - Verify signature on payload       │    │
-│  │  [PeerId list]  │    │  - Check PeerId in allowlist         │    │
-│  └─────────────────┘    └──────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            kels-registry namespace                            │
+│                                                                               │
+│  ┌────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
+│  │  identity  │───>│  Peer Allowlist │───>│  Registration Verification   │   │
+│  │  service   │    │  (PostgreSQL)   │    │  - Verify signature          │   │
+│  │ (1 replica)│    │  [PeerId list]  │    │  - Check PeerId in allowlist │   │
+│  └─────┬──────┘    └─────────────────┘    └──────────────────────────────┘   │
+│        │                                                                      │
+│        ▼                                                                      │
+│  ┌───────────┐                                                               │
+│  │    HSM    │  (manages registry's KELS identity)                           │
+│  │(SoftHSM2) │                                                               │
+│  └───────────┘                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
                                     ▲
                                     │ Signed HTTP requests
         ┌───────────────────────────┼───────────────────────────┐
@@ -39,6 +46,18 @@ Each node has a persistent secp256r1 identity stored in an HSM (the example impl
 │ └───────────┘ │           │ └───────────┘ │           │ └───────────┘ │
 └───────────────┘           └───────────────┘           └───────────────┘
 ```
+
+### Identity Service
+
+The registry namespace includes a dedicated identity service (single replica) that manages the registry's own KELS identity. This separation prevents race conditions when multiple registry replicas attempt identity operations simultaneously.
+
+**Identity Service API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/identity` | Get registry prefix |
+| `GET` | `/api/identity/kel` | Get registry's full KEL |
+| `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
 
 ## Components
 
@@ -320,7 +339,8 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 ```
 kels-registry/
 ├── hsm (SoftHSM2 service)
-├── postgres (peer allowlist)
+├── identity (manages registry's KELS identity, 1 replica)
+├── postgres (peer allowlist + identity KEL)
 ├── redis (node registrations)
 └── kels-registry
 ```

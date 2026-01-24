@@ -19,10 +19,8 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Think about security surrounding registration of nodes. Right now, anyone could poison the pool
-by posing as a ready node and serving no prefixes in a system with many prefixes.
-2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-3. Build a complete example with a use case that kels solves
+1. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+2. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
@@ -34,7 +32,10 @@ kels/
 ├── services/
 │   ├── kels/           # HTTP API server
 │   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
-│   └── kels-registry/  # Node registration and discovery service
+│   ├── kels-registry/  # Node registration and discovery service
+│   ├── identity/       # Registry identity service (single replica)
+│   ├── hsm/            # HSM service (SoftHSM2 wrapper)
+│   └── postgres/       # PostgreSQL configuration
 ├── clients/
 │   ├── kels-cli/       # Command-line interface
 │   ├── kels-bench/     # Benchmarking tool
@@ -56,6 +57,8 @@ kels/
 - **Server-side caching**: Optional Redis + Local LRU caching for high-throughput deployments (enabled by default for the garden example)
 
 - **Cross-deployment gossip**: libp2p-based gossip protocol synchronizes KELs between independent deployments for high availability
+
+- **Secure node registration**: HSM-backed identities with cryptographic peer allowlist - only authorized nodes can register and participate in gossip
 
 ## Event Types
 
@@ -87,6 +90,9 @@ make clippy       # Run clippy lints
 make test         # Run tests
 make deny         # Check dependencies (requires cargo-deny)
 make clean        # Clean build artifacts
+
+# Comprehensive integration tests (requires Garden + Kubernetes)
+make test-comprehensive   # Deploy all services and run full test suite
 ```
 
 ### Running the Server
@@ -255,6 +261,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Attack Surface](docs/attack-surface.md) - Security analysis
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
 - [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
+- [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
 
 ## License
 

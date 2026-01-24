@@ -1,6 +1,4 @@
 //! Client for the identity service
-//!
-//! Used by kels-registry to fetch the registry's KEL and anchor SAIDs.
 
 use kels::{Kel, KelsError};
 use reqwest::Client;
@@ -31,7 +29,6 @@ struct ErrorResponse {
     error: String,
 }
 
-/// Client for interacting with the identity service.
 pub struct IdentityClient {
     client: Client,
     base_url: String,
@@ -45,7 +42,13 @@ impl IdentityClient {
         }
     }
 
-    /// Get the registry's prefix from the identity service.
+    async fn request_error(&self, response: reqwest::Response) -> KelsError {
+        match response.json::<ErrorResponse>().await {
+            Ok(e) => KelsError::ServerError(e.error),
+            Err(e) => KelsError::ServerError(format!("Failed to parse error: {}", e)),
+        }
+    }
+
     pub async fn get_prefix(&self) -> Result<String, KelsError> {
         let url = format!("{}/api/identity", self.base_url);
 
@@ -57,11 +60,7 @@ impl IdentityClient {
             .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            let error: ErrorResponse = response
-                .json()
-                .await
-                .map_err(|e| KelsError::ServerError(format!("Failed to parse error: {}", e)))?;
-            return Err(KelsError::ServerError(error.error));
+            return Err(self.request_error(response).await);
         }
 
         let info: IdentityInfo = response
@@ -72,7 +71,6 @@ impl IdentityClient {
         Ok(info.prefix)
     }
 
-    /// Get the registry's full KEL from the identity service.
     pub async fn get_kel(&self) -> Result<Kel, KelsError> {
         let url = format!("{}/api/identity/kel", self.base_url);
 
@@ -84,11 +82,7 @@ impl IdentityClient {
             .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            let error: ErrorResponse = response
-                .json()
-                .await
-                .map_err(|e| KelsError::ServerError(format!("Failed to parse error: {}", e)))?;
-            return Err(KelsError::ServerError(error.error));
+            return Err(self.request_error(response).await);
         }
 
         let kel: Kel = response
@@ -99,28 +93,19 @@ impl IdentityClient {
         Ok(kel)
     }
 
-    /// Anchor a SAID in the registry's KEL via the identity service.
     pub async fn anchor(&self, said: &str) -> Result<(String, u64), KelsError> {
         let url = format!("{}/api/identity/anchor", self.base_url);
-
-        let request = AnchorRequest {
-            said: said.to_string(),
-        };
 
         let response = self
             .client
             .post(&url)
-            .json(&request)
+            .json(&AnchorRequest { said: said.to_string() })
             .send()
             .await
             .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            let error: ErrorResponse = response
-                .json()
-                .await
-                .map_err(|e| KelsError::ServerError(format!("Failed to parse error: {}", e)))?;
-            return Err(KelsError::ServerError(error.error));
+            return Err(self.request_error(response).await);
         }
 
         let resp: AnchorResponse = response
