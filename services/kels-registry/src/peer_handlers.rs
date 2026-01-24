@@ -120,5 +120,7 @@ pub async fn list_peers(
         .filter(|h| h.records.first().is_some_and(|r| r.active))
         .collect();
 
-    Ok(Json(PeersResponse { peers: active_histories }))
+    Ok(Json(PeersResponse {
+        peers: active_histories,
+    }))
 }

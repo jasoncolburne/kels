@@ -52,12 +52,9 @@ impl IdentityClient {
     pub async fn get_prefix(&self) -> Result<String, KelsError> {
         let url = format!("{}/api/identity", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            KelsError::ServerError(format!("Identity service request failed: {}", e))
+        })?;
 
         if !response.status().is_success() {
             return Err(self.request_error(response).await);
@@ -74,12 +71,9 @@ impl IdentityClient {
     pub async fn get_kel(&self) -> Result<Kel, KelsError> {
         let url = format!("{}/api/identity/kel", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            KelsError::ServerError(format!("Identity service request failed: {}", e))
+        })?;
 
         if !response.status().is_success() {
             return Err(self.request_error(response).await);
@@ -99,10 +93,14 @@ impl IdentityClient {
         let response = self
             .client
             .post(&url)
-            .json(&AnchorRequest { said: said.to_string() })
+            .json(&AnchorRequest {
+                said: said.to_string(),
+            })
             .send()
             .await
-            .map_err(|e| KelsError::ServerError(format!("Identity service request failed: {}", e)))?;
+            .map_err(|e| {
+                KelsError::ServerError(format!("Identity service request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             return Err(self.request_error(response).await);

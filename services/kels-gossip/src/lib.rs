@@ -121,8 +121,7 @@ impl Config {
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| ServiceError::Config("DATABASE_URL is required".to_string()))?;
 
-        let hsm_url = std::env::var("HSM_URL")
-            .unwrap_or_else(|_| "http://hsm".to_string());
+        let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm".to_string());
 
         let registry_url = std::env::var("REGISTRY_URL").ok();
         let registry_prefix = std::env::var("REGISTRY_PREFIX")
@@ -254,11 +253,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     };
 
     let heartbeat_client = registry_client.clone();
-    let bootstrap = BootstrapSync::new(
-        bootstrap_config.clone(),
-        peer_repo.clone(),
-        registry_client,
-    );
+    let bootstrap =
+        BootstrapSync::new(bootstrap_config.clone(), peer_repo.clone(), registry_client);
 
     // Step 2-3: Check allowlist and wait if not authorized
     let peer_id_str = peer_id.to_string();
@@ -289,7 +285,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 tokio::time::sleep(Duration::from_secs(300)).await;
             }
             Err(e) => {
-                warn!("Failed to check allowlist: {}. Retrying in 30 seconds...", e);
+                warn!(
+                    "Failed to check allowlist: {}. Retrying in 30 seconds...",
+                    e
+                );
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         }
@@ -340,7 +339,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Initial allowlist refresh before starting gossip (so we accept authorized peers)
     match allowlist::refresh_allowlist(registry_url, &config.registry_prefix, &allowlist).await {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
-        Err(e) => warn!("Initial allowlist refresh failed: {} - starting with empty allowlist", e),
+        Err(e) => warn!(
+            "Initial allowlist refresh failed: {} - starting with empty allowlist",
+            e
+        ),
     }
 
     // Start gossip swarm in background
@@ -376,7 +378,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                         info!("Connected to peer: {}", connected_peer);
                         return true;
                     }
-                    Some(_) => continue, // Ignore other events
+                    Some(_) => continue,  // Ignore other events
                     None => return false, // Channel closed
                 }
             }
@@ -386,9 +388,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         match peer_connected {
             Ok(true) => {
                 // Resync to catch events missed between preload and connection
-                info!(
-                    "Performing resync to catch events missed during unauthorized period..."
-                );
+                info!("Performing resync to catch events missed during unauthorized period...");
                 if let Err(e) = bootstrap.resync_kels().await {
                     error!("Resync failed: {}", e);
                 }
@@ -450,4 +450,3 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
     }
 }
-

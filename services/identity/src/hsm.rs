@@ -104,7 +104,9 @@ impl HsmOperations for HsmClient {
         let response = self
             .client
             .post(&url)
-            .json(&GenerateKeyRequest { label: label.to_string() })
+            .json(&GenerateKeyRequest {
+                label: label.to_string(),
+            })
             .send()
             .await
             .map_err(|e| KelsError::HardwareError(format!("HSM request failed: {}", e)))?;

@@ -96,14 +96,10 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         let provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0);
         let key_provider = KeyProvider::external(Box::new(provider));
 
-        let mut builder = KeyEventBuilder::with_dependencies(
-            key_provider,
-            None,
-            Some(kel_store.clone()),
-            None,
-        )
-        .await
-        .map_err(|e| format!("Failed to create builder: {}", e))?;
+        let mut builder =
+            KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)
+                .await
+                .map_err(|e| format!("Failed to create builder: {}", e))?;
 
         let (event, _signature) = builder
             .incept()

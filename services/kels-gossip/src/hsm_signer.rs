@@ -2,14 +2,10 @@
 //!
 //! Implements the ExternalSigner trait to allow libp2p to use HSM-stored keys.
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64};
+use base64::{engine::general_purpose::URL_SAFE as BASE64, Engine as _};
 use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
 use libp2p_identity::ExternalSigner;
-use p256::{
-    ecdsa::DerSignature,
-    elliptic_curve::sec1::ToEncodedPoint,
-    PublicKey as P256PublicKey,
-};
+use p256::{ecdsa::DerSignature, elliptic_curve::sec1::ToEncodedPoint, PublicKey as P256PublicKey};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -171,8 +167,9 @@ impl HsmSigner {
         s_bytes.copy_from_slice(&raw[32..]);
 
         // Create p256 signature from components and convert to DER
-        let signature = p256::ecdsa::Signature::from_scalars(r_bytes, s_bytes)
-            .map_err(|e| HsmSignerError::Signature(format!("Invalid signature components: {}", e)))?;
+        let signature = p256::ecdsa::Signature::from_scalars(r_bytes, s_bytes).map_err(|e| {
+            HsmSignerError::Signature(format!("Invalid signature components: {}", e))
+        })?;
 
         let der: DerSignature = signature.to_der();
         Ok(der.as_bytes().to_vec())

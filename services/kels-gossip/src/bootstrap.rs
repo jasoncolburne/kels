@@ -232,7 +232,10 @@ impl BootstrapSync {
     pub async fn preload_kels(&self) -> Result<(), BootstrapError> {
         // Get current Ready peers via unauthenticated endpoint
         let peers = match self.registry.list_nodes(Some(&self.config.node_id)).await {
-            Ok(nodes) => nodes.into_iter().filter(|n| n.status == NodeStatus::Ready).collect::<Vec<_>>(),
+            Ok(nodes) => nodes
+                .into_iter()
+                .filter(|n| n.status == NodeStatus::Ready)
+                .collect::<Vec<_>>(),
             Err(e) => {
                 warn!("Failed to fetch Ready peers for preload: {}", e);
                 return Ok(()); // Continue waiting, don't fail

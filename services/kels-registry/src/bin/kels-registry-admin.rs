@@ -3,7 +3,7 @@
 //! This CLI manages the peer allowlist in the kels-registry.
 //! It connects to PostgreSQL for peer data and the identity service for KEL operations.
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
 use kels::Peer;
 use std::sync::Arc;
@@ -150,7 +150,11 @@ async fn add_peer(ctx: &AdminContext, peer_id: &str, node_id: &str) -> anyhow::R
         .await
         .context("Failed to anchor peer SAID in KEL")?;
 
-    let action = if peer.version == 0 { "Added" } else { "Updated" };
+    let action = if peer.version == 0 {
+        "Added"
+    } else {
+        "Updated"
+    };
     println!("{} peer {} (node: {})", action, peer_id, node_id);
     println!("Version: {} (SAID: {})", peer.version, peer.said);
     Ok(())

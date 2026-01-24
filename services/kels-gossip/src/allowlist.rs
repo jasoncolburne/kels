@@ -4,8 +4,8 @@
 
 use libp2p::swarm::behaviour::ConnectionEstablished;
 use libp2p::swarm::{
-    CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm,
-    NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+    CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
+    THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
 };
 use libp2p::{Multiaddr, PeerId};
 use std::collections::HashSet;
@@ -257,8 +257,12 @@ pub async fn refresh_allowlist(
     let peers_response = client.get(&peers_url).send().await?;
     let peers_text = peers_response.text().await?;
     debug!("Peers response: {}", peers_text);
-    let response: PeersResponse = serde_json::from_str(&peers_text)
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(format!("JSON parse error: {} - body: {}", e, peers_text)))?;
+    let response: PeersResponse = serde_json::from_str(&peers_text).map_err(|e| {
+        AllowlistRefreshError::KelVerificationFailed(format!(
+            "JSON parse error: {} - body: {}",
+            e, peers_text
+        ))
+    })?;
 
     let mut authorized_peers = HashSet::new();
 

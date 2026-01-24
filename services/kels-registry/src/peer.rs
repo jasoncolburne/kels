@@ -10,11 +10,7 @@ mod tests {
 
     #[test]
     fn test_peer_creation() {
-        let peer = Peer::create(
-            "12D3KooWExample".to_string(),
-            "node-a".to_string(),
-            true,
-        ).unwrap();
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
 
         assert!(peer.active);
         assert_eq!(peer.version, 0);
@@ -27,11 +23,7 @@ mod tests {
 
     #[test]
     fn test_peer_deactivation() {
-        let peer = Peer::create(
-            "12D3KooWExample".to_string(),
-            "node-a".to_string(),
-            true,
-        ).unwrap();
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
 
         let deactivated = peer.deactivate().unwrap();
 
@@ -43,11 +35,7 @@ mod tests {
 
     #[test]
     fn test_peer_reactivation() {
-        let peer = Peer::create(
-            "12D3KooWExample".to_string(),
-            "node-a".to_string(),
-            true,
-        ).unwrap();
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
 
         let deactivated = peer.deactivate().unwrap();
         let reactivated = deactivated.reactivate().unwrap();

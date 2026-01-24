@@ -34,7 +34,10 @@ pub fn create_router(
         .with_state(state)
         .route("/api/peers", get(peer_handlers::list_peers))
         .with_state(repo)
-        .route("/api/registry-kel", get(registry_kel_handlers::get_registry_kel))
+        .route(
+            "/api/registry-kel",
+            get(registry_kel_handlers::get_registry_kel),
+        )
         .with_state(registry_kel_state)
 }
 
@@ -69,11 +72,14 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     let repo = Arc::new(repo);
     let store = RegistryStore::new(redis_conn, "kels-registry", heartbeat_timeout_secs);
-    let state = Arc::new(AppState { store, repo: repo.clone() });
+    let state = Arc::new(AppState {
+        store,
+        repo: repo.clone(),
+    });
 
     // Connect to identity service to get the registry's prefix
-    let identity_url = std::env::var("IDENTITY_URL")
-        .unwrap_or_else(|_| "http://identity:80".to_string());
+    let identity_url =
+        std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity:80".to_string());
     tracing::info!("Connecting to identity service at {}", identity_url);
     let identity_client = Arc::new(IdentityClient::new(&identity_url));
 

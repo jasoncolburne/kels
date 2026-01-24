@@ -5,8 +5,8 @@
 
 use cesr::{Matter, PublicKey, Signature};
 use libp2p_identity::PeerId;
-use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use p256::EncodedPoint;
+use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -65,8 +65,8 @@ pub fn verify_signature(
     let derived_peer_id = libp2p_keypair_pubkey.to_peer_id();
 
     // Parse the claimed PeerId
-    let claimed_peer_id = PeerId::from_str(peer_id_str)
-        .map_err(|e| SignatureError::InvalidPeerId(e.to_string()))?;
+    let claimed_peer_id =
+        PeerId::from_str(peer_id_str).map_err(|e| SignatureError::InvalidPeerId(e.to_string()))?;
 
     if derived_peer_id != claimed_peer_id {
         return Err(SignatureError::PeerIdMismatch {
