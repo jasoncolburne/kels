@@ -6,7 +6,10 @@ use redis::aio::ConnectionManager;
 use thiserror::Error;
 
 // Re-export shared types from kels library
-pub use kels::{NodeRegistration, NodeStatus, RegisterNodeRequest, StatusUpdateRequest};
+pub use kels::{
+    DeregisterRequest, HeartbeatRequest, NodeRegistration, NodeStatus, NodeType,
+    RegisterNodeRequest, StatusUpdateRequest,
+};
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -56,6 +59,7 @@ impl RegistryStore {
         let now = Utc::now();
         let registration = NodeRegistration {
             node_id: request.node_id.clone(),
+            node_type: request.node_type,
             kels_url: request.kels_url,
             kels_url_internal: request.kels_url_internal,
             gossip_multiaddr: request.gossip_multiaddr,
@@ -229,7 +233,10 @@ impl RegistryStore {
         for json_opt in values.into_iter().flatten() {
             if let Ok(mut registration) = serde_json::from_str::<NodeRegistration>(&json_opt) {
                 self.check_health(&mut registration);
-                if registration.status == NodeStatus::Ready {
+                // Only include KELS nodes that are ready (exclude Registry nodes)
+                if registration.node_type == NodeType::Kels
+                    && registration.status == NodeStatus::Ready
+                {
                     registrations.push(registration);
                     if registrations.len() > limit {
                         break;

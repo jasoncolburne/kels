@@ -1,4 +1,5 @@
 -- KELS Gossip initial schema for PostgreSQL
+BEGIN;
 
 -- Peer cache table for registry fallback
 CREATE TABLE IF NOT EXISTS kels_gossip_peers (
@@ -18,3 +19,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS kels_gossip_peers_node_id_version_idx ON kels_
 CREATE INDEX IF NOT EXISTS kels_gossip_peers_active_idx ON kels_gossip_peers(active);
 -- Index for looking up latest version by node_id
 CREATE INDEX IF NOT EXISTS kels_gossip_peers_node_id_idx ON kels_gossip_peers(node_id);
+
+COMMIT;

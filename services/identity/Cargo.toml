@@ -1,0 +1,82 @@
+[package]
+name = "identity"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "Identity service - HSM-backed key management for KELS registry"
+
+[[bin]]
+name = "identity"
+path = "src/main.rs"
+
+[[bin]]
+name = "identity-admin"
+path = "src/bin/admin.rs"
+
+[lib]
+name = "identity"
+path = "src/lib.rs"
+
+[dependencies]
+# Local libraries
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+libkels = { path = "../../lib/kels", features = ["redis"] }
+libkels-derive = { path = "../../lib/kels-derive" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time with microsecond precision
+chrono = "0.4"
+
+# Error handling
+thiserror = "1"
+
+# Async traits
+async-trait = "0.1"
+
+# HTTP client for kels and HSM services
+reqwest = { version = "0.12", features = ["json"] }
+
+# Base64 encoding
+base64 = "0.22"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling for CLI
+anyhow = "1"
+
+# Colored output
+colored = "2"
+
+[features]
+default = []
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

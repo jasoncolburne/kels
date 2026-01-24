@@ -1,4 +1,5 @@
 -- KELS initial schema for PostgreSQL
+BEGIN;
 
 -- Key events table
 CREATE TABLE IF NOT EXISTS kels_key_events (
@@ -42,3 +43,5 @@ CREATE TABLE IF NOT EXISTS kels_audit_records (
 
 CREATE INDEX IF NOT EXISTS kels_audit_records_kel_prefix_idx ON kels_audit_records(kel_prefix);
 CREATE INDEX IF NOT EXISTS kels_audit_records_kind_idx ON kels_audit_records(kind);
+
+COMMIT;

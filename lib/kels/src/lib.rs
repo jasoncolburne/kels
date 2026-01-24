@@ -38,14 +38,15 @@ pub use file_store::FileKelStore;
 pub use hardware::HardwareKeyProvider;
 pub use kel::Kel;
 pub use kel::compute_rotation_hash;
-pub use registry_client::KelsRegistryClient;
+pub use registry_client::{KelsRegistryClient, RegistrySigner, SignResult};
 pub use repository::SignedEventRepository;
 pub use repository_store::RepositoryKelStore;
 pub use store::KelStore;
 pub use types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,
-    ErrorCode, ErrorResponse, EventKind, EventSignature, KelMergeResult, KelResponse,
-    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus,
-    NodesResponse, PrefixListResponse, PrefixState, RecoveryOutcome, RegisterNodeRequest,
-    SignedKeyEvent, StatusUpdateRequest,
+    DeregisterRequest, ErrorCode, ErrorResponse, EventKind, EventSignature, HeartbeatRequest,
+    KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
+    NodeRegistration, NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeersResponse,
+    PrefixListResponse, PrefixState, RecoveryOutcome, RegisterNodeRequest, SignedKeyEvent,
+    SignedRequest, StatusUpdateRequest,
 };

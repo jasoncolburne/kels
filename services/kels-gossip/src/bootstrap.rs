@@ -1,15 +1,27 @@
 //! Bootstrap synchronization for new gossip nodes.
 //!
 //! When a new node joins the network, it needs to sync existing KELs from peers.
-//! The bootstrap process is split into phases to avoid missing events:
+//! The bootstrap process handles the allowlist authorization check and avoids
+//! missing events during the transition from unauthorized to authorized state.
 //!
-//! 1. **discover_peers()**: Query registry, register as Bootstrapping, return peer list
-//! 2. Start gossip swarm with discovered peers (now receiving events)
-//! 3. **sync_kels()**: Fetch and submit KELs from peers (events arriving during sync are handled)
-//! 4. **mark_ready()**: Update status to Ready
+//! # Algorithm
 //!
-//! This ordering ensures we're listening for gossip updates before and during KEL sync,
-//! preventing race conditions where events could be missed.
+//! 1. **Authorization check**: Check if peer is in allowlist via `/api/peers`
+//! 2. **If NOT authorized**: Loop:
+//!    - Log alert with PeerId (so admin can add it)
+//!    - **preload_kels()**: Sync KELs from Ready peers (read-only via HTTP)
+//!    - Sleep 5 minutes and recheck allowlist
+//! 3. **Once authorized**:
+//!    - **discover_peers()**: Query registry, register as Bootstrapping
+//!    - Start gossip swarm with discovered peers
+//! 4. **If Ready peers exist**: Wait for first `PeerConnected` event
+//!    - **resync_kels()**: Catch events missed between preload and connection
+//! 5. **If no Ready peers**: Skip resync (we're the first/only node)
+//! 6. **mark_ready()**: Update status to Ready
+//!
+//! The resync in step 4 is critical: while the node was unauthorized, it could
+//! preload KELs via HTTP. But events occurring between the last preload and
+//! joining the gossip network would be missed. The resync catches these events.
 
 use crate::peer_store::PeerRepository;
 use kels::{
@@ -84,8 +96,12 @@ pub struct BootstrapSync {
 }
 
 impl BootstrapSync {
-    pub fn new(config: BootstrapConfig, peer_repo: Arc<PeerRepository>) -> Self {
-        let registry = KelsRegistryClient::new(&config.registry_url);
+    /// Create a new BootstrapSync with an existing registry client.
+    pub fn new(
+        config: BootstrapConfig,
+        peer_repo: Arc<PeerRepository>,
+        registry: KelsRegistryClient,
+    ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -126,6 +142,7 @@ impl BootstrapSync {
                                 .into_iter()
                                 .map(|p| NodeRegistration {
                                     node_id: p.node_id,
+                                    node_type: kels::NodeType::Kels,
                                     kels_url: String::new(),
                                     kels_url_internal: None,
                                     gossip_multiaddr: p.gossip_multiaddr,
@@ -193,16 +210,85 @@ impl BootstrapSync {
         })
     }
 
-    /// Phase 2: Sync KELs from discovered peers.
+    /// Phase 2: Initial sync of KELs from discovered peers.
     /// Call this AFTER the gossip swarm is running so we receive events during sync.
     pub async fn sync_kels(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
         if peers.is_empty() {
             return Ok(());
         }
 
-        info!("Starting KEL sync from {} peer(s)", peers.len());
+        info!("Starting initial KEL sync from {} peer(s)", peers.len());
         self.sync_from_peers(peers).await?;
-        info!("KEL sync complete");
+        info!("Initial KEL sync complete");
+
+        Ok(())
+    }
+
+    /// Preload KELs from Ready peers while not yet in the allowlist.
+    ///
+    /// This allows unauthorized nodes to stay in sync with KEL data while waiting
+    /// to be added to the allowlist. Called in the unauthorized wait loop.
+    /// No registration is performed - just HTTP-based KEL sync.
+    pub async fn preload_kels(&self) -> Result<(), BootstrapError> {
+        // Get current Ready peers via unauthenticated endpoint
+        let peers = match self.registry.list_nodes(Some(&self.config.node_id)).await {
+            Ok(nodes) => nodes.into_iter().filter(|n| n.status == NodeStatus::Ready).collect::<Vec<_>>(),
+            Err(e) => {
+                warn!("Failed to fetch Ready peers for preload: {}", e);
+                return Ok(()); // Continue waiting, don't fail
+            }
+        };
+
+        if peers.is_empty() {
+            info!("No Ready peers found for preload");
+            return Ok(());
+        }
+
+        info!("Preloading KELs from {} Ready peer(s)...", peers.len());
+        self.sync_from_peers(&peers).await?;
+        info!("KEL preload complete");
+
+        Ok(())
+    }
+
+    /// Check if a peer is authorized in the allowlist.
+    pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, BootstrapError> {
+        Ok(self.registry.is_peer_authorized(peer_id).await?)
+    }
+
+    /// Check if there are Ready peers we should resync from.
+    /// Queries /api/nodes/bootstrap to get current Ready peers.
+    pub async fn has_ready_peers(&self) -> bool {
+        match self.registry.list_nodes(Some(&self.config.node_id)).await {
+            Ok(nodes) => !nodes.is_empty(),
+            Err(e) => {
+                warn!("Failed to check for ready peers: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Resync KELs after connecting to the gossip swarm.
+    /// This catches any events that occurred between pre-load and joining gossip.
+    /// Call this after receiving the first PeerConnected event.
+    pub async fn resync_kels(&self) -> Result<(), BootstrapError> {
+        // Get current Ready peers (may be different from initial discovery)
+        let peers = match self.registry.list_nodes(Some(&self.config.node_id)).await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!("Failed to fetch peers for resync: {}", e);
+                return Ok(());
+            }
+        };
+
+        if peers.is_empty() {
+            info!("No Ready peers found, skipping resync");
+            return Ok(());
+        }
+
+        info!("Starting resync from {} Ready peer(s)...", peers.len());
+        self.sync_from_peers(&peers).await?;
+        info!("Resync complete");
 
         Ok(())
     }
@@ -468,8 +554,7 @@ impl BootstrapSync {
 /// Run heartbeat loop in the background.
 /// This keeps the node registered as healthy in the registry.
 /// If the node is not found, it will re-register with the provided config.
-pub async fn run_heartbeat_loop(config: BootstrapConfig) {
-    let client = KelsRegistryClient::new(&config.registry_url);
+pub async fn run_heartbeat_loop(config: BootstrapConfig, client: KelsRegistryClient) {
     let mut ticker = interval(Duration::from_secs(config.heartbeat_interval_secs));
 
     info!(
@@ -486,7 +571,7 @@ pub async fn run_heartbeat_loop(config: BootstrapConfig) {
             }
             Err(KelsError::KeyNotFound(_)) => {
                 // Node was removed from registry, re-register
-                warn!("Node not found in registry, re-registering");
+                warn!("Node not found in registry, attempting re-registration");
                 match client
                     .register(
                         &config.node_id,
@@ -498,11 +583,14 @@ pub async fn run_heartbeat_loop(config: BootstrapConfig) {
                     .await
                 {
                     Ok(_) => info!("Re-registered successfully"),
-                    Err(e) => warn!("Re-registration failed: {}", e),
+                    Err(e) => warn!(
+                        "Re-registration failed (node may not be in allowlist yet): {}",
+                        e
+                    ),
                 }
             }
             Err(e) => {
-                warn!("Heartbeat failed: {}", e);
+                warn!("Heartbeat failed (node may not be in allowlist yet): {}", e);
             }
         }
     }

@@ -22,8 +22,9 @@ COPY services/kels-registry /app/services/kels-registry
 WORKDIR /app/services/kels-registry
 RUN --mount=type=cache,id=kels-registry-cargo,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-registry-target,target=/app/services/kels-registry/target \
-    cargo build --release --bin kels-registry && \
-    cp /app/services/kels-registry/target/release/kels-registry /app/kels-registry
+    cargo build --release --bin kels-registry --bin kels-registry-admin && \
+    cp /app/services/kels-registry/target/release/kels-registry /app/kels-registry && \
+    cp /app/services/kels-registry/target/release/kels-registry-admin /app/kels-registry-admin
 
 # Final stage
 FROM debian:bookworm-slim
@@ -37,8 +38,12 @@ RUN apt-get update && \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy built binary
+# Copy built binaries
 COPY --from=builder /app/kels-registry /app/kels-registry
+COPY --from=builder /app/kels-registry-admin /app/kels-registry-admin
+
+# Copy migrations
+COPY --from=builder /app/services/kels-registry/migrations /app/services/kels-registry/migrations
 
 EXPOSE 80
 

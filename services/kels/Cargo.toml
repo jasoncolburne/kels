@@ -10,10 +10,6 @@ description = "Key Event Log Service - Storage for KERI-inspired key event logs"
 name = "kels"
 path = "src/main.rs"
 
-[[bin]]
-name = "kels-admin"
-path = "src/bin/admin.rs"
-
 [lib]
 name = "kels_service"
 path = "src/lib.rs"
@@ -51,10 +47,6 @@ async-trait = "0.1.89"
 # Redis for KelStreamCache
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 futures-util = "0.3"
-
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
-anyhow = "1"
 
 [dev-dependencies]
 # Testing

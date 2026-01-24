@@ -1,0 +1,26 @@
+kind: Build
+name: hsm
+type: container
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - services/hsm/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/hsm/Dockerfile
+
+---
+
+kind: Deploy
+name: hsm
+type: kubernetes
+
+dependencies:
+  - build.hsm
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

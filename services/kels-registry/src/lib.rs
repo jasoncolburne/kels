@@ -10,8 +10,17 @@
 )]
 
 pub mod handlers;
+pub mod identity_client;
+pub mod peer;
+pub mod peer_handlers;
+pub mod peer_store;
+pub mod registry_kel_handlers;
+pub mod repository;
 pub mod server;
+pub mod signature;
 pub mod store;
 
+pub use peer::{Peer, PeerHistory};
+pub use peer_store::PeerRepository;
 pub use server::run;
 pub use store::{NodeRegistration, NodeStatus, RegistryStore};

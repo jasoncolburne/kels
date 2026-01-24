@@ -693,6 +693,17 @@ pub struct PrefixState {
     pub said: String,
 }
 
+/// Type of node in the registry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeType {
+    /// KELS node that stores and serves KELs
+    #[default]
+    Kels,
+    /// Registry service - participates in gossip but doesn't have KELS
+    Registry,
+}
+
 /// Node status in the registry
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -710,6 +721,9 @@ pub enum NodeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct NodeRegistration {
     pub node_id: String,
+    /// Type of node (KELS node or registry)
+    #[serde(default)]
+    pub node_type: NodeType,
     /// External KELS URL for clients outside the cluster
     pub kels_url: String,
     /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
@@ -726,6 +740,9 @@ pub struct NodeRegistration {
 #[serde(rename_all = "camelCase")]
 pub struct RegisterNodeRequest {
     pub node_id: String,
+    /// Type of node (KELS node or registry)
+    #[serde(default)]
+    pub node_type: NodeType,
     /// External KELS URL for clients outside the cluster
     pub kels_url: String,
     /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
@@ -737,8 +754,24 @@ pub struct RegisterNodeRequest {
 
 /// Request to update node status
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatusUpdateRequest {
+    pub node_id: String,
     pub status: NodeStatus,
+}
+
+/// Request to send a heartbeat (keep registration alive)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatRequest {
+    pub node_id: String,
+}
+
+/// Request to deregister a node
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeregisterRequest {
+    pub node_id: String,
 }
 
 /// Information about a registered KELS node (with client-computed fields)
@@ -799,6 +832,116 @@ pub struct CachedKel {
 pub struct ContestedPrefix {
     #[cfg_attr(feature = "server-caching", cache_key(primary))]
     pub prefix: String,
+}
+
+/// A signed request wrapper for authenticated API calls.
+///
+/// Used to verify that requests come from authorized peers.
+/// Verification flow:
+/// 1. Decode public_key from Base64 (uncompressed SEC1 format)
+/// 2. Verify peer_id matches the public key (PeerId = multihash of public key)
+/// 3. Check peer_id is in the allowlist
+/// 4. Verify signature over canonical JSON of payload using public key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedRequest<T> {
+    /// The actual request payload
+    pub payload: T,
+    /// Base58-encoded libp2p PeerId of the signer (for allowlist lookup)
+    pub peer_id: String,
+    /// Base64-encoded public key (uncompressed SEC1 format, 65 bytes for secp256r1)
+    pub public_key: String,
+    /// Base64-encoded DER signature over the canonical JSON of the payload
+    pub signature: String,
+}
+
+// ==================== Peer Allowlist Types ====================
+
+/// A peer authorized to participate in the KELS gossip network.
+///
+/// Each peer has its own version history, allowing for audit trails of
+/// authorization changes. The `active` field determines current authorization
+/// status - setting it to false effectively removes the peer without losing history.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "peer")]
+#[serde(rename_all = "camelCase")]
+pub struct Peer {
+    /// Content hash (CESR Blake3) - self-addressing identifier
+    #[said]
+    pub said: String,
+
+    /// Stable lineage ID (unique per peer, derived from peer_id)
+    #[prefix]
+    pub prefix: String,
+
+    /// SAID of previous version (None for version 0)
+    #[previous]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+
+    /// Version number (starts at 0)
+    #[version]
+    pub version: u64,
+
+    /// Timestamp when this version was created
+    #[created_at]
+    pub created_at: StorageDatetime,
+
+    /// libp2p PeerId (Base58 encoded)
+    pub peer_id: String,
+
+    /// Human-readable node name (e.g., "node-a")
+    pub node_id: String,
+
+    /// Whether this peer is currently authorized
+    pub active: bool,
+}
+
+impl Peer {
+    /// Create a deactivated version of this peer
+    pub fn deactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
+        let mut peer = self.clone();
+        peer.active = false;
+        peer.increment()?;
+        Ok(peer)
+    }
+
+    /// Create a reactivated version of this peer
+    pub fn reactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
+        let mut peer = self.clone();
+        peer.active = true;
+        peer.increment()?;
+        Ok(peer)
+    }
+}
+
+/// Response containing a peer's complete version chain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerHistory {
+    /// Stable lineage ID (unique per peer)
+    pub prefix: String,
+    /// Complete history, newest first
+    pub records: Vec<Peer>,
+}
+
+impl PeerHistory {
+    /// Get the latest (current) version of this peer
+    pub fn latest(&self) -> Option<&Peer> {
+        self.records.first()
+    }
+
+    /// Check if this peer is currently active
+    pub fn is_active(&self) -> bool {
+        self.latest().map(|p| p.active).unwrap_or(false)
+    }
+}
+
+/// Response from GET /api/peers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersResponse {
+    pub peers: Vec<PeerHistory>,
 }
 
 #[cfg(test)]

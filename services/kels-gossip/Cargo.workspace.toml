@@ -1,0 +1,18 @@
+# Minimal workspace for Docker builds
+# Only includes packages needed for kels-gossip
+[workspace]
+resolver = "2"
+
+members = [
+    "lib/kels",
+    "lib/kels-derive",
+    "services/kels-gossip",
+]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+# Patch libp2p-identity to use our fork with external-signer support
+[patch.crates-io]
+libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer" }

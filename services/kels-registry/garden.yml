@@ -27,7 +27,114 @@ disabled: ${environment.name != 'registry'}
 dependencies:
   - build.kels-registry
   - deploy.redis
+  - deploy.postgres
+  - deploy.identity
+
+variables:
+  kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
+  identityUrl: ${var.identity.url}
 
 spec:
   manifestTemplates:
     - manifests.yml.tpl
+
+---
+
+kind: Run
+name: fetch-registry-prefix
+type: exec
+
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - deploy.identity
+
+spec:
+  command:
+    - bash
+    - -c
+    - |
+      mkdir -p ../../.kels
+      RESPONSE=$(kubectl exec -n ${environment.namespace} deploy/identity -c identity -- \
+        /app/identity-admin -j status 2>/dev/null)
+      PREFIX=$(echo "$RESPONSE" | jq -r '.prefix // empty')
+      if [ -z "$PREFIX" ]; then
+        echo "Error: Could not fetch registry prefix. Is identity service initialized?"
+        echo "Response: $RESPONSE"
+        exit 1
+      fi
+      echo -n "$PREFIX" > "../../.kels/registry_prefix"
+      echo "Registry prefix saved: $PREFIX"
+
+---
+
+kind: Run
+name: add-node-a
+type: exec
+
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - -c
+    - |
+      PEER_ID=$(garden run fetch-gossip-identity --env node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
+      if [ -z "$PEER_ID" ]; then
+        echo "Error: Could not fetch PeerId from node-a"
+        exit 1
+      fi
+      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
+        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-a
+
+---
+
+kind: Run
+name: add-node-b
+type: exec
+
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - -c
+    - |
+      PEER_ID=$(garden run fetch-gossip-identity --env node-b 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
+      if [ -z "$PEER_ID" ]; then
+        echo "Error: Could not fetch PeerId from node-b"
+        exit 1
+      fi
+      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
+        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-b
+
+---
+
+kind: Run
+name: add-node-c
+type: exec
+
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - -c
+    - |
+      PEER_ID=$(garden run fetch-gossip-identity --env node-c 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
+      if [ -z "$PEER_ID" ]; then
+        echo "Error: Could not fetch PeerId from node-c"
+        exit 1
+      fi
+      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
+        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-c
+

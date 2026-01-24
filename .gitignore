@@ -21,6 +21,9 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# Registry prefix (environment-specific)
+.kels/registry_prefix
+
 # Swift/iOS
 clients/kels-client/.build/
 clients/kels-client/KelsClientApp/Generated.swift

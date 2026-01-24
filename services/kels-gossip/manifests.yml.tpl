@@ -48,6 +48,17 @@ spec:
                 sleep 2;
               done;
               echo "Redis is ready!";
+        - name: wait-for-hsm
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z ${var.hsm.host} ${var.hsm.port}; do
+                echo "Waiting for HSM...";
+                sleep 2;
+              done;
+              echo "HSM is ready!";
       containers:
         - name: kels-gossip
           image: ${actions.build.kels-gossip.outputs.deployment-image-id}
@@ -69,8 +80,12 @@ spec:
               value: "${var.redis.url}"
             - name: DATABASE_URL
               value: "${var.kelsGossipDatabaseUrl}"
+            - name: HSM_URL
+              value: "${var.hsm.url}"
             - name: REGISTRY_URL
               value: "${var.registryUrl}"
+            - name: REGISTRY_PREFIX
+              value: "${var.registryPrefix}"
             - name: GOSSIP_LISTEN_ADDR
               value: "${var.gossip.listenAddress}"
             - name: GOSSIP_ADVERTISE_ADDR

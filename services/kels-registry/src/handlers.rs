@@ -6,15 +6,22 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use kels::SignedRequest;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
+use crate::peer::Peer;
+use crate::repository::RegistryRepository;
+use crate::signature::{self, SignatureError};
 use crate::store::{
-    NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest, StoreError,
+    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
+    StoreError,
 };
 
 pub struct AppState {
     pub store: RegistryStore,
+    pub repo: Arc<RegistryRepository>,
 }
 
 // ==================== Error Handling ====================
@@ -41,11 +48,39 @@ impl ApiError {
         )
     }
 
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse { error: msg.into() }),
+        )
+    }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse { error: msg.into() }),
+        )
+    }
+
     pub fn internal_error(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse { error: msg.into() }),
         )
+    }
+}
+
+impl From<SignatureError> for ApiError {
+    fn from(e: SignatureError) -> Self {
+        match e {
+            SignatureError::PeerIdMismatch { .. } => {
+                ApiError::unauthorized(format!("Invalid signature: {}", e))
+            }
+            SignatureError::VerificationFailed => {
+                ApiError::unauthorized("Signature verification failed")
+            }
+            _ => ApiError::bad_request(format!("Invalid request: {}", e)),
+        }
     }
 }
 
@@ -64,6 +99,54 @@ impl From<StoreError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, self.1).into_response()
+    }
+}
+
+// ==================== Authorization ====================
+
+/// Verify a signed request and check that the peer is in the allowlist.
+///
+/// Returns the peer_id on success.
+async fn verify_and_authorize<T: serde::Serialize>(
+    repo: &RegistryRepository,
+    signed_request: &SignedRequest<T>,
+) -> Result<String, ApiError> {
+    // Serialize the payload to JSON for signature verification
+    let payload_json = serde_json::to_vec(&signed_request.payload)
+        .map_err(|e| ApiError::internal_error(format!("Failed to serialize payload: {}", e)))?;
+
+    // Verify signature and derive peer_id
+    let peer_id = signature::verify_signature(
+        &payload_json,
+        &signed_request.peer_id,
+        &signed_request.public_key,
+        &signed_request.signature,
+    )?;
+    let peer_id_str = peer_id.to_string();
+
+    // Check that the peer is in the allowlist and active
+    let query = StorageQuery::<Peer>::new()
+        .eq("peer_id", &peer_id_str)
+        .order_by("version", Order::Desc)
+        .limit(1);
+
+    let peers: Vec<Peer> = repo
+        .peers
+        .pool
+        .fetch(query)
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to query allowlist: {}", e)))?;
+
+    match peers.first() {
+        Some(peer) if peer.active => Ok(peer_id_str),
+        Some(_) => Err(ApiError::forbidden(format!(
+            "Peer {} is not authorized (deactivated)",
+            peer_id_str
+        ))),
+        None => Err(ApiError::forbidden(format!(
+            "Peer {} is not in allowlist",
+            peer_id_str
+        ))),
     }
 }
 
@@ -123,11 +206,18 @@ pub async fn health() -> StatusCode {
 
 // ==================== Node Handlers ====================
 
-/// Register a new node or update existing registration
+/// Register a new node or update existing registration.
+///
+/// Requires a signed request from an authorized peer.
 pub async fn register_node(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<RegisterNodeRequest>,
+    Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
+    // Verify signature and check allowlist
+    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+
+    let request = signed_request.payload;
+
     if request.node_id.is_empty() {
         return Err(ApiError::bad_request("node_id is required"));
     }
@@ -142,12 +232,18 @@ pub async fn register_node(
     Ok(Json(registration))
 }
 
-/// Deregister a node
+/// Deregister a node.
+///
+/// Requires a signed request from an authorized peer.
 pub async fn deregister_node(
     State(state): State<Arc<AppState>>,
-    Path(node_id): Path<String>,
+    Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
 ) -> Result<StatusCode, ApiError> {
-    state.store.deregister(&node_id).await?;
+    // Verify signature and check allowlist
+    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+
+    let request = signed_request.payload;
+    state.store.deregister(&request.node_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -186,13 +282,21 @@ pub async fn heartbeat(
     Ok(Json(registration))
 }
 
-/// Update node status (e.g., from Bootstrapping to Ready)
+/// Update node status (e.g., from Bootstrapping to Ready).
+///
+/// Requires a signed request from an authorized peer.
 pub async fn update_status(
     State(state): State<Arc<AppState>>,
-    Path(node_id): Path<String>,
-    Json(request): Json<StatusUpdateRequest>,
+    Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
-    let registration = state.store.update_status(&node_id, request.status).await?;
+    // Verify signature and check allowlist
+    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+
+    let request = signed_request.payload;
+    let registration = state
+        .store
+        .update_status(&request.node_id, request.status)
+        .await?;
     Ok(Json(registration))
 }
 

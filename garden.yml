@@ -1,0 +1,11 @@
+kind: Run
+name: read-registry-prefix
+type: exec
+
+include:
+  - .kels/registry_prefix
+
+spec:
+  command:
+    - cat
+    - .kels/registry_prefix
