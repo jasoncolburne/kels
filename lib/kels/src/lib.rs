@@ -20,6 +20,8 @@ pub mod kel;
 pub mod registry_client;
 pub mod repository;
 pub mod repository_store;
+#[cfg(feature = "server")]
+pub mod server;
 pub mod store;
 pub mod types;
 
@@ -41,6 +43,8 @@ pub use kel::compute_rotation_hash;
 pub use registry_client::{KelsRegistryClient, RegistrySigner, SignResult};
 pub use repository::SignedEventRepository;
 pub use repository_store::RepositoryKelStore;
+#[cfg(feature = "server")]
+pub use server::shutdown_signal;
 pub use store::KelStore;
 pub use types::{
     BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,

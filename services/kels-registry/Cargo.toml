@@ -47,7 +47,7 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 
 # Shared types and verifiable storage
-libkels = { path = "../../lib/kels", default-features = false, features = ["native"] }
+libkels = { path = "../../lib/kels", default-features = false, features = ["native", "server"] }
 libkels-derive = { path = "../../lib/kels-derive" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
