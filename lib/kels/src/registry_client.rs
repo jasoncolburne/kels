@@ -85,12 +85,9 @@ impl KelsRegistryClient {
     }
 
     /// Create a signed request wrapper for the given payload.
-    async fn sign_request<T: serde::Serialize>(
-        &self,
-        payload: &T,
-    ) -> Result<SignedRequest<T>, KelsError>
+    async fn sign_request<T>(&self, payload: &T) -> Result<SignedRequest<T>, KelsError>
     where
-        T: Clone,
+        T: serde::Serialize + Clone,
     {
         let signer = self
             .signer
@@ -357,10 +354,11 @@ impl KelsRegistryClient {
 
         // Check if any peer history has a latest record with matching peer_id and active=true
         for history in peers_response.peers {
-            if let Some(latest) = history.records.first() {
-                if latest.peer_id == peer_id && latest.active {
-                    return Ok(true);
-                }
+            if let Some(latest) = history.records.first()
+                && latest.peer_id == peer_id
+                && latest.active
+            {
+                return Ok(true);
             }
         }
 

@@ -91,13 +91,13 @@ pub async fn list_peers(
 
     for peer in all_peers {
         if current_prefix.as_ref() != Some(&peer.prefix) {
-            if let Some(prefix) = current_prefix.take() {
-                if !current_records.is_empty() {
-                    histories.push(PeerHistory {
-                        prefix,
-                        records: std::mem::take(&mut current_records),
-                    });
-                }
+            if let Some(prefix) = current_prefix.take()
+                && !current_records.is_empty()
+            {
+                histories.push(PeerHistory {
+                    prefix,
+                    records: std::mem::take(&mut current_records),
+                });
             }
             current_prefix = Some(peer.prefix.clone());
         }
@@ -105,13 +105,13 @@ pub async fn list_peers(
     }
 
     // Don't forget the last history
-    if let Some(prefix) = current_prefix {
-        if !current_records.is_empty() {
-            histories.push(PeerHistory {
-                prefix,
-                records: current_records,
-            });
-        }
+    if let Some(prefix) = current_prefix
+        && !current_records.is_empty()
+    {
+        histories.push(PeerHistory {
+            prefix,
+            records: current_records,
+        });
     }
 
     // Filter to only include peers where the latest record is active

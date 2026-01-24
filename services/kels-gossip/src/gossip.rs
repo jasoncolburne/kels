@@ -182,6 +182,7 @@ pub struct KelsBehaviour {
 }
 
 /// Build and run the libp2p swarm
+#[allow(clippy::too_many_arguments)]
 pub async fn run_swarm(
     keypair: libp2p_identity::Keypair,
     listen_addr: Multiaddr,

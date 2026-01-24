@@ -235,11 +235,11 @@ async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
 
     let mut active_count = 0;
     for prefix in &prefixes {
-        if let Some(peer) = ctx.peer_repo.get_latest(prefix).await? {
-            if peer.active {
-                active_count += 1;
-                println!("  {} ({})", peer.peer_id, peer.node_id);
-            }
+        if let Some(peer) = ctx.peer_repo.get_latest(prefix).await?
+            && peer.active
+        {
+            active_count += 1;
+            println!("  {} ({})", peer.peer_id, peer.node_id);
         }
     }
 
