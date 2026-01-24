@@ -85,11 +85,11 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Verifies signature and checks peer is in allowlist. Returns peer_id on success.
+/// Verifies signature and checks peer is in allowlist. Returns the authorized Peer.
 async fn verify_and_authorize<T: serde::Serialize>(
     repo: &RegistryRepository,
     signed_request: &SignedRequest<T>,
-) -> Result<String, ApiError> {
+) -> Result<Peer, ApiError> {
     let payload_json = serde_json::to_vec(&signed_request.payload)
         .map_err(|e| ApiError::internal_error(format!("Failed to serialize payload: {}", e)))?;
 
@@ -113,8 +113,8 @@ async fn verify_and_authorize<T: serde::Serialize>(
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to query allowlist: {}", e)))?;
 
-    match peers.first() {
-        Some(peer) if peer.active => Ok(peer_id_str),
+    match peers.into_iter().next() {
+        Some(peer) if peer.active => Ok(peer),
         Some(_) => Err(ApiError::forbidden(format!(
             "Peer {} is not authorized (deactivated)",
             peer_id_str
@@ -168,11 +168,14 @@ pub async fn register_node(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
-    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
     let request = signed_request.payload;
 
-    if request.node_id.is_empty() {
-        return Err(ApiError::bad_request("node_id is required"));
+    if request.node_id != peer.node_id {
+        return Err(ApiError::forbidden(format!(
+            "Cannot register node_id '{}' with peer authorized for '{}'",
+            request.node_id, peer.node_id
+        )));
     }
     if request.kels_url.is_empty() {
         return Err(ApiError::bad_request("kels_url is required"));
@@ -189,8 +192,16 @@ pub async fn deregister_node(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
 ) -> Result<StatusCode, ApiError> {
-    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
     let request = signed_request.payload;
+
+    if request.node_id != peer.node_id {
+        return Err(ApiError::forbidden(format!(
+            "Cannot deregister node_id '{}' with peer authorized for '{}'",
+            request.node_id, peer.node_id
+        )));
+    }
+
     state.store.deregister(&request.node_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -231,8 +242,16 @@ pub async fn update_status(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
-    let _peer_id = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
     let request = signed_request.payload;
+
+    if request.node_id != peer.node_id {
+        return Err(ApiError::forbidden(format!(
+            "Cannot update status for node_id '{}' with peer authorized for '{}'",
+            request.node_id, peer.node_id
+        )));
+    }
+
     let registration = state
         .store
         .update_status(&request.node_id, request.status)
