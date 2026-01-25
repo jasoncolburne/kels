@@ -72,15 +72,15 @@ pub struct PeersResponse {
 
 /// Get all peers with their complete version history.
 ///
-/// Each peer is returned with its full history, newest first.
-/// Clients can verify each record's SAID and check that all SAIDs
-/// are anchored in the registry's KEL.
+/// Each peer is returned with its full history in ascending order (oldest first),
+/// matching KEL event ordering. Clients can verify each record's SAID and check
+/// that all SAIDs are anchored in the registry's KEL.
 pub async fn list_peers(
     State(repo): State<Arc<RegistryRepository>>,
 ) -> Result<Json<PeersResponse>, PeerApiError> {
     let query = Query::<Peer>::new()
         .order_by("prefix", Order::Asc)
-        .order_by("version", Order::Desc);
+        .order_by("version", Order::Asc);
 
     let all_peers: Vec<Peer> = repo.peers.pool.fetch(query).await?;
 
@@ -117,7 +117,7 @@ pub async fn list_peers(
     // Filter to only include peers where the latest record is active
     let active_histories: Vec<PeerHistory> = histories
         .into_iter()
-        .filter(|h| h.records.first().is_some_and(|r| r.active))
+        .filter(|h| h.records.last().is_some_and(|r| r.active))
         .collect();
 
     Ok(Json(PeersResponse {

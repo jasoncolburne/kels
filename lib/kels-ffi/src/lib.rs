@@ -1596,8 +1596,8 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let client = KelsRegistryClient::new(&url);
         let http_client = reqwest::Client::new();
 
-        // If a trust anchor is provided, verify the registry's KEL and peer records
-        if let Some(ref expected) = expected_prefix {
+        // Build set of verified node_ids from peer records
+        let verified_node_ids: std::collections::HashSet<String> = if let Some(ref expected) = expected_prefix {
             // Fetch and verify the registry's KEL
             let kel_url = format!("{}/api/registry-kel", url);
             let registry_kel: Kel = http_client.get(&kel_url).send().await?.json().await?;
@@ -1619,38 +1619,45 @@ pub unsafe extern "C" fn kels_discover_nodes(
                 )));
             }
 
-            // Fetch and verify peers
+            // Fetch and verify peers, collecting verified node_ids
             let peers_response: PeersResponse = client.fetch_peers().await?;
 
-            // Verify each peer's SAID is anchored in the registry's KEL
+            let mut verified = std::collections::HashSet::new();
             for history in &peers_response.peers {
-                if let Some(latest) = history.records.first() {
-                    // Verify the peer record's SAID matches its content
-                    if let Err(e) = latest.verify() {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "Peer {} SAID verification failed: {}",
-                            latest.peer_id, e
-                        )));
+                if let Some(latest) = history.records.last() {
+                    // Skip peers with invalid SAID
+                    if latest.verify().is_err() {
+                        continue;
                     }
 
-                    // Verify the peer's SAID is anchored in the registry's KEL
+                    // Skip peers not anchored in registry's KEL
                     if !registry_kel.contains_anchor(&latest.said) {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "Peer {} SAID not anchored in registry KEL",
-                            latest.peer_id
-                        )));
+                        continue;
+                    }
+
+                    // This peer is verified - trust its node_id
+                    if latest.active {
+                        verified.insert(latest.node_id.clone());
                     }
                 }
             }
-        }
+            verified
+        } else {
+            // No verification - empty set means accept all nodes
+            std::collections::HashSet::new()
+        };
 
         // Fetch all nodes (paginated)
         let nodes = client.list_all_nodes().await?;
 
-        // Test latency to each Ready node
+        // Test latency to each Ready node, filtering to verified nodes if verification was performed
         let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());
 
         for node in nodes {
+            // If we have verified node_ids, only include nodes that passed verification
+            if !verified_node_ids.is_empty() && !verified_node_ids.contains(&node.node_id) {
+                continue;
+            }
             let latency_ms = if node.status == NodeStatus::Ready {
                 // Test latency with short timeout
                 let kels_client =
