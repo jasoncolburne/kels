@@ -9,13 +9,13 @@ use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
     KeyProvider, NodeStatus, PeersResponse, RecoveryOutcome,
 };
-use verifiable_storage::Versioned;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
+use verifiable_storage::Versioned;
 
 // ==================== Key State Persistence ====================
 
@@ -1596,54 +1596,55 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let client = KelsRegistryClient::new(&url);
 
         // Build set of verified node_ids from peer records
-        let verified_node_ids: std::collections::HashSet<String> = if let Some(ref expected) = expected_prefix {
-            // Fetch and verify the registry's KEL
-            let registry_kel = client.fetch_registry_kel().await?;
+        let verified_node_ids: std::collections::HashSet<String> =
+            if let Some(ref expected) = expected_prefix {
+                // Fetch and verify the registry's KEL
+                let registry_kel = client.fetch_registry_kel().await?;
 
-            // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
-            if let Err(e) = registry_kel.verify() {
-                return Err(KelsError::VerificationFailed(format!(
-                    "Registry KEL verification failed: {}",
-                    e
-                )));
-            }
+                // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
+                if let Err(e) = registry_kel.verify() {
+                    return Err(KelsError::VerificationFailed(format!(
+                        "Registry KEL verification failed: {}",
+                        e
+                    )));
+                }
 
-            // Check that the registry prefix matches our trust anchor
-            let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
-            if actual_prefix.as_deref() != Some(expected.as_str()) {
-                return Err(KelsError::VerificationFailed(format!(
-                    "Registry prefix mismatch: expected {}, got {:?}",
-                    expected, actual_prefix
-                )));
-            }
+                // Check that the registry prefix matches our trust anchor
+                let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
+                if actual_prefix.as_deref() != Some(expected.as_str()) {
+                    return Err(KelsError::VerificationFailed(format!(
+                        "Registry prefix mismatch: expected {}, got {:?}",
+                        expected, actual_prefix
+                    )));
+                }
 
-            // Fetch and verify peers, collecting verified node_ids
-            let peers_response: PeersResponse = client.fetch_peers().await?;
+                // Fetch and verify peers, collecting verified node_ids
+                let peers_response: PeersResponse = client.fetch_peers().await?;
 
-            let mut verified = std::collections::HashSet::new();
-            for history in &peers_response.peers {
-                if let Some(latest) = history.records.last() {
-                    // Skip peers with invalid SAID
-                    if latest.verify().is_err() {
-                        continue;
-                    }
+                let mut verified = std::collections::HashSet::new();
+                for history in &peers_response.peers {
+                    if let Some(latest) = history.records.last() {
+                        // Skip peers with invalid SAID
+                        if latest.verify().is_err() {
+                            continue;
+                        }
 
-                    // Skip peers not anchored in registry's KEL
-                    if !registry_kel.contains_anchor(&latest.said) {
-                        continue;
-                    }
+                        // Skip peers not anchored in registry's KEL
+                        if !registry_kel.contains_anchor(&latest.said) {
+                            continue;
+                        }
 
-                    // This peer is verified - trust its node_id
-                    if latest.active {
-                        verified.insert(latest.node_id.clone());
+                        // This peer is verified - trust its node_id
+                        if latest.active {
+                            verified.insert(latest.node_id.clone());
+                        }
                     }
                 }
-            }
-            verified
-        } else {
-            // No verification - empty set means accept all nodes
-            std::collections::HashSet::new()
-        };
+                verified
+            } else {
+                // No verification - empty set means accept all nodes
+                std::collections::HashSet::new()
+            };
 
         // Fetch all nodes (paginated)
         let nodes = client.list_all_nodes().await?;
