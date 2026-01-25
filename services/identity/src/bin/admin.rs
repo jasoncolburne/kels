@@ -38,8 +38,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize database schema (run migrations)
-    Init,
     /// Show current identity status
     Status,
     /// Rotate the registry's signing key
@@ -68,12 +66,6 @@ async fn main() -> anyhow::Result<()> {
     let hsm = Arc::new(HsmClient::new(&cli.hsm_url));
 
     match cli.command {
-        Commands::Init => {
-            // Just connect and initialize - migrations are run on connect
-            if !cli.json {
-                println!("Database initialized successfully.");
-            }
-        }
         Commands::Status => {
             cmd_status(&repo, cli.json).await?;
         }
