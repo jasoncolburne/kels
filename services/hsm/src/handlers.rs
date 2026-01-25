@@ -52,60 +52,45 @@ fn compress_public_key(ec_point: &[u8]) -> Result<Vec<u8>, String> {
     Ok(compressed)
 }
 
-/// Request to generate a key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateKeyRequest {
-    /// Label for the key (used as persistent identifier)
     pub label: String,
 }
 
-/// Response containing a generated key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateKeyResponse {
-    /// Key label
     pub label: String,
-    /// Public key in CESR qb64 format
     pub public_key: String,
-    /// Whether the key was newly created (false = already existed)
     pub created: bool,
 }
 
-/// Response containing a public key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicKeyResponse {
-    /// Public key in CESR qb64 format
     pub public_key: String,
 }
 
-/// Request to sign data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignRequest {
-    /// Data to sign (base64 encoded)
     pub data: String,
 }
 
-/// Response containing a signature and public key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignResponse {
-    /// Signature in CESR qb64 format
     pub signature: String,
-    /// Public key in CESR qb64 format
     pub public_key: String,
 }
 
-/// Error response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
 }
 
-/// List of key labels
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListKeysResponse {
@@ -152,12 +137,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Health check
 pub async fn health() -> StatusCode {
     StatusCode::OK
 }
 
-/// Generate a new secp256r1 keypair with a given label, or return existing key
 pub async fn generate_key(
     State(hsm): State<Arc<HsmContext>>,
     Json(request): Json<GenerateKeyRequest>,
@@ -188,7 +171,6 @@ pub async fn generate_key(
     }))
 }
 
-/// Get public key for a label
 pub async fn get_public_key(
     State(hsm): State<Arc<HsmContext>>,
     Path(label): Path<String>,
@@ -208,7 +190,6 @@ pub async fn get_public_key(
     }))
 }
 
-/// Sign data with a key
 pub async fn sign(
     State(hsm): State<Arc<HsmContext>>,
     Path(label): Path<String>,
@@ -237,7 +218,6 @@ pub async fn sign(
     }))
 }
 
-/// List all key labels
 pub async fn list_keys(
     State(hsm): State<Arc<HsmContext>>,
 ) -> Result<Json<ListKeysResponse>, ApiError> {
