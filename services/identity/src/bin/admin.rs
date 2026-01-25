@@ -44,6 +44,18 @@ enum Commands {
     Status,
     /// Rotate the registry's signing key
     Rotate,
+    /// Rotate the registry's recovery key (requires both current and recovery signatures)
+    RotateRecovery,
+    /// Recover control using the recovery key (creates REC event from current tail)
+    Recover,
+    /// Contest a malicious recovery at a specific version (creates CNT event)
+    Contest {
+        /// The version number where the adversary's recovery event occurred
+        #[arg(long)]
+        at_version: u64,
+    },
+    /// Decommission the registry identity (permanent, cannot be undone)
+    Decommission,
 }
 
 #[tokio::main]
@@ -67,6 +79,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Rotate => {
             cmd_rotate(&repo, hsm, cli.json).await?;
+        }
+        Commands::RotateRecovery => {
+            cmd_rotate_recovery(&repo, hsm, cli.json).await?;
+        }
+        Commands::Recover => {
+            cmd_recover(&repo, hsm, cli.json).await?;
+        }
+        Commands::Contest { at_version } => {
+            cmd_contest(&repo, hsm, at_version, cli.json).await?;
+        }
+        Commands::Decommission => {
+            cmd_decommission(&repo, hsm, cli.json).await?;
         }
     }
 
@@ -160,6 +184,7 @@ async fn cmd_rotate(
         binding.version + 2,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
+        KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
     let key_provider = KeyProvider::external(Box::new(provider));
 
@@ -173,16 +198,8 @@ async fn cmd_rotate(
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
 
-    // Verify KEL state matches authority record
-    if let Some(last_said) = builder.last_said() {
-        if last_said != authority.last_said {
-            return Err(anyhow::anyhow!(
-                "KEL last_said mismatch: expected {}, got {}",
-                authority.last_said,
-                last_said
-            ));
-        }
-    } else {
+    // Verify KEL is not empty
+    if builder.last_said().is_none() {
         return Err(anyhow::anyhow!("KEL is empty"));
     }
 
@@ -230,6 +247,409 @@ async fn cmd_rotate(
         println!("  {}: {}", "New SAID".cyan(), event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
+    }
+
+    Ok(())
+}
+
+async fn cmd_rotate_recovery(
+    repo: &IdentityRepository,
+    hsm: Arc<HsmClient>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let mut authority = repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
+
+    let prefix = authority.kel_prefix.clone();
+
+    let mut binding = repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
+
+    if !json {
+        println!("{}", "Rotating Recovery Key...".cyan());
+        println!("  {}: {}", "Current Version".cyan(), binding.version);
+        println!(
+            "  {}: {}",
+            "Current Recovery Key".cyan(),
+            binding.recovery_key_handle
+        );
+    }
+
+    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
+        KeyEventRepository::new(repo.pool().clone()),
+    )));
+
+    let provider = HsmKeyProvider::with_handles(
+        hsm.clone(),
+        "kels-registry",
+        binding.version + 2,
+        KeyHandle::from(binding.current_key_handle.as_str()),
+        KeyHandle::from(binding.next_key_handle.as_str()),
+        KeyHandle::from(binding.recovery_key_handle.as_str()),
+    );
+    let key_provider = KeyProvider::external(Box::new(provider));
+
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
+
+    if builder.last_said().is_none() {
+        return Err(anyhow::anyhow!("KEL is empty"));
+    }
+
+    // Rotate recovery key using the builder (authoritative mode)
+    let (event, _signature) = builder.rotate_recovery_authoritative().await?;
+
+    // Get updated handles from key provider
+    let new_current_handle = builder
+        .key_provider()
+        .current_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No current handle after rotate"))?;
+    let new_next_handle = builder
+        .key_provider()
+        .next_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No next handle after rotate"))?;
+    let new_recovery_handle = builder
+        .key_provider()
+        .recovery_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No recovery handle after rotate"))?;
+
+    // Update HSM binding
+    binding.current_key_handle = new_current_handle.clone();
+    binding.next_key_handle = new_next_handle.clone();
+    binding.recovery_key_handle = new_recovery_handle.clone();
+    repo.hsm_bindings.update(binding).await?;
+
+    // Update authority last_said
+    authority.last_said = event.said.clone();
+    repo.authority.update(authority).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "prefix": prefix,
+                "kel_version": event.version,
+                "said": event.said,
+                "current_key_handle": new_current_handle,
+                "next_key_handle": new_next_handle,
+                "recovery_key_handle": new_recovery_handle,
+            })
+        );
+    } else {
+        println!("{}", "Recovery Key Rotation Successful!".green().bold());
+        println!("{}", "=".repeat(60));
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "New KEL Version".cyan(), event.version);
+        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
+        println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
+        println!("  {}: {}", "New Recovery Key".cyan(), new_recovery_handle);
+    }
+
+    Ok(())
+}
+
+async fn cmd_recover(
+    repo: &IdentityRepository,
+    hsm: Arc<HsmClient>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let mut authority = repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
+
+    let prefix = authority.kel_prefix.clone();
+
+    let mut binding = repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
+
+    if !json {
+        println!("{}", "Recovering Identity...".yellow().bold());
+        println!(
+            "{}",
+            "This will create a recovery event using the recovery key.".yellow()
+        );
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "Current Version".cyan(), binding.version);
+        println!();
+    }
+
+    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
+        KeyEventRepository::new(repo.pool().clone()),
+    )));
+
+    let provider = HsmKeyProvider::with_handles(
+        hsm.clone(),
+        "kels-registry",
+        binding.version + 2,
+        KeyHandle::from(binding.current_key_handle.as_str()),
+        KeyHandle::from(binding.next_key_handle.as_str()),
+        KeyHandle::from(binding.recovery_key_handle.as_str()),
+    );
+    let key_provider = KeyProvider::external(Box::new(provider));
+
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
+
+    if builder.last_said().is_none() {
+        return Err(anyhow::anyhow!("KEL is empty"));
+    }
+
+    // Recover using the builder (authoritative mode)
+    let (event, _signature) = builder.recover_authoritative().await?;
+
+    // Get updated handles from key provider
+    let new_current_handle = builder
+        .key_provider()
+        .current_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No current handle after recover"))?;
+    let new_next_handle = builder
+        .key_provider()
+        .next_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No next handle after recover"))?;
+    let new_recovery_handle = builder
+        .key_provider()
+        .recovery_handle()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No recovery handle after recover"))?;
+
+    // Update HSM binding
+    binding.current_key_handle = new_current_handle.clone();
+    binding.next_key_handle = new_next_handle.clone();
+    binding.recovery_key_handle = new_recovery_handle.clone();
+    repo.hsm_bindings.update(binding).await?;
+
+    // Update authority last_said
+    authority.last_said = event.said.clone();
+    repo.authority.update(authority).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "prefix": prefix,
+                "kel_version": event.version,
+                "said": event.said,
+                "event_kind": "REC",
+                "current_key_handle": new_current_handle,
+                "next_key_handle": new_next_handle,
+                "recovery_key_handle": new_recovery_handle,
+            })
+        );
+    } else {
+        println!("{}", "Recovery Successful!".green().bold());
+        println!("{}", "=".repeat(60));
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "New KEL Version".cyan(), event.version);
+        println!("  {}: REC (Recovery)", "Event Kind".cyan());
+        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
+        println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
+        println!("  {}: {}", "New Recovery Key".cyan(), new_recovery_handle);
+        println!();
+        println!(
+            "{}",
+            "Clients will accept this recovery and heal their KEL view.".green()
+        );
+    }
+
+    Ok(())
+}
+
+async fn cmd_contest(
+    repo: &IdentityRepository,
+    hsm: Arc<HsmClient>,
+    at_version: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    let mut authority = repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
+
+    let prefix = authority.kel_prefix.clone();
+
+    let binding = repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
+
+    if !json {
+        println!("{}", "Contesting Malicious Recovery...".red().bold());
+        println!(
+            "{}",
+            "This will create a contest event at the specified version.".yellow()
+        );
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "Contest at Version".cyan(), at_version);
+        println!();
+    }
+
+    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
+        KeyEventRepository::new(repo.pool().clone()),
+    )));
+
+    let provider = HsmKeyProvider::with_handles(
+        hsm.clone(),
+        "kels-registry",
+        binding.version + 2,
+        KeyHandle::from(binding.current_key_handle.as_str()),
+        KeyHandle::from(binding.next_key_handle.as_str()),
+        KeyHandle::from(binding.recovery_key_handle.as_str()),
+    );
+    let key_provider = KeyProvider::external(Box::new(provider));
+
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
+
+    if builder.last_said().is_none() {
+        return Err(anyhow::anyhow!("KEL is empty"));
+    }
+
+    // Contest using the builder (authoritative mode)
+    let (event, _signature) = builder.contest_authoritative(at_version).await?;
+
+    // Update authority last_said
+    authority.last_said = event.said.clone();
+    repo.authority.update(authority).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "prefix": prefix,
+                "kel_version": event.version,
+                "said": event.said,
+                "event_kind": "CNT",
+                "contested_at_version": at_version,
+            })
+        );
+    } else {
+        println!("{}", "Contest Successful!".green().bold());
+        println!("{}", "=".repeat(60));
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "New KEL Version".cyan(), event.version);
+        println!("  {}: CNT (Contest)", "Event Kind".cyan());
+        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "Contested at Version".cyan(), at_version);
+        println!();
+        println!(
+            "{}",
+            "The adversary's recovery has been contested. KEL is now frozen.".yellow()
+        );
+    }
+
+    Ok(())
+}
+
+async fn cmd_decommission(
+    repo: &IdentityRepository,
+    hsm: Arc<HsmClient>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let mut authority = repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
+
+    let prefix = authority.kel_prefix.clone();
+
+    let binding = repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
+
+    if !json {
+        println!("{}", "WARNING: Decommissioning is PERMANENT!".red().bold());
+        println!("{}", "This identity will be permanently ended.".red());
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "Current Version".cyan(), binding.version);
+        println!();
+        println!("Proceeding with decommission...");
+    }
+
+    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
+        KeyEventRepository::new(repo.pool().clone()),
+    )));
+
+    let provider = HsmKeyProvider::with_handles(
+        hsm.clone(),
+        "kels-registry",
+        binding.version + 2,
+        KeyHandle::from(binding.current_key_handle.as_str()),
+        KeyHandle::from(binding.next_key_handle.as_str()),
+        KeyHandle::from(binding.recovery_key_handle.as_str()),
+    );
+    let key_provider = KeyProvider::external(Box::new(provider));
+
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
+
+    if builder.last_said().is_none() {
+        return Err(anyhow::anyhow!("KEL is empty"));
+    }
+
+    if builder.is_decommissioned() {
+        return Err(anyhow::anyhow!("Identity is already decommissioned"));
+    }
+
+    // Decommission using the builder
+    let (event, _signature) = builder.decommission().await?;
+
+    // Update authority last_said
+    authority.last_said = event.said.clone();
+    repo.authority.update(authority).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "prefix": prefix,
+                "kel_version": event.version,
+                "said": event.said,
+                "decommissioned": true,
+            })
+        );
+    } else {
+        println!("{}", "Identity Decommissioned!".red().bold());
+        println!("{}", "=".repeat(60));
+        println!("  {}: {}", "Prefix".cyan(), prefix);
+        println!("  {}: {}", "Final KEL Version".cyan(), event.version);
+        println!("  {}: {}", "Final SAID".cyan(), event.said);
+        println!();
+        println!("{}", "This identity can no longer be used.".red());
     }
 
     Ok(())

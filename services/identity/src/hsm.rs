@@ -227,6 +227,7 @@ impl HsmKeyProvider {
         next_label_generation: u64,
         current_handle: KeyHandle,
         next_handle: KeyHandle,
+        recovery_handle: KeyHandle,
     ) -> Self {
         Self {
             hsm,
@@ -234,7 +235,7 @@ impl HsmKeyProvider {
             next_label_generation: RwLock::new(next_label_generation),
             current_handle: RwLock::new(Some(current_handle)),
             next_handle: RwLock::new(Some(next_handle)),
-            recovery_handle: RwLock::new(None),
+            recovery_handle: RwLock::new(Some(recovery_handle)),
             pending_current_handle: RwLock::new(None),
             pending_next_handle: RwLock::new(None),
             pending_recovery_handle: RwLock::new(None),

@@ -23,6 +23,7 @@ pub struct HsmKeyBinding {
     pub kel_prefix: String,
     pub current_key_handle: String,
     pub next_key_handle: String,
+    pub recovery_key_handle: String,
     #[created_at]
     pub created_at: StorageDatetime,
 }

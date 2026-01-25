@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS identity_hsm_key_bindings (
     kel_prefix CHAR(44) NOT NULL,
     current_key_handle TEXT NOT NULL,
     next_key_handle TEXT NOT NULL,
+    recovery_key_handle TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 

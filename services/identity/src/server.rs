@@ -67,9 +67,10 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("HSM binding not found for KEL prefix: {}", prefix))?;
 
         tracing::info!(
-            "Restored HSM binding: current={}, next={}",
+            "Restored HSM binding: current={}, next={}, recovery={}",
             binding.current_key_handle,
-            binding.next_key_handle
+            binding.next_key_handle,
+            binding.recovery_key_handle
         );
 
         // next_label_generation = binding.version + 2 (keys 0..version+1 exist, next is version+2)
@@ -79,6 +80,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             binding.version + 2,
             binding.current_key_handle.into(),
             binding.next_key_handle.into(),
+            binding.recovery_key_handle.into(),
         );
         let key_provider = KeyProvider::external(Box::new(provider));
 
@@ -118,11 +120,17 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .next_handle()
             .await
             .ok_or("No next handle after incept")?;
+        let recovery_handle = builder
+            .key_provider()
+            .recovery_handle()
+            .await
+            .ok_or("No recovery handle after incept")?;
 
         let binding = HsmKeyBinding::new(
             event.prefix.clone(),
             current_handle.clone(),
             next_handle.clone(),
+            recovery_handle.clone(),
         );
         repo.hsm_bindings
             .create(binding)
