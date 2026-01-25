@@ -36,7 +36,7 @@ endif
 build: build-ffi
 	@echo "Building $(SCHEME)..."
 ifeq ($(REGISTRY_PREFIX),)
-	$(error REGISTRY_PREFIX not set. Run 'garden run fetch-registry-prefix' in the registry environment first, or set REGISTRY_PREFIX manually)
+	$(error REGISTRY_PREFIX not set. Run 'garden run fetch-registry-prefix --env registry' in the registry environment first, or set REGISTRY_PREFIX manually)
 endif
 	@echo "Using registry prefix: $(REGISTRY_PREFIX)"
 ifeq ($(DEV_TOOLS),1)
