@@ -138,17 +138,17 @@ async fn add_peer(ctx: &AdminContext, peer_id: &str, node_id: &str) -> anyhow::R
         }
     };
 
-    // Insert new version (unique constraint will error on race condition)
-    ctx.peer_repo
-        .insert(peer.clone())
-        .await
-        .context("Failed to insert peer (possible race condition)")?;
-
     // Anchor the SAID in the registry's KEL via identity service
     ctx.identity_client
         .anchor(&peer.said)
         .await
         .context("Failed to anchor peer SAID in KEL")?;
+
+    // Insert new version (unique constraint will error on race condition)
+    ctx.peer_repo
+        .insert(peer.clone())
+        .await
+        .context("Failed to insert peer")?;
 
     let action = if peer.version == 0 {
         "Added"
@@ -180,13 +180,17 @@ async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
 
     // Create new version with active=false
     let deactivated = existing.deactivate()?;
-    ctx.peer_repo.insert(deactivated.clone()).await?;
 
     // Anchor the peer SAID in registry's KEL via identity service
     ctx.identity_client
         .anchor(&deactivated.said)
         .await
         .context("Failed to anchor peer SAID in KEL")?;
+
+    ctx.peer_repo
+        .insert(deactivated.clone())
+        .await
+        .context("Failed to insert peer")?;
 
     println!("Removed peer {} (node: {})", peer_id, deactivated.node_id);
     println!(

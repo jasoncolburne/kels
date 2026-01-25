@@ -112,6 +112,12 @@ pub async fn anchor(
 ) -> Result<Json<AnchorResponse>, ApiError> {
     let mut builder = state.builder.write().await;
 
+    // Reload KEL from database in case it was modified externally (e.g., by identity-admin CLI)
+    builder
+        .reload()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
+
     let (event, _signature) = builder
         .interact(&request.said)
         .await

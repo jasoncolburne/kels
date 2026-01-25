@@ -129,6 +129,22 @@ impl KeyEventBuilder {
         self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
     }
 
+    /// Reload the KEL from the store, if one is configured.
+    /// This is useful when the KEL may have been modified externally (e.g., by a CLI tool).
+    pub async fn reload(&mut self) -> Result<(), KelsError> {
+        let Some(ref store) = self.kel_store else {
+            return Ok(());
+        };
+        let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
+            return Ok(());
+        };
+        if let Some(kel) = store.load(&prefix).await? {
+            self.confirmed_cursor = kel.confirmed_cursor();
+            self.kel = kel;
+        }
+        Ok(())
+    }
+
     // ==================== Event Operations ====================
 
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
