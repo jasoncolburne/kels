@@ -136,14 +136,14 @@ impl KeyEventBuilder {
     }
 
     pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {
-        match &flush_result {
-            Ok(()) => true,
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: true,
-                ..
-            }) => true,
-            _ => false,
-        }
+        matches!(
+            flush_result,
+            Ok(())
+                | Err(KelsError::DivergenceDetected {
+                    submission_accepted: true,
+                    ..
+                })
+        )
     }
 
     async fn rollback_rotation(&mut self, act: bool) {
@@ -173,13 +173,12 @@ impl KeyEventBuilder {
 
         if let Some(ref store) = self.kel_store
             && accepted
+            && let Err(e) = store.save(self.kel()).await
         {
-            if let Err(e) = store.save(self.kel()).await {
-                self.kel.truncate(old_length);
-                self.rollback_rotation(rotation_key_staged).await;
-                self.rollback_recovery_rotation(recovery_key_staged).await;
-                return Err(e);
-            }
+            self.kel.truncate(old_length);
+            self.rollback_rotation(rotation_key_staged).await;
+            self.rollback_recovery_rotation(recovery_key_staged).await;
+            return Err(e);
         }
 
         if accepted {
