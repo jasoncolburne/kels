@@ -62,7 +62,7 @@ test-comprehensive:
 
 	garden cleanup deploy && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=registry
 	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry
-	
+
 	garden deploy --env node-a && garden run add-node-a --env registry
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
 	kubectl exec -it test-client -- ./test-kels.sh
