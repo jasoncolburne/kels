@@ -59,21 +59,30 @@ kels-client-simulator:
 
 test-comprehensive:
 	touch .kels/registry_prefix
+
 	garden cleanup deploy && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=registry
-	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry && garden deploy && garden run add-node-a --env registry
+	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry
+	
+	garden deploy --env node-a && garden run add-node-a --env registry
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
 	kubectl exec -it test-client -- ./test-kels.sh
 	kubectl exec -it test-client -- ./test-adversarial.sh
 	kubectl exec -it test-client -- ./test-kels.sh
 	kubectl exec -it test-client -- ./test-adversarial.sh
+
 	garden deploy --env=node-c && garden run add-node-c --env registry
 	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
 	kubectl exec -it test-client -- ./test-kels.sh
 	kubectl exec -it test-client -- ./test-adversarial.sh
 	kubectl exec -it test-client -- ./test-kels.sh
 	kubectl exec -it test-client -- ./test-adversarial.sh
-	sleep 5
+
 	garden deploy --env=node-b && garden run add-node-b --env registry
 	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+
 	kubectl exec -it test-client -- ./test-gossip.sh
 	kubectl exec -it test-client -- ./test-bootstrap.sh

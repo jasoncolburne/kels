@@ -495,7 +495,7 @@ struct KeysTab: View {
                         }) {
                             HStack {
                                 Image(systemName: "arrow.triangle.2.circlepath.circle")
-                                Text("Rotate Recovery Key")
+                                Text("Rotate Both Keys")
                             }
                         }
                         .disabled(viewModel.isLoading || isFrozen)
@@ -541,7 +541,7 @@ struct KeysTab: View {
             .alert("Key Rotated", isPresented: $showingRotateSuccess) {
                 Button("OK") { showingRotateSuccess = false }
             } message: {
-                Text("Your key has been successfully rotated. Thank you for keeping your identity secure.")
+                Text("Rotation successful. Thank you for keeping your identity secure.")
             }
             .alert("Recovery Complete", isPresented: $showingRecoverSuccess) {
                 Button("OK") { showingRecoverSuccess = false }
