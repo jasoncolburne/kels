@@ -366,30 +366,11 @@ async fn test_submit_event_after_decommission_rejected() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Now try to submit another event - should be rejected
-    // Create a new provider and incept to get a valid signature capability
-    let another_provider = KeyProvider::software();
-    let mut another_builder = KeyEventBuilder::new(another_provider, None);
-    let _ = another_builder.incept().await.unwrap(); // need to incept to have a valid key
-
-    // Create a fake event that would be the next event after decommission
-    let fake_event =
-        KeyEvent::create_interaction(&decom_signed.event, "test_anchor".to_string()).unwrap();
-
-    // Sign with the other provider's key
-    let fake_signature = another_builder
-        .sign(fake_event.said.as_bytes())
-        .await
-        .unwrap();
-
-    // Use the other builder's public key to get a valid signature format
-    let other_icp = another_builder.events().first().unwrap().event.clone();
-    let fake_public_key = other_icp.public_key.clone().unwrap();
-    let fake_request = vec![SignedKeyEvent::new(
-        fake_event,
-        fake_public_key,
-        fake_signature.qb64(),
-    )];
+    // Now try to submit another event using the owner's actual builder
+    // This tests that even the legitimate owner can't add events after decommission
+    let _ = builder.interact("test_anchor").await.unwrap();
+    let anchor_signed = builder.events().last().unwrap().clone();
+    let anchor_request = vec![anchor_signed];
 
     let app3 = create_test_app(repo);
     let response = app3
@@ -398,13 +379,13 @@ async fn test_submit_event_after_decommission_rejected() {
                 .method("POST")
                 .uri("/api/kels/events")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&fake_request).unwrap()))
+                .body(Body::from(serde_json::to_string(&anchor_request).unwrap()))
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // Should be rejected because KEL is decommissioned (merge() will handle this)
+    // Should be rejected because KEL is decommissioned
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -452,20 +433,16 @@ async fn test_submit_event_wrong_signature() {
     let mut builder1 = KeyEventBuilder::new(provider1, None);
     let (event, _) = builder1.incept().await.unwrap();
 
-    // Create a second builder and incept to get a valid key for signing
-    let provider2 = KeyProvider::software();
-    let mut builder2 = KeyEventBuilder::new(provider2, None);
-    let _ = builder2.incept().await.unwrap(); // need to incept to have a valid key
+    // Create a null signature (64 zero bytes for secp256r1)
+    use cesr::{Signature, SignatureCode};
+    let null_signature = Signature::from_raw(SignatureCode::Secp256r1, vec![0u8; 64]).unwrap();
 
-    // Sign the first event with the second key (wrong key)
-    let wrong_signature = builder2.sign(event.said.as_bytes()).await.unwrap();
-
-    // Use the event's public_key (which won't match the wrong_signature's key)
+    // Use the event's public_key
     let public_key = event.public_key.clone().unwrap();
     let request = vec![SignedKeyEvent::new(
         event,
         public_key,
-        wrong_signature.qb64(),
+        null_signature.qb64(),
     )];
 
     let response = app
@@ -731,12 +708,14 @@ async fn test_event_with_wrong_previous_rejected() {
     use verifiable_storage::Versioned;
     bad_event.increment().unwrap(); // This will recompute the SAID
 
-    let bad_signature = builder.sign(bad_event.said.as_bytes()).await.unwrap();
+    // Use a null signature - the event will be rejected regardless (bad chain or bad sig)
+    use cesr::{Signature, SignatureCode};
+    let null_signature = Signature::from_raw(SignatureCode::Secp256r1, vec![0u8; 64]).unwrap();
 
     let bad_request = vec![SignedKeyEvent::new(
         bad_event,
         icp_public_key, // same key as icp
-        bad_signature.qb64(),
+        null_signature.qb64(),
     )];
 
     let app2 = create_test_app(repo);

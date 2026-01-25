@@ -131,72 +131,6 @@ impl KeyEventBuilder {
 
     // ==================== Event Operations ====================
 
-    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        self.kel.last_event().ok_or(KelsError::NotIncepted)
-    }
-
-    pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {
-        matches!(
-            flush_result,
-            Ok(())
-                | Err(KelsError::DivergenceDetected {
-                    submission_accepted: true,
-                    ..
-                })
-        )
-    }
-
-    async fn rollback_rotation(&mut self, act: bool) {
-        if act {
-            self.key_provider.rollback_rotation().await;
-        }
-    }
-
-    async fn rollback_recovery_rotation(&mut self, act: bool) {
-        if act {
-            self.key_provider.rollback_recovery_rotation().await;
-        }
-    }
-
-    async fn add_and_flush(
-        &mut self,
-        signed_events: &[SignedKeyEvent],
-        rotation_key_staged: bool,
-        recovery_key_staged: bool,
-    ) -> Result<(), KelsError> {
-        let events = signed_events.iter().cloned();
-
-        let old_length = self.kel.len();
-        self.kel.extend(events);
-        let flush_result = self.flush().await;
-        let accepted = self.was_flush_accepted(&flush_result);
-
-        if let Some(ref store) = self.kel_store
-            && accepted
-            && let Err(e) = store.save(self.kel()).await
-        {
-            self.kel.truncate(old_length);
-            self.rollback_rotation(rotation_key_staged).await;
-            self.rollback_recovery_rotation(recovery_key_staged).await;
-            return Err(e);
-        }
-
-        if accepted {
-            if rotation_key_staged {
-                self.key_provider.commit_rotation().await;
-            }
-            if recovery_key_staged {
-                self.key_provider.commit_recovery_rotation().await;
-            }
-        } else {
-            self.kel.truncate(old_length);
-            self.rollback_rotation(rotation_key_staged).await;
-            self.rollback_recovery_rotation(recovery_key_staged).await;
-        }
-
-        flush_result
-    }
-
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         let (signed_event, event, signature) = self.create_signed_inception_event().await?;
         self.add_and_flush(&[signed_event], false, false).await?;
@@ -341,7 +275,58 @@ impl KeyEventBuilder {
 
     // ==================== Operations ====================
 
-    pub async fn flush(&mut self) -> Result<(), KelsError> {
+    async fn rollback_rotation(&mut self, act: bool) {
+        if act {
+            self.key_provider.rollback_rotation().await;
+        }
+    }
+
+    async fn rollback_recovery_rotation(&mut self, act: bool) {
+        if act {
+            self.key_provider.rollback_recovery_rotation().await;
+        }
+    }
+
+    async fn add_and_flush(
+        &mut self,
+        signed_events: &[SignedKeyEvent],
+        rotation_key_staged: bool,
+        recovery_key_staged: bool,
+    ) -> Result<(), KelsError> {
+        let events = signed_events.iter().cloned();
+
+        let old_length = self.kel.len();
+        self.kel.extend(events);
+        let flush_result = self.flush().await;
+        let accepted = self.was_flush_accepted(&flush_result);
+
+        if let Some(ref store) = self.kel_store
+            && accepted
+            && let Err(e) = store.save(self.kel()).await
+        {
+            self.kel.truncate(old_length);
+            self.rollback_rotation(rotation_key_staged).await;
+            self.rollback_recovery_rotation(recovery_key_staged).await;
+            return Err(e);
+        }
+
+        if accepted {
+            if rotation_key_staged {
+                self.key_provider.commit_rotation().await;
+            }
+            if recovery_key_staged {
+                self.key_provider.commit_recovery_rotation().await;
+            }
+        } else {
+            self.kel.truncate(old_length);
+            self.rollback_rotation(rotation_key_staged).await;
+            self.rollback_recovery_rotation(recovery_key_staged).await;
+        }
+
+        flush_result
+    }
+
+    async fn flush(&mut self) -> Result<(), KelsError> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
             None => {
@@ -371,11 +356,22 @@ impl KeyEventBuilder {
         }
     }
 
-    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        self.key_provider.sign(data).await
+    // ==================== Private Helpers ====================
+
+    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
+        self.kel.last_event().ok_or(KelsError::NotIncepted)
     }
 
-    // ==================== Private Helpers ====================
+    pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {
+        matches!(
+            flush_result,
+            Ok(())
+                | Err(KelsError::DivergenceDetected {
+                    submission_accepted: true,
+                    ..
+                })
+        )
+    }
 
     /// Create a signed contest event from a base event.
     /// Returns (signed_event, event, primary_signature).

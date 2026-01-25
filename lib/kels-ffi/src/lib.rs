@@ -1370,12 +1370,6 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             }
         }
 
-        // Flush events to server (but not local store)
-        if let Err(e) = adversary_builder.flush().await {
-            set_last_error(&format!("Failed to flush adversary events: {}", e));
-            return -1;
-        }
-
         0
     })
 }
