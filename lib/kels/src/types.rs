@@ -93,12 +93,6 @@ pub enum KelMergeResult {
     RecoveryProtected, // Recovery event protects this version
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryOutcome {
-    Recovered, // KEL continues with new keys
-    Contested, // KEL frozen via contest event
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {

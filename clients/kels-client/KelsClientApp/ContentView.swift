@@ -432,7 +432,7 @@ struct KeysTab: View {
                     if viewModel.needsContest && !viewModel.isContested {
                         Button(action: {
                             Task {
-                                await viewModel.recover()
+                                await viewModel.contest()
                                 if viewModel.errorMessage == nil {
                                     showingContestSuccess = true
                                 }

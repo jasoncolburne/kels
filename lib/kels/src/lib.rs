@@ -51,6 +51,6 @@ pub use types::{
     DeregisterRequest, ErrorCode, ErrorResponse, EventKind, EventSignature, HeartbeatRequest,
     KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
     NodeRegistration, NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeersResponse,
-    PrefixListResponse, PrefixState, RecoveryOutcome, RegisterNodeRequest, SignedKeyEvent,
-    SignedRequest, StatusUpdateRequest,
+    PrefixListResponse, PrefixState, RegisterNodeRequest, SignedKeyEvent, SignedRequest,
+    StatusUpdateRequest,
 };

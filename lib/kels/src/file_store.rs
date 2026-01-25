@@ -93,26 +93,4 @@ impl KelStore for FileKelStore {
         }
         Ok(())
     }
-
-    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
-        use std::io::Write;
-        let path = self.owner_tail_path(prefix);
-        let mut file =
-            std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        file.write_all(said.as_bytes())
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        file.sync_all()
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError> {
-        let path = self.owner_tail_path(prefix);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(Some(contents.trim().to_string()))
-    }
 }

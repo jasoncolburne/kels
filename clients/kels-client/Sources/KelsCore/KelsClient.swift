@@ -141,6 +141,24 @@ public final class KelsClient: @unchecked Sendable {
         }
     }
 
+    /// Contest a malicious recovery by submitting a contest event (cnt)
+    /// Use this when an adversary has revealed your recovery key.
+    /// The KEL will be permanently frozen after contesting.
+    /// - Returns: The contest event
+    public func contest() throws -> KelEvent {
+        try lock.withLock {
+            guard let ctx = context else {
+                throw KelsClientError.notInitialized
+            }
+
+            var result = KelsEventResult()
+            kels_contest(ctx, &result)
+            defer { kels_event_result_free(&result) }
+
+            return try parseEventResult(result)
+        }
+    }
+
     /// Decommission a KEL (permanently disable it)
     /// - Returns: The decommission event
     public func decommission() throws -> KelEvent {

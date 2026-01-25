@@ -8,9 +8,7 @@ use anyhow::{Context, Result};
 use cesr::PrivateKey;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, NodeStatus, RecoveryOutcome,
-};
+use kels::{FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, NodeStatus};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
@@ -68,9 +66,18 @@ enum Commands {
         said: String,
     },
 
-    /// Recover from divergence. Submits rec (recovers) or cnt (contests if adversary has recovery key).
+    /// Recover from divergence by submitting a recovery event (rec).
     Recover {
         /// KEL prefix to recover
+        #[arg(long)]
+        prefix: String,
+    },
+
+    /// Contest a malicious recovery by submitting a contest event (cnt).
+    /// Use this when an adversary has revealed your recovery key.
+    /// The KEL will be permanently frozen after contesting.
+    Contest {
+        /// KEL prefix to contest
         #[arg(long)]
         prefix: String,
     },
@@ -528,25 +535,38 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (outcome, event, _sig) = builder.recover().await.context("Recovery failed")?;
+    let (event, _sig) = builder.recover().await.context("Recovery failed")?;
     save_key_provider(cli, prefix, builder.key_provider())?;
 
-    match outcome {
-        RecoveryOutcome::Recovered => {
-            println!("{}", "Recovery successful!".green().bold());
-            println!("  Event SAID: {}", event.said);
-        }
-        RecoveryOutcome::Contested => {
-            println!(
-                "{}",
-                "KEL is now CONTESTED (adversary had recovery key)"
-                    .red()
-                    .bold()
-            );
-            println!("  The KEL is permanently frozen.");
-            println!("  Event SAID: {}", event.said);
-        }
-    }
+    println!("{}", "Recovery successful!".green().bold());
+    println!("  Event SAID: {}", event.said);
+
+    Ok(())
+}
+
+async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
+    println!("{}", format!("Contesting KEL {}...", prefix).red().bold());
+    println!(
+        "{}",
+        "WARNING: This will permanently freeze the KEL.".yellow()
+    );
+
+    let client = create_client(cli).await?;
+    let key_provider = load_key_provider(cli, prefix).await?;
+    let kel_store = create_kel_store(cli, Some(prefix))?;
+
+    let mut builder = KeyEventBuilder::with_dependencies(
+        key_provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(prefix),
+    )
+    .await?;
+
+    let (event, _sig) = builder.contest().await.context("Contest failed")?;
+
+    println!("{}", "KEL contested and permanently frozen.".red().bold());
+    println!("  Event SAID: {}", event.said);
 
     Ok(())
 }
@@ -939,6 +959,7 @@ async fn main() -> Result<()> {
         Commands::RotateRecovery { prefix } => cmd_rotate_recovery(&cli, prefix).await,
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
         Commands::Recover { prefix } => cmd_recover(&cli, prefix).await,
+        Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
         Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
         Commands::Get {
             prefix,

@@ -54,10 +54,4 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
     async fn delete(&self, _prefix: &str) -> Result<(), KelsError> {
         Ok(())
     }
-    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
-        self.repo.save_owner_tail(prefix, said).await
-    }
-    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError> {
-        self.repo.load_owner_tail(prefix).await
-    }
 }

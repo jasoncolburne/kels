@@ -7,7 +7,7 @@
 
 use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, PeersResponse, RecoveryOutcome,
+    KeyProvider, NodeStatus, PeersResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -770,7 +770,7 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
         .block_on(async { builder_guard.recover().await });
 
     match recover_result {
-        Ok((outcome, event, _sig)) => {
+        Ok((event, _sig)) => {
             // Save key state after recovery
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
@@ -782,10 +782,7 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
             }
 
             result.status = KelsStatus::Ok;
-            result.outcome = match outcome {
-                RecoveryOutcome::Recovered => KelsRecoveryOutcome::Recovered,
-                RecoveryOutcome::Contested => KelsRecoveryOutcome::Contested,
-            };
+            result.outcome = KelsRecoveryOutcome::Recovered;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
             result.version = event.version;
@@ -793,6 +790,67 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
         Err(e) => {
             result.status = map_error_to_status(&e);
             result.outcome = KelsRecoveryOutcome::Failed;
+            result.error = to_c_string(&e.to_string());
+            set_last_error(&e.to_string());
+        }
+    }
+}
+
+/// Contest a malicious recovery by submitting a contest event (cnt)
+///
+/// Use this when an adversary has revealed your recovery key.
+/// The KEL will be permanently frozen after contesting.
+///
+/// # Safety
+/// - `ctx` must be a valid context pointer
+/// - `result` must be a valid pointer to a KelsEventResult
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+    clear_last_error();
+
+    if ctx.is_null() || result.is_null() {
+        if !result.is_null() {
+            unsafe {
+                (*result).status = KelsStatus::NotInitialized;
+                (*result).error = to_c_string("Context or result is null");
+            }
+        }
+        return;
+    }
+
+    let ctx = unsafe { &*ctx };
+    let result = unsafe { &mut *result };
+    *result = KelsEventResult::default();
+
+    let Ok(mut builder_guard) = ctx.builder.lock() else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to acquire builder lock");
+        return;
+    };
+
+    let contest_result = ctx
+        .runtime
+        .block_on(async { builder_guard.contest().await });
+
+    match contest_result {
+        Ok((event, _sig)) => {
+            // Save key state after contest (keys rotated during contest)
+            let save_result = ctx.runtime.block_on(save_key_state(
+                &builder_guard,
+                &ctx.state_dir,
+                &event.prefix,
+            ));
+            if let Err(e) = save_result {
+                set_last_error(&format!("Warning: Failed to save key state: {}", e));
+            }
+
+            result.status = KelsStatus::Ok;
+            result.prefix = to_c_string(&event.prefix);
+            result.said = to_c_string(&event.said);
+            result.version = event.version;
+        }
+        Err(e) => {
+            result.status = map_error_to_status(&e);
             result.error = to_c_string(&e.to_string());
             set_last_error(&e.to_string());
         }

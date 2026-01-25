@@ -415,7 +415,7 @@ async fn cmd_recover(
     }
 
     // Recover using the builder (authoritative mode)
-    let (event, _signature) = builder.recover_authoritative().await?;
+    let (event, _signature) = builder.recover().await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder
@@ -533,7 +533,7 @@ async fn cmd_contest(
     }
 
     // Contest using the builder (authoritative mode)
-    let (event, _signature) = builder.contest_authoritative(at_version).await?;
+    let (event, _signature) = builder.contest().await?;
 
     // Update authority last_said
     authority.last_said = event.said.clone();

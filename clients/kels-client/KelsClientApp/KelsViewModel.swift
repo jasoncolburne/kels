@@ -429,9 +429,39 @@ class KelsViewModel: ObservableObject {
                 errorMessage = "Recovery failed"
             }
             await refreshStatus()
+        } catch KelsClientError.recoveryProtected {
+            log("Recovery protected - adversary used recovery key, contest required")
+            needsContest = true
+            needsRecovery = false
+            errorMessage = "Adversary used recovery key. Use 'Contest' to freeze the KEL."
         } catch {
             log("ERROR: Recovery failed: \(error.localizedDescription)")
             errorMessage = "Recovery failed: \(error.localizedDescription)"
+        }
+    }
+
+    func contest() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let client = client else {
+            log("ERROR: Client not initialized")
+            errorMessage = "Client not initialized"
+            return
+        }
+
+        log("Contesting malicious recovery...")
+
+        do {
+            let event = try client.contest()
+            log("KEL CONTESTED successfully: \(event.said)")
+            isContested = true
+            needsRecovery = false
+            needsContest = false
+            await refreshStatus()
+        } catch {
+            log("ERROR: Contest failed: \(error.localizedDescription)")
+            errorMessage = "Contest failed: \(error.localizedDescription)"
         }
     }
 

@@ -68,16 +68,20 @@ run_test_expect_fail() {
 # Test that expects divergence to be caused (returns error but with "Divergence detected" message)
 run_test_expect_divergence() {
     local name="$1"
-    shift
+    local prefix="$2"
+    shift 2
     echo -e "${YELLOW}Testing (expect divergence): ${name}${NC}"
-    local output
-    output=$("$@" 2>&1) || true  # Don't fail on non-zero exit
-    if echo "$output" | grep -q "Divergence detected"; then
+    # Run the command (expected to fail)
+    "$@" 2>&1 || true
+    # Check server state for divergence
+    local status
+    status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
+    if [ "$status" = "DIVERGENT" ]; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         ((TESTS_PASSED++))
         return 0
     else
-        echo "$output"  # Only show output on failure
+        echo "Expected status DIVERGENT but got: $status"
         echo -e "${RED}FAILED: ${name} (expected divergence but not detected)${NC}"
         ((TESTS_FAILED++))
         return 1
@@ -87,16 +91,20 @@ run_test_expect_divergence() {
 # Test that expects recovery protection (adversary used recovery key)
 run_test_expect_recovery_protected() {
     local name="$1"
-    shift
+    local prefix="$2"
+    shift 2
     echo -e "${YELLOW}Testing (expect recovery protected): ${name}${NC}"
+    # Run the command and capture output (expected to fail with recovery protected error)
     local output
-    output=$("$@" 2>&1) || true  # Don't fail on non-zero exit
-    if echo "$output" | grep -q "adversary used recovery key"; then
+    output=$("$@" 2>&1) || true
+    echo "$output"
+    # Check if the error message indicates recovery protection
+    if echo "$output" | grep -qi "recovery protected"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         ((TESTS_PASSED++))
         return 0
     else
-        echo "$output"  # Only show output on failure
+        echo "Expected 'Recovery protected' error but got: $output"
         echo -e "${RED}FAILED: ${name} (expected recovery protected but not detected)${NC}"
         ((TESTS_FAILED++))
         return 1
@@ -107,9 +115,9 @@ check_kel_status() {
     local prefix="$1"
     local expected_status="$2"
     local actual_status
-    # Use "^  Status:" to match the indented status line, not "KEL Status:" header
+    # Use "get" to query server directly (not local storage)
     # Strip ANSI color codes before comparing (sed removes escape sequences)
-    actual_status=$(kels-cli -u "$KELS_URL" status --prefix "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
+    actual_status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
     [ "$actual_status" = "$expected_status" ]
 }
 
@@ -203,7 +211,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX1" --said "EOwnerAnchor2________
 run_test "Adversary injects ixn event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX1" --events ixn
 
 # Owner tries to add another event - should be stored but cause divergence
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX1" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX1" --said "EOwnerAnchor3_______________________________"
 
 # Verify server has BOTH divergent events (5 total: icp + 2 owner ixn + adv ixn + owner ixn)
@@ -221,8 +229,8 @@ run_test "Owner recovers KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX1
 # Verify KEL is now OK
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX1" "OK"
 
-# Verify recovery from ixn-only attack ends with just rec (no extra rotation needed)
-run_test "KEL ends with rec (no rot) after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec"
+# Verify recovery always ends with rec,rot (rotate away from potentially compromised signing key)
+run_test "KEL ends with rec,rot after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec,rot"
 
 # Owner can now add events again
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX1" --said "EPostRecoveryAnchor_________________________"
@@ -246,7 +254,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX2" --said "EOwnerData___________
 run_test "Adversary injects rot event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX2" --events rot
 
 # Owner tries to add event - this creates divergence (owner's event vs adversary's rot at same version)
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX2" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX2" --said "EOwnerAnchorAfterAdversaryRot_______________"
 
 # Verify divergence occurred
@@ -278,7 +286,7 @@ echo "Created KEL: $PREFIX3"
 run_test "Adversary injects multiple events" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX3" --events "ixn,ixn,rot"
 
 # Owner tries to add event - this creates divergence at version 1
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX3" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX3" --said "EOwnerAnchorAfterMultiAdversary_____________"
 
 # Verify divergence occurred
@@ -315,7 +323,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX4" --said "$ANCHOR2"
 kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX4" --events ixn
 
 # Owner tries to add event - this creates divergence
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX4" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX4" --said "EOwnerPostAttackAnchor______________________"
 
 # Verify divergence occurred
@@ -346,7 +354,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX5" --said "EOwnerSetupAnchor____
 run_test "Adversary injects ixn (before owner rotation)" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX5" --events ixn
 
 # Owner tries to rotate - this causes divergence (owner's rot event is accepted but divergent)
-run_test_expect_divergence "Owner rotation triggers divergence" \
+run_test_expect_divergence "Owner rotation triggers divergence" "$PREFIX5" \
     kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX5"
 
 # Verify divergence occurred (server should have both events at the same version)
@@ -381,11 +389,11 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX6" --said "EOwnerAnchorBeforeAdv
 run_test "Adversary injects ror event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX6" --events ror
 
 # Owner tries to add event - blocked by recovery protection (adversary revealed recovery key)
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" \
+run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX6" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX6" --said "EOwnerAnchorAfterAdversaryRor_______________"
 
 # Owner contests directly (adversary revealed recovery key)
-run_test "Owner contests (adversary used ror)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX6"
+run_test "Owner contests (adversary used ror)" kels-cli -u "$KELS_URL" contest --prefix "$PREFIX6"
 
 # Verify KEL is now CONTESTED
 run_test "KEL status is CONTESTED after ror contest" check_kel_status "$PREFIX6" "CONTESTED"
@@ -409,11 +417,11 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX7" --said "EOwnerAnchorBeforeAdv
 run_test "Adversary injects dec event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX7" --events dec
 
 # Owner tries to add event - blocked by recovery protection (adversary revealed recovery key)
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" \
+run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX7" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX7" --said "EOwnerAnchorAfterAdversaryDec_______________"
 
-# Owner tries to recover - adversary used recovery key for dec
-run_test "Owner contests (adversary used dec)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX7"
+# Owner contests - adversary used recovery key for dec
+run_test "Owner contests (adversary used dec)" kels-cli -u "$KELS_URL" contest --prefix "$PREFIX7"
 
 # Verify KEL is now CONTESTED
 run_test "KEL status is CONTESTED after dec contest" check_kel_status "$PREFIX7" "CONTESTED"
@@ -435,7 +443,7 @@ echo "Created KEL: $PREFIX8"
 run_test "Adversary injects rot,ixn,ixn" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX8" --events "rot,ixn,ixn"
 
 # Owner tries to add event - diverges at v1 (owner's event vs adversary's rot)
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX8" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX8" --said "EOwnerFirstAnchorAfterAdversaryChain________"
 
 # Verify divergence occurred
@@ -470,7 +478,7 @@ echo "Created KEL: $PREFIX9"
 run_test "Adversary injects rot,rot" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX9" --events "rot,rot"
 
 # Owner tries to add event - diverges at v1
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX9" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX9" --said "EOwnerAnchorAfterDoubleRot__________________"
 
 # Verify divergence occurred
@@ -509,7 +517,7 @@ run_test "Owner adds anchor after rotation" kels-cli -u "$KELS_URL" anchor --pre
 run_test "Adversary injects ixn after owner rotation" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX10" --events ixn
 
 # Owner's next event will cause divergence
-run_test_expect_divergence "Owner anchor triggers divergence" \
+run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX10" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX10" --said "EOwnerSecondAnchorCausesDivergence__________"
 
 # Verify divergence
@@ -543,11 +551,11 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX11" --said "EOwnerImportantData3
 run_test "Adversary injects dec after owner anchors" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX11" --events dec
 
 # Owner tries to add more data - blocked by recovery protection
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" \
+run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX11" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX11" --said "EOwnerData4AfterAdversaryDec________________"
 
 # Owner contests (adversary used recovery key)
-run_test "Owner contests (adversary dec'd after anchors)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX11"
+run_test "Owner contests (adversary dec'd after anchors)" kels-cli -u "$KELS_URL" contest --prefix "$PREFIX11"
 
 # Verify CONTESTED
 run_test "KEL status is CONTESTED after dec-on-data contest" check_kel_status "$PREFIX11" "CONTESTED"
@@ -574,11 +582,11 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX12" --said "EOwnerAnchorBeforeAd
 run_test "Adversary injects rec event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX12" --events rec
 
 # Owner tries to add event - blocked by recovery protection
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" \
+run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX12" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX12" --said "EOwnerAnchorAfterAdversaryRec_______________"
 
 # Owner contests (adversary used recovery key)
-run_test "Owner contests (adversary used rec)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX12"
+run_test "Owner contests (adversary used rec)" kels-cli -u "$KELS_URL" contest --prefix "$PREFIX12"
 
 # Verify KEL is now CONTESTED
 run_test "KEL status is CONTESTED after rec contest" check_kel_status "$PREFIX12" "CONTESTED"
@@ -607,11 +615,11 @@ run_test "Owner rotates again (v4)" kels-cli -u "$KELS_URL" rotate --prefix "$PR
 # Adversary attacks at v3 using stolen inception key (generation 0)
 # This creates divergence at v3: owner's rot(v3) vs adversary's rot(v3)
 # Note: The inject command returns error on divergence detection, but that's the expected outcome
-run_test_expect_divergence "Adversary injects rot at v3 using inception key" \
+run_test_expect_divergence "Adversary injects rot at v3 using inception key" "$PREFIX13" \
     kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX13" --events rot --generation 0 --event-version 3
 
 # Owner tries to anchor - server returns frozen, client syncs and sees divergence
-run_test_expect_divergence "Owner anchor syncs divergence from server" \
+run_test_expect_divergence "Owner anchor syncs divergence from server" "$PREFIX13" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EOwnerAnchorAfterAttack_____________________"
 
 # Verify divergence at v3
@@ -624,8 +632,8 @@ run_test "Owner recovers using historical inception key" kels-cli -u "$KELS_URL"
 # Verify recovery succeeded
 run_test "KEL status is OK after historical key recovery" check_kel_status "$PREFIX13" "OK"
 
-# Owner already rotated (v3, v4) before adversary attacked, so no extra rot needed after rec
-run_test "KEL ends with rot,rec after historical key recovery" check_kel_ends_with "$PREFIX13" "rot,rec"
+# Recovery always ends with rec,rot (rotate away from potentially compromised signing key)
+run_test "KEL ends with rec,rot after historical key recovery" check_kel_ends_with "$PREFIX13" "rec,rot"
 
 # Owner can continue
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EPostHistoricalRecoveryAnchor_______________"
@@ -691,11 +699,11 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV1______
 kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV2______________________________"
 
 # Adversary injects at v2, creating divergence
-run_test_expect_divergence "Adversary injects at v2 (creates divergence)" \
+run_test_expect_divergence "Adversary injects at v2 (creates divergence)" "$PREFIX16" \
     kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn --generation 0 --event-version 2
 
 # Owner syncs divergence from server
-run_test_expect_divergence "Owner anchor syncs divergence" \
+run_test_expect_divergence "Owner anchor syncs divergence" "$PREFIX16" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV3TriggersDivergence____________"
 run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX16"
 

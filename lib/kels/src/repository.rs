@@ -19,12 +19,4 @@ pub trait SignedEventRepository: Send + Sync {
         event: crate::KeyEvent,
         signatures: Vec<crate::EventSignature>,
     ) -> Result<crate::KeyEvent, KelsError>;
-
-    /// Owner tail tracking for recovery
-    async fn save_owner_tail(&self, _prefix: &str, _said: &str) -> Result<(), KelsError> {
-        Ok(())
-    }
-    async fn load_owner_tail(&self, _prefix: &str) -> Result<Option<String>, KelsError> {
-        Ok(None)
-    }
 }

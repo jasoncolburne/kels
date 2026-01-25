@@ -35,10 +35,4 @@ pub trait KelStore: Send + Sync {
         }
         self.save(kel).await
     }
-
-    /// Save owner's tail SAID for recovery (identifies our events vs adversary's).
-    async fn save_owner_tail(&self, prefix: &str, said: &str) -> Result<(), KelsError>;
-
-    /// Load owner's tail SAID for tracing through event chain.
-    async fn load_owner_tail(&self, prefix: &str) -> Result<Option<String>, KelsError>;
 }
