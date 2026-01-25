@@ -14,15 +14,15 @@ Each node has a persistent secp256r1 identity stored in an HSM (the example impl
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                            kels-registry namespace                            │
-│                                                                               │
+│                            kels-registry namespace                           │
+│                                                                              │
 │  ┌────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
 │  │  identity  │───>│  Peer Allowlist │───>│  Registration Verification   │   │
 │  │  service   │    │  (PostgreSQL)   │    │  - Verify signature          │   │
 │  │ (1 replica)│    │  [PeerId list]  │    │  - Check PeerId in allowlist │   │
 │  └─────┬──────┘    └─────────────────┘    └──────────────────────────────┘   │
-│        │                                                                      │
-│        ▼                                                                      │
+│        │                                                                     │
+│        ▼                                                                     │
 │  ┌───────────┐                                                               │
 │  │    HSM    │  (manages registry's KELS identity)                           │
 │  │(SoftHSM2) │                                                               │
