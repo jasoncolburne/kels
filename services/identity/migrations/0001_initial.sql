@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS identity_hsm_key_bindings (
     kel_prefix CHAR(44) NOT NULL,
     current_key_handle TEXT NOT NULL,
     next_key_handle TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_hsm_bindings_prefix ON identity_hsm_key_bindings(prefix);
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS identity_authority (
     name TEXT NOT NULL,
     kel_prefix CHAR(44) NOT NULL,
     last_said CHAR(44) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_authority_prefix ON identity_authority(prefix);
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS identity_key_events (
     delegating_prefix CHAR(44),
     recovery_key CHAR(48),
     recovery_hash CHAR(44),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_key_events_prefix ON identity_key_events(prefix);
