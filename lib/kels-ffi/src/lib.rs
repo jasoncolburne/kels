@@ -6,7 +6,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use kels::{
-    FileKelStore, Kel, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
+    FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
     KeyProvider, NodeStatus, PeersResponse, RecoveryOutcome,
 };
 use verifiable_storage::Versioned;
@@ -1594,13 +1594,11 @@ pub unsafe extern "C" fn kels_discover_nodes(
 
     let discover_result = runtime.block_on(async {
         let client = KelsRegistryClient::new(&url);
-        let http_client = reqwest::Client::new();
 
         // Build set of verified node_ids from peer records
         let verified_node_ids: std::collections::HashSet<String> = if let Some(ref expected) = expected_prefix {
             // Fetch and verify the registry's KEL
-            let kel_url = format!("{}/api/registry-kel", url);
-            let registry_kel: Kel = http_client.get(&kel_url).send().await?.json().await?;
+            let registry_kel = client.fetch_registry_kel().await?;
 
             // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
             if let Err(e) = registry_kel.verify() {
