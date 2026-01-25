@@ -78,7 +78,11 @@ services/kels-gossip/
     ├── lib.rs        # Service orchestration
     ├── gossip.rs     # libp2p swarm with gossipsub + request-response
     ├── sync.rs       # Redis subscriber, sync handler using KelsClient
-    └── protocol.rs   # Message types (KelAnnouncement, KelRequest, KelResponse)
+    ├── protocol.rs   # Message types (KelAnnouncement, KelRequest, KelResponse)
+    ├── allowlist.rs  # Connection filtering based on peer allowlist
+    ├── bootstrap.rs  # Bootstrap sync from existing peers
+    ├── hsm_signer.rs # HSM-backed request signing
+    └── peer_store.rs # Peer cache in PostgreSQL
 ```
 
 ### Message Types
@@ -131,13 +135,14 @@ struct KelResponse {
 - Easier debugging and monitoring
 - Communicates with KELS via HTTP (no direct DB access)
 
-### Ephemeral libp2p identity
+### HSM-backed libp2p identity
 
-The gossip layer is **pure transport** with no cryptographic identity requirements:
-- KELS verifies all event signatures when submitted via HTTP
-- Invalid/forged events are rejected by KELS, not the gossip layer
-- Gossip nodes use ephemeral libp2p keys generated on startup
-- No identity persistence or HSM integration needed
+Gossip nodes use persistent HSM-backed identities:
+- Each node's libp2p identity is derived from a secp256r1 key stored in the HSM service
+- The PeerId is deterministic - same HSM key = same PeerId across restarts
+- Nodes must be added to the peer allowlist before they can connect to the gossip mesh
+- Unauthorized peers are disconnected immediately after the Noise handshake
+- See [Secure Registration](secure-registration.md) for details on the peer allowlist
 
 ### Full KEL fetch (not incremental)
 

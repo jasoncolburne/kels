@@ -63,16 +63,15 @@ services/kels-registry/
 ├── garden.yml
 ├── manifests.yml.tpl
 └── src/
-    ├── main.rs          # Entry point, tracing setup
-    ├── lib.rs           # Module definitions
-    ├── server.rs        # HTTP router and startup
-    ├── handlers.rs      # Node registration handlers
-    ├── store.rs         # Redis-backed node storage
-    ├── signature.rs     # Signature verification
-    ├── peer.rs          # Peer allowlist model
-    ├── peer_store.rs    # PostgreSQL peer repository
-    ├── peer_handlers.rs # Peer API handlers
-    ├── hsm_client.rs    # HSM service client
+    ├── main.rs           # Entry point, tracing setup
+    ├── lib.rs            # Module definitions
+    ├── server.rs         # HTTP router and startup
+    ├── handlers.rs       # All handlers (nodes, peers, registry KEL)
+    ├── store.rs          # Redis-backed node storage
+    ├── signature.rs      # Signature verification
+    ├── identity_client.rs # Client for identity service
+    ├── peer_store.rs     # PostgreSQL peer repository
+    ├── repository.rs     # Combined repository
     └── bin/
         └── kels-registry-admin.rs # Admin CLI for peer management
 ```
@@ -87,8 +86,9 @@ services/kels-registry/
 | `GET` | `/api/nodes/:node_id` | Get a specific node |
 | `GET` | `/api/nodes/bootstrap` | Get bootstrap peers (excludes caller via `?exclude=node_id`) |
 | `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
-| `PUT` | `/api/nodes/:node_id/status` | Update node status |
+| `POST` | `/api/nodes/status` | Update node status (requires signed request) |
 | `GET` | `/api/peers` | Get peer allowlist |
+| `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
 | `GET` | `/health` | Health check |
 
 > **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.

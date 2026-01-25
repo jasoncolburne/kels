@@ -137,6 +137,11 @@ kels-cli -u http://localhost:8091 recover --prefix <prefix>
 
 # Decommission a KEL (permanent)
 kels-cli -u http://localhost:8091 decommission --prefix <prefix>
+
+# Reset local state (clear keys and KEL cache)
+kels-cli reset --prefix <prefix>     # Reset specific prefix
+kels-cli reset                        # Reset all local state (prompts for confirmation)
+kels-cli reset -y                     # Reset all without confirmation
 ```
 
 ### Deploying with Garden
