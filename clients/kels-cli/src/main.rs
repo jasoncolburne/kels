@@ -849,7 +849,11 @@ async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
         if !yes {
             print!(
                 "{}",
-                format!("Reset local state for {}? This will delete local KEL and keys. [y/N] ", p).red()
+                format!(
+                    "Reset local state for {}? This will delete local KEL and keys. [y/N] ",
+                    p
+                )
+                .red()
             );
             io::stdout().flush()?;
             let mut input = String::new();
@@ -875,7 +879,9 @@ async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
         if !yes {
             print!(
                 "{}",
-                "Reset ALL local state? This will delete ALL local KELs and keys. [y/N] ".red().bold()
+                "Reset ALL local state? This will delete ALL local KELs and keys. [y/N] "
+                    .red()
+                    .bold()
             );
             io::stdout().flush()?;
             let mut input = String::new();
@@ -903,7 +909,10 @@ async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
             println!("  Deleted {} key directory(ies)", key_count);
         }
 
-        println!("{}", "Reset complete - all local state cleared.".green().bold());
+        println!(
+            "{}",
+            "Reset complete - all local state cleared.".green().bold()
+        );
     }
 
     Ok(())
