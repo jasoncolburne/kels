@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS kels_gossip_peers (
     previous CHAR(44),
     version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    node_id VARCHAR(255) NOT NULL,
+    node_id TEXT NOT NULL,
     gossip_multiaddr TEXT NOT NULL,
     active BOOLEAN NOT NULL DEFAULT true
 );

@@ -8,8 +8,8 @@ CREATE TABLE IF NOT EXISTS identity_hsm_key_bindings (
     previous CHAR(44),
     version BIGINT NOT NULL,
     kel_prefix CHAR(44) NOT NULL,
-    current_key_handle VARCHAR(255) NOT NULL,
-    next_key_handle VARCHAR(255) NOT NULL,
+    current_key_handle TEXT NOT NULL,
+    next_key_handle TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS identity_authority (
     prefix CHAR(44) NOT NULL,
     previous CHAR(44),
     version BIGINT NOT NULL,
-    name VARCHAR(255) NOT NULL,
+    name TEXT NOT NULL,
     kel_prefix CHAR(44) NOT NULL,
     last_said CHAR(44) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -39,12 +39,12 @@ CREATE TABLE IF NOT EXISTS identity_key_events (
     prefix CHAR(44) NOT NULL,
     previous CHAR(44),
     version BIGINT NOT NULL,
-    public_key VARCHAR(255),
+    public_key CHAR(48),
     rotation_hash CHAR(44),
     kind VARCHAR(16) NOT NULL,
     anchor CHAR(44),
     delegating_prefix CHAR(44),
-    recovery_key VARCHAR(255),
+    recovery_key CHAR(48),
     recovery_hash CHAR(44),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -56,8 +56,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_key_events_prefix_version ON identity_key_
 CREATE TABLE IF NOT EXISTS identity_key_event_signatures (
     said CHAR(44) PRIMARY KEY,
     event_said CHAR(44) NOT NULL,
-    public_key VARCHAR(255) NOT NULL,
-    signature TEXT NOT NULL
+    public_key CHAR(48) NOT NULL,
+    signature CHAR(88) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_identity_key_event_signatures_event_said ON identity_key_event_signatures(event_said);
