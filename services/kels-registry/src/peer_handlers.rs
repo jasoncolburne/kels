@@ -10,8 +10,8 @@ use serde::Serialize;
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query, QueryExecutor, StorageError};
 
-use kels::{Peer, PeerHistory};
 use crate::repository::RegistryRepository;
+use kels::{Peer, PeerHistory};
 
 // ==================== Error Handling ====================
 

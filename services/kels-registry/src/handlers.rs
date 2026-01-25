@@ -1,5 +1,11 @@
 //! KELS Registry REST API Handlers
 
+use crate::repository::RegistryRepository;
+use crate::signature::{self, SignatureError};
+use crate::store::{
+    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
+    StoreError,
+};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -10,12 +16,6 @@ use kels::{Peer, SignedRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
-use crate::repository::RegistryRepository;
-use crate::signature::{self, SignatureError};
-use crate::store::{
-    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
-    StoreError,
-};
 
 pub struct AppState {
     pub store: RegistryStore,
