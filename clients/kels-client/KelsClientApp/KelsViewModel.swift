@@ -126,9 +126,8 @@ class KelsViewModel: ObservableObject {
         log("Discovering nodes from \(registryUrl)...")
 
         do {
-            // Use REGISTRY_PREFIX from Generated.swift for verification (nil/empty skips verification)
-            let prefix = REGISTRY_PREFIX.isEmpty ? nil : REGISTRY_PREFIX
-            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: prefix)
+            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
             log("Found \(discoveredNodes.count) nodes")
 
             // Cache nodes for fallback
@@ -186,10 +185,9 @@ class KelsViewModel: ObservableObject {
         log("Auto-selecting fastest node...")
 
         do {
-            // Use REGISTRY_PREFIX from Generated.swift for verification (nil/empty skips verification)
-            let prefix = REGISTRY_PREFIX.isEmpty ? nil : REGISTRY_PREFIX
+            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
             // Discover nodes (this will also cache them)
-            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: prefix)
+            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
             discoveredNodes = nodes
             saveCachedNodes(nodes)
 
