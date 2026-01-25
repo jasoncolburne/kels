@@ -679,11 +679,11 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in response.events.iter().enumerate() {
+        for signed_event in &response.events {
             let event = &signed_event.event;
             println!(
                 "  [{}] {} - {} ({})",
-                i,
+                event.version,
                 event.kind.as_str().to_uppercase(),
                 &event.said[..16],
                 event.created_at
@@ -742,11 +742,11 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     }
     println!();
     println!("{}", "Events:".yellow().bold());
-    for (i, signed_event) in kel.events().iter().enumerate() {
+    for signed_event in kel.events().iter() {
         let event = &signed_event.event;
         println!(
             "  [{}] {} - {} ({})",
-            i,
+            event.version,
             event.kind.as_str().to_uppercase(),
             &event.said[..16],
             event.created_at
