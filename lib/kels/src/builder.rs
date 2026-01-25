@@ -137,37 +137,19 @@ impl KeyEventBuilder {
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
-
-        let event = KeyEvent::create_decommission(
-            &last_event,
-            new_current.qb64(),
-            current_recovery_pub.qb64(),
-        )?;
-
-        let primary_signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
-        let secondary_signature = self
-            .key_provider
-            .sign_with_recovery(event.said.as_bytes())
-            .await?;
-
-        let signed_event = SignedKeyEvent::new_recovery(
-            event.clone(),
-            new_current.qb64(),
-            primary_signature.qb64(),
-            current_recovery_pub.qb64(),
-            secondary_signature.qb64(),
-        );
+        let (signed_event, event, primary_signature) =
+            match self.create_signed_decommission_event(&last_event).await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.key_provider.rollback_rotation().await;
+                    return Err(e);
+                }
+            };
 
         let Some(client) = self.kels_client.as_ref().cloned() else {
-            // Authoritative mode (no client)
+            // No client - save locally
             self.kel.push(signed_event);
 
-            // Save before commit - if save fails, we can rollback
             if let Some(ref store) = self.kel_store {
                 if let Err(e) = store.save(self.kel()).await {
                     self.kel.pop();
@@ -373,18 +355,34 @@ impl KeyEventBuilder {
             return Err(KelsError::KelDecommissioned);
         }
 
-        let client = self
-            .kels_client
-            .as_ref()
-            .ok_or_else(|| {
-                KelsError::OfflineMode("Cannot rotate_recovery without KELS client".into())
-            })?
-            .clone();
-
         let last_event = self.get_owner_tail().await?.event.clone();
         let (signed_event, event, primary_signature) = self
             .create_signed_recovery_rotation_event(&last_event)
             .await?;
+
+        let Some(client) = self.kels_client.as_ref().cloned() else {
+            // No client - save locally
+            self.kel.push(signed_event);
+
+            if let Some(ref store) = self.kel_store {
+                if let Err(e) = store.save(self.kel()).await {
+                    self.kel.pop();
+                    self.key_provider.rollback_rotation().await;
+                    self.key_provider.rollback_recovery_rotation().await;
+                    return Err(e);
+                }
+                if let Err(e) = store.save_owner_tail(&event.prefix, &event.said).await {
+                    self.kel.pop();
+                    self.key_provider.rollback_rotation().await;
+                    self.key_provider.rollback_recovery_rotation().await;
+                    return Err(e);
+                }
+            }
+
+            self.key_provider.commit_rotation().await;
+            self.key_provider.commit_recovery_rotation().await;
+            return Ok((event, primary_signature));
+        };
 
         let response = client
             .submit_events(std::slice::from_ref(&signed_event))
@@ -433,45 +431,6 @@ impl KeyEventBuilder {
                 Err(e)
             }
         }
-    }
-
-    /// Rotate the recovery key (authoritative mode).
-    /// Use this when you are the authority and don't have a KELS client.
-    pub async fn rotate_recovery_authoritative(
-        &mut self,
-    ) -> Result<(KeyEvent, Signature), KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
-        let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, primary_signature) = self
-            .create_signed_recovery_rotation_event(&last_event)
-            .await?;
-
-        self.kel.push(signed_event);
-
-        // Save before commit - if save fails, we can rollback
-        if let Some(ref store) = self.kel_store {
-            if let Err(e) = store.save(self.kel()).await {
-                self.kel.pop();
-                self.key_provider.rollback_rotation().await;
-                self.key_provider.rollback_recovery_rotation().await;
-                return Err(e);
-            }
-            if let Err(e) = store.save_owner_tail(&event.prefix, &event.said).await {
-                self.kel.pop();
-                self.key_provider.rollback_rotation().await;
-                self.key_provider.rollback_recovery_rotation().await;
-                return Err(e);
-            }
-        }
-
-        // Only commit after successful save
-        self.key_provider.commit_rotation().await;
-        self.key_provider.commit_recovery_rotation().await;
-
-        Ok((event, primary_signature))
     }
 
     /// Create a recovery event from the current tail (authoritative mode).
@@ -628,6 +587,42 @@ impl KeyEventBuilder {
         );
 
         Ok((signed_cnt_event, cnt_event, cnt_primary_signature))
+    }
+
+    /// Create a signed decommission event from a base event.
+    /// Prepares key rotation. Caller must commit/rollback.
+    /// Returns (signed_event, event, primary_signature).
+    async fn create_signed_decommission_event(
+        &mut self,
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let new_current = self.key_provider.prepare_rotation().await?;
+        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
+
+        let event = KeyEvent::create_decommission(
+            base_event,
+            new_current.qb64(),
+            current_recovery_pub.qb64(),
+        )?;
+
+        let primary_signature = self
+            .key_provider
+            .sign_with_pending(event.said.as_bytes())
+            .await?;
+        let secondary_signature = self
+            .key_provider
+            .sign_with_recovery(event.said.as_bytes())
+            .await?;
+
+        let signed_event = SignedKeyEvent::new_recovery(
+            event.clone(),
+            new_current.qb64(),
+            primary_signature.qb64(),
+            current_recovery_pub.qb64(),
+            secondary_signature.qb64(),
+        );
+
+        Ok((signed_event, event, primary_signature))
     }
 
     /// Create a signed recovery rotation event from a base event.

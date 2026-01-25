@@ -304,8 +304,8 @@ async fn cmd_rotate_recovery(
         return Err(anyhow::anyhow!("KEL is empty"));
     }
 
-    // Rotate recovery key using the builder (authoritative mode)
-    let (event, _signature) = builder.rotate_recovery_authoritative().await?;
+    // Rotate recovery key using the builder
+    let (event, _signature) = builder.rotate_recovery().await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder
