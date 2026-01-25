@@ -9,4 +9,5 @@ services/ipam/target/**/*
 .git/**/*
 .vscode/**/*
 .idea/**/*
+.build/**/*
 Cargo.lock

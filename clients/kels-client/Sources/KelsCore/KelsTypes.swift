@@ -137,13 +137,15 @@ private struct FFINode: Codable {
 /// Node discovery from registry using FFI
 public struct NodeDiscovery {
     /// Discover nodes from registry and test latency
-    /// - Parameter registryUrl: URL of the registry service
+    /// - Parameters:
+    ///   - registryUrl: URL of the registry service
+    ///   - registryPrefix: Expected registry prefix (trust anchor) - nil to skip verification
     /// - Returns: Array of nodes sorted by latency (fastest first)
-    public static func discoverNodes(registryUrl: String) async throws -> [RegistryNode] {
+    public static func discoverNodes(registryUrl: String, registryPrefix: String? = nil) async throws -> [RegistryNode] {
         // Run FFI call on a background thread since it's blocking
         return try await Task.detached {
             var result = KelsNodesResult()
-            kels_discover_nodes(registryUrl, &result)
+            kels_discover_nodes(registryUrl, registryPrefix, &result)
             defer { kels_nodes_result_free(&result) }
 
             if result.status != KELS_STATUS_OK {
@@ -177,10 +179,12 @@ public struct NodeDiscovery {
     }
 
     /// Get the fastest ready node from registry
-    /// - Parameter registryUrl: URL of the registry service
+    /// - Parameters:
+    ///   - registryUrl: URL of the registry service
+    ///   - registryPrefix: Expected registry prefix (trust anchor) - nil to skip verification
     /// - Returns: The fastest ready node, or nil if none available
-    public static func fastestNode(registryUrl: String) async throws -> RegistryNode? {
-        let nodes = try await discoverNodes(registryUrl: registryUrl)
+    public static func fastestNode(registryUrl: String, registryPrefix: String? = nil) async throws -> RegistryNode? {
+        let nodes = try await discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
         return nodes.first { $0.status == .ready && $0.latencyMs != nil }
     }
 }

@@ -396,7 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hardware_provider_availability() {
-        if let Some(mut provider) = HardwareKeyProvider::new("test-adns-provider") {
+        if let Some(mut provider) = HardwareKeyProvider::new("test-kels-provider") {
             if let Some(label) = provider.current_label().await
                 && let Some(enclave) = DefaultSecureEnclave::new()
             {

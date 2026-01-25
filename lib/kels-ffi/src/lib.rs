@@ -6,9 +6,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, RecoveryOutcome,
+    FileKelStore, Kel, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
+    KeyProvider, NodeStatus, PeersResponse, RecoveryOutcome,
 };
+use verifiable_storage::Versioned;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -1547,15 +1548,23 @@ struct NodeInfoJson {
 /// Returns a JSON array of node objects with status and latency info.
 /// Nodes are sorted by latency (fastest first), with Ready nodes prioritized.
 ///
+/// This function performs cryptographic verification:
+/// 1. Fetches the registry's KEL and verifies its integrity
+/// 2. Checks that the registry prefix matches the expected trust anchor
+/// 3. Verifies each peer's SAID is anchored in the registry's KEL
+///
 /// # Arguments
 /// * `registry_url` - URL of the kels-registry service
+/// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
 ///
 /// # Safety
 /// - `registry_url` must be a valid C string
+/// - `registry_prefix` must be a valid C string or NULL
 /// - `result` must be a valid pointer to a KelsNodesResult
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kels_discover_nodes(
     registry_url: *const c_char,
+    registry_prefix: *const c_char,
     result: *mut KelsNodesResult,
 ) {
     clear_last_error();
@@ -1573,6 +1582,9 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     };
 
+    // registry_prefix is optional - if provided, we verify against it
+    let expected_prefix = from_c_string(registry_prefix);
+
     // Create runtime for async operations
     let Ok(runtime) = Runtime::new() else {
         result.status = KelsStatus::Error;
@@ -1582,6 +1594,55 @@ pub unsafe extern "C" fn kels_discover_nodes(
 
     let discover_result = runtime.block_on(async {
         let client = KelsRegistryClient::new(&url);
+        let http_client = reqwest::Client::new();
+
+        // If a trust anchor is provided, verify the registry's KEL and peer records
+        if let Some(ref expected) = expected_prefix {
+            // Fetch and verify the registry's KEL
+            let kel_url = format!("{}/api/registry-kel", url);
+            let registry_kel: Kel = http_client.get(&kel_url).send().await?.json().await?;
+
+            // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
+            if let Err(e) = registry_kel.verify() {
+                return Err(KelsError::VerificationFailed(format!(
+                    "Registry KEL verification failed: {}",
+                    e
+                )));
+            }
+
+            // Check that the registry prefix matches our trust anchor
+            let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
+            if actual_prefix.as_deref() != Some(expected.as_str()) {
+                return Err(KelsError::VerificationFailed(format!(
+                    "Registry prefix mismatch: expected {}, got {:?}",
+                    expected, actual_prefix
+                )));
+            }
+
+            // Fetch and verify peers
+            let peers_response: PeersResponse = client.fetch_peers().await?;
+
+            // Verify each peer's SAID is anchored in the registry's KEL
+            for history in &peers_response.peers {
+                if let Some(latest) = history.records.first() {
+                    // Verify the peer record's SAID matches its content
+                    if let Err(e) = latest.verify() {
+                        return Err(KelsError::VerificationFailed(format!(
+                            "Peer {} SAID verification failed: {}",
+                            latest.peer_id, e
+                        )));
+                    }
+
+                    // Verify the peer's SAID is anchored in the registry's KEL
+                    if !registry_kel.contains_anchor(&latest.said) {
+                        return Err(KelsError::VerificationFailed(format!(
+                            "Peer {} SAID not anchored in registry KEL",
+                            latest.peer_id
+                        )));
+                    }
+                }
+            }
+        }
 
         // Fetch all nodes (paginated)
         let nodes = client.list_all_nodes().await?;

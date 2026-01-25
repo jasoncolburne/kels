@@ -154,8 +154,8 @@ pub async fn health() -> StatusCode {
 /// - `{ diverged_at: None, accepted: false }` = validation error
 ///
 /// Note: Delegation verification is NOT performed here. KELS accepts any valid KEL
-/// starting with `icp` or `dip`. Delegation trust is verified by consumers (ADNS, vdig)
-/// when they need to verify the trust chain.
+/// starting with `icp` or `dip`. Delegation trust is verified by consumers when they need to
+/// verify the trust chain.
 pub async fn submit_events(
     State(state): State<Arc<AppState>>,
     Json(events): Json<Vec<SignedKeyEvent>>,
