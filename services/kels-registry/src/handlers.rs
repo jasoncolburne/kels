@@ -1,21 +1,23 @@
 //! KELS Registry REST API Handlers
 
-use crate::repository::RegistryRepository;
-use crate::signature::{self, SignatureError};
-use crate::store::{
-    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
-    StoreError,
-};
 use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use kels::{Peer, SignedRequest};
+use kels::{Kel, Peer, PeerHistory, PeersResponse, SignedRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
+
+use crate::identity_client::IdentityClient;
+use crate::repository::RegistryRepository;
+use crate::signature::{self, SignatureError};
+use crate::store::{
+    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
+    StoreError,
+};
 
 pub struct AppState {
     pub store: RegistryStore,
@@ -286,4 +288,86 @@ pub async fn get_node(
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Node not found: {}", node_id)))?;
     Ok(Json(registration))
+}
+
+// ==================== Peer Handlers ====================
+
+/// Get all peers with their complete version history.
+///
+/// Each peer is returned with its full history in ascending order (oldest first),
+/// matching KEL event ordering. Clients can verify each record's SAID and check
+/// that all SAIDs are anchored in the registry's KEL.
+pub async fn list_peers(
+    State(repo): State<Arc<RegistryRepository>>,
+) -> Result<Json<PeersResponse>, ApiError> {
+    let query = StorageQuery::<Peer>::new()
+        .order_by("prefix", Order::Asc)
+        .order_by("version", Order::Asc);
+
+    let all_peers: Vec<Peer> = repo
+        .peers
+        .pool
+        .fetch(query)
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Storage error: {}", e)))?;
+
+    // Group into histories by prefix
+    let mut histories: Vec<PeerHistory> = Vec::new();
+    let mut current_prefix: Option<String> = None;
+    let mut current_records: Vec<Peer> = Vec::new();
+
+    for peer in all_peers {
+        if current_prefix.as_ref() != Some(&peer.prefix) {
+            if let Some(prefix) = current_prefix.take()
+                && !current_records.is_empty()
+            {
+                histories.push(PeerHistory {
+                    prefix,
+                    records: std::mem::take(&mut current_records),
+                });
+            }
+            current_prefix = Some(peer.prefix.clone());
+        }
+        current_records.push(peer);
+    }
+
+    // Don't forget the last history
+    if let Some(prefix) = current_prefix
+        && !current_records.is_empty()
+    {
+        histories.push(PeerHistory {
+            prefix,
+            records: current_records,
+        });
+    }
+
+    // Filter to only include peers where the latest record is active
+    let active_histories: Vec<PeerHistory> = histories
+        .into_iter()
+        .filter(|h| h.records.last().is_some_and(|r| r.active))
+        .collect();
+
+    Ok(Json(PeersResponse {
+        peers: active_histories,
+    }))
+}
+
+// ==================== Registry KEL Handlers ====================
+
+pub struct RegistryKelState {
+    pub identity_client: Arc<IdentityClient>,
+    pub prefix: String,
+}
+
+/// Public endpoint for clients to verify peer records are anchored in the registry's KEL.
+pub async fn get_registry_kel(
+    State(state): State<Arc<RegistryKelState>>,
+) -> Result<Json<Kel>, ApiError> {
+    let kel = state
+        .identity_client
+        .get_kel()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to fetch KEL: {}", e)))?;
+
+    Ok(Json(kel))
 }

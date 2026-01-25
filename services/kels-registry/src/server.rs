@@ -10,10 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use verifiable_storage::RepositoryConnection;
 
-use crate::handlers::{self, AppState};
+use crate::handlers::{self, AppState, RegistryKelState};
 use crate::identity_client::IdentityClient;
-use crate::peer_handlers;
-use crate::registry_kel_handlers::{self, RegistryKelState};
 use crate::repository::RegistryRepository;
 use crate::store::RegistryStore;
 
@@ -32,12 +30,9 @@ pub fn create_router(
         .route("/api/nodes/:node_id/heartbeat", post(handlers::heartbeat))
         .route("/api/nodes/status", post(handlers::update_status))
         .with_state(state)
-        .route("/api/peers", get(peer_handlers::list_peers))
+        .route("/api/peers", get(handlers::list_peers))
         .with_state(repo)
-        .route(
-            "/api/registry-kel",
-            get(registry_kel_handlers::get_registry_kel),
-        )
+        .route("/api/registry-kel", get(handlers::get_registry_kel))
         .with_state(registry_kel_state)
 }
 
