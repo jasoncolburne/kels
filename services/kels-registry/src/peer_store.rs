@@ -4,7 +4,7 @@
 
 use verifiable_storage_postgres::{PgPool, Stored};
 
-use crate::peer::Peer;
+use kels::Peer;
 
 /// PostgreSQL-backed peer repository using Stored derive
 #[derive(Stored)]

@@ -6,12 +6,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use kels::SignedRequest;
+use kels::{Peer, SignedRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
-
-use crate::peer::Peer;
 use crate::repository::RegistryRepository;
 use crate::signature::{self, SignatureError};
 use crate::store::{

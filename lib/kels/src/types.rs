@@ -848,13 +848,6 @@ impl Peer {
         peer.increment()?;
         Ok(peer)
     }
-
-    pub fn reactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
-        let mut peer = self.clone();
-        peer.active = true;
-        peer.increment()?;
-        Ok(peer)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -927,5 +920,30 @@ mod tests {
         assert_eq!(json, "\"icp\"");
         let parsed: EventKind = serde_json::from_str("\"rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
+    }
+
+    #[test]
+    fn test_peer_creation() {
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+
+        assert!(peer.active);
+        assert_eq!(peer.version, 0);
+        assert!(peer.previous.is_none());
+        assert!(!peer.said.is_empty());
+        // Prefix is derived from content hash, not manually set
+        assert!(!peer.prefix.is_empty());
+        assert_eq!(peer.prefix, peer.said);
+    }
+
+    #[test]
+    fn test_peer_deactivation() {
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+
+        let deactivated = peer.deactivate().unwrap();
+
+        assert!(!deactivated.active);
+        assert_eq!(deactivated.version, 1);
+        assert_eq!(deactivated.previous, Some(peer.said.clone()));
+        assert_eq!(deactivated.prefix, peer.prefix);
     }
 }
