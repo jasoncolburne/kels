@@ -10,6 +10,11 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
+# Read registry prefix from file (required for CLI builds)
+REGISTRY_PREFIX_FILE := .kels/registry_prefix
+REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
+export REGISTRY_PREFIX
+
 .PHONY: all build clean clippy deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build

@@ -12,6 +12,11 @@ use kels::{FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, Nod
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
+const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry.local";
+
+/// Registry KEL prefix - trust anchor for verifying registry identity.
+/// Must be set at compile time via REGISTRY_PREFIX environment variable.
+const REGISTRY_PREFIX: &str = env!("REGISTRY_PREFIX");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -21,8 +26,8 @@ struct Cli {
     url: String,
 
     /// Registry URL for node discovery
-    #[arg(long, env = "KELS_REGISTRY_URL")]
-    registry: Option<String>,
+    #[arg(long, env = "KELS_REGISTRY_URL", default_value = DEFAULT_REGISTRY_URL)]
+    registry: String,
 
     /// Auto-select the fastest available node from registry (requires --registry)
     #[arg(long)]
@@ -106,7 +111,7 @@ enum Commands {
     /// List all local KELs
     List,
 
-    /// List registered nodes from registry (requires --registry)
+    /// List registered nodes from registry
     ListNodes,
 
     /// Show status of a local KEL
@@ -114,6 +119,17 @@ enum Commands {
         /// KEL prefix
         #[arg(long)]
         prefix: String,
+    },
+
+    /// Reset local state (delete local KEL and keys)
+    Reset {
+        /// KEL prefix to reset (if omitted, resets all local state)
+        #[arg(long)]
+        prefix: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Development and testing commands
@@ -283,14 +299,42 @@ fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<
     Ok(())
 }
 
+/// Verify the registry's KEL matches the expected prefix (trust anchor).
+async fn verify_registry(registry_url: &str) -> Result<()> {
+    use kels::KelsRegistryClient;
+
+    let registry_client = KelsRegistryClient::new(registry_url);
+    let registry_kel = registry_client
+        .fetch_registry_kel()
+        .await
+        .context("Failed to fetch registry KEL")?;
+
+    let actual_prefix = registry_kel
+        .prefix()
+        .ok_or_else(|| anyhow::anyhow!("Registry KEL has no prefix"))?;
+
+    if actual_prefix != REGISTRY_PREFIX {
+        return Err(anyhow::anyhow!(
+            "Registry prefix mismatch!\n  Expected: {}\n  Actual:   {}\n  This may indicate a compromised or misconfigured registry.",
+            REGISTRY_PREFIX,
+            actual_prefix
+        ));
+    }
+
+    // Verify the KEL is valid
+    registry_kel
+        .verify()
+        .context("Registry KEL verification failed")?;
+
+    Ok(())
+}
+
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
-        let registry_url = cli
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("--auto-select requires --registry"))?;
+        // Verify registry identity before trusting node list
+        verify_registry(&cli.registry).await?;
 
-        let nodes = KelsClient::discover_nodes(registry_url)
+        let nodes = KelsClient::discover_nodes(&cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -358,17 +402,15 @@ fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
 // ==================== Command Handlers ====================
 
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
-    let registry_url = cli
-        .registry
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--registry is required for list-nodes"))?;
+    // Verify registry identity before trusting node list
+    verify_registry(&cli.registry).await?;
 
     println!(
         "{}",
-        format!("Discovering nodes from {}...", registry_url).green()
+        format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let nodes = KelsClient::discover_nodes(registry_url).await?;
+    let nodes = KelsClient::discover_nodes(&cli.registry).await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());
@@ -787,6 +829,86 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
+    use std::io::{self, Write};
+
+    let config = config_dir(cli)?;
+    let kel_dir = kel_dir(cli)?;
+    let keys_dir = config.join("keys");
+
+    if let Some(p) = prefix {
+        // Reset specific KEL
+        let kel_file = kel_dir.join(format!("{}.kel.json", p));
+        let key_dir = keys_dir.join(p);
+
+        if !kel_file.exists() && !key_dir.exists() {
+            println!("{}", format!("No local state found for {}", p).yellow());
+            return Ok(());
+        }
+
+        if !yes {
+            print!(
+                "{}",
+                format!("Reset local state for {}? This will delete local KEL and keys. [y/N] ", p).red()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        if kel_file.exists() {
+            std::fs::remove_file(&kel_file)?;
+            println!("  Deleted KEL: {}", kel_file.display());
+        }
+        if key_dir.exists() {
+            std::fs::remove_dir_all(&key_dir)?;
+            println!("  Deleted keys: {}", key_dir.display());
+        }
+
+        println!("{}", format!("Reset complete for {}", p).green().bold());
+    } else {
+        // Reset all local state
+        if !yes {
+            print!(
+                "{}",
+                "Reset ALL local state? This will delete ALL local KELs and keys. [y/N] ".red().bold()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        let mut count = 0;
+        if kel_dir.exists() {
+            for entry in std::fs::read_dir(&kel_dir)? {
+                let entry = entry?;
+                std::fs::remove_file(entry.path())?;
+                count += 1;
+            }
+            println!("  Deleted {} KEL file(s)", count);
+        }
+
+        if keys_dir.exists() {
+            let key_count = std::fs::read_dir(&keys_dir)?.count();
+            std::fs::remove_dir_all(&keys_dir)?;
+            std::fs::create_dir_all(&keys_dir)?;
+            println!("  Deleted {} key directory(ies)", key_count);
+        }
+
+        println!("{}", "Reset complete - all local state cleared.".green().bold());
+    }
+
+    Ok(())
+}
+
 // ==================== Dev Commands ====================
 
 #[cfg(feature = "dev-tools")]
@@ -969,6 +1091,7 @@ async fn main() -> Result<()> {
         Commands::List => cmd_list(&cli).await,
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
+        Commands::Reset { prefix, yes } => cmd_reset(&cli, prefix.as_deref(), *yes).await,
 
         #[cfg(feature = "dev-tools")]
         Commands::Dev(dev_cmd) => match dev_cmd {
