@@ -5,10 +5,12 @@ use std::path::PathBuf;
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use cesr::PrivateKey;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use kels::{FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, NodeStatus};
+use kels::{
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, NodeStatus, ProviderConfig,
+    SoftwareProviderConfig,
+};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
@@ -211,92 +213,9 @@ fn kel_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("kels"))
 }
 
-async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
+fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    std::fs::create_dir_all(&key_dir)?;
-
-    let current_path = key_dir.join("current.key");
-    let next_path = key_dir.join("next.key");
-    let recovery_path = key_dir.join("recovery.key");
-
-    let current = if current_path.exists() {
-        let qb64 = std::fs::read_to_string(&current_path).context("Failed to read current key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid current key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    let next = if next_path.exists() {
-        let qb64 = std::fs::read_to_string(&next_path).context("Failed to read next key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid next key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    let recovery = if recovery_path.exists() {
-        let qb64 =
-            std::fs::read_to_string(&recovery_path).context("Failed to read recovery key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid recovery key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    if current.is_none() && next.is_none() {
-        return Ok(KeyProvider::software());
-    }
-
-    Ok(KeyProvider::with_all_software_keys(current, next, recovery))
-}
-
-fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<()> {
-    let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    std::fs::create_dir_all(&key_dir)?;
-
-    let software = provider
-        .as_software()
-        .ok_or_else(|| anyhow::anyhow!("Cannot save non-software key provider"))?;
-
-    if let Some(current) = software.current_private_key() {
-        let path = key_dir.join("current.key");
-        std::fs::write(&path, current.qb64()).context("Failed to write current key")?;
-    }
-
-    if let Some(next) = software.next_private_key() {
-        let path = key_dir.join("next.key");
-        std::fs::write(&path, next.qb64()).context("Failed to write next key")?;
-    }
-
-    if let Some(recovery) = software.recovery_private_key() {
-        let path = key_dir.join("recovery.key");
-        std::fs::write(&path, recovery.qb64()).context("Failed to write recovery key")?;
-    }
-    for i in 0.. {
-        let path = key_dir.join(format!("signing_{}.key", i));
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        } else {
-            break;
-        }
-    }
-    for i in 0.. {
-        let path = key_dir.join(format!("history_{}.key", i));
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        } else {
-            break;
-        }
-    }
-
-    Ok(())
+    Ok(SoftwareProviderConfig::new(key_dir))
 }
 
 /// Verify the registry's KEL matches the expected prefix (trust anchor).
@@ -428,7 +347,9 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
     let client = create_client(cli).await?;
-    let key_provider = KeyProvider::software();
+    // Use a temporary config for init - we don't know the prefix yet
+    let temp_config = SoftwareProviderConfig::new(config_dir(cli)?.join("keys").join("temp"));
+    let key_provider = temp_config.load_provider()?;
     let kel_store = create_kel_store(cli, None)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -440,7 +361,10 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     .await?;
 
     let (event, _sig) = builder.incept().await.context("Inception failed")?;
-    save_key_provider(cli, &event.prefix, builder.key_provider())?;
+
+    // Save to the correct prefix directory
+    let config = provider_config(cli, &event.prefix)?;
+    config.save_provider(builder.key_provider())?;
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
     kel_store.save(builder.kel()).await?;
 
@@ -457,8 +381,9 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating signing key for {}...", prefix).green()
     );
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -471,7 +396,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
 
     match builder.rotate().await {
         Ok((event, _sig)) => {
-            save_key_provider(cli, prefix, builder.key_provider())?;
+            config.save_provider(builder.key_provider())?;
             println!("{}", "Rotation successful!".green().bold());
             println!("  Event SAID: {}", event.said);
             Ok(())
@@ -481,7 +406,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
             ref diverged_at,
         }) => {
             // Keys were committed internally - save them before returning error
-            save_key_provider(cli, prefix, builder.key_provider())?;
+            config.save_provider(builder.key_provider())?;
             Err(anyhow::anyhow!(
                 "Divergence detected at: {}, submission_accepted: true",
                 diverged_at
@@ -497,8 +422,9 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating recovery key for {}...", prefix).green()
     );
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -513,7 +439,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         .rotate_recovery()
         .await
         .context("Recovery rotation failed")?;
-    save_key_provider(cli, prefix, builder.key_provider())?;
+    config.save_provider(builder.key_provider())?;
 
     println!("{}", "Recovery rotation successful!".green().bold());
     println!("  Event SAID: {}", event.said);
@@ -525,7 +451,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -548,8 +474,9 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
 async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     println!("{}", format!("Recovering KEL {}...", prefix).yellow());
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -561,7 +488,7 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     .await?;
 
     let (event, _sig) = builder.recover().await.context("Recovery failed")?;
-    save_key_provider(cli, prefix, builder.key_provider())?;
+    config.save_provider(builder.key_provider())?;
 
     println!("{}", "Recovery successful!".green().bold());
     println!("  Event SAID: {}", event.said);
@@ -577,7 +504,7 @@ async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
     );
 
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -607,7 +534,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     );
 
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider()?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -971,7 +898,7 @@ async fn cmd_adversary_inject(
         .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
 
     // Load the key provider (adversary has the same keys as owner)
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider()?;
 
     // If event_version specified, truncate KEL to that point (simulates adversary with old state)
     if let Some(version) = event_version {

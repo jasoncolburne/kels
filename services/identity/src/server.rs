@@ -74,7 +74,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             binding.next_label_generation
         );
 
-        let provider = HsmKeyProvider::with_handles(
+        let key_provider = HsmKeyProvider::with_handles(
             hsm.clone(),
             &key_handle_prefix,
             binding.next_label_generation,
@@ -82,7 +82,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             binding.next_key_handle.into(),
             binding.recovery_key_handle.into(),
         );
-        let key_provider = KeyProvider::external(Box::new(provider));
 
         KeyEventBuilder::with_dependencies(
             key_provider,
@@ -95,8 +94,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("No existing identity - auto-incepting");
 
-        let provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0);
-        let key_provider = KeyProvider::external(Box::new(provider));
+        let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0);
 
         let mut builder =
             KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)

@@ -12,8 +12,8 @@ fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
     compute_rotation_hash(&key.qb64())
 }
 
-pub struct KeyEventBuilder {
-    key_provider: KeyProvider,
+pub struct KeyEventBuilder<K: KeyProvider> {
+    key_provider: K,
     #[allow(dead_code)]
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
@@ -21,10 +21,10 @@ pub struct KeyEventBuilder {
     confirmed_cursor: usize,
 }
 
-impl KeyEventBuilder {
+impl<K: KeyProvider> KeyEventBuilder<K> {
     // ==================== Constructors ====================
 
-    pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
+    pub fn new(key_provider: K, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
             kels_client,
@@ -35,7 +35,7 @@ impl KeyEventBuilder {
     }
 
     pub async fn with_dependencies(
-        key_provider: KeyProvider,
+        key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         prefix: Option<&str>,
@@ -56,7 +56,7 @@ impl KeyEventBuilder {
     }
 
     pub fn with_kel(
-        key_provider: KeyProvider,
+        key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
@@ -97,11 +97,11 @@ impl KeyEventBuilder {
         &self.kel
     }
 
-    pub fn key_provider(&self) -> &KeyProvider {
+    pub fn key_provider(&self) -> &K {
         &self.key_provider
     }
 
-    pub fn key_provider_mut(&mut self) -> &mut KeyProvider {
+    pub fn key_provider_mut(&mut self) -> &mut K {
         &mut self.key_provider
     }
 

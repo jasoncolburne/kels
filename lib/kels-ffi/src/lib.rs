@@ -5,6 +5,16 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
+use kels::HardwareKeyProvider;
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+use kels::SoftwareKeyProvider;
 use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
     KeyProvider, NodeStatus, PeersResponse,
@@ -226,18 +236,30 @@ impl Default for KelsRecoveryResult {
 
 // ==================== Context ====================
 
-/// Opaque context for KELS operations
+/// Opaque context for KELS operations (Secure Enclave variant)
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
 pub struct KelsContext {
-    builder: Arc<Mutex<KeyEventBuilder>>,
+    builder: Arc<Mutex<KeyEventBuilder<HardwareKeyProvider>>>,
     store: Arc<FileKelStore>,
     runtime: Runtime,
     kels_url: RwLock<String>,
     state_dir: PathBuf,
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    use_hardware: bool,
+}
+
+/// Opaque context for KELS operations (Software variant)
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+pub struct KelsContext {
+    builder: Arc<Mutex<KeyEventBuilder<SoftwareKeyProvider>>>,
+    store: Arc<FileKelStore>,
+    runtime: Runtime,
+    kels_url: RwLock<String>,
+    state_dir: PathBuf,
 }
 
 // ==================== Helper Functions ====================
@@ -269,8 +291,8 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
 }
 
 /// Save key state from the builder's key provider
-async fn save_key_state(
-    builder: &KeyEventBuilder,
+async fn save_key_state<K: KeyProvider>(
+    builder: &KeyEventBuilder<K>,
     state_dir: &Path,
     prefix: &str,
 ) -> Result<(), KelsError> {
@@ -331,13 +353,12 @@ pub extern "C" fn kels_init(
         }
     };
 
-    // Create key provider (prefer Secure Enclave on iOS/macOS)
-    // If we have a saved prefix, try to load existing key state
+    // Create key provider
     #[cfg(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     ))]
-    let (key_provider, use_hardware) = {
+    let key_provider = {
         let namespace = prefix_opt.as_deref().unwrap_or("kels-client").to_string();
 
         // Try to load existing key state for this prefix
@@ -347,27 +368,33 @@ pub extern "C" fn kels_init(
 
         if let Some(ks) = key_state {
             // Restore key provider with saved handles
-            match KeyProvider::with_hardware_handles(
+            match HardwareKeyProvider::with_all_handles(
                 &namespace,
                 ks.current_label,
                 ks.next_label,
                 ks.recovery_label,
                 ks.next_label_generation,
             ) {
-                Some(p) => (p, true),
+                Some(p) => p,
                 None => {
                     // Fall back to fresh hardware provider
-                    match KeyProvider::hardware(&namespace) {
-                        Some(p) => (p, true),
-                        None => (KeyProvider::software(), false),
+                    match HardwareKeyProvider::new(&namespace) {
+                        Some(p) => p,
+                        None => {
+                            set_last_error("Secure Enclave not available");
+                            return std::ptr::null_mut();
+                        }
                     }
                 }
             }
         } else {
             // No saved state, create fresh provider
-            match KeyProvider::hardware(&namespace) {
-                Some(p) => (p, true),
-                None => (KeyProvider::software(), false),
+            match HardwareKeyProvider::new(&namespace) {
+                Some(p) => p,
+                None => {
+                    set_last_error("Secure Enclave not available");
+                    return std::ptr::null_mut();
+                }
             }
         }
     };
@@ -376,7 +403,7 @@ pub extern "C" fn kels_init(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     )))]
-    let (key_provider, _use_hardware) = (KeyProvider::software(), false);
+    let key_provider = SoftwareKeyProvider::new();
 
     // Create KELS client
     let client = KelsClient::with_caching(&url);
@@ -406,11 +433,6 @@ pub extern "C" fn kels_init(
         runtime,
         kels_url: RwLock::new(url),
         state_dir: state_path,
-        #[cfg(all(
-            any(target_os = "macos", target_os = "ios"),
-            feature = "secure-enclave"
-        ))]
-        use_hardware,
     });
 
     Box::into_raw(ctx)
@@ -473,15 +495,20 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     let prefix = builder_guard.prefix().map(|s| s.to_string());
     let kel = builder_guard.kel().clone();
 
-    // Try to clone the key provider
-    let key_provider_opt = ctx
+    // Clone the key provider
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    let key_provider = ctx
         .runtime
-        .block_on(async { builder_guard.key_provider().try_clone().await });
+        .block_on(async { builder_guard.key_provider().clone_async().await });
 
-    let Some(key_provider) = key_provider_opt else {
-        set_last_error("Cannot clone key provider");
-        return -1;
-    };
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let key_provider = builder_guard.key_provider().clone();
 
     // Create new builder with same state but new client, preserving store
     let new_builder =
@@ -967,7 +994,7 @@ pub unsafe extern "C" fn kels_status(
         feature = "secure-enclave"
     ))]
     {
-        result.use_hardware = ctx.use_hardware;
+        result.use_hardware = true;
     }
 
     #[cfg(not(all(
@@ -1321,14 +1348,17 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         }
 
         // Clone key provider for adversary builder
-        // Note: We hold the lock during try_clone().await, but this is safe because
-        // we drop the guard immediately after and don't hold it during adversary operations
-        let Some(adversary_keys) = builder_guard.key_provider().try_clone().await else {
-            set_last_error(
-                "Cannot clone key provider - adversary injection requires cloneable keys",
-            );
-            return -1;
-        };
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        let adversary_keys = builder_guard.key_provider().clone_async().await;
+
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        let adversary_keys = builder_guard.key_provider().clone();
 
         let kel = builder_guard.kel().clone();
         drop(builder_guard);

@@ -7,6 +7,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{Kel, KelsError, KeyEventBuilder};
+
+use crate::hsm::HsmKeyProvider;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -40,7 +42,7 @@ pub struct ErrorResponse {
 
 pub struct AppState {
     pub repo: Arc<IdentityRepository>,
-    pub builder: RwLock<KeyEventBuilder>,
+    pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
 }
 

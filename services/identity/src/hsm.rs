@@ -152,7 +152,7 @@ impl HsmOperations for HsmClient {
     }
 }
 
-use kels::ExternalKeyProvider;
+use kels::KeyProvider;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -216,18 +216,6 @@ impl HsmKeyProvider {
         }
     }
 
-    pub async fn current_handle(&self) -> Option<KeyHandle> {
-        self.current_handle.read().await.clone()
-    }
-
-    pub async fn next_handle(&self) -> Option<KeyHandle> {
-        self.next_handle.read().await.clone()
-    }
-
-    pub async fn next_label_generation(&self) -> u64 {
-        *self.next_label_generation.read().await
-    }
-
     async fn generate_new_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
         let mut generation = self.next_label_generation.write().await;
         let label = format!("{}-{}", self.label_prefix, *generation);
@@ -237,7 +225,7 @@ impl HsmKeyProvider {
 }
 
 #[async_trait]
-impl ExternalKeyProvider for HsmKeyProvider {
+impl KeyProvider for HsmKeyProvider {
     async fn has_current(&self) -> bool {
         self.current_handle.read().await.is_some()
     }
@@ -266,10 +254,6 @@ impl ExternalKeyProvider for HsmKeyProvider {
         let (handle, public_key) = self.generate_new_key().await?;
         *self.recovery_handle.write().await = Some(handle);
         Ok(public_key)
-    }
-
-    fn promote_next_to_current(&mut self) {
-        *self.current_handle.get_mut() = self.next_handle.get_mut().take();
     }
 
     async fn current_public_key(&self) -> Result<PublicKey, KelsError> {

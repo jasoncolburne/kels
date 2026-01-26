@@ -1,5 +1,6 @@
 //! Hardware Key Provider - Secure Enclave backed key storage
 
+use crate::crypto::KeyProvider;
 use crate::error::KelsError;
 use cesr::{PublicKey, Signature};
 use std::sync::Arc;
@@ -122,7 +123,7 @@ impl HardwareKeyProvider {
         )
     }
 
-    // ==================== Accessors ====================
+    // ==================== Non-trait Methods ====================
 
     pub async fn clone_async(&self) -> Self {
         Self {
@@ -140,116 +141,6 @@ impl HardwareKeyProvider {
     pub async fn current_generation(&self) -> u64 {
         *self.next_label_generation.read().await
     }
-
-    pub async fn current_label(&self) -> Option<String> {
-        self.current_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.label.clone())
-    }
-
-    pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        let current = self.current_handle.read().await;
-        let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
-        self.enclave.get_public_key(handle)
-    }
-
-    pub async fn has_current(&self) -> bool {
-        self.current_handle.read().await.is_some()
-    }
-
-    pub async fn has_next(&self) -> bool {
-        self.next_handle.read().await.is_some()
-    }
-
-    pub async fn has_recovery(&self) -> bool {
-        self.recovery_handle.read().await.is_some()
-    }
-
-    pub async fn next_label(&self) -> Option<String> {
-        self.next_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.label.clone())
-    }
-
-    pub async fn next_label_generation(&self) -> u64 {
-        *self.next_label_generation.read().await
-    }
-
-    pub async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
-        let next = self.next_handle.read().await;
-        let handle = next.as_ref().ok_or(KelsError::NoNextKey)?;
-        self.enclave.get_public_key(handle)
-    }
-
-    pub async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
-        let pending_next = self.pending_next_handle.read().await;
-        let handle = pending_next.as_ref().ok_or(KelsError::NoNextKey)?;
-        self.enclave.get_public_key(handle)
-    }
-
-    pub async fn recovery_label(&self) -> Option<String> {
-        self.recovery_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.label.clone())
-    }
-
-    pub async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
-        let recovery = self.recovery_handle.read().await;
-        let handle = recovery.as_ref().ok_or(KelsError::NoRecoveryKey)?;
-        self.enclave.get_public_key(handle)
-    }
-
-    // ==================== Key Generation ====================
-
-    pub async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
-        let mut generation = self.next_label_generation.write().await;
-        let label = self.generate_label(*generation);
-        *generation += 1;
-
-        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
-            label: label.clone(),
-        });
-
-        let (handle, public_key) = self.enclave.generate_key(&label)?;
-        *self.current_handle.write().await = Some(handle);
-        Ok(public_key)
-    }
-
-    pub async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
-        let mut generation = self.next_label_generation.write().await;
-        let label = self.generate_label(*generation);
-        *generation += 1;
-
-        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
-            label: label.clone(),
-        });
-
-        let (handle, public_key) = self.enclave.generate_key(&label)?;
-        *self.next_handle.write().await = Some(handle);
-        Ok(public_key)
-    }
-
-    pub async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
-        let mut generation = self.next_label_generation.write().await;
-        let label = self.generate_label(*generation);
-        *generation += 1;
-
-        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
-            label: label.clone(),
-        });
-
-        let (handle, public_key) = self.enclave.generate_key(&label)?;
-        *self.recovery_handle.write().await = Some(handle);
-        Ok(public_key)
-    }
-
-    // ==================== Key Management ====================
 
     pub async fn delete_all_keys(&mut self) {
         let generation = *self.next_label_generation.read().await;
@@ -275,21 +166,137 @@ impl HardwareKeyProvider {
         }
     }
 
-    // ==================== Rotation Operations ====================
+    pub fn promote_next_to_current(&mut self) {
+        *self.current_handle.get_mut() = self.next_handle.get_mut().take();
+    }
 
-    pub async fn commit_recovery_rotation(&mut self) {
+    fn generate_label(&self, generation: u64) -> String {
+        format!("{}-{}", self.key_namespace, generation)
+    }
+}
+
+// ==================== KeyProvider impl ====================
+
+#[async_trait::async_trait]
+impl KeyProvider for HardwareKeyProvider {
+    async fn current_handle(&self) -> Option<String> {
+        self.current_handle
+            .read()
+            .await
+            .as_ref()
+            .map(|h| h.label.clone())
+    }
+
+    async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+        let current = self.current_handle.read().await;
+        let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
+        self.enclave.get_public_key(handle)
+    }
+
+    async fn next_handle(&self) -> Option<String> {
+        self.next_handle
+            .read()
+            .await
+            .as_ref()
+            .map(|h| h.label.clone())
+    }
+
+    async fn next_label_generation(&self) -> u64 {
+        *self.next_label_generation.read().await
+    }
+
+    async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
+        let next = self.next_handle.read().await;
+        let handle = next.as_ref().ok_or(KelsError::NoNextKey)?;
+        self.enclave.get_public_key(handle)
+    }
+
+    async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
+        let pending_next = self.pending_next_handle.read().await;
+        let handle = pending_next.as_ref().ok_or(KelsError::NoNextKey)?;
+        self.enclave.get_public_key(handle)
+    }
+
+    async fn recovery_handle(&self) -> Option<String> {
+        self.recovery_handle
+            .read()
+            .await
+            .as_ref()
+            .map(|h| h.label.clone())
+    }
+
+    async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
+        let recovery = self.recovery_handle.read().await;
+        let handle = recovery.as_ref().ok_or(KelsError::NoRecoveryKey)?;
+        self.enclave.get_public_key(handle)
+    }
+
+    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
+        let mut generation = self.next_label_generation.write().await;
+        let label = self.generate_label(*generation);
+        *generation += 1;
+
+        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
+            label: label.clone(),
+        });
+
+        let (handle, public_key) = self.enclave.generate_key(&label)?;
+        *self.current_handle.write().await = Some(handle);
+        Ok(public_key)
+    }
+
+    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
+        let mut generation = self.next_label_generation.write().await;
+        let label = self.generate_label(*generation);
+        *generation += 1;
+
+        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
+            label: label.clone(),
+        });
+
+        let (handle, public_key) = self.enclave.generate_key(&label)?;
+        *self.next_handle.write().await = Some(handle);
+        Ok(public_key)
+    }
+
+    async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
+        let mut generation = self.next_label_generation.write().await;
+        let label = self.generate_label(*generation);
+        *generation += 1;
+
+        let _ = self.enclave.delete_key(&SecureEnclaveKeyHandle {
+            label: label.clone(),
+        });
+
+        let (handle, public_key) = self.enclave.generate_key(&label)?;
+        *self.recovery_handle.write().await = Some(handle);
+        Ok(public_key)
+    }
+
+    async fn has_current(&self) -> bool {
+        self.current_handle.read().await.is_some()
+    }
+
+    async fn has_next(&self) -> bool {
+        self.next_handle.read().await.is_some()
+    }
+
+    async fn has_recovery(&self) -> bool {
+        self.recovery_handle.read().await.is_some()
+    }
+
+    async fn commit_recovery_rotation(&mut self) {
         *self.recovery_handle.write().await = self.pending_recovery_handle.write().await.take();
     }
 
-    pub async fn commit_rotation(&mut self) {
+    async fn commit_rotation(&mut self) {
         if let Some(pending_next) = self.pending_next_handle.write().await.take() {
             *self.current_handle.write().await = self.next_handle.write().await.take();
             *self.next_handle.write().await = Some(pending_next);
         }
     }
 
-    /// Returns (current_recovery_pub, new_recovery_pub).
-    pub async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
+    async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
         let current_recovery = {
             let recovery = self.recovery_handle.read().await;
             let handle = recovery.as_ref().ok_or(KelsError::NoRecoveryKey)?;
@@ -310,8 +317,7 @@ impl HardwareKeyProvider {
         Ok((current_recovery, new_recovery_pub))
     }
 
-    /// Returns the new current public key (what will be current after commit).
-    pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
+    async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
         let new_current_pub = {
             let next_handle = self.next_handle.read().await;
             let handle = next_handle.as_ref().ok_or(KelsError::NoNextKey)?;
@@ -332,11 +338,7 @@ impl HardwareKeyProvider {
         Ok(new_current_pub)
     }
 
-    pub fn promote_next_to_current(&mut self) {
-        *self.current_handle.get_mut() = self.next_handle.get_mut().take();
-    }
-
-    pub async fn rollback_recovery_rotation(&mut self) {
+    async fn rollback_recovery_rotation(&mut self) {
         if let Some(ref handle) = *self.pending_recovery_handle.read().await
             && let Err(e) = self.enclave.delete_key(handle)
         {
@@ -345,7 +347,7 @@ impl HardwareKeyProvider {
         *self.pending_recovery_handle.write().await = None;
     }
 
-    pub async fn rollback_rotation(&mut self) {
+    async fn rollback_rotation(&mut self) {
         if let Some(ref handle) = *self.pending_next_handle.read().await
             && let Err(e) = self.enclave.delete_key(handle)
         {
@@ -354,36 +356,28 @@ impl HardwareKeyProvider {
         *self.pending_next_handle.write().await = None;
     }
 
-    // ==================== Signing/Verification ====================
-
-    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
+    async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
         let current = self.current_handle.read().await;
         let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.sign(handle, data)
     }
 
-    pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
+    async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
         let next_handle = self.next_handle.read().await;
         let handle = next_handle.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.sign(handle, data)
     }
 
-    pub async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
+    async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
         let recovery = self.recovery_handle.read().await;
         let handle = recovery.as_ref().ok_or(KelsError::NoRecoveryKey)?;
         self.enclave.sign(handle, data)
     }
 
-    pub async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
+    async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
         let current = self.current_handle.read().await;
         let handle = current.as_ref().ok_or(KelsError::NoCurrentKey)?;
         self.enclave.verify(handle, data, signature)
-    }
-
-    // ==================== Private Helpers ====================
-
-    fn generate_label(&self, generation: u64) -> String {
-        format!("{}-{}", self.key_namespace, generation)
     }
 }
 
@@ -397,12 +391,12 @@ mod tests {
     #[tokio::test]
     async fn test_hardware_provider_availability() {
         if let Some(mut provider) = HardwareKeyProvider::new("test-kels-provider") {
-            if let Some(label) = provider.current_label().await
+            if let Some(label) = provider.current_handle().await
                 && let Some(enclave) = DefaultSecureEnclave::new()
             {
                 let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
             }
-            if let Some(label) = provider.next_label().await
+            if let Some(label) = provider.next_handle().await
                 && let Some(enclave) = DefaultSecureEnclave::new()
             {
                 let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
@@ -422,12 +416,12 @@ mod tests {
 
             provider.verify(data, &sig).await.unwrap();
 
-            if let Some(label) = provider.current_label().await
+            if let Some(label) = provider.current_handle().await
                 && let Some(enclave) = DefaultSecureEnclave::new()
             {
                 let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
             }
-            if let Some(label) = provider.next_label().await
+            if let Some(label) = provider.next_handle().await
                 && let Some(enclave) = DefaultSecureEnclave::new()
             {
                 let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });

@@ -785,12 +785,12 @@ impl<'a> IntoIterator for &'a Kel {
 mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
-    use crate::crypto::KeyProvider;
+    use crate::crypto::SoftwareKeyProvider;
     use verifiable_storage::SelfAddressed;
 
     #[tokio::test]
     async fn test_incept() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let (event, signature) = builder.incept().await.unwrap();
 
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_interact() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let (icp_event, _) = builder.incept().await.unwrap();
 
@@ -837,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let (icp_event, _) = builder.incept().await.unwrap();
         let original_public_key = builder.current_public_key().await.unwrap();
@@ -868,7 +868,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_interact_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let result = builder.interact("some_anchor").await;
         assert!(result.is_err());
@@ -876,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let result = builder.rotate().await;
         assert!(result.is_err());
@@ -884,7 +884,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_said_verification() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let (event, _) = builder.incept().await.unwrap();
         assert!(event.verify_prefix().is_ok());
@@ -895,11 +895,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_kel() {
-        let mut builder1 = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let public_key = icp_event.public_key.clone().unwrap();
 
-        let software = builder1.key_provider().as_software().unwrap();
+        let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
 
@@ -910,7 +910,7 @@ mod tests {
             icp_sig.qb64(),
         ));
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             kel.clone(),
@@ -924,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation_after_interactions() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder.interact("anchor1").await.unwrap();
         let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
@@ -940,11 +940,11 @@ mod tests {
         )
         .unwrap();
 
-        let software = builder.key_provider().as_software().unwrap();
+        let software = builder.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             kel.clone(),
@@ -963,7 +963,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kel_struct() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
         let (icp_event, icp_sig) = builder.incept().await.unwrap();
         let (ixn_event, ixn_sig) = builder.interact("test_anchor").await.unwrap();
@@ -999,7 +999,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_roundtrip() {
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (event, signature) = builder.incept().await.unwrap();
 
         let public_key = event.public_key.clone().unwrap();
@@ -1027,7 +1027,7 @@ mod tests {
     #[tokio::test]
     async fn test_find_divergence_none() {
         // Normal KEL with no divergence
-        let mut builder = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder.incept().await.unwrap();
         let (ixn_event, ixn_sig) = builder.interact("anchor").await.unwrap();
 
@@ -1047,12 +1047,12 @@ mod tests {
     #[tokio::test]
     async fn test_find_divergence_two_way() {
         // KEL with 2 events at same version (2-way divergence)
-        let mut builder1 = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
         // Create a second builder from the same icp to make a divergent event
-        let software = builder1.key_provider().as_software().unwrap();
+        let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
 
@@ -1065,7 +1065,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1100,11 +1100,11 @@ mod tests {
     #[tokio::test]
     async fn test_find_divergence_three_way() {
         // KEL with 3 events at same version (3-way divergence from race condition)
-        let mut builder1 = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider().as_software().unwrap();
+        let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
 
@@ -1118,7 +1118,7 @@ mod tests {
 
         // Create second divergent event
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1127,7 +1127,7 @@ mod tests {
 
         // Create third divergent event
         let mut builder3 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1167,11 +1167,11 @@ mod tests {
     #[tokio::test]
     async fn test_with_kel_divergent_sets_correct_state() {
         // When loading a divergent KEL, with_kel should set state to last non-divergent event
-        let mut builder1 = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider().as_software().unwrap();
+        let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
 
@@ -1184,7 +1184,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1207,7 +1207,7 @@ mod tests {
 
         // Load with with_kel
         let builder3 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1227,11 +1227,11 @@ mod tests {
     #[tokio::test]
     async fn test_with_kel_three_way_divergent() {
         // Test that 3-way divergence is handled correctly by with_kel
-        let mut builder1 = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider().as_software().unwrap();
+        let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
 
@@ -1244,7 +1244,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
             None,
             None,
             kel_for_others.clone(),
@@ -1252,7 +1252,7 @@ mod tests {
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
             None,
             None,
             kel_for_others.clone(),
@@ -1277,7 +1277,7 @@ mod tests {
 
         // Load with with_kel
         let loaded_builder = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key, next_key),
+            SoftwareKeyProvider::with_keys(current_key, next_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1293,12 +1293,12 @@ mod tests {
         // Test that we correctly detect when adversary rotated vs when we rotated
         // This is critical for knowing when to submit [rec, rot] vs just [rec]
 
-        let mut owner = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp, icp_sig) = owner.incept().await.unwrap();
         let (owner_ixn, owner_ixn_sig) = owner.interact("owner-anchor").await.unwrap();
 
         // Save owner's keys for adversary simulation
-        let software = owner.key_provider().as_software().unwrap();
+        let software = owner.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
         let icp_public_key = icp.public_key.clone().unwrap();
@@ -1312,7 +1312,7 @@ mod tests {
         ));
 
         let mut adversary = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
             None,
             None,
             adversary_kel.clone(),
@@ -1374,11 +1374,11 @@ mod tests {
     async fn test_owner_rotation_not_detected_as_adversary() {
         // Test that owner's own rotation is NOT detected as adversary rotation
 
-        let mut owner = KeyEventBuilder::new(KeyProvider::software(), None);
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let (icp, icp_sig) = owner.incept().await.unwrap();
 
         // Save keys for adversary BEFORE rotation (adversary has inception-era keys)
-        let software = owner.key_provider().as_software().unwrap();
+        let software = owner.key_provider();
         let pre_rot_current = software.current_private_key().unwrap().clone(); // inception key
         let pre_rot_next = software.next_private_key().unwrap().clone(); // first rotation key
 
@@ -1396,7 +1396,7 @@ mod tests {
         ));
 
         let mut adversary = KeyEventBuilder::with_kel(
-            KeyProvider::with_software_keys(pre_rot_current, pre_rot_next),
+            SoftwareKeyProvider::with_keys(pre_rot_current, pre_rot_next),
             None,
             None,
             adversary_kel.clone(),

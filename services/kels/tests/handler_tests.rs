@@ -31,7 +31,7 @@ fn create_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .with_state(state)
 }
-use kels::{BatchSubmitResponse, KeyEvent, KeyEventBuilder, KeyProvider, SignedKeyEvent};
+use kels::{BatchSubmitResponse, KeyEvent, KeyEventBuilder, SignedKeyEvent, SoftwareKeyProvider};
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
@@ -107,7 +107,7 @@ async fn test_submit_inception_event() {
     let app = create_test_app(repo);
 
     // Create a valid inception event
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (event, signature) = builder.incept().await.unwrap();
 
@@ -146,7 +146,7 @@ async fn test_submit_duplicate_inception_idempotent() {
     let app = create_test_app(repo.clone());
 
     // Create and submit first inception
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (event, signature) = builder.incept().await.unwrap();
 
@@ -196,7 +196,7 @@ async fn test_submit_interaction_event() {
     let app = create_test_app(repo.clone());
 
     // Create and submit inception first
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (icp_event, icp_signature) = builder.incept().await.unwrap();
 
@@ -258,7 +258,7 @@ async fn test_submit_rotation_event() {
     let app = create_test_app(repo.clone());
 
     // Create and submit inception first
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (icp_event, icp_signature) = builder.incept().await.unwrap();
 
@@ -321,7 +321,7 @@ async fn test_submit_event_after_decommission_rejected() {
     let app = create_test_app(repo.clone());
 
     // Create and submit inception
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (icp_event, icp_signature) = builder.incept().await.unwrap();
 
@@ -396,7 +396,7 @@ async fn test_submit_event_invalid_signature_format() {
     let app = create_test_app(repo);
 
     // Create a valid inception event but with invalid signature format
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (event, _signature) = builder.incept().await.unwrap();
 
@@ -429,7 +429,7 @@ async fn test_submit_event_wrong_signature() {
     let app = create_test_app(repo);
 
     // Create an inception event
-    let provider1 = KeyProvider::software();
+    let provider1 = SoftwareKeyProvider::new();
     let mut builder1 = KeyEventBuilder::new(provider1, None);
     let (event, _) = builder1.incept().await.unwrap();
 
@@ -470,7 +470,7 @@ async fn test_get_kel() {
     let app = create_test_app(repo.clone());
 
     // Create and submit some events
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (icp_event, icp_signature) = builder.incept().await.unwrap();
     let (ixn_event, ixn_signature) = builder.interact("anchor1").await.unwrap();
@@ -562,7 +562,7 @@ async fn test_get_event_by_said() {
     let app = create_test_app(repo.clone());
 
     // Create and submit an event
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (event, signature) = builder.incept().await.unwrap();
 
@@ -635,7 +635,7 @@ async fn test_submit_delegated_inception() {
     let app = create_test_app(repo);
 
     // Create a delegated inception event
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (event, signature) = builder
         .incept_delegated("Efake_delegating_prefix")
@@ -678,7 +678,7 @@ async fn test_event_with_wrong_previous_rejected() {
     let app = create_test_app(repo.clone());
 
     // Create and submit inception
-    let provider = KeyProvider::software();
+    let provider = SoftwareKeyProvider::new();
     let mut builder = KeyEventBuilder::new(provider, None);
     let (icp_event, icp_signature) = builder.incept().await.unwrap();
 

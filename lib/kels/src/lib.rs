@@ -31,9 +31,9 @@ pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel
 #[cfg(feature = "redis")]
 pub use client::RedisKelCache;
 pub use client::{KelCache, KelCacheConfig, KelsClient};
-#[cfg(feature = "native")]
-pub use crypto::ExternalKeyProvider;
-pub use crypto::{KeyProvider, SoftwareKeyProvider};
+#[cfg(feature = "secure-enclave")]
+pub use crypto::HardwareProviderConfig;
+pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
 pub use file_store::FileKelStore;
 #[cfg(feature = "secure-enclave")]

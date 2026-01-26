@@ -178,7 +178,7 @@ async fn cmd_rotate(
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
-    let key_provider = KeyProvider::external(Box::new(provider));
+    let key_provider = provider;
 
     // Create builder with auto-load from store and auto-save after operations
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -285,7 +285,7 @@ async fn cmd_rotate_recovery(
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
-    let key_provider = KeyProvider::external(Box::new(provider));
+    let key_provider = provider;
 
     let mut builder =
         KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
@@ -395,7 +395,7 @@ async fn cmd_recover(
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
-    let key_provider = KeyProvider::external(Box::new(provider));
+    let key_provider = provider;
 
     let mut builder =
         KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
@@ -513,7 +513,7 @@ async fn cmd_contest(
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
-    let key_provider = KeyProvider::external(Box::new(provider));
+    let key_provider = provider;
 
     let mut builder =
         KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
@@ -601,7 +601,7 @@ async fn cmd_decommission(
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
     );
-    let key_provider = KeyProvider::external(Box::new(provider));
+    let key_provider = provider;
 
     let mut builder =
         KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
