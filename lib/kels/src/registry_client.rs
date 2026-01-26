@@ -395,4 +395,30 @@ impl KelsRegistryClient {
             )))
         }
     }
+
+    /// Fetch and verify the registry's KEL against an expected prefix.
+    ///
+    /// This performs cryptographic verification:
+    /// 1. Fetches the registry's KEL
+    /// 2. Verifies KEL integrity (SAIDs, signatures, chaining, rotation hashes)
+    /// 3. Checks that the registry prefix matches the expected trust anchor
+    ///
+    /// Returns the verified KEL on success, which can be used to check peer anchoring.
+    pub async fn verify_registry(&self, expected_prefix: &str) -> Result<crate::Kel, KelsError> {
+        let registry_kel = self.fetch_registry_kel().await?;
+
+        registry_kel.verify().map_err(|e| {
+            KelsError::VerificationFailed(format!("Registry KEL verification failed: {}", e))
+        })?;
+
+        let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
+        if actual_prefix.as_deref() != Some(expected_prefix) {
+            return Err(KelsError::VerificationFailed(format!(
+                "Registry prefix mismatch: expected {}, got {:?}",
+                expected_prefix, actual_prefix
+            )));
+        }
+
+        Ok(registry_kel)
+    }
 }

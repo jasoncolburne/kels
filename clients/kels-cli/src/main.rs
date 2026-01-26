@@ -304,27 +304,10 @@ async fn verify_registry(registry_url: &str) -> Result<()> {
     use kels::KelsRegistryClient;
 
     let registry_client = KelsRegistryClient::new(registry_url);
-    let registry_kel = registry_client
-        .fetch_registry_kel()
+    registry_client
+        .verify_registry(REGISTRY_PREFIX)
         .await
-        .context("Failed to fetch registry KEL")?;
-
-    let actual_prefix = registry_kel
-        .prefix()
-        .ok_or_else(|| anyhow::anyhow!("Registry KEL has no prefix"))?;
-
-    if actual_prefix != REGISTRY_PREFIX {
-        return Err(anyhow::anyhow!(
-            "Registry prefix mismatch!\n  Expected: {}\n  Actual:   {}\n  This may indicate a compromised or misconfigured registry.",
-            REGISTRY_PREFIX,
-            actual_prefix
-        ));
-    }
-
-    // Verify the KEL is valid
-    registry_kel
-        .verify()
-        .context("Registry KEL verification failed")?;
+        .context("Registry verification failed")?;
 
     Ok(())
 }

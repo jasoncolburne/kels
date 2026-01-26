@@ -1650,25 +1650,8 @@ pub unsafe extern "C" fn kels_discover_nodes(
         // Build set of verified node_ids from peer records
         let verified_node_ids: std::collections::HashSet<String> =
             if let Some(ref expected) = expected_prefix {
-                // Fetch and verify the registry's KEL
-                let registry_kel = client.fetch_registry_kel().await?;
-
-                // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
-                if let Err(e) = registry_kel.verify() {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "Registry KEL verification failed: {}",
-                        e
-                    )));
-                }
-
-                // Check that the registry prefix matches our trust anchor
-                let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
-                if actual_prefix.as_deref() != Some(expected.as_str()) {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "Registry prefix mismatch: expected {}, got {:?}",
-                        expected, actual_prefix
-                    )));
-                }
+                // Verify registry and get the KEL for peer anchoring checks
+                let registry_kel = client.verify_registry(expected).await?;
 
                 // Fetch and verify peers, collecting verified node_ids
                 let peers_response: PeersResponse = client.fetch_peers().await?;

@@ -172,6 +172,47 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 kels::Kel::from_events(signed_events, false)
                     .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))
             }
+
+            /// Store multiple items with their signatures in a single transaction.
+            /// Ensures atomicity when saving multiple events (e.g., recovery + rotation).
+            pub async fn create_batch_with_signatures(
+                &self,
+                events: Vec<(kels::KeyEvent, Vec<kels::EventSignature>)>,
+            ) -> Result<(), verifiable_storage::StorageError> {
+                use verifiable_storage::SelfAddressed;
+
+                if events.is_empty() {
+                    return Ok(());
+                }
+
+                let mut tx = self
+                    .pool
+                    .inner()
+                    .begin()
+                    .await
+                    .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+
+                for (item, signatures) in events {
+                    // Insert the item
+                    verifiable_storage_postgres::bind_insert_with_table_tx(&mut tx, &item, Self::TABLE_NAME).await?;
+
+                    // Store the signatures
+                    for signature in &signatures {
+                        let sig = kels::EventSignature::create(
+                            item.said.clone(),
+                            signature.public_key.clone(),
+                            signature.signature.clone(),
+                        ).map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+                        verifiable_storage_postgres::bind_insert_with_table_tx(&mut tx, &sig, Self::SIGNATURES_TABLE_NAME).await?;
+                    }
+                }
+
+                tx.commit()
+                    .await
+                    .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+
+                Ok(())
+            }
         }
     };
 
@@ -199,6 +240,15 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 signatures: Vec<kels::EventSignature>,
             ) -> Result<kels::KeyEvent, kels::KelsError> {
                 #repo_name::create_with_signatures(self, event, signatures)
+                    .await
+                    .map_err(|e| kels::KelsError::ServerError(e.to_string()))
+            }
+
+            async fn create_batch_with_signatures(
+                &self,
+                events: Vec<(kels::KeyEvent, Vec<kels::EventSignature>)>,
+            ) -> Result<(), kels::KelsError> {
+                #repo_name::create_batch_with_signatures(self, events)
                     .await
                     .map_err(|e| kels::KelsError::ServerError(e.to_string()))
             }

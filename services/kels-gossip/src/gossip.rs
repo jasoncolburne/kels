@@ -5,6 +5,7 @@
 use crate::allowlist::{AllowlistBehaviour, SharedAllowlist};
 use crate::protocol::{KelAnnouncement, KelRequest, KelResponse, PROTOCOL_NAME};
 use futures::prelude::*;
+use kels::KelsRegistryClient;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, noise,
@@ -189,7 +190,7 @@ pub async fn run_swarm(
     peer_addrs: Vec<Multiaddr>,
     topic_name: &str,
     allowlist: SharedAllowlist,
-    registry_url: String,
+    registry_client: KelsRegistryClient,
     registry_prefix: String,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
@@ -230,7 +231,7 @@ pub async fn run_swarm(
             Some(()) = refresh_rx.recv() => {
                 debug!("Refreshing allowlist due to unknown peer connection");
                 if let Err(e) = crate::allowlist::refresh_allowlist(
-                    &registry_url,
+                    &registry_client,
                     &registry_prefix,
                     &allowlist,
                 ).await {

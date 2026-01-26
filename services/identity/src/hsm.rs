@@ -91,8 +91,18 @@ impl HsmClient {
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
         match response.json::<ErrorResponse>().await {
             Ok(e) => KelsError::HardwareError(e.error),
-            Err(e) => KelsError::HardwareError(format!("Failed to parse error: {}", e)),
+            Err(e) => e.into(),
         }
+    }
+
+    async fn parse_response<T: serde::de::DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T, KelsError> {
+        if !response.status().is_success() {
+            return Err(self.request_error(response).await);
+        }
+        Ok(response.json().await?)
     }
 }
 
@@ -108,20 +118,11 @@ impl HsmOperations for HsmClient {
                 label: label.to_string(),
             })
             .send()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("HSM request failed: {}", e)))?;
+            .await?;
 
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
+        let resp: GenerateKeyResponse = self.parse_response(response).await?;
 
-        let resp: GenerateKeyResponse = response
-            .json()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("Failed to parse response: {}", e)))?;
-
-        let public_key = PublicKey::from_qb64(&resp.public_key)
-            .map_err(|e| KelsError::HardwareError(format!("Invalid CESR public key: {}", e)))?;
+        let public_key = PublicKey::from_qb64(&resp.public_key)?;
 
         Ok((KeyHandle::new(resp.label), public_key))
     }
@@ -129,24 +130,11 @@ impl HsmOperations for HsmClient {
     async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError> {
         let url = format!("{}/api/hsm/keys/{}/public", self.base_url, handle.as_str());
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("HSM request failed: {}", e)))?;
+        let response = self.client.get(&url).send().await?;
 
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
+        let resp: PublicKeyResponse = self.parse_response(response).await?;
 
-        let resp: PublicKeyResponse = response
-            .json()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("Failed to parse response: {}", e)))?;
-
-        PublicKey::from_qb64(&resp.public_key)
-            .map_err(|e| KelsError::HardwareError(format!("Invalid CESR public key: {}", e)))
+        Ok(PublicKey::from_qb64(&resp.public_key)?)
     }
 
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError> {
@@ -156,25 +144,11 @@ impl HsmOperations for HsmClient {
             data: base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, data),
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("HSM request failed: {}", e)))?;
+        let response = self.client.post(&url).json(&request).send().await?;
 
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
+        let resp: SignResponse = self.parse_response(response).await?;
 
-        let resp: SignResponse = response
-            .json()
-            .await
-            .map_err(|e| KelsError::HardwareError(format!("Failed to parse response: {}", e)))?;
-
-        Signature::from_qb64(&resp.signature)
-            .map_err(|e| KelsError::HardwareError(format!("Invalid CESR signature: {}", e)))
+        Ok(Signature::from_qb64(&resp.signature)?)
     }
 }
 

@@ -22,6 +22,8 @@ pub enum HsmError {
     KeyNotFound(String),
     #[error("Signing failed: {0}")]
     SigningFailed(String),
+    #[error("Internal error: {0}")]
+    InternalError(String),
 }
 
 /// HSM context managing PKCS#11 session
@@ -56,10 +58,9 @@ impl HsmContext {
     ///
     /// Returns the public key bytes (uncompressed EC point)
     pub fn generate_keypair(&self, label: &str) -> Result<Vec<u8>, HsmError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| HsmError::SigningFailed("Lock poisoned".into()))?;
+        let session = self.session.lock().map_err(|_| {
+            HsmError::InternalError("Session lock poisoned during key generation".into())
+        })?;
 
         let label_bytes = label.as_bytes().to_vec();
         // OID for secp256r1: 1.2.840.10045.3.1.7
@@ -124,10 +125,9 @@ impl HsmContext {
 
     /// Get public key bytes for a label
     pub fn get_public_key(&self, label: &str) -> Result<Vec<u8>, HsmError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| HsmError::SigningFailed("Lock poisoned".into()))?;
+        let session = self.session.lock().map_err(|_| {
+            HsmError::InternalError("Session lock poisoned during public key retrieval".into())
+        })?;
 
         let pub_handle = self.find_key(&session, label, ObjectClass::PUBLIC_KEY)?;
 
@@ -150,7 +150,7 @@ impl HsmContext {
         let session = self
             .session
             .lock()
-            .map_err(|_| HsmError::SigningFailed("Lock poisoned".into()))?;
+            .map_err(|_| HsmError::InternalError("Session lock poisoned during signing".into()))?;
 
         let priv_handle = self.find_key(&session, label, ObjectClass::PRIVATE_KEY)?;
 
@@ -174,10 +174,9 @@ impl HsmContext {
 
     /// List all key labels
     pub fn list_keys(&self) -> Result<Vec<String>, HsmError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| HsmError::SigningFailed("Lock poisoned".into()))?;
+        let session = self.session.lock().map_err(|_| {
+            HsmError::InternalError("Session lock poisoned during key listing".into())
+        })?;
 
         let template = vec![Attribute::Class(ObjectClass::PRIVATE_KEY)];
         let handles = session.find_objects(&template)?;

@@ -29,7 +29,7 @@ pub struct AllowlistBehaviour {
     /// Peers awaiting verification after allowlist refresh
     pending_verification: HashSet<PeerId>,
     /// Pending disconnections to emit
-    pending_disconnects: Vec<PeerId>,
+    pending_disconnects: HashSet<PeerId>,
     /// Channel to signal that allowlist refresh is needed
     refresh_tx: mpsc::Sender<()>,
 }
@@ -44,11 +44,19 @@ impl AllowlistBehaviour {
             Self {
                 allowlist,
                 pending_verification: HashSet::new(),
-                pending_disconnects: Vec::new(),
+                pending_disconnects: HashSet::new(),
                 refresh_tx: tx,
             },
             rx,
         )
+    }
+
+    /// Check if a peer is in the allowlist (non-blocking).
+    fn is_peer_allowed(&self, peer: &PeerId) -> bool {
+        self.allowlist
+            .try_read()
+            .map(|guard| guard.contains(peer))
+            .unwrap_or(false)
     }
 
     /// Called after allowlist refresh completes.
@@ -61,9 +69,7 @@ impl AllowlistBehaviour {
                     peer_id = %peer_id,
                     "Peer not in allowlist after refresh, disconnecting"
                 );
-                if !self.pending_disconnects.contains(&peer_id) {
-                    self.pending_disconnects.push(peer_id);
-                }
+                self.pending_disconnects.insert(peer_id);
             } else {
                 info!(
                     peer_id = %peer_id,
@@ -106,13 +112,7 @@ impl NetworkBehaviour for AllowlistBehaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Check allowlist using try_read (non-blocking, safe in async context)
-        let allowed = self
-            .allowlist
-            .try_read()
-            .map(|guard| guard.contains(&peer))
-            .unwrap_or(false);
-        if !allowed {
+        if !self.is_peer_allowed(&peer) {
             debug!(
                 peer_id = %peer,
                 "Unknown peer connected, triggering allowlist refresh"
@@ -145,25 +145,21 @@ impl NetworkBehaviour for AllowlistBehaviour {
                 ..
             }) => {
                 // Only check on first connection from this peer
-                if other_established == 0 {
-                    let allowed = self
-                        .allowlist
-                        .try_read()
-                        .map(|guard| guard.contains(&peer_id))
-                        .unwrap_or(false);
-                    if !allowed && !self.pending_verification.contains(&peer_id) {
-                        debug!(
-                            peer_id = %peer_id,
-                            "Unknown peer connected (swarm event), triggering allowlist refresh"
-                        );
-                        self.pending_verification.insert(peer_id);
-                        let _ = self.refresh_tx.try_send(());
-                    }
+                if other_established == 0
+                    && !self.is_peer_allowed(&peer_id)
+                    && !self.pending_verification.contains(&peer_id)
+                {
+                    debug!(
+                        peer_id = %peer_id,
+                        "Unknown peer connected (swarm event), triggering allowlist refresh"
+                    );
+                    self.pending_verification.insert(peer_id);
+                    let _ = self.refresh_tx.try_send(());
                 }
             }
             FromSwarm::ConnectionClosed(ConnectionClosed { peer_id, .. }) => {
                 // Remove from pending lists if present
-                self.pending_disconnects.retain(|p| p != &peer_id);
+                self.pending_disconnects.remove(&peer_id);
                 self.pending_verification.remove(&peer_id);
             }
             _ => {}
@@ -183,7 +179,8 @@ impl NetworkBehaviour for AllowlistBehaviour {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        if let Some(peer_id) = self.pending_disconnects.pop() {
+        if let Some(&peer_id) = self.pending_disconnects.iter().next() {
+            self.pending_disconnects.remove(&peer_id);
             return Poll::Ready(ToSwarm::CloseConnection {
                 peer_id,
                 connection: CloseConnection::All,
@@ -201,6 +198,8 @@ pub enum AllowlistRefreshError {
     InvalidPeerId(String),
     #[error("KEL verification failed: {0}")]
     KelVerificationFailed(String),
+    #[error("JSON parse error: {0}")]
+    JsonParseError(String),
     #[error("Registry prefix mismatch: expected {expected}, got {actual:?}")]
     PrefixMismatch {
         expected: String,
@@ -211,7 +210,7 @@ pub enum AllowlistRefreshError {
 }
 
 // Use types from kels library
-use kels::{Kel, PeersResponse};
+use kels::KelsRegistryClient;
 use verifiable_storage::Versioned;
 
 /// Shared allowlist type
@@ -226,43 +225,23 @@ pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_url: &str,
+    registry_client: &KelsRegistryClient,
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
 ) -> Result<usize, AllowlistRefreshError> {
-    let client = reqwest::Client::new();
-
     // Fetch and verify the registry's KEL
-    let kel_url = format!("{}/api/registry-kel", registry_url);
-    debug!("Fetching registry KEL from {}", kel_url);
-    let registry_kel: Kel = client.get(&kel_url).send().await?.json().await?;
-
-    // Verify KEL integrity (SAIDs, signatures, chaining, rotation hashes)
-    if let Err(e) = registry_kel.verify() {
-        return Err(AllowlistRefreshError::KelVerificationFailed(e.to_string()));
-    }
-
-    // Check that the registry prefix matches our trust anchor
-    let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
-    if actual_prefix.as_deref() != Some(registry_prefix) {
-        return Err(AllowlistRefreshError::PrefixMismatch {
-            expected: registry_prefix.to_string(),
-            actual: actual_prefix,
-        });
-    }
+    debug!("Verifying registry KEL");
+    let registry_kel = registry_client
+        .verify_registry(registry_prefix)
+        .await
+        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
     // Fetch peers
-    let peers_url = format!("{}/api/peers", registry_url);
-    debug!("Fetching peers from {}", peers_url);
-    let peers_response = client.get(&peers_url).send().await?;
-    let peers_text = peers_response.text().await?;
-    debug!("Peers response: {}", peers_text);
-    let response: PeersResponse = serde_json::from_str(&peers_text).map_err(|e| {
-        AllowlistRefreshError::KelVerificationFailed(format!(
-            "JSON parse error: {} - body: {}",
-            e, peers_text
-        ))
-    })?;
+    debug!("Fetching peers");
+    let response = registry_client
+        .fetch_peers()
+        .await
+        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
     let mut authorized_peers = HashSet::new();
 
@@ -310,10 +289,7 @@ pub async fn refresh_allowlist(
     let count = authorized_peers.len();
 
     // Update the shared allowlist
-    {
-        let mut allowlist_guard = allowlist.write().await;
-        *allowlist_guard = authorized_peers;
-    }
+    *allowlist.write().await = authorized_peers;
 
     info!(
         "Allowlist refreshed with {} verified authorized peers",
@@ -327,7 +303,7 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_url: String,
+    registry_client: KelsRegistryClient,
     registry_prefix: String,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
@@ -338,7 +314,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(&registry_url, &registry_prefix, &allowlist).await {
+        match refresh_allowlist(&registry_client, &registry_prefix, &allowlist).await {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }

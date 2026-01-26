@@ -52,6 +52,15 @@ fn compress_public_key(ec_point: &[u8]) -> Result<Vec<u8>, String> {
     Ok(compressed)
 }
 
+/// Convert raw PKCS#11 public key bytes to CESR qb64 format.
+/// Handles compression and CESR encoding in one step.
+fn bytes_to_cesr_public_key(ec_point: &[u8]) -> Result<PublicKey, ApiError> {
+    let compressed = compress_public_key(ec_point)
+        .map_err(|e| ApiError::internal(format!("Failed to compress public key: {}", e)))?;
+    PublicKey::from_raw(KeyCode::Secp256r1, compressed)
+        .map_err(|e| ApiError::internal(format!("Failed to create CESR public key: {}", e)))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateKeyRequest {
@@ -141,13 +150,41 @@ pub async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+/// Maximum allowed length for key labels
+const MAX_LABEL_LENGTH: usize = 128;
+
+/// Validate a key label for safety and compatibility
+fn validate_label(label: &str) -> Result<(), ApiError> {
+    if label.is_empty() {
+        return Err(ApiError::bad_request("Label cannot be empty"));
+    }
+
+    if label.len() > MAX_LABEL_LENGTH {
+        return Err(ApiError::bad_request(format!(
+            "Label too long: {} chars (max {})",
+            label.len(),
+            MAX_LABEL_LENGTH
+        )));
+    }
+
+    // Allow alphanumeric, hyphens, underscores, and dots
+    if !label
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::bad_request(
+            "Label contains invalid characters (only alphanumeric, hyphen, underscore, dot allowed)",
+        ));
+    }
+
+    Ok(())
+}
+
 pub async fn generate_key(
     State(hsm): State<Arc<HsmContext>>,
     Json(request): Json<GenerateKeyRequest>,
 ) -> Result<Json<GenerateKeyResponse>, ApiError> {
-    if request.label.is_empty() {
-        return Err(ApiError::bad_request("Label cannot be empty"));
-    }
+    validate_label(&request.label)?;
 
     // Check if key already exists - if so, return it (get-or-create semantic)
     let (public_key_bytes, created) = if hsm.key_exists(&request.label) {
@@ -156,13 +193,7 @@ pub async fn generate_key(
         (hsm.generate_keypair(&request.label)?, true)
     };
 
-    // Compress the public key for CESR
-    let compressed = compress_public_key(&public_key_bytes)
-        .map_err(|e| ApiError::internal(format!("Failed to compress public key: {}", e)))?;
-
-    // Convert to CESR qb64 format
-    let public_key = PublicKey::from_raw(KeyCode::Secp256r1, compressed)
-        .map_err(|e| ApiError::internal(format!("Failed to create CESR public key: {}", e)))?;
+    let public_key = bytes_to_cesr_public_key(&public_key_bytes)?;
 
     Ok(Json(GenerateKeyResponse {
         label: request.label,
@@ -175,15 +206,9 @@ pub async fn get_public_key(
     State(hsm): State<Arc<HsmContext>>,
     Path(label): Path<String>,
 ) -> Result<Json<PublicKeyResponse>, ApiError> {
+    validate_label(&label)?;
     let public_key_bytes = hsm.get_public_key(&label)?;
-
-    // Compress the public key for CESR
-    let compressed = compress_public_key(&public_key_bytes)
-        .map_err(|e| ApiError::internal(format!("Failed to compress public key: {}", e)))?;
-
-    // Convert to CESR qb64 format
-    let public_key = PublicKey::from_raw(KeyCode::Secp256r1, compressed)
-        .map_err(|e| ApiError::internal(format!("Failed to create CESR public key: {}", e)))?;
+    let public_key = bytes_to_cesr_public_key(&public_key_bytes)?;
 
     Ok(Json(PublicKeyResponse {
         public_key: public_key.qb64(),
@@ -195,6 +220,7 @@ pub async fn sign(
     Path(label): Path<String>,
     Json(request): Json<SignRequest>,
 ) -> Result<Json<SignResponse>, ApiError> {
+    validate_label(&label)?;
     let data = base64::engine::general_purpose::URL_SAFE
         .decode(&request.data)
         .map_err(|e| ApiError::bad_request(format!("Invalid base64 data: {}", e)))?;
@@ -207,10 +233,7 @@ pub async fn sign(
 
     // Get public key and convert to CESR qb64 format
     let public_key_bytes = hsm.get_public_key(&label)?;
-    let compressed = compress_public_key(&public_key_bytes)
-        .map_err(|e| ApiError::internal(format!("Failed to compress public key: {}", e)))?;
-    let public_key = PublicKey::from_raw(KeyCode::Secp256r1, compressed)
-        .map_err(|e| ApiError::internal(format!("Failed to create CESR public key: {}", e)))?;
+    let public_key = bytes_to_cesr_public_key(&public_key_bytes)?;
 
     Ok(Json(SignResponse {
         signature: signature.qb64(),

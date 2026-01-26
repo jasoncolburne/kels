@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS identity_hsm_key_bindings (
     current_key_handle TEXT NOT NULL,
     next_key_handle TEXT NOT NULL,
     recovery_key_handle TEXT NOT NULL,
+    next_label_generation BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 

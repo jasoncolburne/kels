@@ -24,6 +24,9 @@ pub struct HsmKeyBinding {
     pub current_key_handle: String,
     pub next_key_handle: String,
     pub recovery_key_handle: String,
+    /// Next label generation counter for HSM key creation.
+    /// Persisted to survive restarts and prevent key label collisions.
+    pub next_label_generation: u64,
     #[created_at]
     pub created_at: StorageDatetime,
 }

@@ -45,46 +45,31 @@ impl IdentityClient {
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
         match response.json::<ErrorResponse>().await {
             Ok(e) => KelsError::ServerError(e.error),
-            Err(e) => KelsError::ServerError(format!("Failed to parse error: {}", e)),
+            Err(e) => e.into(),
         }
+    }
+
+    async fn parse_response<T: serde::de::DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T, KelsError> {
+        if !response.status().is_success() {
+            return Err(self.request_error(response).await);
+        }
+        Ok(response.json().await?)
     }
 
     pub async fn get_prefix(&self) -> Result<String, KelsError> {
         let url = format!("{}/api/identity", self.base_url);
-
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            KelsError::ServerError(format!("Identity service request failed: {}", e))
-        })?;
-
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
-
-        let info: IdentityInfo = response
-            .json()
-            .await
-            .map_err(|e| KelsError::ServerError(format!("Failed to parse response: {}", e)))?;
-
+        let response = self.client.get(&url).send().await?;
+        let info: IdentityInfo = self.parse_response(response).await?;
         Ok(info.prefix)
     }
 
     pub async fn get_kel(&self) -> Result<Kel, KelsError> {
         let url = format!("{}/api/identity/kel", self.base_url);
-
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            KelsError::ServerError(format!("Identity service request failed: {}", e))
-        })?;
-
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
-
-        let kel: Kel = response
-            .json()
-            .await
-            .map_err(|e| KelsError::ServerError(format!("Failed to parse KEL: {}", e)))?;
-
-        Ok(kel)
+        let response = self.client.get(&url).send().await?;
+        self.parse_response(response).await
     }
 
     pub async fn anchor(&self, said: &str) -> Result<(String, u64), KelsError> {
@@ -97,19 +82,9 @@ impl IdentityClient {
                 said: said.to_string(),
             })
             .send()
-            .await
-            .map_err(|e| {
-                KelsError::ServerError(format!("Identity service request failed: {}", e))
-            })?;
+            .await?;
 
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
-
-        let resp: AnchorResponse = response
-            .json()
-            .await
-            .map_err(|e| KelsError::ServerError(format!("Failed to parse response: {}", e)))?;
+        let resp: AnchorResponse = self.parse_response(response).await?;
 
         Ok((resp.event_said, resp.event_version))
     }

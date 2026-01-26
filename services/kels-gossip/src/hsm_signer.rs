@@ -160,11 +160,13 @@ impl HsmSigner {
             )));
         }
 
-        // Split into r and s components and copy into fixed-size arrays
-        let mut r_bytes = [0u8; 32];
-        let mut s_bytes = [0u8; 32];
-        r_bytes.copy_from_slice(&raw[..32]);
-        s_bytes.copy_from_slice(&raw[32..]);
+        // Split into r and s components
+        let r_bytes: [u8; 32] = raw[..32]
+            .try_into()
+            .map_err(|_| HsmSignerError::Signature("Failed to convert r component".into()))?;
+        let s_bytes: [u8; 32] = raw[32..]
+            .try_into()
+            .map_err(|_| HsmSignerError::Signature("Failed to convert s component".into()))?;
 
         // Create p256 signature from components and convert to DER
         let signature = p256::ecdsa::Signature::from_scalars(r_bytes, s_bytes).map_err(|e| {

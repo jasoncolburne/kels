@@ -334,10 +334,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create shared allowlist for authorized peers
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashSet::new()));
-    let allowlist_for_gossip = allowlist.clone();
+    let registry_allowlist = allowlist.clone();
 
     // Initial allowlist refresh before starting gossip (so we accept authorized peers)
-    match allowlist::refresh_allowlist(registry_url, &config.registry_prefix, &allowlist).await {
+    let client = KelsRegistryClient::new(registry_url);
+    match allowlist::refresh_allowlist(&client, &config.registry_prefix, &allowlist).await {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
@@ -348,17 +349,17 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Start gossip swarm in background
     let listen_addr = config.listen_addr.clone();
     let topic = config.topic.clone();
-    let registry_url_for_gossip = registry_url.clone();
-    let registry_prefix_for_gossip = config.registry_prefix.clone();
+    let registry_client = client.clone();
+    let registry_prefix = config.registry_prefix.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
             keypair,
             listen_addr,
             peer_multiaddrs,
             &topic,
-            allowlist_for_gossip,
-            registry_url_for_gossip,
-            registry_prefix_for_gossip,
+            registry_allowlist,
+            registry_client,
+            registry_prefix,
             command_rx,
             event_tx,
         )
@@ -424,18 +425,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Start allowlist refresh loop
-    let allowlist_refresh_interval =
-        std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let registry_url_for_allowlist = registry_url.clone();
-    let registry_prefix_for_allowlist = config.registry_prefix.clone();
+    let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
+    let registry_prefix = config.registry_prefix.clone();
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(
-            registry_url_for_allowlist,
-            registry_prefix_for_allowlist,
-            allowlist,
-            allowlist_refresh_interval,
-        )
-        .await;
+        allowlist::run_allowlist_refresh_loop(client, registry_prefix, allowlist, refresh_interval)
+            .await;
     });
 
     // Wait for gossip swarm to complete (blocking)

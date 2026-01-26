@@ -30,6 +30,8 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
     }
 
     async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
+        // Collect new events that need to be saved
+        let mut new_events = Vec::new();
         for signed_event in kel.events() {
             if self
                 .repo
@@ -40,13 +42,13 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
                 if signed_event.signatures.is_empty() {
                     return Err(KelsError::NoCurrentKey);
                 }
-                self.repo
-                    .create_with_signatures(
-                        signed_event.event.clone(),
-                        signed_event.event_signatures(),
-                    )
-                    .await?;
+                new_events.push((signed_event.event.clone(), signed_event.event_signatures()));
             }
+        }
+
+        // Save all new events in a single transaction for atomicity
+        if !new_events.is_empty() {
+            self.repo.create_batch_with_signatures(new_events).await?;
         }
         Ok(())
     }
