@@ -257,32 +257,45 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         // Select best node (randomly among ties)
         use rand::seq::SliceRandom;
 
+        // Filter to ready nodes with successful latency measurements
         let ready_nodes: Vec<_> = nodes
             .into_iter()
             .filter(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
             .collect();
 
         if ready_nodes.is_empty() {
-            return Err(anyhow::anyhow!("No ready nodes available in registry"));
+            return Err(anyhow::anyhow!(
+                "No ready nodes with successful latency measurements available"
+            ));
         }
 
+        // Find minimum latency
         let min_latency = ready_nodes
             .iter()
             .filter_map(|n| n.latency_ms)
             .min()
-            .unwrap();
+            .context("No nodes with latency measurements")?;
+
+        // Get all nodes with the minimum latency and pick randomly among ties
         let best_nodes: Vec<_> = ready_nodes
             .into_iter()
             .filter(|n| n.latency_ms == Some(min_latency))
             .collect();
 
-        let best_node = best_nodes.choose(&mut rand::thread_rng()).unwrap().clone();
+        let best_node = best_nodes
+            .choose(&mut rand::thread_rng())
+            .context("No nodes available")?
+            .clone();
+
+        let latency = best_node
+            .latency_ms
+            .context("Selected node missing latency")?;
 
         println!(
             "{} {} ({}ms)",
             "Selected:".green().bold(),
             best_node.node_id,
-            best_node.latency_ms.unwrap_or(0)
+            latency
         );
         println!();
 
