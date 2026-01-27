@@ -103,8 +103,8 @@ impl ProviderConfig for HardwareProviderConfig {
 /// - **recovery**: Emergency key for recovery operations
 ///
 /// Rotation is a two-phase operation:
-/// 1. `prepare_rotation()` - stages the rotation (next becomes pending current, new next generated)
-/// 2. `commit_rotation()` or `rollback_rotation()` - finalizes or reverts
+/// 1. `stage_rotation()` - stages the rotation (next becomes pending current, new next generated)
+/// 2. `commit()` or `rollback()` - finalizes or reverts
 #[async_trait::async_trait]
 pub trait KeyProvider: Send + Sync {
     // ==================== Accessors ====================
