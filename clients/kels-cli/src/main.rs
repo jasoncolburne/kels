@@ -349,7 +349,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     let client = create_client(cli).await?;
     // Use a temporary config for init - we don't know the prefix yet
     let temp_config = SoftwareProviderConfig::new(config_dir(cli)?.join("keys").join("temp"));
-    let key_provider = temp_config.load_provider()?;
+    let key_provider = temp_config.load_provider().await?;
     let kel_store = create_kel_store(cli, None)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -364,7 +364,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
 
     // Save to the correct prefix directory
     let config = provider_config(cli, &event.prefix)?;
-    config.save_provider(builder.key_provider())?;
+    config.save_provider(builder.key_provider()).await?;
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
     kel_store.save(builder.kel()).await?;
 
@@ -383,7 +383,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
 
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = config.load_provider()?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -396,7 +396,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
 
     match builder.rotate().await {
         Ok((event, _sig)) => {
-            config.save_provider(builder.key_provider())?;
+            config.save_provider(builder.key_provider()).await?;
             println!("{}", "Rotation successful!".green().bold());
             println!("  Event SAID: {}", event.said);
             Ok(())
@@ -406,7 +406,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
             ref diverged_at,
         }) => {
             // Keys were committed internally - save them before returning error
-            config.save_provider(builder.key_provider())?;
+            config.save_provider(builder.key_provider()).await?;
             Err(anyhow::anyhow!(
                 "Divergence detected at: {}, submission_accepted: true",
                 diverged_at
@@ -424,7 +424,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
 
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = config.load_provider()?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -439,7 +439,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         .rotate_recovery()
         .await
         .context("Recovery rotation failed")?;
-    config.save_provider(builder.key_provider())?;
+    config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery rotation successful!".green().bold());
     println!("  Event SAID: {}", event.said);
@@ -451,7 +451,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
     let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider()?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -476,7 +476,7 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
 
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = config.load_provider()?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -488,7 +488,7 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     .await?;
 
     let (event, _sig) = builder.recover().await.context("Recovery failed")?;
-    config.save_provider(builder.key_provider())?;
+    config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery successful!".green().bold());
     println!("  Event SAID: {}", event.said);
@@ -504,7 +504,7 @@ async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
     );
 
     let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider()?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -534,7 +534,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     );
 
     let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider()?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -898,7 +898,7 @@ async fn cmd_adversary_inject(
         .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
 
     // Load the key provider (adversary has the same keys as owner)
-    let key_provider = provider_config(cli, prefix)?.load_provider()?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
 
     // If event_version specified, truncate KEL to that point (simulates adversary with old state)
     if let Some(version) = event_version {

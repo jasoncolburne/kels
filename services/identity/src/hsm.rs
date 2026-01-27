@@ -152,23 +152,27 @@ impl HsmOperations for HsmClient {
     }
 }
 
-use kels::KeyProvider;
+use kels::{KeyProvider, compute_rotation_hash};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// HSM-backed key provider with two-phase rotation support.
 ///
-/// Pending handles stage key changes before commit, enabling rollback on failure.
+/// Uses vector-based key handle storage where:
+/// - key_handles[len-2] = current key
+/// - key_handles[len-1] = next key
+/// - len > 2 means rotation is staged
+///
+/// Same pattern for recovery_handles:
+/// - recovery_handles[0] = current recovery key
+/// - len > 1 means recovery rotation is staged
 pub struct HsmKeyProvider {
     hsm: Arc<dyn HsmOperations>,
     label_prefix: String,
-    next_label_generation: RwLock<u64>,
-    current_handle: RwLock<Option<KeyHandle>>,
-    next_handle: RwLock<Option<KeyHandle>>,
-    recovery_handle: RwLock<Option<KeyHandle>>,
-    pending_current_handle: RwLock<Option<KeyHandle>>,
-    pending_next_handle: RwLock<Option<KeyHandle>>,
-    pending_recovery_handle: RwLock<Option<KeyHandle>>,
+    signing_generation: RwLock<u64>,
+    recovery_generation: RwLock<u64>,
+    key_handles: RwLock<Vec<KeyHandle>>,
+    recovery_handles: RwLock<Vec<KeyHandle>>,
 }
 
 impl std::fmt::Debug for HsmKeyProvider {
@@ -180,17 +184,19 @@ impl std::fmt::Debug for HsmKeyProvider {
 }
 
 impl HsmKeyProvider {
-    pub fn new(hsm: Arc<dyn HsmOperations>, label_prefix: &str, start_generation: u64) -> Self {
+    pub fn new(
+        hsm: Arc<dyn HsmOperations>,
+        label_prefix: &str,
+        signing_generation: u64,
+        recovery_generation: u64,
+    ) -> Self {
         Self {
             hsm,
             label_prefix: label_prefix.to_string(),
-            next_label_generation: RwLock::new(start_generation),
-            current_handle: RwLock::new(None),
-            next_handle: RwLock::new(None),
-            recovery_handle: RwLock::new(None),
-            pending_current_handle: RwLock::new(None),
-            pending_next_handle: RwLock::new(None),
-            pending_recovery_handle: RwLock::new(None),
+            signing_generation: RwLock::new(signing_generation),
+            recovery_generation: RwLock::new(recovery_generation),
+            key_handles: RwLock::new(Vec::new()),
+            recovery_handles: RwLock::new(Vec::new()),
         }
     }
 
@@ -198,7 +204,8 @@ impl HsmKeyProvider {
     pub fn with_handles(
         hsm: Arc<dyn HsmOperations>,
         label_prefix: &str,
-        next_label_generation: u64,
+        signing_generation: u64,
+        recovery_generation: u64,
         current_handle: KeyHandle,
         next_handle: KeyHandle,
         recovery_handle: KeyHandle,
@@ -206,19 +213,23 @@ impl HsmKeyProvider {
         Self {
             hsm,
             label_prefix: label_prefix.to_string(),
-            next_label_generation: RwLock::new(next_label_generation),
-            current_handle: RwLock::new(Some(current_handle)),
-            next_handle: RwLock::new(Some(next_handle)),
-            recovery_handle: RwLock::new(Some(recovery_handle)),
-            pending_current_handle: RwLock::new(None),
-            pending_next_handle: RwLock::new(None),
-            pending_recovery_handle: RwLock::new(None),
+            signing_generation: RwLock::new(signing_generation),
+            recovery_generation: RwLock::new(recovery_generation),
+            key_handles: RwLock::new(vec![current_handle, next_handle]),
+            recovery_handles: RwLock::new(vec![recovery_handle]),
         }
     }
 
-    async fn generate_new_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
-        let mut generation = self.next_label_generation.write().await;
+    async fn generate_signing_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
+        let mut generation = self.signing_generation.write().await;
         let label = format!("{}-{}", self.label_prefix, *generation);
+        *generation += 1;
+        self.hsm.generate_keypair(&label).await
+    }
+
+    async fn generate_recovery_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
+        let mut generation = self.recovery_generation.write().await;
+        let label = format!("{}-recovery-{}", self.label_prefix, *generation);
         *generation += 1;
         self.hsm.generate_keypair(&label).await
     }
@@ -226,166 +237,190 @@ impl HsmKeyProvider {
 
 #[async_trait]
 impl KeyProvider for HsmKeyProvider {
-    async fn has_current(&self) -> bool {
-        self.current_handle.read().await.is_some()
+    async fn signing_generation(&self) -> u64 {
+        *self.signing_generation.read().await
     }
 
-    async fn has_next(&self) -> bool {
-        self.next_handle.read().await.is_some()
+    async fn recovery_generation(&self) -> u64 {
+        *self.recovery_generation.read().await
     }
 
-    async fn has_recovery(&self) -> bool {
-        self.recovery_handle.read().await.is_some()
+    async fn current_handle(&self) -> Option<String> {
+        let key_handles = self.key_handles.read().await;
+        if key_handles.len() >= 2 {
+            key_handles
+                .get(key_handles.len() - 2)
+                .map(|h| h.as_str().to_string())
+        } else {
+            None
+        }
     }
 
-    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
-        let (handle, public_key) = self.generate_new_key().await?;
-        *self.current_handle.write().await = Some(handle);
-        Ok(public_key)
+    async fn next_handle(&self) -> Option<String> {
+        let key_handles = self.key_handles.read().await;
+        key_handles.last().map(|h| h.as_str().to_string())
     }
 
-    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
-        let (handle, public_key) = self.generate_new_key().await?;
-        *self.next_handle.write().await = Some(handle);
-        Ok(public_key)
-    }
-
-    async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
-        let (handle, public_key) = self.generate_new_key().await?;
-        *self.recovery_handle.write().await = Some(handle);
-        Ok(public_key)
+    async fn recovery_handle(&self) -> Option<String> {
+        let recovery_handles = self.recovery_handles.read().await;
+        recovery_handles.first().map(|h| h.as_str().to_string())
     }
 
     async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        let handle = self.current_handle.read().await;
-        let handle = handle
-            .as_ref()
-            .ok_or_else(|| KelsError::HardwareError("No current key".to_string()))?;
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        let key_handles = self.key_handles.read().await;
+        let index = key_handles.len() - 2;
+        let handle = key_handles
+            .get(index)
+            .ok_or(KelsError::KeyNotFound("Current key not found".to_string()))?;
         self.hsm.get_public_key(handle).await
     }
 
-    async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
-        let handle = self.next_handle.read().await;
-        let handle = handle
-            .as_ref()
-            .ok_or_else(|| KelsError::HardwareError("No next key".to_string()))?;
-        self.hsm.get_public_key(handle).await
+    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
+        let (current_handle, current_pub) = self.generate_signing_key().await?;
+        let (next_handle, next_pub) = self.generate_signing_key().await?;
+        let (recovery_handle, recovery_pub) = self.generate_recovery_key().await?;
+
+        let next_hash = compute_rotation_hash(&next_pub.qb64());
+        let recovery_hash = compute_rotation_hash(&recovery_pub.qb64());
+
+        let mut key_handles = self.key_handles.write().await;
+        *key_handles = vec![current_handle, next_handle];
+
+        let mut recovery_handles = self.recovery_handles.write().await;
+        *recovery_handles = vec![recovery_handle];
+
+        Ok((current_pub, next_hash, recovery_hash))
     }
 
-    async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
-        let handle = self.recovery_handle.read().await;
-        let handle = handle.as_ref().ok_or(KelsError::NoRecoveryKey)?;
-        self.hsm.get_public_key(handle).await
+    async fn has_current(&self) -> bool {
+        !self.key_handles.read().await.is_empty()
+    }
+
+    async fn has_next(&self) -> bool {
+        self.key_handles.read().await.len() > 1
+    }
+
+    async fn has_staged(&self) -> bool {
+        self.key_handles.read().await.len() > 2
+    }
+
+    async fn has_recovery(&self) -> bool {
+        !self.recovery_handles.read().await.is_empty()
+    }
+
+    async fn has_staged_recovery(&self) -> bool {
+        self.recovery_handles.read().await.len() > 1
+    }
+
+    async fn commit(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
+
+        if self.has_staged_recovery().await {
+            let mut recovery_handles = self.recovery_handles.write().await;
+            let length = recovery_handles.len();
+            *recovery_handles = recovery_handles[(length - 1)..].to_vec();
+        }
+
+        let mut key_handles = self.key_handles.write().await;
+        let length = key_handles.len();
+        *key_handles = key_handles[(length - 2)..].to_vec();
+
+        Ok(())
+    }
+
+    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_next().await {
+            return Err(KelsError::NoNextKey);
+        }
+
+        let new_current_pub = {
+            let key_handles = self.key_handles.read().await;
+            let length = key_handles.len();
+            let handle = &key_handles[length - 1];
+            self.hsm.get_public_key(handle).await?
+        };
+
+        let (new_next_handle, new_next_pub) = self.generate_signing_key().await?;
+        let mut key_handles = self.key_handles.write().await;
+        key_handles.push(new_next_handle);
+
+        let next_hash = compute_rotation_hash(&new_next_pub.qb64());
+
+        Ok((new_current_pub, next_hash))
+    }
+
+    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        if self.has_staged_recovery().await {
+            return Err(KelsError::AlreadyStagedRecovery);
+        }
+
+        let current_recovery = {
+            let recovery_handles = self.recovery_handles.read().await;
+            let handle = &recovery_handles[0];
+            self.hsm.get_public_key(handle).await?
+        };
+
+        let (new_recovery_handle, new_recovery_pub) = self.generate_recovery_key().await?;
+        let mut recovery_handles = self.recovery_handles.write().await;
+        recovery_handles.push(new_recovery_handle);
+
+        let recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
+
+        Ok((current_recovery, recovery_hash))
+    }
+
+    async fn rollback(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
+
+        if self.has_staged_recovery().await {
+            let mut recovery_handles = self.recovery_handles.write().await;
+            let mut generation = self.recovery_generation.write().await;
+
+            *generation -= (recovery_handles.len() as u64) - 1;
+            *recovery_handles = recovery_handles[..1].to_vec();
+        }
+
+        let mut key_handles = self.key_handles.write().await;
+        let mut generation = self.signing_generation.write().await;
+
+        *generation -= (key_handles.len() as u64) - 2;
+        *key_handles = key_handles[..2].to_vec();
+
+        Ok(())
     }
 
     async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let handle = self.current_handle.read().await;
-        let handle = handle
-            .as_ref()
-            .ok_or_else(|| KelsError::HardwareError("No current key".to_string()))?;
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        let key_handles = self.key_handles.read().await;
+        let length = key_handles.len();
+        let handle = &key_handles[length - 2];
+
         self.hsm.sign(handle, data).await
     }
 
     async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let handle = self.recovery_handle.read().await;
-        let handle = handle.as_ref().ok_or(KelsError::NoRecoveryKey)?;
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        let recovery_handles = self.recovery_handles.read().await;
+        let handle = &recovery_handles[0];
+
         self.hsm.sign(handle, data).await
-    }
-
-    async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        let public_key = self.current_public_key().await?;
-        public_key
-            .verify(data, signature)
-            .map_err(|e| KelsError::VerificationFailed(e.to_string()))
-    }
-
-    async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
-        let current_recovery = {
-            let handle = self.recovery_handle.read().await;
-            let handle = handle.as_ref().ok_or(KelsError::NoRecoveryKey)?;
-            self.hsm.get_public_key(handle).await?
-        };
-
-        let (handle, new_recovery_pub) = self.generate_new_key().await?;
-        *self.pending_recovery_handle.write().await = Some(handle);
-
-        Ok((current_recovery, new_recovery_pub))
-    }
-
-    async fn commit_recovery_rotation(&mut self) {
-        *self.recovery_handle.write().await = self.pending_recovery_handle.write().await.take();
-    }
-
-    async fn current_handle(&self) -> Option<String> {
-        self.current_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.as_str().to_string())
-    }
-
-    async fn next_handle(&self) -> Option<String> {
-        self.next_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.as_str().to_string())
-    }
-
-    async fn recovery_handle(&self) -> Option<String> {
-        self.recovery_handle
-            .read()
-            .await
-            .as_ref()
-            .map(|h| h.as_str().to_string())
-    }
-
-    async fn next_label_generation(&self) -> u64 {
-        *self.next_label_generation.read().await
-    }
-
-    async fn rollback_recovery_rotation(&mut self) {
-        *self.pending_recovery_handle.write().await = None;
-    }
-
-    async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        let next_handle = self.next_handle.write().await.take();
-        let next_handle =
-            next_handle.ok_or_else(|| KelsError::HardwareError("No next key".to_string()))?;
-
-        let new_current_pub = self.hsm.get_public_key(&next_handle).await?;
-        *self.pending_current_handle.write().await = Some(next_handle);
-
-        let (new_next_handle, _new_next_pub) = self.generate_new_key().await?;
-        *self.pending_next_handle.write().await = Some(new_next_handle);
-
-        Ok(new_current_pub)
-    }
-
-    async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
-        let pending_next = self.pending_next_handle.read().await;
-        let handle = pending_next
-            .as_ref()
-            .ok_or_else(|| KelsError::HardwareError("No pending next key".to_string()))?;
-        self.hsm.get_public_key(handle).await
-    }
-
-    async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let pending_current = self.pending_current_handle.read().await;
-        let handle = pending_current
-            .as_ref()
-            .ok_or_else(|| KelsError::HardwareError("No pending current key".to_string()))?;
-        self.hsm.sign(handle, data).await
-    }
-
-    async fn commit_rotation(&mut self) {
-        *self.current_handle.write().await = self.pending_current_handle.write().await.take();
-        *self.next_handle.write().await = self.pending_next_handle.write().await.take();
-    }
-
-    async fn rollback_rotation(&mut self) {
-        // Restore next from pending_current (it was the original next)
-        *self.next_handle.write().await = self.pending_current_handle.write().await.take();
-        *self.pending_next_handle.write().await = None;
     }
 }

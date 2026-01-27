@@ -67,17 +67,19 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("HSM binding not found for KEL prefix: {}", prefix))?;
 
         tracing::info!(
-            "Restored HSM binding: current={}, next={}, recovery={}, next_gen={}",
+            "Restored HSM binding: current={}, next={}, recovery={}, signing_gen={}, recovery_gen={}",
             binding.current_key_handle,
             binding.next_key_handle,
             binding.recovery_key_handle,
-            binding.next_label_generation
+            binding.signing_generation,
+            binding.recovery_generation
         );
 
         let key_provider = HsmKeyProvider::with_handles(
             hsm.clone(),
             &key_handle_prefix,
-            binding.next_label_generation,
+            binding.signing_generation,
+            binding.recovery_generation,
             binding.current_key_handle.into(),
             binding.next_key_handle.into(),
             binding.recovery_key_handle.into(),
@@ -94,7 +96,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("No existing identity - auto-incepting");
 
-        let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0);
+        let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
 
         let mut builder =
             KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)
@@ -124,14 +126,16 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .ok_or("No recovery handle after incept")?;
 
-        // Get the next_label_generation from the provider (3 keys were just created: 0, 1, 2)
-        let next_gen = builder.key_provider().next_label_generation().await;
+        // Get generation counters from the provider (2 signing keys and 1 recovery key were created)
+        let signing_gen = builder.key_provider().signing_generation().await;
+        let recovery_gen = builder.key_provider().recovery_generation().await;
         let binding = HsmKeyBinding::new(
             event.prefix.clone(),
             current_handle.clone(),
             next_handle.clone(),
             recovery_handle.clone(),
-            next_gen,
+            signing_gen,
+            recovery_gen,
         );
         repo.hsm_bindings
             .create(binding)

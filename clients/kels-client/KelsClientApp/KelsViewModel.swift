@@ -37,6 +37,7 @@ class KelsViewModel: ObservableObject {
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
     private let nodeUrlKey = "com.kels.nodeUrl"
+    private let keyNamespace = "com.kels.kelsclient"
     private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
     private let defaultNodeUrl = "http://kels.kels-node-a.local"
 
@@ -238,7 +239,7 @@ class KelsViewModel: ObservableObject {
         log("Connecting to: \(currentNodeUrl)")
 
         do {
-            client = try KelsClient(kelsURL: currentNodeUrl, prefix: savedPrefix)
+            client = try KelsClient(kelsURL: currentNodeUrl, keyNamespace: keyNamespace, prefix: savedPrefix)
             log("Client initialized successfully")
             Task {
                 await refreshStatus()

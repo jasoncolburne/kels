@@ -169,11 +169,11 @@ async fn cmd_rotate(
     )));
 
     // Create HSM key provider with existing handles
-    // next_label_generation is binding.version + 2 (we have keys 0..binding.version+1, next is binding.version+2)
     let provider = HsmKeyProvider::with_handles(
         hsm.clone(),
         "kels-registry",
-        binding.version + 2,
+        binding.signing_generation,
+        binding.recovery_generation,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
@@ -280,7 +280,8 @@ async fn cmd_rotate_recovery(
     let provider = HsmKeyProvider::with_handles(
         hsm.clone(),
         "kels-registry",
-        binding.version + 2,
+        binding.signing_generation,
+        binding.recovery_generation,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
@@ -390,7 +391,8 @@ async fn cmd_recover(
     let provider = HsmKeyProvider::with_handles(
         hsm.clone(),
         "kels-registry",
-        binding.version + 2,
+        binding.signing_generation,
+        binding.recovery_generation,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
@@ -508,7 +510,8 @@ async fn cmd_contest(
     let provider = HsmKeyProvider::with_handles(
         hsm.clone(),
         "kels-registry",
-        binding.version + 2,
+        binding.signing_generation,
+        binding.recovery_generation,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),
@@ -596,7 +599,8 @@ async fn cmd_decommission(
     let provider = HsmKeyProvider::with_handles(
         hsm.clone(),
         "kels-registry",
-        binding.version + 2,
+        binding.signing_generation,
+        binding.recovery_generation,
         KeyHandle::from(binding.current_key_handle.as_str()),
         KeyHandle::from(binding.next_key_handle.as_str()),
         KeyHandle::from(binding.recovery_key_handle.as_str()),

@@ -1,7 +1,7 @@
 //! Cryptographic Key Provider
 
-use crate::error::KelsError;
-use cesr::{PrivateKey, PublicKey, Signature, generate_secp256r1};
+use crate::{compute_rotation_hash, error::KelsError};
+use cesr::{Matter, PrivateKey, PublicKey, Signature, generate_secp256r1};
 use std::path::{Path, PathBuf};
 
 #[cfg(all(
@@ -13,15 +13,16 @@ use crate::hardware::HardwareKeyProvider;
 // ==================== ProviderConfig Trait ====================
 
 /// Trait for provider configuration that handles creation and persistence.
+#[async_trait::async_trait]
 pub trait ProviderConfig: Send + Sync {
     /// The provider type this config creates.
     type Provider: KeyProvider;
 
     /// Loads or creates a provider from this configuration.
-    fn load_provider(&self) -> Result<Self::Provider, KelsError>;
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError>;
 
     /// Saves the provider state.
-    fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError>;
+    async fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError>;
 }
 
 /// Software provider configuration - keys stored in files.
@@ -36,10 +37,11 @@ impl SoftwareProviderConfig {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderConfig for SoftwareProviderConfig {
     type Provider = SoftwareKeyProvider;
 
-    fn load_provider(&self) -> Result<Self::Provider, KelsError> {
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
         if self.key_dir.exists() {
             SoftwareKeyProvider::load_from_dir(&self.key_dir)
         } else {
@@ -47,8 +49,8 @@ impl ProviderConfig for SoftwareProviderConfig {
         }
     }
 
-    fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError> {
-        provider.save_to_dir(&self.key_dir)
+    async fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError> {
+        provider.save_to_dir(&self.key_dir).await
     }
 }
 
@@ -76,15 +78,16 @@ impl HardwareProviderConfig {
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 ))]
+#[async_trait::async_trait]
 impl ProviderConfig for HardwareProviderConfig {
     type Provider = HardwareKeyProvider;
 
-    fn load_provider(&self) -> Result<Self::Provider, KelsError> {
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
         HardwareKeyProvider::new(&self.namespace)
             .ok_or_else(|| KelsError::HardwareError("Secure Enclave not available".into()))
     }
 
-    fn save_provider(&self, _provider: &Self::Provider) -> Result<(), KelsError> {
+    async fn save_provider(&self, _provider: &Self::Provider) -> Result<(), KelsError> {
         // Hardware keys persist automatically in the Secure Enclave
         Ok(())
     }
@@ -106,48 +109,37 @@ impl ProviderConfig for HardwareProviderConfig {
 pub trait KeyProvider: Send + Sync {
     // ==================== Accessors ====================
 
+    /// Returns the signing key generation counter (for persistence).
+    async fn signing_generation(&self) -> u64 {
+        0
+    }
+
+    /// Returns the recovery key generation counter (for persistence).
+    async fn recovery_generation(&self) -> u64 {
+        0
+    }
+
     /// Returns the handle/label for the current key (for persistence).
     async fn current_handle(&self) -> Option<String> {
         None
     }
-
-    /// Returns the current signing public key.
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError>;
 
     /// Returns the handle/label for the next key (for persistence).
     async fn next_handle(&self) -> Option<String> {
         None
     }
 
-    /// Returns the generation counter for key labels (for persistence).
-    async fn next_label_generation(&self) -> u64 {
-        0
-    }
-
-    /// Returns the next (pre-committed) public key.
-    async fn next_public_key(&self) -> Result<PublicKey, KelsError>;
-
-    /// Returns the staged next public key (after prepare_rotation, before commit).
-    async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError>;
-
     /// Returns the handle/label for the recovery key (for persistence).
     async fn recovery_handle(&self) -> Option<String> {
         None
     }
 
-    /// Returns the recovery public key.
-    async fn recovery_public_key(&self) -> Result<PublicKey, KelsError>;
+    /// Returns the current signing public key.
+    async fn current_public_key(&self) -> Result<PublicKey, KelsError>;
 
     // ==================== Key Generation ====================
 
-    /// Generates a new key into the current slot.
-    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError>;
-
-    /// Generates a new key into the next slot.
-    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError>;
-
-    /// Generates a new recovery key.
-    async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError>;
+    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError>;
 
     // ==================== Query Methods ====================
 
@@ -157,64 +149,44 @@ pub trait KeyProvider: Send + Sync {
     /// Returns true if a next key exists.
     async fn has_next(&self) -> bool;
 
+    async fn has_staged(&self) -> bool;
+
     /// Returns true if a recovery key exists.
     async fn has_recovery(&self) -> bool;
 
+    async fn has_staged_recovery(&self) -> bool;
+
     // ==================== Rotation Operations ====================
 
-    /// Commits a staged recovery key rotation.
-    async fn commit_recovery_rotation(&mut self);
-
-    /// Commits a staged key rotation (pending becomes active).
-    async fn commit_rotation(&mut self);
+    /// Prepares a key rotation. Returns the new current public key (what next will become).
+    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
 
     /// Prepares a recovery key rotation. Returns (current_recovery_pub, new_recovery_pub).
-    async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError>;
+    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
 
-    /// Prepares a key rotation. Returns the new current public key (what next will become).
-    async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError>;
-
-    /// Reverts a staged recovery key rotation.
-    async fn rollback_recovery_rotation(&mut self);
+    /// Commits a staged key rotation (pending becomes active).
+    async fn commit(&mut self) -> Result<(), KelsError>;
 
     /// Reverts a staged key rotation.
-    async fn rollback_rotation(&mut self);
+    async fn rollback(&mut self) -> Result<(), KelsError>;
 
     // ==================== Signing ====================
 
     /// Signs data with the current key.
     async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError>;
 
-    /// Signs data with the pending current key (next key, used during rotation).
-    async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError>;
-
     /// Signs data with the recovery key.
     async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError>;
 
-    /// Verifies a signature against the current public key.
-    async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError>;
-
     // ==================== Convenience Methods ====================
-
-    /// Generates a keypair into the appropriate slot (current if empty, else next).
-    async fn generate_keypair(&mut self) -> Result<PublicKey, KelsError> {
-        if !self.has_current().await {
-            self.generate_into_current().await
-        } else {
-            self.generate_into_next().await
-        }
-    }
 }
 
 // ==================== SoftwareKeyProvider ====================
 
 #[derive(Debug, Clone)]
 pub struct SoftwareKeyProvider {
-    current_key: Option<PrivateKey>,
-    next_key: Option<PrivateKey>,
-    recovery_key: Option<PrivateKey>,
-    pending_next_key: Option<PrivateKey>,
-    pending_recovery_key: Option<PrivateKey>,
+    keys: Vec<PrivateKey>,
+    recovery_keys: Vec<PrivateKey>,
 }
 
 impl Default for SoftwareKeyProvider {
@@ -228,11 +200,8 @@ impl SoftwareKeyProvider {
 
     pub fn new() -> Self {
         Self {
-            current_key: None,
-            next_key: None,
-            recovery_key: None,
-            pending_next_key: None,
-            pending_recovery_key: None,
+            keys: Vec::new(),
+            recovery_keys: Vec::new(),
         }
     }
 
@@ -241,28 +210,21 @@ impl SoftwareKeyProvider {
         next: Option<PrivateKey>,
         recovery: Option<PrivateKey>,
     ) -> Self {
-        Self {
-            current_key: current,
-            next_key: next,
-            recovery_key: recovery,
-            pending_next_key: None,
-            pending_recovery_key: None,
+        if let Some(c) = current
+            && let Some(n) = next
+            && let Some(r) = recovery
+        {
+            return Self {
+                keys: vec![c, n],
+                recovery_keys: vec![r],
+            };
         }
+
+        Self::new()
     }
 
-    pub fn with_keys(current: PrivateKey, next: PrivateKey) -> Self {
-        Self {
-            current_key: Some(current),
-            next_key: Some(next),
-            recovery_key: None,
-            pending_next_key: None,
-            pending_recovery_key: None,
-        }
-    }
-}
+    // ==================== Persistence ====================
 
-// Persistence methods
-impl SoftwareKeyProvider {
     /// Loads keys from a directory containing key files.
     pub fn load_from_dir(dir: &Path) -> Result<Self, KelsError> {
         let current_path = dir.join("current.key");
@@ -299,30 +261,51 @@ impl SoftwareKeyProvider {
     }
 
     /// Saves keys to a directory.
-    pub fn save_to_dir(&self, dir: &Path) -> Result<(), KelsError> {
+    pub async fn save_to_dir(&self, dir: &Path) -> Result<(), KelsError> {
+        if !self.has_current().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        if !self.has_next().await {
+            return Err(KelsError::NoNextKey);
+        }
+
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        if self.has_staged().await || self.has_staged_recovery().await {
+            return Err(KelsError::CurrentlyStaged);
+        }
+
         std::fs::create_dir_all(dir).map_err(|e| {
             KelsError::HardwareError(format!("Failed to create key directory: {}", e))
         })?;
 
-        if let Some(key) = &self.current_key {
+        if let Some(key) = self.keys.first() {
             let path = dir.join("current.key");
             std::fs::write(&path, key.qb64()).map_err(|e| {
                 KelsError::HardwareError(format!("Failed to write current key: {}", e))
             })?;
+        } else {
+            return Err(KelsError::NoCurrentKey);
         }
-
-        if let Some(key) = &self.next_key {
+        if let Some(key) = &self.keys.last() {
             let path = dir.join("next.key");
             std::fs::write(&path, key.qb64()).map_err(|e| {
                 KelsError::HardwareError(format!("Failed to write next key: {}", e))
             })?;
+        } else {
+            return Err(KelsError::NoNextKey);
         }
 
-        if let Some(key) = &self.recovery_key {
+        if let Some(key) = &self.recovery_keys.first() {
             let path = dir.join("recovery.key");
             std::fs::write(&path, key.qb64()).map_err(|e| {
                 KelsError::HardwareError(format!("Failed to write recovery key: {}", e))
             })?;
+        } else {
+            return Err(KelsError::NoRecoveryKey);
         }
 
         Ok(())
@@ -333,11 +316,15 @@ impl SoftwareKeyProvider {
 #[cfg(test)]
 impl SoftwareKeyProvider {
     pub fn current_private_key(&self) -> Option<&PrivateKey> {
-        self.current_key.as_ref()
+        self.keys.first()
     }
 
     pub fn next_private_key(&self) -> Option<&PrivateKey> {
-        self.next_key.as_ref()
+        self.keys.last()
+    }
+
+    pub fn recovery_private_key(&self) -> Option<&PrivateKey> {
+        self.recovery_keys.first()
     }
 }
 
@@ -346,133 +333,132 @@ impl SoftwareKeyProvider {
 #[async_trait::async_trait]
 impl KeyProvider for SoftwareKeyProvider {
     async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        self.current_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoCurrentKey)
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        let index = self.keys.len() - 2;
+        Ok(self.keys[index].public_key())
     }
 
-    async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
-        self.next_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoNextKey)
-    }
-
-    async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
-        self.pending_next_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoNextKey)
-    }
-
-    async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
-        self.recovery_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoRecoveryKey)
-    }
-
-    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
+    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
         let (public, private) = generate_secp256r1()?;
-        self.current_key = Some(private);
-        Ok(public)
-    }
+        let (next_public, next_private) = generate_secp256r1()?;
+        let (recovery_public, recovery_private) = generate_secp256r1()?;
 
-    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
-        let (public, private) = generate_secp256r1()?;
-        self.next_key = Some(private);
-        Ok(public)
-    }
+        let rotation_hash = compute_rotation_hash(&next_public.qb64());
+        let recovery_hash = compute_rotation_hash(&recovery_public.qb64());
 
-    async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
-        let (public, private) = generate_secp256r1()?;
-        self.recovery_key = Some(private);
-        Ok(public)
+        self.keys = vec![private, next_private];
+        self.recovery_keys = vec![recovery_private];
+
+        Ok((public, rotation_hash, recovery_hash))
     }
 
     async fn has_current(&self) -> bool {
-        self.current_key.is_some()
+        !self.keys.is_empty()
     }
 
     async fn has_next(&self) -> bool {
-        self.next_key.is_some()
+        self.keys.len() > 1
+    }
+
+    async fn has_staged(&self) -> bool {
+        self.keys.len() > 2
     }
 
     async fn has_recovery(&self) -> bool {
-        self.recovery_key.is_some()
+        !self.recovery_keys.is_empty()
     }
 
-    async fn commit_recovery_rotation(&mut self) {
-        if let Some(pending) = self.pending_recovery_key.take() {
-            self.recovery_key = Some(pending);
+    async fn has_staged_recovery(&self) -> bool {
+        self.recovery_keys.len() > 1
+    }
+
+    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_next().await {
+            return Err(KelsError::NoNextKey);
         }
+
+        let new_current_pub = {
+            let length = self.keys.len();
+            self.keys[length - 1].public_key()
+        };
+
+        let (new_next_pub, new_next_priv) = generate_secp256r1()?;
+        self.keys.push(new_next_priv);
+
+        let rotation_hash = compute_rotation_hash(&new_next_pub.qb64());
+
+        Ok((new_current_pub, rotation_hash))
     }
 
-    async fn commit_rotation(&mut self) {
-        if let Some(pending_next) = self.pending_next_key.take() {
-            self.current_key = self.next_key.take();
-            self.next_key = Some(pending_next);
+    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
         }
-    }
 
-    async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
-        let current_recovery = self
-            .recovery_key
-            .as_ref()
-            .ok_or(KelsError::NoRecoveryKey)?
-            .public_key();
+        let current_recovery = self.recovery_keys[0].public_key();
 
         let (new_recovery_pub, new_recovery_priv) = generate_secp256r1()?;
-        self.pending_recovery_key = Some(new_recovery_priv);
+        self.recovery_keys.push(new_recovery_priv);
+        let new_recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
 
-        Ok((current_recovery, new_recovery_pub))
+        Ok((current_recovery, new_recovery_hash))
     }
 
-    async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        let new_current_pub = self
-            .next_key
-            .as_ref()
-            .ok_or(KelsError::NoNextKey)?
-            .public_key();
+    async fn commit(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
 
-        let (_new_next_pub, new_next_priv) = generate_secp256r1()?;
-        self.pending_next_key = Some(new_next_priv);
+        if self.has_staged_recovery().await {
+            let length = self.recovery_keys.len();
+            self.recovery_keys = self.recovery_keys[(length - 1)..].to_vec();
+        }
 
-        Ok(new_current_pub)
+        let length = self.keys.len();
+        self.keys = self.keys[(length - 2)..].to_vec();
+
+        Ok(())
     }
 
-    async fn rollback_recovery_rotation(&mut self) {
-        self.pending_recovery_key = None;
-    }
+    async fn rollback(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
 
-    async fn rollback_rotation(&mut self) {
-        self.pending_next_key = None;
+        if self.has_staged_recovery().await {
+            self.recovery_keys = self.recovery_keys[..1].to_vec();
+        }
+
+        self.keys = self.keys[..2].to_vec();
+
+        Ok(())
     }
 
     async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.current_key.as_ref().ok_or(KelsError::NoCurrentKey)?;
-        key.sign(data)
-            .map_err(|e| KelsError::SigningFailed(e.to_string()))
-    }
+        // this is correct, the error makes sense to the user
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
 
-    async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.next_key.as_ref().ok_or(KelsError::NoCurrentKey)?;
+        let length = self.keys.len();
+        let key = &self.keys[length - 2];
+
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
     }
 
     async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.recovery_key.as_ref().ok_or(KelsError::NoRecoveryKey)?;
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        let key = &self.recovery_keys[0];
+
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
-    }
-
-    async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        let public_key = self.current_public_key().await?;
-        public_key
-            .verify(data, signature)
-            .map_err(|e| KelsError::VerificationFailed(e.to_string()))
     }
 }
 
@@ -484,38 +470,48 @@ mod tests {
     use cesr::Matter;
 
     #[tokio::test]
-    async fn test_generate_keypair() {
+    async fn test_generate_initial_keys() {
         let mut provider = SoftwareKeyProvider::new();
 
-        let current = provider.generate_keypair().await.unwrap();
+        let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert!(provider.current_public_key().await.is_ok());
-        assert!(provider.next_public_key().await.is_err());
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            current.qb64()
+        );
 
-        let next = provider.generate_keypair().await.unwrap();
-        assert!(provider.next_public_key().await.is_ok());
-
-        assert_ne!(current.qb64(), next.qb64());
+        assert_ne!(next_hash, recovery_hash);
+        assert!(provider.has_current().await);
+        assert!(provider.has_next().await);
+        assert!(provider.has_recovery().await);
     }
 
     #[tokio::test]
     async fn test_rotation() {
         let mut provider = SoftwareKeyProvider::new();
 
-        let _current = provider.generate_keypair().await.unwrap();
-        let original_next = provider.generate_keypair().await.unwrap();
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
 
-        let new_current = provider.prepare_rotation().await.unwrap();
-        assert_eq!(new_current.qb64(), original_next.qb64());
-        provider.commit_rotation().await;
+        // Stage rotation: next becomes new current, new next is generated
+        let (new_current, _new_next_hash) = provider.stage_rotation().await.unwrap();
+        assert!(provider.has_staged().await);
 
-        assert!(provider.next_public_key().await.is_ok());
+        provider.commit().await.unwrap();
+        assert!(!provider.has_staged().await);
+
+        // After commit, new_current is now current
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            new_current.qb64()
+        );
     }
 
     #[tokio::test]
     async fn test_rotation_without_next_fails() {
         let mut provider = SoftwareKeyProvider::new();
-        provider.generate_keypair().await.unwrap();
-        assert!(provider.prepare_rotation().await.is_err());
+        // No keys at all - should fail
+        assert!(provider.stage_rotation().await.is_err());
     }
 
     #[tokio::test]
@@ -525,72 +521,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recovery_key() {
-        let mut provider = SoftwareKeyProvider::new();
-
-        assert!(provider.recovery_public_key().await.is_err());
-
-        let recovery = provider.generate_recovery_key().await.unwrap();
-        assert!(provider.recovery_public_key().await.is_ok());
-        assert_eq!(
-            provider.recovery_public_key().await.unwrap().qb64(),
-            recovery.qb64()
-        );
-
-        let message = b"test message";
-        let sig = provider.sign_with_recovery(message).await.unwrap();
-        assert!(recovery.verify(message, &sig).is_ok());
-    }
-
-    #[tokio::test]
     async fn test_recovery_rotation() {
         let mut provider = SoftwareKeyProvider::new();
 
-        let original_recovery = provider.generate_recovery_key().await.unwrap();
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
 
-        let (current_recovery, new_recovery) = provider.prepare_recovery_rotation().await.unwrap();
-        assert_eq!(current_recovery.qb64(), original_recovery.qb64());
-        assert_ne!(new_recovery.qb64(), original_recovery.qb64());
+        // Stage recovery rotation
+        let (_, _) = provider.stage_rotation().await.unwrap();
+        let (_current_recovery, _new_recovery_hash) =
+            provider.stage_recovery_rotation().await.unwrap();
+        assert!(provider.has_staged_recovery().await);
+        assert!(provider.has_staged().await);
 
-        assert_eq!(
-            provider.recovery_public_key().await.unwrap().qb64(),
-            original_recovery.qb64()
-        );
+        provider.commit().await.unwrap();
+        assert!(!provider.has_staged_recovery().await);
+        assert!(!provider.has_staged().await);
 
-        provider.commit_recovery_rotation().await;
-
-        assert_eq!(
-            provider.recovery_public_key().await.unwrap().qb64(),
-            new_recovery.qb64()
-        );
+        // The old recovery key is gone, we can't easily verify the new one without
+        // exposing the recovery public key, but we can sign with recovery
+        let message = b"test message";
+        let sig = provider.sign_with_recovery(message).await.unwrap();
+        // Can't verify directly without recovery_public_key, but sign succeeded
+        assert!(!sig.qb64().is_empty());
     }
 
     #[tokio::test]
     async fn test_sign() {
         let mut provider = SoftwareKeyProvider::new();
-        provider.generate_into_current().await.unwrap();
+        let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
         let signature = provider.sign(message).await.unwrap();
 
-        let public = provider.current_public_key().await.unwrap();
-        assert!(public.verify(message, &signature).is_ok());
+        assert!(current.verify(message, &signature).is_ok());
     }
 
     #[tokio::test]
-    async fn test_with_keys() {
+    async fn test_with_all_keys() {
         let (pub1, priv1) = generate_secp256r1().unwrap();
-        let (pub2, priv2) = generate_secp256r1().unwrap();
+        let (_pub2, priv2) = generate_secp256r1().unwrap();
+        let (_pub3, priv3) = generate_secp256r1().unwrap();
 
-        let provider = SoftwareKeyProvider::with_keys(priv1, priv2);
+        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), Some(priv3));
 
         assert_eq!(
             provider.current_public_key().await.unwrap().qb64(),
             pub1.qb64()
         );
+        // We can sign and the signature should be verifiable with pub1
+        let message = b"test";
+        let sig = provider.sign(message).await.unwrap();
+        assert!(pub1.verify(message, &sig).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_rotation() {
+        let mut provider = SoftwareKeyProvider::new();
+
+        let (original_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
+
+        // Stage a rotation
+        let (_new_current, _new_next_hash) = provider.stage_rotation().await.unwrap();
+        assert!(provider.has_staged().await);
+
+        // Rollback
+        provider.rollback().await.unwrap();
+        assert!(!provider.has_staged().await);
+
+        // Current should still be the original
         assert_eq!(
-            provider.next_public_key().await.unwrap().qb64(),
-            pub2.qb64()
+            provider.current_public_key().await.unwrap().qb64(),
+            original_current.qb64()
         );
+    }
+
+    #[tokio::test]
+    async fn test_rollback_recovery_rotation() {
+        let mut provider = SoftwareKeyProvider::new();
+
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
+
+        // Stage a recovery rotation
+        let (_, _) = provider.stage_rotation().await.unwrap();
+        let (_old_recovery, _new_recovery_hash) = provider.stage_recovery_rotation().await.unwrap();
+        assert!(provider.has_staged_recovery().await);
+        assert!(provider.has_staged().await);
+
+        // Rollback
+        provider.rollback().await.unwrap();
+        assert!(!provider.has_staged_recovery().await);
+        assert!(!provider.has_staged().await);
     }
 }

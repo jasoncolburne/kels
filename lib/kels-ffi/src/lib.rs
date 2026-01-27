@@ -32,10 +32,8 @@ use verifiable_storage::Versioned;
 /// Persisted key state for restoring Secure Enclave keys
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct KeyState {
-    current_label: Option<String>,
-    next_label: Option<String>,
-    recovery_label: Option<String>,
-    next_label_generation: u64,
+    signing_generation: u64,
+    recovery_generation: u64,
 }
 
 impl KeyState {
@@ -298,10 +296,8 @@ async fn save_key_state<K: KeyProvider>(
 ) -> Result<(), KelsError> {
     let key_provider = builder.key_provider();
     let key_state = KeyState {
-        current_label: key_provider.current_handle().await,
-        next_label: key_provider.next_handle().await,
-        recovery_label: key_provider.recovery_handle().await,
-        next_label_generation: key_provider.next_label_generation().await,
+        signing_generation: key_provider.signing_generation().await,
+        recovery_generation: key_provider.recovery_generation().await,
     };
     key_state.save(state_dir, prefix)
 }
@@ -313,6 +309,7 @@ async fn save_key_state<K: KeyProvider>(
 /// # Arguments
 /// * `kels_url` - URL of the KELS server (e.g., "http://kels.example.com")
 /// * `state_dir` - Directory for storing local state (KELs, keys)
+/// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
 ///
 /// # Returns
@@ -321,6 +318,7 @@ async fn save_key_state<K: KeyProvider>(
 pub extern "C" fn kels_init(
     kels_url: *const c_char,
     state_dir: *const c_char,
+    key_namespace: *const c_char,
     prefix: *const c_char,
 ) -> *mut KelsContext {
     clear_last_error();
@@ -334,6 +332,24 @@ pub extern "C" fn kels_init(
         set_last_error("Invalid state directory");
         return std::ptr::null_mut();
     };
+
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    let namespace = match from_c_string(key_namespace) {
+        Some(ns) => ns,
+        None => {
+            set_last_error("Invalid key namespace");
+            return std::ptr::null_mut();
+        }
+    };
+
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let _ = key_namespace; // Unused in software-only builds
 
     let prefix_opt = from_c_string(prefix);
     let state_path = PathBuf::from(&state_dir_str);
@@ -359,8 +375,6 @@ pub extern "C" fn kels_init(
         feature = "secure-enclave"
     ))]
     let key_provider = {
-        let namespace = prefix_opt.as_deref().unwrap_or("kels-client").to_string();
-
         // Try to load existing key state for this prefix
         let key_state = prefix_opt
             .as_deref()
@@ -370,21 +384,13 @@ pub extern "C" fn kels_init(
             // Restore key provider with saved handles
             match HardwareKeyProvider::with_all_handles(
                 &namespace,
-                ks.current_label,
-                ks.next_label,
-                ks.recovery_label,
-                ks.next_label_generation,
+                ks.signing_generation,
+                ks.recovery_generation,
             ) {
-                Some(p) => p,
-                None => {
-                    // Fall back to fresh hardware provider
-                    match HardwareKeyProvider::new(&namespace) {
-                        Some(p) => p,
-                        None => {
-                            set_last_error("Secure Enclave not available");
-                            return std::ptr::null_mut();
-                        }
-                    }
+                Ok(p) => p,
+                Err(e) => {
+                    set_last_error(&format!("Failed to restore key provider: {}", e));
+                    return std::ptr::null_mut();
                 }
             }
         } else {

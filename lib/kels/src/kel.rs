@@ -902,6 +902,7 @@ mod tests {
         let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
 
         let mut kel = Kel::new();
         kel.push(SignedKeyEvent::new(
@@ -910,7 +911,11 @@ mod tests {
             icp_sig.qb64(),
         ));
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             kel.clone(),
@@ -943,8 +948,13 @@ mod tests {
         let software = builder.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             kel.clone(),
@@ -1055,6 +1065,7 @@ mod tests {
         let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1065,7 +1076,11 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1107,6 +1122,7 @@ mod tests {
         let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1118,7 +1134,11 @@ mod tests {
 
         // Create second divergent event
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key.clone()),
+                Some(next_key.clone()),
+                Some(recovery_key.clone()),
+            ),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1127,7 +1147,11 @@ mod tests {
 
         // Create third divergent event
         let mut builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1174,6 +1198,7 @@ mod tests {
         let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1184,7 +1209,11 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key.clone()),
+                Some(next_key.clone()),
+                Some(recovery_key.clone()),
+            ),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1207,7 +1236,11 @@ mod tests {
 
         // Load with with_kel
         let builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             divergent_kel.clone(),
@@ -1234,6 +1267,7 @@ mod tests {
         let software = builder1.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_others = Kel::new();
@@ -1244,7 +1278,11 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key.clone()),
+                Some(next_key.clone()),
+                Some(recovery_key.clone()),
+            ),
             None,
             None,
             kel_for_others.clone(),
@@ -1252,7 +1290,11 @@ mod tests {
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key.clone()),
+                Some(next_key.clone()),
+                Some(recovery_key.clone()),
+            ),
             None,
             None,
             kel_for_others.clone(),
@@ -1277,7 +1319,11 @@ mod tests {
 
         // Load with with_kel
         let loaded_builder = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key, next_key),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
             None,
             None,
             divergent_kel.clone(),
@@ -1301,6 +1347,7 @@ mod tests {
         let software = owner.key_provider();
         let current_key = software.current_private_key().unwrap().clone();
         let next_key = software.next_private_key().unwrap().clone();
+        let recovery_key = software.recovery_private_key().unwrap().clone();
         let icp_public_key = icp.public_key.clone().unwrap();
 
         // Adversary creates a rotation at v1 (same version as owner's ixn)
@@ -1312,7 +1359,11 @@ mod tests {
         ));
 
         let mut adversary = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(current_key.clone(), next_key.clone()),
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key.clone()),
+                Some(next_key.clone()),
+                Some(recovery_key.clone()),
+            ),
             None,
             None,
             adversary_kel.clone(),
@@ -1381,6 +1432,7 @@ mod tests {
         let software = owner.key_provider();
         let pre_rot_current = software.current_private_key().unwrap().clone(); // inception key
         let pre_rot_next = software.next_private_key().unwrap().clone(); // first rotation key
+        let pre_rot_recovery = software.recovery_private_key().unwrap().clone();
 
         let (owner_rot, owner_rot_sig) = owner.rotate().await.unwrap();
 
@@ -1396,7 +1448,11 @@ mod tests {
         ));
 
         let mut adversary = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_keys(pre_rot_current, pre_rot_next),
+            SoftwareKeyProvider::with_all_keys(
+                Some(pre_rot_current),
+                Some(pre_rot_next),
+                Some(pre_rot_recovery),
+            ),
             None,
             None,
             adversary_kel.clone(),

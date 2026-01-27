@@ -3,14 +3,10 @@
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
 use crate::error::KelsError;
-use crate::kel::{Kel, compute_rotation_hash};
+use crate::kel::Kel;
 use crate::store::KelStore;
 use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey, Signature};
-
-fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
-    compute_rotation_hash(&key.qb64())
-}
 
 pub struct KeyEventBuilder<K: KeyProvider> {
     key_provider: K,
@@ -149,7 +145,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         let (signed_event, event, signature) = self.create_signed_inception_event().await?;
-        self.add_and_flush(&[signed_event], false, false).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -160,7 +156,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let (signed_event, event, signature) = self
             .create_signed_delegated_inception_event(delegating_prefix)
             .await?;
-        self.add_and_flush(&[signed_event], false, false).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -173,7 +169,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let (signed_event, event, signature) = self
             .create_signed_interaction_event(&last_event, anchor)
             .await?;
-        self.add_and_flush(&[signed_event], false, false).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -187,11 +183,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             match self.create_signed_rotation_event(&last_event).await {
                 Ok(r) => r,
                 Err(e) => {
-                    self.key_provider.rollback_rotation().await;
+                    self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
-        self.add_and_flush(&[signed_event], true, false).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -205,11 +201,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             match self.create_signed_decommission_event(&last_event).await {
                 Ok(r) => r,
                 Err(e) => {
-                    self.key_provider.rollback_rotation().await;
+                    self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
-        self.add_and_flush(&[signed_event], true, false).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, primary_signature))
     }
 
@@ -225,12 +221,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         {
             Ok(r) => r,
             Err(e) => {
-                self.key_provider.rollback_rotation().await;
-                self.key_provider.rollback_recovery_rotation().await;
+                self.key_provider.rollback().await?;
                 return Err(e);
             }
         };
-        self.add_and_flush(&[signed_event], true, true).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, primary_signature))
     }
 
@@ -242,30 +237,33 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let last_event = self.get_owner_tail().await?.event.clone();
         let (signed_rec_event, rec_event) =
             match self.create_signed_recovery_event(&last_event).await {
-                Ok((signed_event, event, _)) => {
-                    self.key_provider.commit_rotation().await;
-                    self.key_provider.commit_recovery_rotation().await;
-                    (signed_event, event)
-                }
+                Ok((signed_event, event, _)) => (signed_event, event),
                 Err(e) => {
-                    self.key_provider.rollback_rotation().await;
-                    self.key_provider.rollback_recovery_rotation().await;
+                    self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
 
-        // this one is a little tricky - we always submit a rot after a rec to ensure that if the
-        // rotation key was compromised, we rotate away from the known one.
+        // we add a rot intentionally in case the attacker determined the rotation key.
+        // after recovery, they'd still be able to inject ixn if we didn't.
+        //
+        // however, this is only necessary if they exposed the rotation key which
+        // is unlikely. our logic could be better - we could:
+        //  1. ensure we didn't already rotate as the last, divergent event that will
+        //     become authoritative after recovery
+        //  2. fetch from the server and determine if the attacker rotated
+        //
+        // If we didn't rotate and the adversary did, we should add a rotation.
         let (signed_event, event, signature) =
             match self.create_signed_rotation_event(&rec_event).await {
                 Ok(r) => r,
                 Err(e) => {
-                    self.key_provider.rollback_rotation().await;
+                    self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
 
-        self.add_and_flush(&[signed_rec_event, signed_event], true, false)
+        self.add_and_flush(&[signed_rec_event, signed_event])
             .await?;
         Ok((event, signature))
     }
@@ -280,36 +278,36 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             match self.create_signed_contest_event(&last_event).await {
                 Ok(r) => r,
                 Err(e) => {
-                    self.key_provider.rollback_rotation().await;
-                    self.key_provider.rollback_recovery_rotation().await;
+                    self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
-        self.add_and_flush(&[signed_event], true, true).await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
     // ==================== Operations ====================
 
-    async fn rollback_rotation(&mut self, act: bool) {
+    async fn commit(&mut self, act: bool) -> Result<(), KelsError> {
         if act {
-            self.key_provider.rollback_rotation().await;
+            self.key_provider.commit().await?;
         }
+
+        Ok(())
     }
 
-    async fn rollback_recovery_rotation(&mut self, act: bool) {
+    async fn rollback(&mut self, act: bool) -> Result<(), KelsError> {
         if act {
-            self.key_provider.rollback_recovery_rotation().await;
+            self.key_provider.rollback().await?;
         }
+
+        Ok(())
     }
 
-    async fn add_and_flush(
-        &mut self,
-        signed_events: &[SignedKeyEvent],
-        rotation_key_staged: bool,
-        recovery_key_staged: bool,
-    ) -> Result<(), KelsError> {
+    async fn add_and_flush(&mut self, signed_events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let events = signed_events.iter().cloned();
+
+        let has_staged = self.key_provider.has_staged().await;
 
         let old_length = self.kel.len();
         self.kel.extend(events);
@@ -321,22 +319,15 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             && let Err(e) = store.save(self.kel()).await
         {
             self.kel.truncate(old_length);
-            self.rollback_rotation(rotation_key_staged).await;
-            self.rollback_recovery_rotation(recovery_key_staged).await;
+            self.rollback(has_staged).await?;
             return Err(e);
         }
 
         if accepted {
-            if rotation_key_staged {
-                self.key_provider.commit_rotation().await;
-            }
-            if recovery_key_staged {
-                self.key_provider.commit_recovery_rotation().await;
-            }
+            self.commit(has_staged).await?;
         } else {
             self.kel.truncate(old_length);
-            self.rollback_rotation(rotation_key_staged).await;
-            self.rollback_recovery_rotation(recovery_key_staged).await;
+            self.rollback(has_staged).await?;
         }
 
         flush_result
@@ -392,19 +383,17 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     /// Create a signed contest event from a base event.
     /// Returns (signed_event, event, primary_signature).
     async fn create_signed_contest_event(
-        &self,
+        &mut self,
         base_event: &KeyEvent,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let rotation_key = self.key_provider.next_public_key().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
+        let (rotation_key, _next_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, _recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
 
         let cnt_event =
             KeyEvent::create_contest(base_event, rotation_key.qb64(), current_recovery_pub.qb64())?;
 
-        let cnt_primary_signature = self
-            .key_provider
-            .sign_with_pending(cnt_event.said.as_bytes())
-            .await?;
+        let cnt_primary_signature = self.key_provider.sign(cnt_event.said.as_bytes()).await?;
         let cnt_secondary_signature = self
             .key_provider
             .sign_with_recovery(cnt_event.said.as_bytes())
@@ -427,11 +416,8 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     async fn create_signed_inception_event(
         &mut self,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
+        let (current_key, rotation_hash, recovery_hash) =
+            self.key_provider.generate_initial_keys().await?;
 
         let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
@@ -448,11 +434,8 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &mut self,
         delegating_prefix: &str,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
+        let (current_key, rotation_hash, recovery_hash) =
+            self.key_provider.generate_initial_keys().await?;
 
         let event = KeyEvent::create_delegated_inception(
             current_key.qb64(),
@@ -491,15 +474,10 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &mut self,
         base_event: &KeyEvent,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&new_next);
+        let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
 
         let event = KeyEvent::create_rotation(base_event, new_current.qb64(), Some(rotation_hash))?;
-        let signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
         let signed_event = SignedKeyEvent::new(event.clone(), new_current.qb64(), signature.qb64());
 
@@ -513,8 +491,9 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &mut self,
         base_event: &KeyEvent,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
+        let (new_current, _rotation_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, _recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
 
         let event = KeyEvent::create_decommission(
             base_event,
@@ -522,10 +501,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             current_recovery_pub.qb64(),
         )?;
 
-        let primary_signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
+        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
         let secondary_signature = self
             .key_provider
             .sign_with_recovery(event.said.as_bytes())
@@ -549,13 +525,10 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &mut self,
         base_event: &KeyEvent,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&new_next);
+        let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
 
-        let (current_recovery_pub, new_recovery_pub) =
-            self.key_provider.prepare_recovery_rotation().await?;
-        let new_recovery_hash = compute_rotation_hash_from_key(&new_recovery_pub);
+        let (current_recovery_pub, new_recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
 
         let event = KeyEvent::create_recovery_rotation(
             base_event,
@@ -565,10 +538,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             new_recovery_hash,
         )?;
 
-        let primary_signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
+        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
         let secondary_signature = self
             .key_provider
             .sign_with_recovery(event.said.as_bytes())
@@ -592,25 +562,19 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &mut self,
         base_event: &KeyEvent,
     ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
-        let rotation_key = self.key_provider.next_public_key().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
-        let (_, new_recovery_pub) = self.key_provider.prepare_recovery_rotation().await?;
-
-        self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
+        let (rotation_key, new_rotation_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, new_recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
 
         let rec_event = KeyEvent::create_recovery(
             base_event,
             rotation_key.qb64(),
-            compute_rotation_hash_from_key(&new_next),
+            new_rotation_hash,
             current_recovery_pub.qb64(),
-            compute_rotation_hash_from_key(&new_recovery_pub),
+            new_recovery_hash,
         )?;
 
-        let rec_primary_signature = self
-            .key_provider
-            .sign_with_pending(rec_event.said.as_bytes())
-            .await?;
+        let rec_primary_signature = self.key_provider.sign(rec_event.said.as_bytes()).await?;
         let rec_secondary_signature = self
             .key_provider
             .sign_with_recovery(rec_event.said.as_bytes())

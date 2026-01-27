@@ -12,11 +12,12 @@ public final class KelsClient: @unchecked Sendable {
     /// - Parameters:
     ///   - kelsURL: URL of the KELS server
     ///   - stateDir: Directory for storing local state (defaults to app documents)
+    ///   - keyNamespace: Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
     ///   - prefix: Optional existing KEL prefix to load
-    public init(kelsURL: String, stateDir: String? = nil, prefix: String? = nil) throws {
+    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil) throws {
         let dir = stateDir ?? Self.defaultStateDirectory()
 
-        context = kels_init(kelsURL, dir, prefix)
+        context = kels_init(kelsURL, dir, keyNamespace, prefix)
         if context == nil {
             let error = Self.getLastError()
             throw KelsClientError.unknown(error ?? "Failed to initialize KELS context")
