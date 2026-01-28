@@ -27,16 +27,42 @@ type: kubernetes
 disabled: ${environment.name == 'registry'}
 
 dependencies:
+  - run.read-registry-prefix
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
+  - deploy.hsm
 
 variables:
   kelsAdvertiseUrl: "http://kels.kels-${environment.name}.local"
   kelsAdvertiseUrlInternal: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
   kelsGossipDatabaseUrl: ${var.postgres.url}/kels_gossip
   gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.svc.cluster.local/tcp/${var.gossip.port}"
+  registryPrefix: ${actions.run.read-registry-prefix.outputs.log}
 
 spec:
   manifestTemplates:
     - manifests.yml.tpl
+
+---
+
+kind: Run
+name: fetch-gossip-identity
+type: exec
+
+disabled: ${environment.name == 'registry'}
+
+dependencies:
+  - deploy.kels-gossip
+
+spec:
+  command:
+    - bash
+    - -c
+    - |
+      PEER_ID=$(kubectl logs -n ${environment.namespace} deploy/kels-gossip -c kels-gossip 2>/dev/null | rg "Local PeerId: " | jq -r '.fields.message // empty' | cut -f 3 -d ' ')
+      if [ -z "$PEER_ID" ]; then
+        echo "Error: Could not fetch PeerId from kels-gossip logs" >&2
+        exit 1
+      fi
+      echo -n "$PEER_ID"

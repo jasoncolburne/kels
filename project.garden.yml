@@ -52,3 +52,11 @@ variables:
     replicas: 2
     port: "80"
     heartbeatTimeoutSecs: "60"
+  hsm:
+    port: "80"
+    host: hsm
+    url: http://${var.hsm.host}:${var.hsm.port}
+  identity:
+    port: "80"
+    host: identity
+    url: http://${var.identity.host}:${var.identity.port}

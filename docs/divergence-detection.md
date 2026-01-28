@@ -131,13 +131,13 @@ match result {
 
 ### Two-Phase Key Rotation
 
-Key rotations use prepare/commit/rollback to ensure recovery is possible:
+Key rotations use stage/commit/rollback to ensure recovery is possible:
 
-1. `prepare_rotation()` - Stage new key, keep old key active
+1. `stage_rotation()` - Stage new key, keep old key active
 2. Submit event to KELS
-3. On success: `commit_rotation()` - Activate new key
-4. On divergence with `submission_accepted: true`: `commit_rotation()` - Event was stored
-5. On divergence with `submission_accepted: false`: `rollback_rotation()` - Event was rejected
+3. On success: `commit()` - Activate new key
+4. On divergence with `submission_accepted: true`: `commit()` - Event was stored
+5. On divergence with `submission_accepted: false`: `rollback()` - Event was rejected
 
 The CLI must save key state whenever keys are committed (both success and accepted divergence).
 

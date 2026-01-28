@@ -10,6 +10,10 @@ description = "KELS Node Registry - Service discovery for KELS gossip nodes"
 name = "kels-registry"
 path = "src/main.rs"
 
+[[bin]]
+name = "kels-registry-admin"
+path = "src/bin/kels-registry-admin.rs"
+
 [lib]
 name = "kels_registry"
 path = "src/lib.rs"
@@ -34,12 +38,40 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
 thiserror = "1"
+anyhow = "1"
 
-# Redis for storage
+# Redis for storage (node registrations)
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
-# Shared types
-libkels = { path = "../../lib/kels", default-features = false }
+# PostgreSQL for peer allowlist
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
+
+# Shared types and verifiable storage
+libkels = { path = "../../lib/kels", default-features = false, features = ["native", "server"] }
+libkels-derive = { path = "../../lib/kels-derive" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# HTTP client for HSM
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Base64 encoding for request data
+base64 = "0.22"
+
+# CESR encoding for public keys and signatures
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# CLI framework for kels-registry-admin
+clap = { version = "4", features = ["derive"] }
+
+# Async traits
+async-trait = "0.1"
+
+# libp2p for PeerId parsing and HSM-backed identity (forked with external-signer support)
+libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer", features = ["peerid", "ecdsa", "external-signer"] }
+
+# p256 for public key decompression (libp2p requires uncompressed format)
+p256 = { version = "0.13", features = ["ecdsa"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -10,6 +10,11 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
+# Read registry prefix from file (required for CLI builds)
+REGISTRY_PREFIX_FILE := .kels/registry_prefix
+REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
+export REGISTRY_PREFIX
+
 .PHONY: all build clean clippy deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
@@ -34,7 +39,7 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in kels kels-gossip; do \
+	@for service in hsm identity kels kels-gossip kels-registry; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done
@@ -56,3 +61,33 @@ test:
 
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
+
+test-comprehensive:
+	touch .kels/registry_prefix
+
+	garden cleanup deploy && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=registry
+	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry
+
+	garden deploy --env node-a && garden run add-node-a --env registry
+	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+
+	garden deploy --env=node-c && garden run add-node-c --env registry
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+
+	garden deploy --env=node-b && garden run add-node-b --env registry
+	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -it test-client -- ./test-kels.sh
+	kubectl exec -it test-client -- ./test-adversarial.sh
+
+	kubectl exec -it test-client -- ./test-gossip.sh
+	kubectl exec -it test-client -- ./test-bootstrap.sh

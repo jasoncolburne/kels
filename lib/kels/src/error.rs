@@ -16,6 +16,18 @@ pub enum KelsError {
     #[error("No recovery key available")]
     NoRecoveryKey,
 
+    #[error("No staged key available")]
+    NoStagedKey,
+
+    #[error("No staged recovery key available")]
+    NoStagedRecoveryKey,
+
+    #[error("Currently staged keys")]
+    CurrentlyStaged,
+
+    #[error("Already staged recovery key")]
+    AlreadyStagedRecovery,
+
     #[error("Invalid signature: {0}")]
     InvalidSignature(String),
 

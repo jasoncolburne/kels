@@ -8,6 +8,8 @@ members = [
     "services/kels",
     "services/kels-gossip",
     "services/kels-registry",
+    "services/identity",
+    "services/hsm",
     "clients/kels-bench",
     "clients/kels-cli",
 ]
@@ -23,3 +25,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 unwrap_in_result = "deny"
+
+# Patch libp2p-identity to use our fork with external-signer support
+[patch.crates-io]
+libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer" }

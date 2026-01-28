@@ -17,6 +17,7 @@ wasm = ["cesr/wasm", "wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"
 secure-enclave = ["security-framework", "security-framework-sys", "core-foundation", "core-foundation-sys"]
 redis = ["dep:redis"]
 server-caching = ["dep:cacheable"]
+server = ["tokio/signal"]  # Server utilities (shutdown signal handling)
 dev-tools = []  # Developer-only tools - DO NOT enable in production
 
 [dependencies]

@@ -12,11 +12,12 @@ public final class KelsClient: @unchecked Sendable {
     /// - Parameters:
     ///   - kelsURL: URL of the KELS server
     ///   - stateDir: Directory for storing local state (defaults to app documents)
+    ///   - keyNamespace: Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
     ///   - prefix: Optional existing KEL prefix to load
-    public init(kelsURL: String, stateDir: String? = nil, prefix: String? = nil) throws {
+    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil) throws {
         let dir = stateDir ?? Self.defaultStateDirectory()
 
-        context = kels_init(kelsURL, dir, prefix)
+        context = kels_init(kelsURL, dir, keyNamespace, prefix)
         if context == nil {
             let error = Self.getLastError()
             throw KelsClientError.unknown(error ?? "Failed to initialize KELS context")
@@ -138,6 +139,24 @@ public final class KelsClient: @unchecked Sendable {
             let said = result.said.map { String(cString: $0) } ?? ""
 
             return (outcome, KelEvent(prefix: prefix, said: said, version: result.version))
+        }
+    }
+
+    /// Contest a malicious recovery by submitting a contest event (cnt)
+    /// Use this when an adversary has revealed your recovery key.
+    /// The KEL will be permanently frozen after contesting.
+    /// - Returns: The contest event
+    public func contest() throws -> KelEvent {
+        try lock.withLock {
+            guard let ctx = context else {
+                throw KelsClientError.notInitialized
+            }
+
+            var result = KelsEventResult()
+            kels_contest(ctx, &result)
+            defer { kels_event_result_free(&result) }
+
+            return try parseEventResult(result)
         }
     }
 

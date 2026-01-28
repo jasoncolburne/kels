@@ -2,6 +2,9 @@ kind: Build
 name: test-client
 type: container
 
+dependencies:
+  - run.read-registry-prefix
+
 source:
   path: ../..  # Set build context to repository root
 
@@ -15,6 +18,8 @@ include:
 
 spec:
   dockerfile: clients/test/Dockerfile
+  buildArgs:
+    REGISTRY_PREFIX: ${actions.run.read-registry-prefix.outputs.log}
 
 ---
 

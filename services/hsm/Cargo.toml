@@ -1,0 +1,56 @@
+[package]
+name = "hsm"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "HSM service - SoftHSM2 PKCS#11 wrapper for KELS"
+
+[[bin]]
+name = "hsm"
+path = "src/main.rs"
+
+[lib]
+name = "hsm"
+path = "src/lib.rs"
+
+[dependencies]
+# PKCS#11 interface
+cryptoki = "0.7"
+
+# CESR encoding for public keys and signatures
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1"
+
+# Base64 encoding for key/signature transport
+base64 = "0.22"
+
+# Hex encoding for handles
+hex = "0.4"
+
+# SHA-256 for pre-hashing before ECDSA (SoftHSM2 doesn't support EcdsaSha256)
+sha2 = "0.10.9"
+
+[dev-dependencies]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

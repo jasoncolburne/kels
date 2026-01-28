@@ -15,6 +15,17 @@ spec:
         app: kels-registry
     spec:
       initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "Waiting for postgres...";
+                sleep 2;
+              done;
+              echo "Postgres is ready!";
         - name: wait-for-redis
           image: busybox:1.36
           command:
@@ -26,6 +37,17 @@ spec:
                 sleep 2;
               done;
               echo "Redis is ready!";
+        - name: wait-for-identity
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z ${var.identity.host} ${var.identity.port}; do
+                echo "Waiting for identity service...";
+                sleep 2;
+              done;
+              echo "Identity service is ready!";
       containers:
         - name: kels-registry
           image: ${actions.build.kels-registry.outputs.deployment-image-id}
@@ -37,6 +59,10 @@ spec:
               value: "${var.rustLogLevel}"
             - name: REDIS_URL
               value: "${var.redis.url}"
+            - name: DATABASE_URL
+              value: "${var.kelsRegistryDatabaseUrl}"
+            - name: IDENTITY_URL
+              value: "${var.identityUrl}"
             - name: HEARTBEAT_TIMEOUT_SECS
               value: "${var.registry.heartbeatTimeoutSecs}"
           livenessProbe:

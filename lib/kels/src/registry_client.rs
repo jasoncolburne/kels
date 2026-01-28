@@ -5,24 +5,49 @@
 
 use crate::error::KelsError;
 use crate::types::{
-    NodeInfo, NodeRegistration, NodeStatus, NodesResponse, RegisterNodeRequest, StatusUpdateRequest,
+    DeregisterRequest, NodeInfo, NodeRegistration, NodeStatus, NodesResponse, PeersResponse,
+    RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Result of a signing operation, containing all data needed for a SignedRequest.
+#[derive(Debug, Clone)]
+pub struct SignResult {
+    /// CESR qb64 encoded signature
+    pub signature: String,
+    /// CESR qb64 encoded public key
+    pub public_key: String,
+    /// libp2p PeerId derived from public key
+    pub peer_id: String,
+}
+
+/// Trait for signing registry requests.
+///
+/// Implementors sign data and return the signature along with the public key
+/// and peer ID (all derived from the same HSM call).
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait RegistrySigner: Send + Sync {
+    /// Sign the given data and return signature, public key, and peer ID.
+    async fn sign(&self, data: &[u8]) -> Result<SignResult, KelsError>;
+}
 
 /// Client for interacting with the kels-registry service.
 #[derive(Clone)]
 pub struct KelsRegistryClient {
     client: reqwest::Client,
     base_url: String,
+    signer: Option<Arc<dyn RegistrySigner>>,
 }
 
 impl KelsRegistryClient {
-    /// Create a new registry client with default timeout.
+    /// Create a new registry client with default timeout (no signing capability).
     pub fn new(registry_url: &str) -> Self {
         Self::with_timeout(registry_url, Duration::from_secs(10))
     }
 
-    /// Create a new registry client with custom timeout.
+    /// Create a new registry client with custom timeout (no signing capability).
     pub fn with_timeout(registry_url: &str, timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -32,10 +57,60 @@ impl KelsRegistryClient {
         Self {
             client,
             base_url: registry_url.trim_end_matches('/').to_string(),
+            signer: None,
         }
     }
 
+    /// Create a new registry client with signing capability.
+    pub fn with_signer(registry_url: &str, signer: Arc<dyn RegistrySigner>) -> Self {
+        Self::with_signer_and_timeout(registry_url, signer, Duration::from_secs(10))
+    }
+
+    /// Create a new registry client with signing capability and custom timeout.
+    pub fn with_signer_and_timeout(
+        registry_url: &str,
+        signer: Arc<dyn RegistrySigner>,
+        timeout: Duration,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+
+        Self {
+            client,
+            base_url: registry_url.trim_end_matches('/').to_string(),
+            signer: Some(signer),
+        }
+    }
+
+    /// Create a signed request wrapper for the given payload.
+    async fn sign_request<T>(&self, payload: &T) -> Result<SignedRequest<T>, KelsError>
+    where
+        T: serde::Serialize + Clone,
+    {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| KelsError::SigningFailed("No signer configured".to_string()))?;
+
+        // Serialize payload to JSON for signing
+        let payload_json = serde_json::to_vec(payload)?;
+
+        // Sign the payload (returns signature, public key, and peer ID)
+        let sign_result = signer.sign(&payload_json).await?;
+
+        Ok(SignedRequest {
+            payload: payload.clone(),
+            peer_id: sign_result.peer_id,
+            public_key: sign_result.public_key,
+            signature: sign_result.signature,
+        })
+    }
+
     /// Register a node with the registry.
+    ///
+    /// Requires a signer to be configured (use `with_signer` constructor).
     pub async fn register(
         &self,
         node_id: &str,
@@ -46,16 +121,22 @@ impl KelsRegistryClient {
     ) -> Result<NodeRegistration, KelsError> {
         let request = RegisterNodeRequest {
             node_id: node_id.to_string(),
+            node_type: crate::NodeType::Kels,
             kels_url: kels_url.to_string(),
             kels_url_internal: kels_url_internal.map(|s| s.to_string()),
             gossip_multiaddr: gossip_multiaddr.to_string(),
             status,
         };
 
+        // Sign the request
+        let signed_request = self.sign_request(&request).await?;
+
+        tracing::info!("${:?}", signed_request);
+
         let response = self
             .client
             .post(format!("{}/api/nodes/register", self.base_url))
-            .json(&request)
+            .json(&signed_request)
             .send()
             .await?;
 
@@ -72,10 +153,20 @@ impl KelsRegistryClient {
     }
 
     /// Deregister a node from the registry.
+    ///
+    /// Requires a signer to be configured (use `with_signer` constructor).
     pub async fn deregister(&self, node_id: &str) -> Result<(), KelsError> {
+        let request = DeregisterRequest {
+            node_id: node_id.to_string(),
+        };
+
+        // Sign the request
+        let signed_request = self.sign_request(&request).await?;
+
         let response = self
             .client
-            .delete(format!("{}/api/nodes/{}", self.base_url, node_id))
+            .post(format!("{}/api/nodes/deregister", self.base_url))
+            .json(&signed_request)
             .send()
             .await?;
 
@@ -182,17 +273,25 @@ impl KelsRegistryClient {
     }
 
     /// Update node status.
+    ///
+    /// Requires a signer to be configured (use `with_signer` constructor).
     pub async fn update_status(
         &self,
         node_id: &str,
         status: NodeStatus,
     ) -> Result<NodeRegistration, KelsError> {
-        let request = StatusUpdateRequest { status };
+        let request = StatusUpdateRequest {
+            node_id: node_id.to_string(),
+            status,
+        };
+
+        // Sign the request
+        let signed_request = self.sign_request(&request).await?;
 
         let response = self
             .client
-            .put(format!("{}/api/nodes/{}/status", self.base_url, node_id))
-            .json(&request)
+            .post(format!("{}/api/nodes/status", self.base_url))
+            .json(&signed_request)
             .send()
             .await?;
 
@@ -219,5 +318,107 @@ impl KelsRegistryClient {
             .await?;
 
         Ok(response.status().is_success())
+    }
+
+    /// Fetch all peers from the registry.
+    ///
+    /// Returns peer histories containing all versions of each peer record.
+    /// This is an unauthenticated endpoint - nodes can check the peer list
+    /// before they are authorized.
+    pub async fn fetch_peers(&self) -> Result<PeersResponse, KelsError> {
+        let response = self
+            .client
+            .get(format!("{}/api/peers", self.base_url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let status = response.status();
+            let message = response.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(format!(
+                "Registry error {}: {}",
+                status, message
+            )))
+        }
+    }
+
+    /// Check if a peer is authorized in the allowlist.
+    ///
+    /// Returns true if the peer_id is found in the allowlist with active=true.
+    /// This is an unauthenticated check - nodes can verify their authorization
+    /// before attempting to register.
+    pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, KelsError> {
+        let peers_response = self.fetch_peers().await?;
+
+        // Check if any peer history has a latest record with matching peer_id and active=true
+        for history in peers_response.peers {
+            if let Some(latest) = history.records.first()
+                && latest.peer_id == peer_id
+                && latest.active
+            {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Check if there are any Ready peers available for bootstrap sync.
+    ///
+    /// Returns true if at least one node with Ready status exists (excluding self).
+    pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
+        let nodes = self.list_nodes(exclude_node_id).await?;
+        Ok(nodes.iter().any(|n| n.status == NodeStatus::Ready))
+    }
+
+    /// Fetch the registry's KEL for verification.
+    ///
+    /// This is an unauthenticated endpoint - nodes use this to verify
+    /// that peer records are anchored in the registry's KEL.
+    pub async fn fetch_registry_kel(&self) -> Result<crate::Kel, KelsError> {
+        let response = self
+            .client
+            .get(format!("{}/api/registry-kel", self.base_url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let status = response.status();
+            let message = response.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(format!(
+                "Registry error {}: {}",
+                status, message
+            )))
+        }
+    }
+
+    /// Fetch and verify the registry's KEL against an expected prefix.
+    ///
+    /// This performs cryptographic verification:
+    /// 1. Fetches the registry's KEL
+    /// 2. Verifies KEL integrity (SAIDs, signatures, chaining, rotation hashes)
+    /// 3. Checks that the registry prefix matches the expected trust anchor
+    ///
+    /// Returns the verified KEL on success, which can be used to check peer anchoring.
+    pub async fn verify_registry(&self, expected_prefix: &str) -> Result<crate::Kel, KelsError> {
+        let registry_kel = self.fetch_registry_kel().await?;
+
+        registry_kel.verify().map_err(|e| {
+            KelsError::VerificationFailed(format!("Registry KEL verification failed: {}", e))
+        })?;
+
+        let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
+        if actual_prefix.as_deref() != Some(expected_prefix) {
+            return Err(KelsError::VerificationFailed(format!(
+                "Registry prefix mismatch: expected {}, got {:?}",
+                expected_prefix, actual_prefix
+            )));
+        }
+
+        Ok(registry_kel)
     }
 }

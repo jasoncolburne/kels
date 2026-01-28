@@ -1,19 +1,17 @@
 //! Key Event Builder
 
+use std::collections::HashSet;
+
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
 use crate::error::KelsError;
-use crate::kel::{Kel, compute_rotation_hash};
+use crate::kel::Kel;
 use crate::store::KelStore;
-use crate::types::{KeyEvent, RecoveryOutcome, SignedKeyEvent};
+use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey, Signature};
 
-fn compute_rotation_hash_from_key(key: &PublicKey) -> String {
-    compute_rotation_hash(&key.qb64())
-}
-
-pub struct KeyEventBuilder {
-    key_provider: KeyProvider,
+pub struct KeyEventBuilder<K: KeyProvider> {
+    key_provider: K,
     #[allow(dead_code)]
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
@@ -21,10 +19,10 @@ pub struct KeyEventBuilder {
     confirmed_cursor: usize,
 }
 
-impl KeyEventBuilder {
+impl<K: KeyProvider> KeyEventBuilder<K> {
     // ==================== Constructors ====================
 
-    pub fn new(key_provider: KeyProvider, kels_client: Option<KelsClient>) -> Self {
+    pub fn new(key_provider: K, kels_client: Option<KelsClient>) -> Self {
         Self {
             key_provider,
             kels_client,
@@ -35,7 +33,7 @@ impl KeyEventBuilder {
     }
 
     pub async fn with_dependencies(
-        key_provider: KeyProvider,
+        key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         prefix: Option<&str>,
@@ -56,7 +54,7 @@ impl KeyEventBuilder {
     }
 
     pub fn with_kel(
-        key_provider: KeyProvider,
+        key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
@@ -97,11 +95,11 @@ impl KeyEventBuilder {
         &self.kel
     }
 
-    pub fn key_provider(&self) -> &KeyProvider {
+    pub fn key_provider(&self) -> &K {
         &self.key_provider
     }
 
-    pub fn key_provider_mut(&mut self) -> &mut KeyProvider {
+    pub fn key_provider_mut(&mut self) -> &mut K {
         &mut self.key_provider
     }
 
@@ -129,88 +127,66 @@ impl KeyEventBuilder {
         self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
     }
 
-    // ==================== Event Operations ====================
-
-    pub async fn decommission(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
-        let last_event = self.get_owner_tail().await?.event.clone();
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
-
-        let event = KeyEvent::create_decommission(
-            &last_event,
-            new_current.qb64(),
-            current_recovery_pub.qb64(),
-        )?;
-
-        let primary_signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
-        let secondary_signature = self
-            .key_provider
-            .sign_with_recovery(event.said.as_bytes())
-            .await?;
-
-        let signed_event = SignedKeyEvent::new_recovery(
-            event.clone(),
-            new_current.qb64(),
-            primary_signature.qb64(),
-            current_recovery_pub.qb64(),
-            secondary_signature.qb64(),
-        );
-
-        let Some(client) = self.kels_client.as_ref().cloned() else {
-            self.key_provider.commit_rotation().await;
-            self.kel.push(signed_event);
-            return Ok((event, primary_signature));
+    /// Reload the KEL from the store, if one is configured.
+    /// This is useful when the KEL may have been modified externally (e.g., by a CLI tool).
+    pub async fn reload(&mut self) -> Result<(), KelsError> {
+        let Some(ref store) = self.kel_store else {
+            return Ok(());
         };
+        let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
+            return Ok(());
+        };
+        if let Some(kel) = store.load(&prefix).await? {
+            self.confirmed_cursor = kel.confirmed_cursor();
+            self.kel = kel;
+        }
+        Ok(())
+    }
 
-        let response = client
-            .submit_events(std::slice::from_ref(&signed_event))
-            .await;
+    pub async fn should_add_rot_with_recover(&self) -> Result<bool, KelsError> {
+        if let Some(client) = &self.kels_client
+            && let Some(prefix) = self.prefix()
+        {
+            let mut kels_kel = client.fetch_full_kel(prefix).await?;
+            let local_events = self.events();
+            let local_set: HashSet<_> = local_events.iter().collect();
+            let local_vec: Vec<_> = local_events.to_vec();
 
-        match response {
-            Ok(resp) if resp.accepted => {
-                self.key_provider.commit_rotation().await;
-                self.kel.push(signed_event);
-                self.confirmed_cursor = self.kel.len();
+            let _ = kels_kel.merge(local_vec)?;
+            if let Some(divergence) = kels_kel.find_divergence() {
+                let owner_has_rot = local_events.iter().any(|e| {
+                    e.event.version >= divergence.diverged_at_version
+                        && e.event.reveals_rotation_key()
+                });
 
-                if let Some(ref store) = self.kel_store {
-                    store.save(self.kel()).await?;
-                    store.save_owner_tail(&event.prefix, &event.said).await?;
+                if owner_has_rot {
+                    // owner rotated
+                    Ok(false)
+                } else {
+                    let adversarial_events: Vec<_> = kels_kel
+                        .events()
+                        .iter()
+                        .filter(|e| !local_set.contains(e))
+                        .collect();
+                    Ok(adversarial_events
+                        .iter()
+                        .any(|e| e.event.reveals_rotation_key()))
                 }
-
-                Ok((event, primary_signature))
+            } else {
+                // not divergent
+                Ok(false)
             }
-            Ok(_) => {
-                self.key_provider.rollback_rotation().await;
-                Err(KelsError::SubmissionFailed(
-                    "Decommission event rejected by KELS".into(),
-                ))
-            }
-            Err(e) => {
-                self.key_provider.rollback_rotation().await;
-                Err(e)
-            }
+        } else {
+            // fail secure
+            Ok(true)
         }
     }
 
+    // ==================== Event Operations ====================
+
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
-
-        let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
-            .await?;
-
+        let (signed_event, event, signature) = self.create_signed_inception_event().await?;
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -218,22 +194,10 @@ impl KeyEventBuilder {
         &mut self,
         delegating_prefix: &str,
     ) -> Result<(KeyEvent, Signature), KelsError> {
-        let current_key = self.key_provider.generate_keypair().await?;
-        let next_key = self.key_provider.generate_keypair().await?;
-        let recovery_key = self.key_provider.generate_recovery_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&next_key);
-        let recovery_hash = compute_rotation_hash_from_key(&recovery_key);
-
-        let event = KeyEvent::create_delegated_inception(
-            current_key.qb64(),
-            rotation_hash,
-            recovery_hash,
-            delegating_prefix.to_string(),
-        )?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), true)
+        let (signed_event, event, signature) = self
+            .create_signed_delegated_inception_event(delegating_prefix)
             .await?;
-
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
@@ -243,57 +207,11 @@ impl KeyEventBuilder {
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let current_key = self.key_provider.current_public_key().await?;
-
-        let event = KeyEvent::create_interaction(&last_event, anchor.to_string())?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
-        self.add_and_flush(event.clone(), current_key.qb64(), signature.clone(), false)
+        let (signed_event, event, signature) = self
+            .create_signed_interaction_event(&last_event, anchor)
             .await?;
-
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
-    }
-
-    pub async fn recover(&mut self) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
-        let client = self
-            .kels_client
-            .as_ref()
-            .ok_or_else(|| KelsError::OfflineMode("Cannot recover without KELS client".into()))?
-            .clone();
-
-        let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?.to_string();
-        let kels_kel = client.fetch_full_kel(&prefix).await?;
-
-        if kels_kel.is_empty() {
-            return Err(KelsError::InvalidKel(
-                "KELS returned empty KEL for existing prefix".into(),
-            ));
-        }
-
-        if kels_kel.is_contested() {
-            return Err(KelsError::ContestedKel("KEL already contested".to_string()));
-        }
-
-        let kels_events = kels_kel.events();
-        let owner_saids = self.build_owner_saids(&kels_kel).await?;
-
-        let adversary_recovery_revelation = kels_events
-            .iter()
-            .find(|e| e.event.reveals_recovery_key() && !owner_saids.contains(&e.event.said));
-
-        let divergence_info = kels_kel.find_divergence();
-
-        if adversary_recovery_revelation.is_none() && divergence_info.is_none() {
-            return Err(KelsError::NoRecoveryNeeded(
-                "No divergence or adversary recovery revelation detected".into(),
-            ));
-        }
-
-        if let Some(recovery_event) = adversary_recovery_revelation {
-            self.contest_at_version(&kels_kel, recovery_event.event.version, &client)
-                .await
-        } else {
-            self.recover_from_divergence(&kels_kel, &client).await
-        }
     }
 
     pub async fn rotate(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
@@ -302,138 +220,175 @@ impl KeyEventBuilder {
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&new_next);
-
-        let event =
-            KeyEvent::create_rotation(&last_event, new_current.qb64(), Some(rotation_hash))?;
-        let signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
-
-        let flush_result = self
-            .add_and_flush(event.clone(), new_current.qb64(), signature.clone(), true)
-            .await;
-
-        match &flush_result {
-            Ok(()) => {
-                self.key_provider.commit_rotation().await;
-            }
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: true,
-                ..
-            }) => {
-                self.key_provider.commit_rotation().await;
-            }
-            Err(KelsError::DivergenceDetected {
-                submission_accepted: false,
-                ..
-            }) => {
-                self.key_provider.rollback_rotation().await;
-            }
-            Err(_) => {
-                self.key_provider.rollback_rotation().await;
-            }
-        }
-
-        flush_result?;
+        let (signed_event, event, signature) =
+            match self.create_signed_rotation_event(&last_event).await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.key_provider.rollback().await?;
+                    return Err(e);
+                }
+            };
+        self.add_and_flush(&[signed_event]).await?;
         Ok((event, signature))
     }
 
-    pub async fn rotate_recovery(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        let client = self
-            .kels_client
-            .as_ref()
-            .ok_or_else(|| {
-                KelsError::OfflineMode("Cannot rotate recovery without KELS client".into())
-            })?
-            .clone();
-
+    pub async fn decommission(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-
-        let new_current = self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
-        let rotation_hash = compute_rotation_hash_from_key(&new_next);
-
-        let (current_recovery_pub, new_recovery_pub) =
-            self.key_provider.prepare_recovery_rotation().await?;
-        let new_recovery_hash = compute_rotation_hash_from_key(&new_recovery_pub);
-
-        let event = KeyEvent::create_recovery_rotation(
-            &last_event,
-            new_current.qb64(),
-            rotation_hash,
-            current_recovery_pub.qb64(),
-            new_recovery_hash,
-        )?;
-
-        let primary_signature = self
-            .key_provider
-            .sign_with_pending(event.said.as_bytes())
-            .await?;
-        let secondary_signature = self
-            .key_provider
-            .sign_with_recovery(event.said.as_bytes())
-            .await?;
-
-        let signed_event = SignedKeyEvent::new_recovery(
-            event.clone(),
-            new_current.qb64(),
-            primary_signature.qb64(),
-            current_recovery_pub.qb64(),
-            secondary_signature.qb64(),
-        );
-
-        let response = client
-            .submit_events(std::slice::from_ref(&signed_event))
-            .await;
-
-        match response {
-            Ok(resp) if resp.accepted => {
-                self.key_provider.commit_rotation().await;
-                self.key_provider.commit_recovery_rotation().await;
-
-                self.kel.push(signed_event);
-                self.confirmed_cursor = self.kel.len();
-
-                if let Some(ref store) = self.kel_store {
-                    store.save(self.kel()).await?;
-                    store.save_owner_tail(&event.prefix, &event.said).await?;
+        let (signed_event, event, primary_signature) =
+            match self.create_signed_decommission_event(&last_event).await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.key_provider.rollback().await?;
+                    return Err(e);
                 }
+            };
+        self.add_and_flush(&[signed_event]).await?;
+        Ok((event, primary_signature))
+    }
 
-                Ok((event, primary_signature))
-            }
-            Ok(resp) => {
-                self.key_provider.rollback_rotation().await;
-                self.key_provider.rollback_recovery_rotation().await;
-
-                Err(KelsError::SubmissionFailed(format!(
-                    "Recovery rotation rejected by KELS: {:?}",
-                    resp.diverged_at
-                )))
-            }
-            Err(e) => {
-                self.key_provider.rollback_rotation().await;
-                self.key_provider.rollback_recovery_rotation().await;
-
-                Err(e)
-            }
+    pub async fn rotate_recovery(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
         }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+        let (signed_event, event, primary_signature) = match self
+            .create_signed_recovery_rotation_event(&last_event)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.key_provider.rollback().await?;
+                return Err(e);
+            }
+        };
+        self.add_and_flush(&[signed_event]).await?;
+        Ok((event, primary_signature))
+    }
+
+    pub async fn recover(&mut self, add_rot: bool) -> Result<(KeyEvent, Signature), KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+        let (signed_rec_event, rec_event, rec_signature) =
+            match self.create_signed_recovery_event(&last_event).await {
+                Ok((signed_event, event, signature)) => (signed_event, event, signature),
+                Err(e) => {
+                    self.key_provider.rollback().await?;
+                    return Err(e);
+                }
+            };
+
+        let mut events = vec![signed_rec_event];
+        // we can add a rot intentionally in case the attacker determined the rotation key.
+        // after recovery, they'd still be able to inject ixn if we didn't.
+        //
+        // however, this is only necessary if they exposed the rotation key which
+        // is unlikely. our logic should be:
+        //  1. ensure we didn't already rotate as the last, divergent event that will
+        //     become authoritative after recovery
+        //  2. if we didn't rotate, fetch from the server and determine if the attacker rotated
+        //  3. if they did, we must rotate
+        //
+        // If we didn't rotate and the adversary did, we should add a rotation.
+        let (event, signature) = if add_rot {
+            let (signed_rot_event, rot_event, rot_signature) =
+                match self.create_signed_rotation_event(&rec_event).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.key_provider.rollback().await?;
+                        return Err(e);
+                    }
+                };
+
+            events.push(signed_rot_event);
+            (rot_event, rot_signature)
+        } else {
+            (rec_event, rec_signature)
+        };
+
+        self.add_and_flush(&events).await?;
+        Ok((event, signature))
+    }
+
+    pub async fn contest(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+        let (signed_event, event, signature) =
+            match self.create_signed_contest_event(&last_event).await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.key_provider.rollback().await?;
+                    return Err(e);
+                }
+            };
+        self.add_and_flush(&[signed_event]).await?;
+        Ok((event, signature))
     }
 
     // ==================== Operations ====================
 
-    pub async fn flush(&mut self) -> Result<(), KelsError> {
+    async fn commit(&mut self, act: bool) -> Result<(), KelsError> {
+        if act {
+            self.key_provider.commit().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn rollback(&mut self, act: bool) -> Result<(), KelsError> {
+        if act {
+            self.key_provider.rollback().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn add_and_flush(&mut self, signed_events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let events = signed_events.iter().cloned();
+
+        let has_staged = self.key_provider.has_staged().await;
+
+        let old_length = self.kel.len();
+        self.kel.extend(events);
+        let flush_result = self.flush().await;
+        let accepted = self.was_flush_accepted(&flush_result);
+
+        if let Some(ref store) = self.kel_store
+            && accepted
+            && let Err(e) = store.save(self.kel()).await
+        {
+            self.kel.truncate(old_length);
+            self.rollback(has_staged).await?;
+            return Err(e);
+        }
+
+        if accepted {
+            self.commit(has_staged).await?;
+        } else {
+            self.kel.truncate(old_length);
+            self.rollback(has_staged).await?;
+        }
+
+        flush_result
+    }
+
+    async fn flush(&mut self) -> Result<(), KelsError> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
-            None => return Ok(()),
+            None => {
+                self.confirmed_cursor = self.kel.len();
+                return Ok(());
+            }
         };
 
         let pending: Vec<_> = self.pending_events().to_vec();
@@ -442,20 +397,7 @@ impl KeyEventBuilder {
         }
 
         let response = client.submit_events(&pending).await?;
-
         if let Some(diverged_at) = response.diverged_at {
-            let prefix = self.kel.prefix().ok_or_else(|| KelsError::NotIncepted)?;
-            let server_kel = client.fetch_full_kel(prefix).await?;
-
-            if server_kel.find_divergence().is_none() {
-                return Err(KelsError::InvalidKel(
-                    "Server reported divergence but KEL has no divergent events".into(),
-                ));
-            }
-
-            self.confirmed_cursor = server_kel.confirmed_cursor();
-            self.kel = server_kel;
-
             Err(KelsError::DivergenceDetected {
                 diverged_at,
                 submission_accepted: response.accepted,
@@ -470,100 +412,37 @@ impl KeyEventBuilder {
         }
     }
 
-    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        self.key_provider.sign(data).await
-    }
-
     // ==================== Private Helpers ====================
 
-    async fn add_and_flush(
-        &mut self,
-        event: KeyEvent,
-        public_key: String,
-        signature: Signature,
-        _is_establishment: bool,
-    ) -> Result<(), KelsError> {
-        self.kel.push(SignedKeyEvent::new(
-            event.clone(),
-            public_key,
-            signature.qb64(),
-        ));
+    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
+        self.kel.last_event().ok_or(KelsError::NotIncepted)
+    }
 
-        let flush_result = if self.kels_client.is_some() {
-            self.flush().await
-        } else {
-            Ok(())
-        };
-
-        let event_accepted = matches!(
-            &flush_result,
+    pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {
+        matches!(
+            flush_result,
             Ok(())
                 | Err(KelsError::DivergenceDetected {
                     submission_accepted: true,
                     ..
                 })
-        );
-
-        if let Some(ref store) = self.kel_store {
-            store.save(self.kel()).await?;
-            if event_accepted {
-                store.save_owner_tail(&event.prefix, &event.said).await?;
-            }
-        }
-
-        flush_result
+        )
     }
 
-    async fn build_owner_saids(
-        &self,
-        kels_kel: &Kel,
-    ) -> Result<std::collections::HashSet<String>, KelsError> {
-        let Some(ref store) = self.kel_store else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        let Some(prefix) = kels_kel.prefix() else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
-            return Ok(std::collections::HashSet::new());
-        };
-
-        Ok(kels_kel.trace_chain_saids(&tail_said))
-    }
-
-    async fn contest_at_version(
+    /// Create a signed contest event from a base event.
+    /// Returns (signed_event, event, primary_signature).
+    async fn create_signed_contest_event(
         &mut self,
-        kels_kel: &Kel,
-        contest_version: u64,
-        client: &crate::client::KelsClient,
-    ) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
-        let kels_events = kels_kel.events();
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (rotation_key, _next_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, _recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
 
-        let agreed_events: Vec<_> = kels_events
-            .iter()
-            .filter(|e| e.event.version < contest_version)
-            .cloned()
-            .collect();
+        let cnt_event =
+            KeyEvent::create_contest(base_event, rotation_key.qb64(), current_recovery_pub.qb64())?;
 
-        let last_agreed_event = agreed_events
-            .last()
-            .ok_or_else(|| KelsError::InvalidKel("No events before contest point".into()))?;
-
-        let rotation_key = self.key_provider.next_public_key().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
-
-        let cnt_event = KeyEvent::create_contest(
-            &last_agreed_event.event,
-            rotation_key.qb64(),
-            current_recovery_pub.qb64(),
-        )?;
-
-        let cnt_primary_signature = self
-            .key_provider
-            .sign_with_pending(cnt_event.said.as_bytes())
-            .await?;
+        let cnt_primary_signature = self.key_provider.sign(cnt_event.said.as_bytes()).await?;
         let cnt_secondary_signature = self
             .key_provider
             .sign_with_recovery(cnt_event.said.as_bytes())
@@ -577,113 +456,174 @@ impl KeyEventBuilder {
             cnt_secondary_signature.qb64(),
         );
 
-        let response = client
-            .submit_events(std::slice::from_ref(&signed_cnt_event))
-            .await?;
-
-        if response.accepted {
-            // Fetch the full KEL from server to get the complete authoritative record
-            let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?;
-            self.kel = client.fetch_full_kel(prefix).await?;
-            self.confirmed_cursor = self.kel.len();
-
-            if let Some(ref store) = self.kel_store {
-                store.save(self.kel()).await?;
-                store
-                    .save_owner_tail(&cnt_event.prefix, &cnt_event.said)
-                    .await?;
-            }
-
-            Ok((RecoveryOutcome::Contested, cnt_event, cnt_primary_signature))
-        } else {
-            Err(KelsError::SubmissionFailed(
-                "Contest event rejected by KELS".into(),
-            ))
-        }
+        Ok((signed_cnt_event, cnt_event, cnt_primary_signature))
     }
 
-    async fn find_owner_tail_in<'a>(
-        &self,
-        kel: &'a Kel,
-    ) -> Result<Option<&'a SignedKeyEvent>, KelsError> {
-        let Some(ref store) = self.kel_store else {
-            return Ok(None);
-        };
-        let Some(prefix) = kel.prefix() else {
-            return Ok(None);
-        };
-        let Some(tail_said) = store.load_owner_tail(prefix).await? else {
-            return Ok(None);
-        };
-        Ok(kel.iter().rfind(|e| e.event.said == tail_said))
-    }
-
-    async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        if let Some(event) = self.find_owner_tail_in(&self.kel).await? {
-            return Ok(event);
-        }
-        self.kel.last_event().ok_or(KelsError::NotIncepted)
-    }
-
-    async fn recover_from_divergence(
+    /// Create a signed inception event.
+    /// Generates all keys. Caller should handle any cleanup on failure.
+    /// Returns (signed_event, event, signature).
+    async fn create_signed_inception_event(
         &mut self,
-        kels_kel: &Kel,
-        client: &crate::client::KelsClient,
-    ) -> Result<(RecoveryOutcome, KeyEvent, Signature), KelsError> {
-        let kels_events = kels_kel.events();
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (current_key, rotation_hash, recovery_hash) =
+            self.key_provider.generate_initial_keys().await?;
 
-        let divergence = kels_kel
-            .find_divergence()
-            .ok_or_else(|| KelsError::NoRecoveryNeeded("No divergence found in KEL".into()))?;
-        let divergence_version = divergence.diverged_at_version;
+        let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let agreed_events: Vec<_> = kels_events
-            .iter()
-            .filter(|e| e.event.version < divergence_version)
-            .cloned()
-            .collect();
+        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
 
-        let last_agreed_event = agreed_events
-            .last()
-            .ok_or_else(|| KelsError::InvalidKel("No events before divergence point".into()))?;
+        Ok((signed_event, event, signature))
+    }
 
-        let chain_from_event = self
-            .find_owner_tail_in(kels_kel)
-            .await?
-            .unwrap_or(last_agreed_event);
+    /// Create a signed delegated inception event.
+    /// Generates all keys. Caller should handle any cleanup on failure.
+    /// Returns (signed_event, event, signature).
+    async fn create_signed_delegated_inception_event(
+        &mut self,
+        delegating_prefix: &str,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (current_key, rotation_hash, recovery_hash) =
+            self.key_provider.generate_initial_keys().await?;
 
-        let owner_saids = self.build_owner_saids(kels_kel).await?;
+        let event = KeyEvent::create_delegated_inception(
+            current_key.qb64(),
+            rotation_hash,
+            recovery_hash,
+            delegating_prefix.to_string(),
+        )?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let owner_rotated = kels_events.iter().any(|e| {
-            e.event.version >= divergence_version
-                && e.event.is_rotation()
-                && owner_saids.contains(&e.event.said)
-        });
-        let adversary_rotated = kels_events.iter().any(|e| {
-            e.event.version >= divergence_version
-                && e.event.is_rotation()
-                && !owner_saids.contains(&e.event.said)
-        });
+        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
 
-        let rotation_key = self.key_provider.next_public_key().await?;
-        let current_recovery_pub = self.key_provider.recovery_public_key().await?;
-        let (_, new_recovery_pub) = self.key_provider.prepare_recovery_rotation().await?;
+        Ok((signed_event, event, signature))
+    }
 
-        self.key_provider.prepare_rotation().await?;
-        let new_next = self.key_provider.pending_next_public_key().await?;
+    /// Create a signed interaction event from a base event.
+    /// Returns (signed_event, event, signature).
+    async fn create_signed_interaction_event(
+        &self,
+        base_event: &KeyEvent,
+        anchor: &str,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let current_key = self.key_provider.current_public_key().await?;
 
-        let rec_event = KeyEvent::create_recovery(
-            &chain_from_event.event,
-            rotation_key.qb64(),
-            compute_rotation_hash_from_key(&new_next),
+        let event = KeyEvent::create_interaction(base_event, anchor.to_string())?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+
+        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
+
+        Ok((signed_event, event, signature))
+    }
+
+    /// Create a signed rotation event from a base event.
+    /// Prepares key rotation. Caller must commit/rollback.
+    /// Returns (signed_event, event, signature).
+    async fn create_signed_rotation_event(
+        &mut self,
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
+
+        let event = KeyEvent::create_rotation(base_event, new_current.qb64(), Some(rotation_hash))?;
+        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+
+        let signed_event = SignedKeyEvent::new(event.clone(), new_current.qb64(), signature.qb64());
+
+        Ok((signed_event, event, signature))
+    }
+
+    /// Create a signed decommission event from a base event.
+    /// Prepares key rotation. Caller must commit/rollback.
+    /// Returns (signed_event, event, primary_signature).
+    async fn create_signed_decommission_event(
+        &mut self,
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (new_current, _rotation_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, _recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
+
+        let event = KeyEvent::create_decommission(
+            base_event,
+            new_current.qb64(),
             current_recovery_pub.qb64(),
-            compute_rotation_hash_from_key(&new_recovery_pub),
         )?;
 
-        let rec_primary_signature = self
+        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let secondary_signature = self
             .key_provider
-            .sign_with_pending(rec_event.said.as_bytes())
+            .sign_with_recovery(event.said.as_bytes())
             .await?;
+
+        let signed_event = SignedKeyEvent::new_recovery(
+            event.clone(),
+            new_current.qb64(),
+            primary_signature.qb64(),
+            current_recovery_pub.qb64(),
+            secondary_signature.qb64(),
+        );
+
+        Ok((signed_event, event, primary_signature))
+    }
+
+    /// Create a signed recovery rotation event from a base event.
+    /// Prepares key rotation and recovery rotation. Caller must commit/rollback.
+    /// Returns (signed_event, event, primary_signature).
+    async fn create_signed_recovery_rotation_event(
+        &mut self,
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
+
+        let (current_recovery_pub, new_recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
+
+        let event = KeyEvent::create_recovery_rotation(
+            base_event,
+            new_current.qb64(),
+            rotation_hash,
+            current_recovery_pub.qb64(),
+            new_recovery_hash,
+        )?;
+
+        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let secondary_signature = self
+            .key_provider
+            .sign_with_recovery(event.said.as_bytes())
+            .await?;
+
+        let signed_event = SignedKeyEvent::new_recovery(
+            event.clone(),
+            new_current.qb64(),
+            primary_signature.qb64(),
+            current_recovery_pub.qb64(),
+            secondary_signature.qb64(),
+        );
+
+        Ok((signed_event, event, primary_signature))
+    }
+
+    /// Create a signed recovery event from a base event.
+    /// Prepares key rotation and recovery rotation. Caller must commit/rollback.
+    /// Returns (signed_event, event, primary_signature).
+    async fn create_signed_recovery_event(
+        &mut self,
+        base_event: &KeyEvent,
+    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+        let (rotation_key, new_rotation_hash) = self.key_provider.stage_rotation().await?;
+        let (current_recovery_pub, new_recovery_hash) =
+            self.key_provider.stage_recovery_rotation().await?;
+
+        let rec_event = KeyEvent::create_recovery(
+            base_event,
+            rotation_key.qb64(),
+            new_rotation_hash,
+            current_recovery_pub.qb64(),
+            new_recovery_hash,
+        )?;
+
+        let rec_primary_signature = self.key_provider.sign(rec_event.said.as_bytes()).await?;
         let rec_secondary_signature = self
             .key_provider
             .sign_with_recovery(rec_event.said.as_bytes())
@@ -697,66 +637,6 @@ impl KeyEventBuilder {
             rec_secondary_signature.qb64(),
         );
 
-        let needs_extra_rot = adversary_rotated && !owner_rotated;
-
-        let (events_to_submit, final_event, final_signature) = if needs_extra_rot {
-            self.key_provider.commit_rotation().await;
-
-            let post_rec_current = self.key_provider.rotate().await?;
-            let post_rec_next = self.key_provider.next_public_key().await?;
-
-            let rot_event = KeyEvent::create_rotation(
-                &rec_event,
-                post_rec_current.qb64(),
-                Some(compute_rotation_hash_from_key(&post_rec_next)),
-            )?;
-
-            let rot_signature = self.key_provider.sign(rot_event.said.as_bytes()).await?;
-            let signed_rot_event = SignedKeyEvent::new(
-                rot_event.clone(),
-                post_rec_current.qb64(),
-                rot_signature.qb64(),
-            );
-
-            (
-                vec![signed_rec_event, signed_rot_event],
-                rot_event,
-                rot_signature,
-            )
-        } else {
-            self.key_provider.commit_rotation().await;
-
-            (
-                vec![signed_rec_event.clone()],
-                rec_event.clone(),
-                rec_primary_signature.clone(),
-            )
-        };
-
-        let response = client.submit_events(&events_to_submit).await?;
-
-        if response.accepted {
-            self.key_provider.commit_recovery_rotation().await;
-
-            // Fetch the full KEL from server to get the complete authoritative record
-            // including all branches (adversary events + recovery)
-            let prefix = self.kel.prefix().ok_or(KelsError::NotIncepted)?;
-            self.kel = client.fetch_full_kel(prefix).await?;
-            self.confirmed_cursor = self.kel.len();
-
-            if let Some(ref store) = self.kel_store {
-                store.save(self.kel()).await?;
-                store
-                    .save_owner_tail(&final_event.prefix, &final_event.said)
-                    .await?;
-            }
-
-            Ok((RecoveryOutcome::Recovered, final_event, final_signature))
-        } else {
-            self.key_provider.rollback_recovery_rotation().await;
-            Err(KelsError::SubmissionFailed(
-                "Recovery event rejected by KELS".into(),
-            ))
-        }
+        Ok((signed_rec_event, rec_event, rec_primary_signature))
     }
 }

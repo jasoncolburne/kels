@@ -5,15 +5,20 @@ use std::path::PathBuf;
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use cesr::PrivateKey;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, KeyProvider, NodeStatus, RecoveryOutcome,
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, NodeStatus, ProviderConfig,
+    SoftwareProviderConfig,
 };
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
+const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry.local";
+
+/// Registry KEL prefix - trust anchor for verifying registry identity.
+/// Must be set at compile time via REGISTRY_PREFIX environment variable.
+const REGISTRY_PREFIX: &str = env!("REGISTRY_PREFIX");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -23,8 +28,8 @@ struct Cli {
     url: String,
 
     /// Registry URL for node discovery
-    #[arg(long, env = "KELS_REGISTRY_URL")]
-    registry: Option<String>,
+    #[arg(long, env = "KELS_REGISTRY_URL", default_value = DEFAULT_REGISTRY_URL)]
+    registry: String,
 
     /// Auto-select the fastest available node from registry (requires --registry)
     #[arg(long)]
@@ -68,9 +73,18 @@ enum Commands {
         said: String,
     },
 
-    /// Recover from divergence. Submits rec (recovers) or cnt (contests if adversary has recovery key).
+    /// Recover from divergence by submitting a recovery event (rec).
     Recover {
         /// KEL prefix to recover
+        #[arg(long)]
+        prefix: String,
+    },
+
+    /// Contest a malicious recovery by submitting a contest event (cnt).
+    /// Use this when an adversary has revealed your recovery key.
+    /// The KEL will be permanently frozen after contesting.
+    Contest {
+        /// KEL prefix to contest
         #[arg(long)]
         prefix: String,
     },
@@ -99,7 +113,7 @@ enum Commands {
     /// List all local KELs
     List,
 
-    /// List registered nodes from registry (requires --registry)
+    /// List registered nodes from registry
     ListNodes,
 
     /// Show status of a local KEL
@@ -107,6 +121,17 @@ enum Commands {
         /// KEL prefix
         #[arg(long)]
         prefix: String,
+    },
+
+    /// Reset local state (delete local KEL and keys)
+    Reset {
+        /// KEL prefix to reset (if omitted, resets all local state)
+        #[arg(long)]
+        prefix: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Development and testing commands
@@ -154,17 +179,6 @@ enum AdversaryCommands {
         /// Comma-separated list of event types to inject (e.g., "ixn,ixn,rot")
         #[arg(long)]
         events: String,
-
-        /// Use a historical signing key from specified generation
-        /// (0 = inception key, 1 = after first rotation, etc.)
-        /// Simulates adversary who stole keys before owner rotated.
-        #[arg(long)]
-        generation: Option<usize>,
-
-        /// Start injecting at this version (chain from version-1)
-        /// Use with --generation to inject at a specific point in the KEL.
-        #[arg(long)]
-        event_version: Option<u64>,
     },
 }
 
@@ -188,102 +202,30 @@ fn kel_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("kels"))
 }
 
-async fn load_key_provider(cli: &Cli, prefix: &str) -> Result<KeyProvider> {
+fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    std::fs::create_dir_all(&key_dir)?;
-
-    let current_path = key_dir.join("current.key");
-    let next_path = key_dir.join("next.key");
-    let recovery_path = key_dir.join("recovery.key");
-
-    let current = if current_path.exists() {
-        let qb64 = std::fs::read_to_string(&current_path).context("Failed to read current key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid current key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    let next = if next_path.exists() {
-        let qb64 = std::fs::read_to_string(&next_path).context("Failed to read next key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid next key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    let recovery = if recovery_path.exists() {
-        let qb64 =
-            std::fs::read_to_string(&recovery_path).context("Failed to read recovery key")?;
-        Some(
-            PrivateKey::from_qb64(qb64.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid recovery key: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    if current.is_none() && next.is_none() {
-        return Ok(KeyProvider::software());
-    }
-
-    Ok(KeyProvider::with_all_software_keys(current, next, recovery))
+    Ok(SoftwareProviderConfig::new(key_dir))
 }
 
-fn save_key_provider(cli: &Cli, prefix: &str, provider: &KeyProvider) -> Result<()> {
-    let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    std::fs::create_dir_all(&key_dir)?;
+/// Verify the registry's KEL matches the expected prefix (trust anchor).
+async fn verify_registry(registry_url: &str) -> Result<()> {
+    use kels::KelsRegistryClient;
 
-    let software = provider
-        .as_software()
-        .ok_or_else(|| anyhow::anyhow!("Cannot save non-software key provider"))?;
-
-    if let Some(current) = software.current_private_key() {
-        let path = key_dir.join("current.key");
-        std::fs::write(&path, current.qb64()).context("Failed to write current key")?;
-    }
-
-    if let Some(next) = software.next_private_key() {
-        let path = key_dir.join("next.key");
-        std::fs::write(&path, next.qb64()).context("Failed to write next key")?;
-    }
-
-    if let Some(recovery) = software.recovery_private_key() {
-        let path = key_dir.join("recovery.key");
-        std::fs::write(&path, recovery.qb64()).context("Failed to write recovery key")?;
-    }
-    for i in 0.. {
-        let path = key_dir.join(format!("signing_{}.key", i));
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        } else {
-            break;
-        }
-    }
-    for i in 0.. {
-        let path = key_dir.join(format!("history_{}.key", i));
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        } else {
-            break;
-        }
-    }
+    let registry_client = KelsRegistryClient::new(registry_url);
+    registry_client
+        .verify_registry(REGISTRY_PREFIX)
+        .await
+        .context("Registry verification failed")?;
 
     Ok(())
 }
 
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
-        let registry_url = cli
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("--auto-select requires --registry"))?;
+        // Verify registry identity before trusting node list
+        verify_registry(&cli.registry).await?;
 
-        let nodes = KelsClient::discover_nodes(registry_url)
+        let nodes = KelsClient::discover_nodes(&cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -304,32 +246,45 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         // Select best node (randomly among ties)
         use rand::seq::SliceRandom;
 
+        // Filter to ready nodes with successful latency measurements
         let ready_nodes: Vec<_> = nodes
             .into_iter()
             .filter(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
             .collect();
 
         if ready_nodes.is_empty() {
-            return Err(anyhow::anyhow!("No ready nodes available in registry"));
+            return Err(anyhow::anyhow!(
+                "No ready nodes with successful latency measurements available"
+            ));
         }
 
+        // Find minimum latency
         let min_latency = ready_nodes
             .iter()
             .filter_map(|n| n.latency_ms)
             .min()
-            .unwrap();
+            .context("No nodes with latency measurements")?;
+
+        // Get all nodes with the minimum latency and pick randomly among ties
         let best_nodes: Vec<_> = ready_nodes
             .into_iter()
             .filter(|n| n.latency_ms == Some(min_latency))
             .collect();
 
-        let best_node = best_nodes.choose(&mut rand::thread_rng()).unwrap().clone();
+        let best_node = best_nodes
+            .choose(&mut rand::thread_rng())
+            .context("No nodes available")?
+            .clone();
+
+        let latency = best_node
+            .latency_ms
+            .context("Selected node missing latency")?;
 
         println!(
             "{} {} ({}ms)",
             "Selected:".green().bold(),
             best_node.node_id,
-            best_node.latency_ms.unwrap_or(0)
+            latency
         );
         println!();
 
@@ -351,17 +306,15 @@ fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
 // ==================== Command Handlers ====================
 
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
-    let registry_url = cli
-        .registry
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--registry is required for list-nodes"))?;
+    // Verify registry identity before trusting node list
+    verify_registry(&cli.registry).await?;
 
     println!(
         "{}",
-        format!("Discovering nodes from {}...", registry_url).green()
+        format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let nodes = KelsClient::discover_nodes(registry_url).await?;
+    let nodes = KelsClient::discover_nodes(&cli.registry).await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());
@@ -396,7 +349,9 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
     let client = create_client(cli).await?;
-    let key_provider = KeyProvider::software();
+    // Use a temporary config for init - we don't know the prefix yet
+    let temp_config = SoftwareProviderConfig::new(config_dir(cli)?.join("keys").join("temp"));
+    let key_provider = temp_config.load_provider().await?;
     let kel_store = create_kel_store(cli, None)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -408,7 +363,10 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     .await?;
 
     let (event, _sig) = builder.incept().await.context("Inception failed")?;
-    save_key_provider(cli, &event.prefix, builder.key_provider())?;
+
+    // Save to the correct prefix directory
+    let config = provider_config(cli, &event.prefix)?;
+    config.save_provider(builder.key_provider()).await?;
     let kel_store = create_kel_store(cli, Some(&event.prefix))?;
     kel_store.save(builder.kel()).await?;
 
@@ -425,8 +383,9 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating signing key for {}...", prefix).green()
     );
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -439,7 +398,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
 
     match builder.rotate().await {
         Ok((event, _sig)) => {
-            save_key_provider(cli, prefix, builder.key_provider())?;
+            config.save_provider(builder.key_provider()).await?;
             println!("{}", "Rotation successful!".green().bold());
             println!("  Event SAID: {}", event.said);
             Ok(())
@@ -449,7 +408,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
             ref diverged_at,
         }) => {
             // Keys were committed internally - save them before returning error
-            save_key_provider(cli, prefix, builder.key_provider())?;
+            config.save_provider(builder.key_provider()).await?;
             Err(anyhow::anyhow!(
                 "Divergence detected at: {}, submission_accepted: true",
                 diverged_at
@@ -465,8 +424,9 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         format!("Rotating recovery key for {}...", prefix).green()
     );
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -481,7 +441,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         .rotate_recovery()
         .await
         .context("Recovery rotation failed")?;
-    save_key_provider(cli, prefix, builder.key_provider())?;
+    config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery rotation successful!".green().bold());
     println!("  Event SAID: {}", event.said);
@@ -493,7 +453,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -516,8 +476,9 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
 async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     println!("{}", format!("Recovering KEL {}...", prefix).yellow());
 
+    let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = config.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -528,25 +489,39 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (outcome, event, _sig) = builder.recover().await.context("Recovery failed")?;
-    save_key_provider(cli, prefix, builder.key_provider())?;
+    let add_rot = builder.should_add_rot_with_recover().await?;
+    let (event, _sig) = builder.recover(add_rot).await.context("Recovery failed")?;
+    config.save_provider(builder.key_provider()).await?;
 
-    match outcome {
-        RecoveryOutcome::Recovered => {
-            println!("{}", "Recovery successful!".green().bold());
-            println!("  Event SAID: {}", event.said);
-        }
-        RecoveryOutcome::Contested => {
-            println!(
-                "{}",
-                "KEL is now CONTESTED (adversary had recovery key)"
-                    .red()
-                    .bold()
-            );
-            println!("  The KEL is permanently frozen.");
-            println!("  Event SAID: {}", event.said);
-        }
-    }
+    println!("{}", "Recovery successful!".green().bold());
+    println!("  Event SAID: {}", event.said);
+
+    Ok(())
+}
+
+async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
+    println!("{}", format!("Contesting KEL {}...", prefix).red().bold());
+    println!(
+        "{}",
+        "WARNING: This will permanently freeze the KEL.".yellow()
+    );
+
+    let client = create_client(cli).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
+    let kel_store = create_kel_store(cli, Some(prefix))?;
+
+    let mut builder = KeyEventBuilder::with_dependencies(
+        key_provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(prefix),
+    )
+    .await?;
+
+    let (event, _sig) = builder.contest().await.context("Contest failed")?;
+
+    println!("{}", "KEL contested and permanently frozen.".red().bold());
+    println!("  Event SAID: {}", event.said);
 
     Ok(())
 }
@@ -562,7 +537,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     );
 
     let client = create_client(cli).await?;
-    let key_provider = load_key_provider(cli, prefix).await?;
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, Some(prefix))?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -617,11 +592,11 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in response.events.iter().enumerate() {
+        for signed_event in &response.events {
             let event = &signed_event.event;
             println!(
                 "  [{}] {} - {} ({})",
-                i,
+                event.version,
                 event.kind.as_str().to_uppercase(),
                 &event.said[..16],
                 event.created_at
@@ -680,11 +655,11 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     }
     println!();
     println!("{}", "Events:".yellow().bold());
-    for (i, signed_event) in kel.events().iter().enumerate() {
+    for signed_event in kel.events().iter() {
         let event = &signed_event.event;
         println!(
             "  [{}] {} - {} ({})",
-            i,
+            event.version,
             event.kind.as_str().to_uppercase(),
             &event.said[..16],
             event.created_at
@@ -767,6 +742,95 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
+    use std::io::{self, Write};
+
+    let config = config_dir(cli)?;
+    let kel_dir = kel_dir(cli)?;
+    let keys_dir = config.join("keys");
+
+    if let Some(p) = prefix {
+        // Reset specific KEL
+        let kel_file = kel_dir.join(format!("{}.kel.json", p));
+        let key_dir = keys_dir.join(p);
+
+        if !kel_file.exists() && !key_dir.exists() {
+            println!("{}", format!("No local state found for {}", p).yellow());
+            return Ok(());
+        }
+
+        if !yes {
+            print!(
+                "{}",
+                format!(
+                    "Reset local state for {}? This will delete local KEL and keys. [y/N] ",
+                    p
+                )
+                .red()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        if kel_file.exists() {
+            std::fs::remove_file(&kel_file)?;
+            println!("  Deleted KEL: {}", kel_file.display());
+        }
+        if key_dir.exists() {
+            std::fs::remove_dir_all(&key_dir)?;
+            println!("  Deleted keys: {}", key_dir.display());
+        }
+
+        println!("{}", format!("Reset complete for {}", p).green().bold());
+    } else {
+        // Reset all local state
+        if !yes {
+            print!(
+                "{}",
+                "Reset ALL local state? This will delete ALL local KELs and keys. [y/N] "
+                    .red()
+                    .bold()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        let mut count = 0;
+        if kel_dir.exists() {
+            for entry in std::fs::read_dir(&kel_dir)? {
+                let entry = entry?;
+                std::fs::remove_file(entry.path())?;
+                count += 1;
+            }
+            println!("  Deleted {} KEL file(s)", count);
+        }
+
+        if keys_dir.exists() {
+            let key_count = std::fs::read_dir(&keys_dir)?.count();
+            std::fs::remove_dir_all(&keys_dir)?;
+            std::fs::create_dir_all(&keys_dir)?;
+            println!("  Deleted {} key directory(ies)", key_count);
+        }
+
+        println!(
+            "{}",
+            "Reset complete - all local state cleared.".green().bold()
+        );
+    }
+
+    Ok(())
+}
+
 // ==================== Dev Commands ====================
 
 #[cfg(feature = "dev-tools")]
@@ -815,13 +879,7 @@ async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 #[cfg(feature = "dev-tools")]
-async fn cmd_adversary_inject(
-    cli: &Cli,
-    prefix: &str,
-    events_str: &str,
-    _generation: Option<usize>,
-    event_version: Option<u64>,
-) -> Result<()> {
+async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Result<()> {
     println!(
         "{}",
         format!("ADVERSARY: Injecting events to {} (server only)...", prefix)
@@ -831,33 +889,13 @@ async fn cmd_adversary_inject(
 
     // Load the local KEL to get the chain state
     let kel_store = create_kel_store(cli, Some(prefix))?;
-    let mut kel = kel_store
+    let kel = kel_store
         .load(prefix)
         .await?
         .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
 
     // Load the key provider (adversary has the same keys as owner)
-    let key_provider = load_key_provider(cli, prefix).await?;
-
-    // If event_version specified, truncate KEL to that point (simulates adversary with old state)
-    if let Some(version) = event_version {
-        let truncate_at = kel
-            .events()
-            .iter()
-            .position(|e| e.event.version >= version)
-            .unwrap_or(kel.len());
-
-        kel.truncate(truncate_at);
-        println!(
-            "{}",
-            format!(
-                "Truncated KEL to {} events (adversary chains from v{})",
-                truncate_at,
-                truncate_at.saturating_sub(1)
-            )
-            .yellow()
-        );
-    }
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
 
     // Parse event types
     let event_types: Vec<&str> = events_str.split(',').map(|s| s.trim()).collect();
@@ -939,6 +977,7 @@ async fn main() -> Result<()> {
         Commands::RotateRecovery { prefix } => cmd_rotate_recovery(&cli, prefix).await,
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
         Commands::Recover { prefix } => cmd_recover(&cli, prefix).await,
+        Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
         Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
         Commands::Get {
             prefix,
@@ -948,6 +987,7 @@ async fn main() -> Result<()> {
         Commands::List => cmd_list(&cli).await,
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
+        Commands::Reset { prefix, yes } => cmd_reset(&cli, prefix.as_deref(), *yes).await,
 
         #[cfg(feature = "dev-tools")]
         Commands::Dev(dev_cmd) => match dev_cmd {
@@ -957,12 +997,9 @@ async fn main() -> Result<()> {
 
         #[cfg(feature = "dev-tools")]
         Commands::Adversary(adv_cmd) => match adv_cmd {
-            AdversaryCommands::Inject {
-                prefix,
-                events,
-                generation,
-                event_version,
-            } => cmd_adversary_inject(&cli, prefix, events, *generation, *event_version).await,
+            AdversaryCommands::Inject { prefix, events } => {
+                cmd_adversary_inject(&cli, prefix, events).await
+            }
         },
     }
 }

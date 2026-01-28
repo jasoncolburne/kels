@@ -1,9 +1,8 @@
 //! Cryptographic Key Provider
 
-use crate::error::KelsError;
-use cesr::{PrivateKey, PublicKey, Signature, generate_secp256r1};
-#[cfg(feature = "native")]
-use std::sync::Arc;
+use crate::{compute_rotation_hash, error::KelsError};
+use cesr::{Matter, PrivateKey, PublicKey, Signature, generate_secp256r1};
+use std::path::{Path, PathBuf};
 
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
@@ -11,552 +10,183 @@ use std::sync::Arc;
 ))]
 use crate::hardware::HardwareKeyProvider;
 
-// ==================== ExternalKeyProvider Trait ====================
+// ==================== ProviderConfig Trait ====================
 
-#[cfg(feature = "native")]
+/// Trait for provider configuration that handles creation and persistence.
 #[async_trait::async_trait]
-pub trait ExternalKeyProvider: Send + Sync {
-    // Accessors
+pub trait ProviderConfig: Send + Sync {
+    /// The provider type this config creates.
+    type Provider: KeyProvider;
+
+    /// Loads or creates a provider from this configuration.
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError>;
+
+    /// Saves the provider state.
+    async fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError>;
+}
+
+/// Software provider configuration - keys stored in files.
+#[derive(Debug, Clone)]
+pub struct SoftwareProviderConfig {
+    pub key_dir: PathBuf,
+}
+
+impl SoftwareProviderConfig {
+    pub fn new(key_dir: PathBuf) -> Self {
+        Self { key_dir }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderConfig for SoftwareProviderConfig {
+    type Provider = SoftwareKeyProvider;
+
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
+        if self.key_dir.exists() {
+            SoftwareKeyProvider::load_from_dir(&self.key_dir)
+        } else {
+            Ok(SoftwareKeyProvider::new())
+        }
+    }
+
+    async fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError> {
+        provider.save_to_dir(&self.key_dir).await
+    }
+}
+
+/// Hardware provider configuration - keys in Secure Enclave.
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
+#[derive(Debug, Clone)]
+pub struct HardwareProviderConfig {
+    pub namespace: String,
+}
+
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
+impl HardwareProviderConfig {
+    pub fn new(namespace: String) -> Self {
+        Self { namespace }
+    }
+}
+
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
+#[async_trait::async_trait]
+impl ProviderConfig for HardwareProviderConfig {
+    type Provider = HardwareKeyProvider;
+
+    async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
+        HardwareKeyProvider::new(&self.namespace)
+            .ok_or_else(|| KelsError::HardwareError("Secure Enclave not available".into()))
+    }
+
+    async fn save_provider(&self, _provider: &Self::Provider) -> Result<(), KelsError> {
+        // Hardware keys persist automatically in the Secure Enclave
+        Ok(())
+    }
+}
+
+// ==================== KeyProvider Trait ====================
+
+/// Trait for cryptographic key management and signing operations.
+///
+/// Implementations manage three key slots:
+/// - **current**: The active signing key
+/// - **next**: Pre-committed key for the next rotation (rotation hash published)
+/// - **recovery**: Emergency key for recovery operations
+///
+/// Rotation is a two-phase operation:
+/// 1. `stage_rotation()` - stages the rotation (next becomes pending current, new next generated)
+/// 2. `commit()` or `rollback()` - finalizes or reverts
+#[async_trait::async_trait]
+pub trait KeyProvider: Send + Sync {
+    // ==================== Accessors ====================
+
+    /// Returns the signing key generation counter (for persistence).
+    async fn signing_generation(&self) -> u64 {
+        0
+    }
+
+    /// Returns the recovery key generation counter (for persistence).
+    async fn recovery_generation(&self) -> u64 {
+        0
+    }
+
+    /// Returns the handle/label for the current key (for persistence).
     async fn current_handle(&self) -> Option<String> {
         None
     }
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError>;
+
+    /// Returns the handle/label for the next key (for persistence).
     async fn next_handle(&self) -> Option<String> {
         None
     }
-    async fn next_label_generation(&self) -> u64 {
-        0
-    }
-    async fn next_public_key(&self) -> Result<PublicKey, KelsError>;
-    async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError>;
+
+    /// Returns the handle/label for the recovery key (for persistence).
     async fn recovery_handle(&self) -> Option<String> {
         None
     }
-    async fn recovery_public_key(&self) -> Result<PublicKey, KelsError>;
 
-    // Key Generation
-    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError>;
-    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError>;
-    async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError>;
-
-    // Query Methods
-    async fn has_current(&self) -> bool;
-    async fn has_next(&self) -> bool;
-    async fn has_recovery(&self) -> bool;
-
-    // Rotation Operations
-    async fn commit_recovery_rotation(&mut self);
-    async fn commit_rotation(&mut self);
-    async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError>;
-    async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError>;
-    fn promote_next_to_current(&mut self);
-    async fn rollback_recovery_rotation(&mut self);
-    async fn rollback_rotation(&mut self);
-
-    // Signing/Verification
-    async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError>;
-    async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError>;
-    async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError>;
-    async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError>;
-}
-
-// ==================== KeyProvider Enum ====================
-
-pub enum KeyProvider {
-    Software(Box<SoftwareKeyProvider>),
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    Hardware(Box<HardwareKeyProvider>),
-    #[cfg(feature = "native")]
-    External(Arc<tokio::sync::Mutex<Box<dyn ExternalKeyProvider>>>),
-}
-
-impl KeyProvider {
-    // ==================== Constructors ====================
-
-    #[cfg(feature = "native")]
-    pub fn external(provider: Box<dyn ExternalKeyProvider>) -> Self {
-        Self::External(Arc::new(tokio::sync::Mutex::new(provider)))
-    }
-
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    pub fn hardware(key_namespace: &str) -> Option<Self> {
-        HardwareKeyProvider::new(key_namespace).map(|p| Self::Hardware(Box::new(p)))
-    }
-
-    pub fn software() -> Self {
-        Self::Software(Box::default())
-    }
-
-    pub fn with_all_software_keys(
-        current: Option<PrivateKey>,
-        next: Option<PrivateKey>,
-        recovery: Option<PrivateKey>,
-    ) -> Self {
-        Self::Software(Box::new(SoftwareKeyProvider::with_all_keys(
-            current, next, recovery,
-        )))
-    }
-
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    pub fn with_hardware_handles(
-        key_namespace: &str,
-        current_label: Option<String>,
-        next_label: Option<String>,
-        recovery_label: Option<String>,
-        next_label_generation: u64,
-    ) -> Option<Self> {
-        HardwareKeyProvider::with_all_handles(
-            key_namespace,
-            current_label,
-            next_label,
-            recovery_label,
-            next_label_generation,
-        )
-        .map(|p| Self::Hardware(Box::new(p)))
-    }
-
-    pub fn with_software_keys(current: PrivateKey, next: PrivateKey) -> Self {
-        Self::Software(Box::new(SoftwareKeyProvider::with_keys(current, next)))
-    }
-
-    // ==================== Accessors ====================
-
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    #[allow(unreachable_patterns)]
-    pub fn as_hardware(&self) -> Option<&HardwareKeyProvider> {
-        match self {
-            Self::Hardware(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    #[allow(unreachable_patterns)]
-    pub fn as_software(&self) -> Option<&SoftwareKeyProvider> {
-        match self {
-            Self::Software(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    pub async fn current_generation(&self) -> u64 {
-        match self {
-            Self::Software(_) => 0,
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.current_generation().await,
-            #[cfg(feature = "native")]
-            Self::External(_) => 0,
-        }
-    }
-
-    pub async fn current_handle(&self) -> Option<String> {
-        match self {
-            Self::Software(_) => None,
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.current_label().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.current_handle().await,
-        }
-    }
-
-    pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.current_public_key_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.current_public_key().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.current_public_key().await,
-        }
-    }
-
-    pub async fn next_handle(&self) -> Option<String> {
-        match self {
-            Self::Software(_) => None,
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.next_label().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.next_handle().await,
-        }
-    }
-
-    pub async fn next_label_generation(&self) -> u64 {
-        match self {
-            Self::Software(_) => 0,
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.next_label_generation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.next_label_generation().await,
-        }
-    }
-
-    pub async fn next_public_key(&self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.next_public_key_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.next_public_key().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.next_public_key().await,
-        }
-    }
-
-    pub async fn pending_next_public_key(&self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.pending_next_public_key_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.pending_next_public_key().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.pending_next_public_key().await,
-        }
-    }
-
-    pub async fn recovery_handle(&self) -> Option<String> {
-        match self {
-            Self::Software(_) => None,
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.recovery_label().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.recovery_handle().await,
-        }
-    }
-
-    pub async fn recovery_public_key(&self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.recovery_public_key_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.recovery_public_key().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.recovery_public_key().await,
-        }
-    }
+    /// Returns the current signing public key.
+    async fn current_public_key(&self) -> Result<PublicKey, KelsError>;
 
     // ==================== Key Generation ====================
 
-    pub async fn generate_keypair(&mut self) -> Result<PublicKey, KelsError> {
-        if !self.has_current().await {
-            self.generate_into_current().await
-        } else {
-            self.generate_into_next().await
-        }
-    }
+    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError>;
 
-    pub async fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.generate_recovery_key(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.generate_recovery_key().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.generate_recovery_key().await,
-        }
-    }
+    // ==================== Query Methods ====================
 
-    // ==================== Key Management ====================
+    /// Returns true if a current key exists.
+    async fn has_current(&self) -> bool;
 
-    pub async fn delete_all_keys(&mut self) {
-        match self {
-            Self::Software(_) => {}
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => {
-                p.delete_all_keys().await;
-            }
-            #[cfg(feature = "native")]
-            Self::External(_) => {}
-        }
-    }
+    /// Returns true if a next key exists.
+    async fn has_next(&self) -> bool;
 
-    #[allow(unused_variables)]
-    pub async fn delete_keys_from_generation(&self, start_generation: u64) {
-        match self {
-            Self::Software(_) => {}
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => {
-                p.delete_keys_from_generation(start_generation).await;
-            }
-            #[cfg(feature = "native")]
-            Self::External(_) => {}
-        }
-    }
+    async fn has_staged(&self) -> bool;
 
-    pub async fn try_clone(&self) -> Option<Self> {
-        match self {
-            Self::Software(p) => Some(Self::Software(p.clone())),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => Some(Self::Hardware(Box::new(p.clone_async().await))),
-            #[cfg(feature = "native")]
-            Self::External(_) => None,
-        }
-    }
+    /// Returns true if a recovery key exists.
+    async fn has_recovery(&self) -> bool;
+
+    async fn has_staged_recovery(&self) -> bool;
 
     // ==================== Rotation Operations ====================
 
-    pub async fn commit_recovery_rotation(&mut self) {
-        match self {
-            Self::Software(p) => p.commit_recovery_rotation(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.commit_recovery_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.commit_recovery_rotation().await,
-        }
-    }
+    /// Prepares a key rotation. Returns the new current public key (what next will become).
+    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
 
-    pub async fn commit_rotation(&mut self) {
-        match self {
-            Self::Software(p) => p.commit_rotation(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.commit_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.commit_rotation().await,
-        }
-    }
+    /// Prepares a recovery key rotation. Returns (current_recovery_pub, new_recovery_pub).
+    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
 
-    pub async fn prepare_recovery_rotation(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
-        match self {
-            Self::Software(p) => p.prepare_recovery_rotation_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.prepare_recovery_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.prepare_recovery_rotation().await,
-        }
-    }
+    /// Commits a staged key rotation (pending becomes active).
+    async fn commit(&mut self) -> Result<(), KelsError>;
 
-    pub async fn prepare_rotation(&mut self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.prepare_rotation_sync(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.prepare_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.prepare_rotation().await,
-        }
-    }
+    /// Reverts a staged key rotation.
+    async fn rollback(&mut self) -> Result<(), KelsError>;
 
-    pub async fn rollback_recovery_rotation(&mut self) {
-        match self {
-            Self::Software(p) => p.rollback_recovery_rotation(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.rollback_recovery_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.rollback_recovery_rotation().await,
-        }
-    }
+    // ==================== Signing ====================
 
-    pub async fn rollback_rotation(&mut self) {
-        match self {
-            Self::Software(p) => p.rollback_rotation(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.rollback_rotation().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.rollback_rotation().await,
-        }
-    }
+    /// Signs data with the current key.
+    async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError>;
 
-    pub async fn rotate(&mut self) -> Result<PublicKey, KelsError> {
-        if !self.has_next().await {
-            return Err(KelsError::NoNextKey);
-        }
+    /// Signs data with the recovery key.
+    async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError>;
 
-        self.promote_next_to_current().await;
-        self.generate_into_next().await?;
-        self.current_public_key().await
-    }
-
-    // ==================== Signing/Verification ====================
-
-    pub async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        match self {
-            Self::Software(p) => p.sign_sync(data),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.sign(data).await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.sign(data).await,
-        }
-    }
-
-    pub async fn sign_with_pending(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        match self {
-            Self::Software(p) => p.sign_with_pending_sync(data),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.sign_with_pending(data).await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.sign_with_pending(data).await,
-        }
-    }
-
-    pub async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        match self {
-            Self::Software(p) => p.sign_with_recovery_sync(data),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.sign_with_recovery(data).await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.sign_with_recovery(data).await,
-        }
-    }
-
-    pub async fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        match self {
-            Self::Software(p) => p.verify_sync(data, signature),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.verify(data, signature).await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.verify(data, signature).await,
-        }
-    }
-
-    // ==================== Private Helpers ====================
-
-    async fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.generate_into_current(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.generate_into_current().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.generate_into_current().await,
-        }
-    }
-
-    async fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
-        match self {
-            Self::Software(p) => p.generate_into_next(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.generate_into_next().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.generate_into_next().await,
-        }
-    }
-
-    async fn has_current(&self) -> bool {
-        match self {
-            Self::Software(p) => p.current_key.is_some(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.has_current().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.has_current().await,
-        }
-    }
-
-    async fn has_next(&self) -> bool {
-        match self {
-            Self::Software(p) => p.next_key.is_some(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.has_next().await,
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.has_next().await,
-        }
-    }
-
-    async fn promote_next_to_current(&mut self) {
-        match self {
-            Self::Software(p) => p.promote_next_to_current(),
-            #[cfg(all(
-                any(target_os = "macos", target_os = "ios"),
-                feature = "secure-enclave"
-            ))]
-            Self::Hardware(p) => p.promote_next_to_current(),
-            #[cfg(feature = "native")]
-            Self::External(p) => p.lock().await.promote_next_to_current(),
-        }
-    }
+    // ==================== Convenience Methods ====================
 }
 
 // ==================== SoftwareKeyProvider ====================
 
 #[derive(Debug, Clone)]
 pub struct SoftwareKeyProvider {
-    current_key: Option<PrivateKey>,
-    next_key: Option<PrivateKey>,
-    recovery_key: Option<PrivateKey>,
-    pending_next_key: Option<PrivateKey>,
-    pending_recovery_key: Option<PrivateKey>,
+    keys: Vec<PrivateKey>,
+    recovery_keys: Vec<PrivateKey>,
 }
 
 impl Default for SoftwareKeyProvider {
@@ -570,11 +200,8 @@ impl SoftwareKeyProvider {
 
     pub fn new() -> Self {
         Self {
-            current_key: None,
-            next_key: None,
-            recovery_key: None,
-            pending_next_key: None,
-            pending_recovery_key: None,
+            keys: Vec::new(),
+            recovery_keys: Vec::new(),
         }
     }
 
@@ -583,166 +210,255 @@ impl SoftwareKeyProvider {
         next: Option<PrivateKey>,
         recovery: Option<PrivateKey>,
     ) -> Self {
-        Self {
-            current_key: current,
-            next_key: next,
-            recovery_key: recovery,
-            pending_next_key: None,
-            pending_recovery_key: None,
+        if let Some(c) = current
+            && let Some(n) = next
+            && let Some(r) = recovery
+        {
+            return Self {
+                keys: vec![c, n],
+                recovery_keys: vec![r],
+            };
         }
+
+        Self::new()
     }
 
-    pub fn with_keys(current: PrivateKey, next: PrivateKey) -> Self {
-        Self {
-            current_key: Some(current),
-            next_key: Some(next),
-            recovery_key: None,
-            pending_next_key: None,
-            pending_recovery_key: None,
-        }
+    // ==================== Persistence ====================
+
+    /// Loads keys from a directory containing key files.
+    pub fn load_from_dir(dir: &Path) -> Result<Self, KelsError> {
+        let current_path = dir.join("current.key");
+        let next_path = dir.join("next.key");
+        let recovery_path = dir.join("recovery.key");
+
+        let current = if current_path.exists() {
+            let qb64 = std::fs::read_to_string(&current_path).map_err(|e| {
+                KelsError::HardwareError(format!("Failed to read current key: {}", e))
+            })?;
+            Some(PrivateKey::from_qb64(qb64.trim())?)
+        } else {
+            None
+        };
+
+        let next = if next_path.exists() {
+            let qb64 = std::fs::read_to_string(&next_path)
+                .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
+            Some(PrivateKey::from_qb64(qb64.trim())?)
+        } else {
+            None
+        };
+
+        let recovery = if recovery_path.exists() {
+            let qb64 = std::fs::read_to_string(&recovery_path).map_err(|e| {
+                KelsError::HardwareError(format!("Failed to read recovery key: {}", e))
+            })?;
+            Some(PrivateKey::from_qb64(qb64.trim())?)
+        } else {
+            None
+        };
+
+        Ok(Self::with_all_keys(current, next, recovery))
     }
 
-    // ==================== Accessors ====================
+    /// Saves keys to a directory.
+    pub async fn save_to_dir(&self, dir: &Path) -> Result<(), KelsError> {
+        if !self.has_current().await {
+            return Err(KelsError::NoCurrentKey);
+        }
 
+        if !self.has_next().await {
+            return Err(KelsError::NoNextKey);
+        }
+
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        if self.has_staged().await || self.has_staged_recovery().await {
+            return Err(KelsError::CurrentlyStaged);
+        }
+
+        std::fs::create_dir_all(dir).map_err(|e| {
+            KelsError::HardwareError(format!("Failed to create key directory: {}", e))
+        })?;
+
+        if let Some(key) = self.keys.first() {
+            let path = dir.join("current.key");
+            std::fs::write(&path, key.qb64()).map_err(|e| {
+                KelsError::HardwareError(format!("Failed to write current key: {}", e))
+            })?;
+        } else {
+            return Err(KelsError::NoCurrentKey);
+        }
+        if let Some(key) = &self.keys.last() {
+            let path = dir.join("next.key");
+            std::fs::write(&path, key.qb64()).map_err(|e| {
+                KelsError::HardwareError(format!("Failed to write next key: {}", e))
+            })?;
+        } else {
+            return Err(KelsError::NoNextKey);
+        }
+
+        if let Some(key) = &self.recovery_keys.first() {
+            let path = dir.join("recovery.key");
+            std::fs::write(&path, key.qb64()).map_err(|e| {
+                KelsError::HardwareError(format!("Failed to write recovery key: {}", e))
+            })?;
+        } else {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        Ok(())
+    }
+}
+
+// Test-only private key accessors
+#[cfg(test)]
+impl SoftwareKeyProvider {
     pub fn current_private_key(&self) -> Option<&PrivateKey> {
-        self.current_key.as_ref()
-    }
-
-    pub fn current_public_key_sync(&self) -> Result<PublicKey, KelsError> {
-        self.current_private_key()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoCurrentKey)
+        self.keys.first()
     }
 
     pub fn next_private_key(&self) -> Option<&PrivateKey> {
-        self.next_key.as_ref()
-    }
-
-    pub fn next_public_key_sync(&self) -> Result<PublicKey, KelsError> {
-        self.next_private_key()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoNextKey)
-    }
-
-    pub fn pending_next_public_key_sync(&self) -> Result<PublicKey, KelsError> {
-        self.pending_next_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoNextKey)
+        self.keys.last()
     }
 
     pub fn recovery_private_key(&self) -> Option<&PrivateKey> {
-        self.recovery_key.as_ref()
+        self.recovery_keys.first()
+    }
+}
+
+// ==================== KeyProvider impl for SoftwareKeyProvider ====================
+
+#[async_trait::async_trait]
+impl KeyProvider for SoftwareKeyProvider {
+    async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        let index = self.keys.len() - 2;
+        Ok(self.keys[index].public_key())
     }
 
-    pub fn recovery_public_key_sync(&self) -> Result<PublicKey, KelsError> {
-        self.recovery_key
-            .as_ref()
-            .map(|k| k.public_key())
-            .ok_or(KelsError::NoRecoveryKey)
-    }
-
-    // ==================== Key Generation ====================
-
-    pub fn generate_recovery_key(&mut self) -> Result<PublicKey, KelsError> {
+    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
         let (public, private) = generate_secp256r1()?;
-        self.recovery_key = Some(private);
-        Ok(public)
+        let (next_public, next_private) = generate_secp256r1()?;
+        let (recovery_public, recovery_private) = generate_secp256r1()?;
+
+        let rotation_hash = compute_rotation_hash(&next_public.qb64());
+        let recovery_hash = compute_rotation_hash(&recovery_public.qb64());
+
+        self.keys = vec![private, next_private];
+        self.recovery_keys = vec![recovery_private];
+
+        Ok((public, rotation_hash, recovery_hash))
     }
 
-    // ==================== Rotation Operations ====================
+    async fn has_current(&self) -> bool {
+        !self.keys.is_empty()
+    }
 
-    pub fn commit_recovery_rotation(&mut self) {
-        if let Some(pending) = self.pending_recovery_key.take() {
-            self.recovery_key = Some(pending);
+    async fn has_next(&self) -> bool {
+        self.keys.len() > 1
+    }
+
+    async fn has_staged(&self) -> bool {
+        self.keys.len() > 2
+    }
+
+    async fn has_recovery(&self) -> bool {
+        !self.recovery_keys.is_empty()
+    }
+
+    async fn has_staged_recovery(&self) -> bool {
+        self.recovery_keys.len() > 1
+    }
+
+    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_next().await {
+            return Err(KelsError::NoNextKey);
         }
+
+        let new_current_pub = {
+            let length = self.keys.len();
+            self.keys[length - 1].public_key()
+        };
+
+        let (new_next_pub, new_next_priv) = generate_secp256r1()?;
+        self.keys.push(new_next_priv);
+
+        let rotation_hash = compute_rotation_hash(&new_next_pub.qb64());
+
+        Ok((new_current_pub, rotation_hash))
     }
 
-    pub fn commit_rotation(&mut self) {
-        if let Some(pending_next) = self.pending_next_key.take() {
-            self.current_key = self.next_key.take();
-            self.next_key = Some(pending_next);
+    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
         }
-    }
 
-    /// Returns (current_recovery_pub, new_recovery_pub).
-    pub fn prepare_recovery_rotation_sync(&mut self) -> Result<(PublicKey, PublicKey), KelsError> {
-        let current_recovery = self
-            .recovery_key
-            .as_ref()
-            .ok_or(KelsError::NoRecoveryKey)?
-            .public_key();
+        let current_recovery = self.recovery_keys[0].public_key();
 
         let (new_recovery_pub, new_recovery_priv) = generate_secp256r1()?;
-        self.pending_recovery_key = Some(new_recovery_priv);
+        self.recovery_keys.push(new_recovery_priv);
+        let new_recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
 
-        Ok((current_recovery, new_recovery_pub))
+        Ok((current_recovery, new_recovery_hash))
     }
 
-    /// Returns the new current public key (what will be current after commit).
-    pub fn prepare_rotation_sync(&mut self) -> Result<PublicKey, KelsError> {
-        let new_current_pub = self
-            .next_private_key()
-            .ok_or(KelsError::NoNextKey)?
-            .public_key();
+    async fn commit(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
 
-        let (_new_next_pub, new_next_priv) = generate_secp256r1()?;
-        self.pending_next_key = Some(new_next_priv);
+        if self.has_staged_recovery().await {
+            let length = self.recovery_keys.len();
+            self.recovery_keys = self.recovery_keys[(length - 1)..].to_vec();
+        }
 
-        Ok(new_current_pub)
+        let length = self.keys.len();
+        self.keys = self.keys[(length - 2)..].to_vec();
+
+        Ok(())
     }
 
-    pub fn rollback_recovery_rotation(&mut self) {
-        self.pending_recovery_key = None;
+    async fn rollback(&mut self) -> Result<(), KelsError> {
+        if !self.has_staged().await {
+            return Err(KelsError::NoStagedKey);
+        }
+
+        if self.has_staged_recovery().await {
+            self.recovery_keys = self.recovery_keys[..1].to_vec();
+        }
+
+        self.keys = self.keys[..2].to_vec();
+
+        Ok(())
     }
 
-    pub fn rollback_rotation(&mut self) {
-        self.pending_next_key = None;
-    }
+    async fn sign(&self, data: &[u8]) -> Result<Signature, KelsError> {
+        // this is correct, the error makes sense to the user
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
 
-    // ==================== Signing/Verification ====================
+        let length = self.keys.len();
+        let key = &self.keys[length - 2];
 
-    pub fn sign_sync(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.current_private_key().ok_or(KelsError::NoCurrentKey)?;
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
     }
 
-    pub fn sign_with_pending_sync(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.next_private_key().ok_or(KelsError::NoCurrentKey)?;
+    async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError> {
+        if !self.has_recovery().await {
+            return Err(KelsError::NoRecoveryKey);
+        }
+
+        let key = &self.recovery_keys[0];
+
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
-    }
-
-    pub fn sign_with_recovery_sync(&self, data: &[u8]) -> Result<Signature, KelsError> {
-        let key = self.recovery_key.as_ref().ok_or(KelsError::NoRecoveryKey)?;
-        key.sign(data)
-            .map_err(|e| KelsError::SigningFailed(e.to_string()))
-    }
-
-    fn verify_sync(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        let public_key = self.current_public_key_sync()?;
-        public_key
-            .verify(data, signature)
-            .map_err(|e| KelsError::VerificationFailed(e.to_string()))
-    }
-
-    // ==================== Private Helpers ====================
-
-    fn generate_into_current(&mut self) -> Result<PublicKey, KelsError> {
-        let (public, private) = generate_secp256r1()?;
-        self.current_key = Some(private);
-        Ok(public)
-    }
-
-    fn generate_into_next(&mut self) -> Result<PublicKey, KelsError> {
-        let (public, private) = generate_secp256r1()?;
-        self.next_key = Some(private);
-        Ok(public)
-    }
-
-    fn promote_next_to_current(&mut self) {
-        self.current_key = self.next_key.take();
     }
 }
 
@@ -754,149 +470,149 @@ mod tests {
     use cesr::Matter;
 
     #[tokio::test]
-    async fn test_key_provider_enum_generate() {
-        let mut provider = KeyProvider::software();
+    async fn test_generate_initial_keys() {
+        let mut provider = SoftwareKeyProvider::new();
 
-        let current = provider.generate_keypair().await.unwrap();
+        let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert!(provider.current_public_key().await.is_ok());
-        assert!(provider.next_public_key().await.is_err());
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            current.qb64()
+        );
 
-        let next = provider.generate_keypair().await.unwrap();
-        assert!(provider.next_public_key().await.is_ok());
-
-        assert_ne!(current.qb64(), next.qb64());
+        assert_ne!(next_hash, recovery_hash);
+        assert!(provider.has_current().await);
+        assert!(provider.has_next().await);
+        assert!(provider.has_recovery().await);
     }
 
     #[tokio::test]
-    async fn test_key_provider_enum_rotate() {
-        let mut provider = KeyProvider::software();
+    async fn test_rotation() {
+        let mut provider = SoftwareKeyProvider::new();
 
-        let _current = provider.generate_keypair().await.unwrap();
-        let original_next = provider.generate_keypair().await.unwrap();
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
 
-        let new_current = provider.rotate().await.unwrap();
-        assert_eq!(new_current.qb64(), original_next.qb64());
+        // Stage rotation: next becomes new current, new next is generated
+        let (new_current, _new_next_hash) = provider.stage_rotation().await.unwrap();
+        assert!(provider.has_staged().await);
 
-        assert!(provider.next_public_key().await.is_ok());
+        provider.commit().await.unwrap();
+        assert!(!provider.has_staged().await);
+
+        // After commit, new_current is now current
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            new_current.qb64()
+        );
     }
 
     #[tokio::test]
-    async fn test_key_provider_enum_rotate_without_next_fails() {
-        let mut provider = KeyProvider::software();
-        provider.generate_keypair().await.unwrap();
-        assert!(provider.rotate().await.is_err());
+    async fn test_rotation_without_next_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        // No keys at all - should fail
+        assert!(provider.stage_rotation().await.is_err());
     }
 
-    #[test]
-    fn test_sign_without_key_fails() {
+    #[tokio::test]
+    async fn test_sign_without_key_fails() {
         let provider = SoftwareKeyProvider::new();
-        assert!(provider.sign_sync(b"test").is_err());
+        assert!(provider.sign(b"test").await.is_err());
     }
 
-    #[test]
-    fn test_software_provider_generate() {
+    #[tokio::test]
+    async fn test_recovery_rotation() {
         let mut provider = SoftwareKeyProvider::new();
 
-        let current = provider.generate_into_current().unwrap();
-        assert!(provider.current_public_key_sync().is_ok());
-        assert!(provider.next_public_key_sync().is_err());
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
 
-        let next = provider.generate_into_next().unwrap();
-        assert!(provider.next_public_key_sync().is_ok());
+        // Stage recovery rotation
+        let (_, _) = provider.stage_rotation().await.unwrap();
+        let (_current_recovery, _new_recovery_hash) =
+            provider.stage_recovery_rotation().await.unwrap();
+        assert!(provider.has_staged_recovery().await);
+        assert!(provider.has_staged().await);
 
-        assert_ne!(current.qb64(), next.qb64());
+        provider.commit().await.unwrap();
+        assert!(!provider.has_staged_recovery().await);
+        assert!(!provider.has_staged().await);
+
+        // The old recovery key is gone, we can't easily verify the new one without
+        // exposing the recovery public key, but we can sign with recovery
+        let message = b"test message";
+        let sig = provider.sign_with_recovery(message).await.unwrap();
+        // Can't verify directly without recovery_public_key, but sign succeeded
+        assert!(!sig.qb64().is_empty());
     }
 
-    #[test]
-    fn test_software_provider_recovery_key() {
+    #[tokio::test]
+    async fn test_sign() {
         let mut provider = SoftwareKeyProvider::new();
-
-        assert!(provider.recovery_public_key_sync().is_err());
-
-        let recovery = provider.generate_recovery_key().unwrap();
-        assert!(provider.recovery_public_key_sync().is_ok());
-        assert_eq!(
-            provider.recovery_public_key_sync().unwrap().qb64(),
-            recovery.qb64()
-        );
+        let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
-        let sig = provider.sign_with_recovery_sync(message).unwrap();
-        assert!(recovery.verify(message, &sig).is_ok());
+        let signature = provider.sign(message).await.unwrap();
+
+        assert!(current.verify(message, &signature).is_ok());
     }
 
-    #[test]
-    fn test_software_provider_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new();
-
-        let original_recovery = provider.generate_recovery_key().unwrap();
-
-        let (current_recovery, new_recovery) = provider.prepare_recovery_rotation_sync().unwrap();
-        assert_eq!(current_recovery.qb64(), original_recovery.qb64());
-        assert_ne!(new_recovery.qb64(), original_recovery.qb64());
-
-        assert_eq!(
-            provider.recovery_public_key_sync().unwrap().qb64(),
-            original_recovery.qb64()
-        );
-
-        provider.commit_recovery_rotation();
-
-        assert_eq!(
-            provider.recovery_public_key_sync().unwrap().qb64(),
-            new_recovery.qb64()
-        );
-    }
-
-    #[test]
-    fn test_software_provider_rotate_primitives() {
-        let mut provider = SoftwareKeyProvider::new();
-
-        let original_current = provider.generate_into_current().unwrap();
-        let original_next = provider.generate_into_next().unwrap();
-
-        assert_eq!(
-            provider.current_public_key_sync().unwrap().qb64(),
-            original_current.qb64()
-        );
-        assert_eq!(
-            provider.next_public_key_sync().unwrap().qb64(),
-            original_next.qb64()
-        );
-
-        let prepared_current = provider.prepare_rotation_sync().unwrap();
-        assert_eq!(prepared_current.qb64(), original_next.qb64());
-
-        provider.commit_rotation();
-
-        let new_current = provider.current_public_key_sync().unwrap();
-        assert_eq!(new_current.qb64(), original_next.qb64());
-        assert!(provider.next_public_key_sync().is_ok());
-    }
-
-    #[test]
-    fn test_software_provider_sign() {
-        let mut provider = SoftwareKeyProvider::new();
-        provider.generate_into_current().unwrap();
-
-        let message = b"test message";
-        let signature = provider.sign_sync(message).unwrap();
-
-        let public = provider.current_public_key_sync().unwrap();
-        assert!(public.verify(message, &signature).is_ok());
-    }
-
-    #[test]
-    fn test_software_provider_with_keys() {
+    #[tokio::test]
+    async fn test_with_all_keys() {
         let (pub1, priv1) = generate_secp256r1().unwrap();
-        let (pub2, priv2) = generate_secp256r1().unwrap();
+        let (_pub2, priv2) = generate_secp256r1().unwrap();
+        let (_pub3, priv3) = generate_secp256r1().unwrap();
 
-        let provider = SoftwareKeyProvider::with_keys(priv1, priv2);
+        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), Some(priv3));
 
         assert_eq!(
-            provider.current_public_key_sync().unwrap().qb64(),
+            provider.current_public_key().await.unwrap().qb64(),
             pub1.qb64()
         );
-        assert_eq!(provider.next_public_key_sync().unwrap().qb64(), pub2.qb64());
+        // We can sign and the signature should be verifiable with pub1
+        let message = b"test";
+        let sig = provider.sign(message).await.unwrap();
+        assert!(pub1.verify(message, &sig).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_rotation() {
+        let mut provider = SoftwareKeyProvider::new();
+
+        let (original_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
+
+        // Stage a rotation
+        let (_new_current, _new_next_hash) = provider.stage_rotation().await.unwrap();
+        assert!(provider.has_staged().await);
+
+        // Rollback
+        provider.rollback().await.unwrap();
+        assert!(!provider.has_staged().await);
+
+        // Current should still be the original
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            original_current.qb64()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollback_recovery_rotation() {
+        let mut provider = SoftwareKeyProvider::new();
+
+        let (_current, _next_hash, _recovery_hash) =
+            provider.generate_initial_keys().await.unwrap();
+
+        // Stage a recovery rotation
+        let (_, _) = provider.stage_rotation().await.unwrap();
+        let (_old_recovery, _new_recovery_hash) = provider.stage_recovery_rotation().await.unwrap();
+        assert!(provider.has_staged_recovery().await);
+        assert!(provider.has_staged().await);
+
+        // Rollback
+        provider.rollback().await.unwrap();
+        assert!(!provider.has_staged_recovery().await);
+        assert!(!provider.has_staged().await);
     }
 }

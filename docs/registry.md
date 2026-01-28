@@ -63,36 +63,52 @@ services/kels-registry/
 ├── garden.yml
 ├── manifests.yml.tpl
 └── src/
-    ├── main.rs       # Entry point, tracing setup
-    ├── lib.rs        # Module definitions
-    ├── server.rs     # HTTP router and startup
-    ├── handlers.rs   # REST endpoint handlers
-    └── store.rs      # Redis-backed storage
+    ├── main.rs           # Entry point, tracing setup
+    ├── lib.rs            # Module definitions
+    ├── server.rs         # HTTP router and startup
+    ├── handlers.rs       # All handlers (nodes, peers, registry KEL)
+    ├── store.rs          # Redis-backed node storage
+    ├── signature.rs      # Signature verification
+    ├── identity_client.rs # Client for identity service
+    ├── peer_store.rs     # PostgreSQL peer repository
+    ├── repository.rs     # Combined repository
+    └── bin/
+        └── kels-registry-admin.rs # Admin CLI for peer management
 ```
 
 ### API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/nodes/register` | Register or update a node |
-| `DELETE` | `/api/nodes/:node_id` | Deregister a node |
+| `POST` | `/api/nodes/register` | Register or update a node (requires signed request) |
+| `POST` | `/api/nodes/deregister` | Deregister a node (requires signed request) |
 | `GET` | `/api/nodes` | List all registered nodes |
 | `GET` | `/api/nodes/:node_id` | Get a specific node |
 | `GET` | `/api/nodes/bootstrap` | Get bootstrap peers (excludes caller via `?exclude=node_id`) |
 | `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
-| `PUT` | `/api/nodes/:node_id/status` | Update node status |
+| `POST` | `/api/nodes/status` | Update node status (requires signed request) |
+| `GET` | `/api/peers` | Get peer allowlist |
+| `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
 | `GET` | `/health` | Health check |
+
+> **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
 
 ### Data Model
 
 ```rust
 struct NodeRegistration {
     node_id: String,           // Unique identifier (e.g., "node-a")
+    node_type: NodeType,       // Kels or Registry
     kels_url: String,          // HTTP endpoint for KELS API
     gossip_multiaddr: String,  // libp2p multiaddr for gossip
     registered_at: DateTime<Utc>,
     last_heartbeat: DateTime<Utc>,
     status: NodeStatus,
+}
+
+enum NodeType {
+    Kels,      // Regular KELS node (has KEL storage)
+    Registry,  // Registry node (no KEL storage, excluded from bootstrap)
 }
 
 enum NodeStatus {

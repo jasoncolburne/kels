@@ -20,11 +20,10 @@ pub trait SignedEventRepository: Send + Sync {
         signatures: Vec<crate::EventSignature>,
     ) -> Result<crate::KeyEvent, KelsError>;
 
-    /// Owner tail tracking for recovery
-    async fn save_owner_tail(&self, _prefix: &str, _said: &str) -> Result<(), KelsError> {
-        Ok(())
-    }
-    async fn load_owner_tail(&self, _prefix: &str) -> Result<Option<String>, KelsError> {
-        Ok(None)
-    }
+    /// Create multiple events with signatures in a single transaction.
+    /// This ensures atomicity when saving multiple events (e.g., recovery + rotation).
+    async fn create_batch_with_signatures(
+        &self,
+        events: Vec<(crate::KeyEvent, Vec<crate::EventSignature>)>,
+    ) -> Result<(), KelsError>;
 }

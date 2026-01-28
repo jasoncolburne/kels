@@ -2,8 +2,10 @@
 //!
 //! Sets up gossipsub for announcements and request-response for KEL fetching.
 
+use crate::allowlist::{AllowlistBehaviour, SharedAllowlist};
 use crate::protocol::{KelAnnouncement, KelRequest, KelResponse, PROTOCOL_NAME};
 use futures::prelude::*;
+use kels::KelsRegistryClient;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, noise,
@@ -177,17 +179,23 @@ pub struct KelsBehaviour {
     gossipsub: gossipsub::Behaviour,
     request_response: request_response::Behaviour<JsonCodec>,
     identify: identify::Behaviour,
+    allowlist: AllowlistBehaviour,
 }
 
 /// Build and run the libp2p swarm
+#[allow(clippy::too_many_arguments)]
 pub async fn run_swarm(
+    keypair: libp2p_identity::Keypair,
     listen_addr: Multiaddr,
     peer_addrs: Vec<Multiaddr>,
     topic_name: &str,
+    allowlist: SharedAllowlist,
+    registry_client: KelsRegistryClient,
+    registry_prefix: String,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
 ) -> Result<(), GossipError> {
-    let mut swarm = build_swarm(topic_name)?;
+    let (mut swarm, mut refresh_rx) = build_swarm(keypair, topic_name, allowlist.clone())?;
 
     // Listen on the specified address
     swarm
@@ -218,11 +226,32 @@ pub async fn run_swarm(
                     error!("Error handling swarm event: {}", e);
                 }
             }
+
+            // Handle allowlist refresh requests (triggered by unknown peer connections)
+            Some(()) = refresh_rx.recv() => {
+                debug!("Refreshing allowlist due to unknown peer connection");
+                if let Err(e) = crate::allowlist::refresh_allowlist(
+                    &registry_client,
+                    &registry_prefix,
+                    &allowlist,
+                ).await {
+                    warn!("Failed to refresh allowlist: {}", e);
+                }
+                // Verify pending peers after refresh
+                swarm.behaviour_mut().allowlist.verify_pending_peers().await;
+            }
         }
     }
 }
 
-fn build_swarm(topic_name: &str) -> Result<Swarm<KelsBehaviour>, GossipError> {
+fn build_swarm(
+    keypair: libp2p_identity::Keypair,
+    topic_name: &str,
+    allowlist: SharedAllowlist,
+) -> Result<(Swarm<KelsBehaviour>, mpsc::Receiver<()>), GossipError> {
+    // Create allowlist behaviour and get refresh receiver before SwarmBuilder
+    let (allowlist_behaviour, refresh_rx) = AllowlistBehaviour::new(allowlist);
+
     // Message ID function for deduplication
     let message_id_fn = |message: &gossipsub::Message| {
         let mut hasher = DefaultHasher::new();
@@ -238,7 +267,9 @@ fn build_swarm(topic_name: &str) -> Result<Swarm<KelsBehaviour>, GossipError> {
         .build()
         .map_err(|e| GossipError::Gossipsub(e.to_string()))?;
 
-    let swarm = SwarmBuilder::with_new_identity()
+    // Convert libp2p_identity::Keypair to libp2p::identity::Keypair
+    // The forked libp2p-identity is compatible with libp2p's identity
+    let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
             tcp::Config::default(),
@@ -269,6 +300,7 @@ fn build_swarm(topic_name: &str) -> Result<Swarm<KelsBehaviour>, GossipError> {
                 gossipsub,
                 request_response,
                 identify,
+                allowlist: allowlist_behaviour,
             })
         })
         .map_err(|e| GossipError::Transport(e.to_string()))?
@@ -277,7 +309,6 @@ fn build_swarm(topic_name: &str) -> Result<Swarm<KelsBehaviour>, GossipError> {
 
     // Subscribe to the topic
     let topic = IdentTopic::new(topic_name);
-    let mut swarm = swarm;
     swarm
         .behaviour_mut()
         .gossipsub
@@ -286,7 +317,7 @@ fn build_swarm(topic_name: &str) -> Result<Swarm<KelsBehaviour>, GossipError> {
 
     info!("Local peer ID: {}", swarm.local_peer_id());
 
-    Ok(swarm)
+    Ok((swarm, refresh_rx))
 }
 
 fn handle_command(

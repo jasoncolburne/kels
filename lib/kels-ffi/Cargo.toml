@@ -21,6 +21,7 @@ kels = { path = "../kels", package = "libkels", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 [build-dependencies]
 cbindgen = "0.29"

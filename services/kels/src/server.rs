@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
 };
 use cacheable::create_pubsub_subscriber;
-use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
+use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal};
 use redis::Client as RedisClient;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -105,40 +105,4 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
     }
 
     tracing::warn!("Cache sync subscriber ended unexpectedly");
-}
-
-async fn shutdown_signal() {
-    use tokio::signal;
-
-    let ctrl_c = async {
-        match signal::ctrl_c().await {
-            Ok(()) => tracing::info!("Received Ctrl+C signal"),
-            Err(e) => tracing::error!("Failed to listen for Ctrl+C: {}", e),
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-                tracing::info!("Received SIGTERM signal");
-            }
-            Err(e) => {
-                tracing::error!("Failed to install SIGTERM handler: {}", e);
-                // Wait forever since we can't receive SIGTERM
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-
-    tracing::info!("Starting graceful shutdown...");
 }

@@ -8,7 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{KelsClient, KeyEventBuilder, KeyProvider};
+use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use verifiable_storage::compute_said;
@@ -166,7 +166,7 @@ impl Stats {
 }
 
 async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<String> {
-    let mut builder = KeyEventBuilder::new(KeyProvider::software(), Some(client.clone()));
+    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), Some(client.clone()));
     let (icp_event, _) = builder.incept().await?;
     let prefix = icp_event.prefix.clone();
 

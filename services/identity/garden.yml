@@ -1,0 +1,40 @@
+kind: Build
+name: identity
+type: container
+
+# Identity service is only needed in the registry environment
+disabled: ${environment.name != 'registry'}
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/kels-derive/**/*
+  - services/identity/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/identity/Dockerfile
+
+---
+
+kind: Deploy
+name: identity
+type: kubernetes
+
+# Identity service is only needed in the registry environment
+disabled: ${environment.name != 'registry'}
+
+dependencies:
+  - build.identity
+  - deploy.postgres
+  - deploy.hsm
+
+variables:
+  identityDatabaseUrl: ${var.postgres.url}/identity
+  identityKeyHandlePrefix: kels-registry
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

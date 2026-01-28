@@ -432,7 +432,7 @@ struct KeysTab: View {
                     if viewModel.needsContest && !viewModel.isContested {
                         Button(action: {
                             Task {
-                                await viewModel.recover()
+                                await viewModel.contest()
                                 if viewModel.errorMessage == nil {
                                     showingContestSuccess = true
                                 }
@@ -495,7 +495,7 @@ struct KeysTab: View {
                         }) {
                             HStack {
                                 Image(systemName: "arrow.triangle.2.circlepath.circle")
-                                Text("Rotate Recovery Key")
+                                Text("Rotate Both Keys")
                             }
                         }
                         .disabled(viewModel.isLoading || isFrozen)
@@ -538,22 +538,22 @@ struct KeysTab: View {
             .refreshable {
                 await viewModel.refreshStatus()
             }
-            .alert("Key Rotated", isPresented: $showingRotateSuccess) {
+            .alert("Rotated", isPresented: $showingRotateSuccess) {
                 Button("OK") { showingRotateSuccess = false }
             } message: {
-                Text("Your key has been successfully rotated. Thank you for keeping your identity secure.")
+                Text("Rotation successful. Thank you for keeping your identity secure.")
             }
-            .alert("Recovery Complete", isPresented: $showingRecoverSuccess) {
+            .alert("Recovered", isPresented: $showingRecoverSuccess) {
                 Button("OK") { showingRecoverSuccess = false }
             } message: {
                 Text("Your KEL has been recovered successfully.")
             }
-            .alert("KEL Contested", isPresented: $showingContestSuccess) {
+            .alert("Contested", isPresented: $showingContestSuccess) {
                 Button("OK") { showingContestSuccess = false }
             } message: {
                 Text("The KEL has been contested and frozen. The adversary had your recovery key (full compromise). This identity can no longer be used.")
             }
-            .alert("KEL Decommissioned", isPresented: $showingDecommissionSuccess) {
+            .alert("Decommissioned", isPresented: $showingDecommissionSuccess) {
                 Button("OK") { showingDecommissionSuccess = false }
             } message: {
                 Text("Your KEL has been permanently frozen and can no longer be modified.")

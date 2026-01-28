@@ -2,7 +2,10 @@
 
 use crate::error::KelsError;
 use serde::{Deserialize, Serialize};
+use std::cmp::{Eq, PartialEq};
+use std::collections::HashSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use verifiable_storage::{SelfAddressed, StorageDatetime, Versioned};
 
@@ -40,6 +43,10 @@ impl EventKind {
     /// Establishment events have a public key
     pub fn is_establishment(&self) -> bool {
         !matches!(self, Self::Ixn)
+    }
+
+    pub fn reveals_rotation_key(&self) -> bool {
+        matches!(self, Self::Rot) || self.reveals_recovery_key()
     }
 
     pub fn reveals_recovery_key(&self) -> bool {
@@ -91,12 +98,6 @@ pub enum KelMergeResult {
     Contested,         // Both revealed recovery keys, KEL frozen
     Frozen,            // Already divergent, only rec/cnt allowed
     RecoveryProtected, // Recovery event protects this version
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryOutcome {
-    Recovered, // KEL continues with new keys
-    Contested, // KEL frozen via contest event
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +331,9 @@ impl KeyEvent {
     pub fn is_establishment(&self) -> bool {
         self.kind.is_establishment()
     }
+    pub fn reveals_rotation_key(&self) -> bool {
+        self.kind.reveals_rotation_key()
+    }
     pub fn reveals_recovery_key(&self) -> bool {
         self.kind.reveals_recovery_key()
     }
@@ -545,6 +549,42 @@ pub struct SignedKeyEvent {
     pub signatures: Vec<KeyEventSignature>,
 }
 
+impl Eq for SignedKeyEvent {}
+
+impl PartialEq for SignedKeyEvent {
+    fn eq(&self, other: &Self) -> bool {
+        if self.event.said != other.event.said {
+            return false;
+        }
+
+        if self.signatures.len() != other.signatures.len() {
+            return false;
+        }
+
+        let actual_signatures: HashSet<_> = self
+            .signatures
+            .iter()
+            .map(|s| s.signature.clone())
+            .collect();
+        for signature in &other.signatures {
+            if !actual_signatures.contains(&signature.signature) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl Hash for SignedKeyEvent {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.event.said.hash(state);
+        for signature in self.signatures.clone() {
+            signature.signature.hash(state);
+        }
+    }
+}
+
 impl SignedKeyEvent {
     pub fn new(event: KeyEvent, public_key: String, signature: String) -> Self {
         Self {
@@ -693,26 +733,29 @@ pub struct PrefixState {
     pub said: String,
 }
 
-/// Node status in the registry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeType {
+    #[default]
+    Kels,
+    Registry,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeStatus {
-    /// Node is syncing, not ready for queries
     Bootstrapping,
-    /// Node is fully synced and accepting requests
     Ready,
-    /// Missed heartbeats
     Unhealthy,
 }
 
-/// Node registration data stored in the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeRegistration {
     pub node_id: String,
-    /// External KELS URL for clients outside the cluster
+    #[serde(default)]
+    pub node_type: NodeType,
     pub kels_url: String,
-    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
@@ -721,24 +764,36 @@ pub struct NodeRegistration {
     pub status: NodeStatus,
 }
 
-/// Request to register a node with the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterNodeRequest {
     pub node_id: String,
-    /// External KELS URL for clients outside the cluster
+    #[serde(default)]
+    pub node_type: NodeType,
     pub kels_url: String,
-    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub status: NodeStatus,
 }
 
-/// Request to update node status
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatusUpdateRequest {
+    pub node_id: String,
     pub status: NodeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatRequest {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeregisterRequest {
+    pub node_id: String,
 }
 
 /// Information about a registered KELS node (with client-computed fields)
@@ -801,6 +856,69 @@ pub struct ContestedPrefix {
     pub prefix: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedRequest<T> {
+    pub payload: T,
+    pub peer_id: String,
+    pub public_key: String,
+    pub signature: String,
+}
+
+// ==================== Peer Allowlist Types ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "peer")]
+#[serde(rename_all = "camelCase")]
+pub struct Peer {
+    #[said]
+    pub said: String,
+    #[prefix]
+    pub prefix: String,
+    #[previous]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    pub peer_id: String,
+    pub node_id: String,
+    pub active: bool,
+}
+
+impl Peer {
+    pub fn deactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
+        let mut peer = self.clone();
+        peer.active = false;
+        peer.increment()?;
+        Ok(peer)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerHistory {
+    pub prefix: String,
+    pub records: Vec<Peer>,
+}
+
+impl PeerHistory {
+    pub fn latest(&self) -> Option<&Peer> {
+        self.records.last()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.latest().is_some_and(|p| p.active)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersResponse {
+    pub peers: Vec<PeerHistory>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,5 +966,30 @@ mod tests {
         assert_eq!(json, "\"icp\"");
         let parsed: EventKind = serde_json::from_str("\"rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
+    }
+
+    #[test]
+    fn test_peer_creation() {
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+
+        assert!(peer.active);
+        assert_eq!(peer.version, 0);
+        assert!(peer.previous.is_none());
+        assert!(!peer.said.is_empty());
+        // Prefix is derived from content hash, not manually set
+        assert!(!peer.prefix.is_empty());
+        assert_eq!(peer.prefix, peer.said);
+    }
+
+    #[test]
+    fn test_peer_deactivation() {
+        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+
+        let deactivated = peer.deactivate().unwrap();
+
+        assert!(!deactivated.active);
+        assert_eq!(deactivated.version, 1);
+        assert_eq!(deactivated.previous, Some(peer.said.clone()));
+        assert_eq!(deactivated.prefix, peer.prefix);
     }
 }

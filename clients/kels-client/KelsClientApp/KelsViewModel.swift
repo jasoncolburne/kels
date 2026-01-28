@@ -37,6 +37,7 @@ class KelsViewModel: ObservableObject {
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
     private let nodeUrlKey = "com.kels.nodeUrl"
+    private let keyNamespace = "com.kels.kelsclient"
     private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
     private let defaultNodeUrl = "http://kels.kels-node-a.local"
 
@@ -110,6 +111,11 @@ class KelsViewModel: ObservableObject {
         log("Cached \(nodes.count) nodes")
     }
 
+    private func clearCachedNodes() {
+        UserDefaults.standard.removeObject(forKey: cachedNodesKey)
+        log("Cleared cached nodes")
+    }
+
     // MARK: - Registry Discovery
 
     /// Discover nodes from the configured registry
@@ -126,7 +132,8 @@ class KelsViewModel: ObservableObject {
         log("Discovering nodes from \(registryUrl)...")
 
         do {
-            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
+            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
             log("Found \(discoveredNodes.count) nodes")
 
             // Cache nodes for fallback
@@ -145,12 +152,10 @@ class KelsViewModel: ObservableObject {
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")
 
-            // Fall back to cached nodes if available
-            if !discoveredNodes.isEmpty {
-                log("Using \(discoveredNodes.count) cached nodes")
-            } else {
-                errorMessage = "Node discovery failed: \(error.localizedDescription)"
-            }
+            // Clear cached nodes on verification failure - don't trust unverified data
+            discoveredNodes = []
+            clearCachedNodes()
+            errorMessage = "Node discovery failed: \(error.localizedDescription)"
         }
     }
 
@@ -184,8 +189,9 @@ class KelsViewModel: ObservableObject {
         log("Auto-selecting fastest node...")
 
         do {
+            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
             // Discover nodes (this will also cache them)
-            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
+            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
             discoveredNodes = nodes
             saveCachedNodes(nodes)
 
@@ -199,27 +205,10 @@ class KelsViewModel: ObservableObject {
         } catch {
             log("ERROR: Registry unavailable: \(error.localizedDescription)")
 
-            // Try to use cached nodes
-            if !discoveredNodes.isEmpty {
-                log("Falling back to cached nodes...")
-                // Re-test latency on cached nodes
-                var updatedNodes = discoveredNodes
-                for i in updatedNodes.indices where updatedNodes[i].status == .ready {
-                    if let latency = await testLatency(to: updatedNodes[i].kelsUrl) {
-                        updatedNodes[i].latencyMs = latency
-                    }
-                }
-                discoveredNodes = updatedNodes
-
-                if let fastestNode = updatedNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                    selectNode(fastestNode)
-                    log("Auto-selected from cache: \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
-                } else {
-                    errorMessage = "No reachable nodes available"
-                }
-            } else {
-                errorMessage = "Auto-select failed: \(error.localizedDescription)"
-            }
+            // Clear cached nodes on verification failure - don't trust unverified data
+            discoveredNodes = []
+            clearCachedNodes()
+            errorMessage = "Auto-select failed: \(error.localizedDescription)"
         }
     }
 
@@ -250,7 +239,7 @@ class KelsViewModel: ObservableObject {
         log("Connecting to: \(currentNodeUrl)")
 
         do {
-            client = try KelsClient(kelsURL: currentNodeUrl, prefix: savedPrefix)
+            client = try KelsClient(kelsURL: currentNodeUrl, keyNamespace: keyNamespace, prefix: savedPrefix)
             log("Client initialized successfully")
             Task {
                 await refreshStatus()
@@ -441,9 +430,39 @@ class KelsViewModel: ObservableObject {
                 errorMessage = "Recovery failed"
             }
             await refreshStatus()
+        } catch KelsClientError.recoveryProtected {
+            log("Recovery protected - adversary used recovery key, contest required")
+            needsContest = true
+            needsRecovery = false
+            errorMessage = "Adversary used recovery key. Use 'Contest' to freeze the KEL."
         } catch {
             log("ERROR: Recovery failed: \(error.localizedDescription)")
             errorMessage = "Recovery failed: \(error.localizedDescription)"
+        }
+    }
+
+    func contest() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let client = client else {
+            log("ERROR: Client not initialized")
+            errorMessage = "Client not initialized"
+            return
+        }
+
+        log("Contesting malicious recovery...")
+
+        do {
+            let event = try client.contest()
+            log("KEL CONTESTED successfully: \(event.said)")
+            isContested = true
+            needsRecovery = false
+            needsContest = false
+            await refreshStatus()
+        } catch {
+            log("ERROR: Contest failed: \(error.localizedDescription)")
+            errorMessage = "Contest failed: \(error.localizedDescription)"
         }
     }
 

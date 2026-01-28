@@ -1,10 +1,7 @@
 .garden/**/*
 target/**/*
 **/target/**/*
-services/*/target/**/*
-services/dhcp/target/**/*
-services/dns/target/**/*
-services/ipam/target/**/*
+**/.build/**/*
 **/*.log
 .git/**/*
 .vscode/**/*

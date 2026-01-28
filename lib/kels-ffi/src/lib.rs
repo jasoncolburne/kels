@@ -5,9 +5,19 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
+use kels::HardwareKeyProvider;
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+use kels::SoftwareKeyProvider;
 use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, RecoveryOutcome,
+    KeyProvider, NodeStatus, PeersResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -15,16 +25,15 @@ use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
+use verifiable_storage::Versioned;
 
 // ==================== Key State Persistence ====================
 
 /// Persisted key state for restoring Secure Enclave keys
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct KeyState {
-    current_label: Option<String>,
-    next_label: Option<String>,
-    recovery_label: Option<String>,
-    next_label_generation: u64,
+    signing_generation: u64,
+    recovery_generation: u64,
 }
 
 impl KeyState {
@@ -225,18 +234,30 @@ impl Default for KelsRecoveryResult {
 
 // ==================== Context ====================
 
-/// Opaque context for KELS operations
+/// Opaque context for KELS operations (Secure Enclave variant)
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+))]
 pub struct KelsContext {
-    builder: Arc<Mutex<KeyEventBuilder>>,
+    builder: Arc<Mutex<KeyEventBuilder<HardwareKeyProvider>>>,
     store: Arc<FileKelStore>,
     runtime: Runtime,
     kels_url: RwLock<String>,
     state_dir: PathBuf,
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    use_hardware: bool,
+}
+
+/// Opaque context for KELS operations (Software variant)
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+pub struct KelsContext {
+    builder: Arc<Mutex<KeyEventBuilder<SoftwareKeyProvider>>>,
+    store: Arc<FileKelStore>,
+    runtime: Runtime,
+    kels_url: RwLock<String>,
+    state_dir: PathBuf,
 }
 
 // ==================== Helper Functions ====================
@@ -268,17 +289,15 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
 }
 
 /// Save key state from the builder's key provider
-async fn save_key_state(
-    builder: &KeyEventBuilder,
+async fn save_key_state<K: KeyProvider>(
+    builder: &KeyEventBuilder<K>,
     state_dir: &Path,
     prefix: &str,
 ) -> Result<(), KelsError> {
     let key_provider = builder.key_provider();
     let key_state = KeyState {
-        current_label: key_provider.current_handle().await,
-        next_label: key_provider.next_handle().await,
-        recovery_label: key_provider.recovery_handle().await,
-        next_label_generation: key_provider.next_label_generation().await,
+        signing_generation: key_provider.signing_generation().await,
+        recovery_generation: key_provider.recovery_generation().await,
     };
     key_state.save(state_dir, prefix)
 }
@@ -290,6 +309,7 @@ async fn save_key_state(
 /// # Arguments
 /// * `kels_url` - URL of the KELS server (e.g., "http://kels.example.com")
 /// * `state_dir` - Directory for storing local state (KELs, keys)
+/// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
 ///
 /// # Returns
@@ -298,6 +318,7 @@ async fn save_key_state(
 pub extern "C" fn kels_init(
     kels_url: *const c_char,
     state_dir: *const c_char,
+    key_namespace: *const c_char,
     prefix: *const c_char,
 ) -> *mut KelsContext {
     clear_last_error();
@@ -311,6 +332,24 @@ pub extern "C" fn kels_init(
         set_last_error("Invalid state directory");
         return std::ptr::null_mut();
     };
+
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    let namespace = match from_c_string(key_namespace) {
+        Some(ns) => ns,
+        None => {
+            set_last_error("Invalid key namespace");
+            return std::ptr::null_mut();
+        }
+    };
+
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let _ = key_namespace; // Unused in software-only builds
 
     let prefix_opt = from_c_string(prefix);
     let state_path = PathBuf::from(&state_dir_str);
@@ -330,15 +369,12 @@ pub extern "C" fn kels_init(
         }
     };
 
-    // Create key provider (prefer Secure Enclave on iOS/macOS)
-    // If we have a saved prefix, try to load existing key state
+    // Create key provider
     #[cfg(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     ))]
-    let (key_provider, use_hardware) = {
-        let namespace = prefix_opt.as_deref().unwrap_or("kels-client").to_string();
-
+    let key_provider = {
         // Try to load existing key state for this prefix
         let key_state = prefix_opt
             .as_deref()
@@ -346,27 +382,25 @@ pub extern "C" fn kels_init(
 
         if let Some(ks) = key_state {
             // Restore key provider with saved handles
-            match KeyProvider::with_hardware_handles(
+            match HardwareKeyProvider::with_all_handles(
                 &namespace,
-                ks.current_label,
-                ks.next_label,
-                ks.recovery_label,
-                ks.next_label_generation,
+                ks.signing_generation,
+                ks.recovery_generation,
             ) {
-                Some(p) => (p, true),
-                None => {
-                    // Fall back to fresh hardware provider
-                    match KeyProvider::hardware(&namespace) {
-                        Some(p) => (p, true),
-                        None => (KeyProvider::software(), false),
-                    }
+                Ok(p) => p,
+                Err(e) => {
+                    set_last_error(&format!("Failed to restore key provider: {}", e));
+                    return std::ptr::null_mut();
                 }
             }
         } else {
             // No saved state, create fresh provider
-            match KeyProvider::hardware(&namespace) {
-                Some(p) => (p, true),
-                None => (KeyProvider::software(), false),
+            match HardwareKeyProvider::new(&namespace) {
+                Some(p) => p,
+                None => {
+                    set_last_error("Secure Enclave not available");
+                    return std::ptr::null_mut();
+                }
             }
         }
     };
@@ -375,7 +409,7 @@ pub extern "C" fn kels_init(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     )))]
-    let (key_provider, _use_hardware) = (KeyProvider::software(), false);
+    let key_provider = SoftwareKeyProvider::new();
 
     // Create KELS client
     let client = KelsClient::with_caching(&url);
@@ -405,11 +439,6 @@ pub extern "C" fn kels_init(
         runtime,
         kels_url: RwLock::new(url),
         state_dir: state_path,
-        #[cfg(all(
-            any(target_os = "macos", target_os = "ios"),
-            feature = "secure-enclave"
-        ))]
-        use_hardware,
     });
 
     Box::into_raw(ctx)
@@ -472,15 +501,20 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     let prefix = builder_guard.prefix().map(|s| s.to_string());
     let kel = builder_guard.kel().clone();
 
-    // Try to clone the key provider
-    let key_provider_opt = ctx
+    // Clone the key provider
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    let key_provider = ctx
         .runtime
-        .block_on(async { builder_guard.key_provider().try_clone().await });
+        .block_on(async { builder_guard.key_provider().clone_async().await });
 
-    let Some(key_provider) = key_provider_opt else {
-        set_last_error("Cannot clone key provider");
-        return -1;
-    };
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let key_provider = builder_guard.key_provider().clone();
 
     // Create new builder with same state but new client, preserving store
     let new_builder =
@@ -764,12 +798,13 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
         return;
     };
 
-    let recover_result = ctx
-        .runtime
-        .block_on(async { builder_guard.recover().await });
+    let recover_result = ctx.runtime.block_on(async {
+        let add_rot = builder_guard.should_add_rot_with_recover().await?;
+        builder_guard.recover(add_rot).await
+    });
 
     match recover_result {
-        Ok((outcome, event, _sig)) => {
+        Ok((event, _sig)) => {
             // Save key state after recovery
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
@@ -781,10 +816,7 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
             }
 
             result.status = KelsStatus::Ok;
-            result.outcome = match outcome {
-                RecoveryOutcome::Recovered => KelsRecoveryOutcome::Recovered,
-                RecoveryOutcome::Contested => KelsRecoveryOutcome::Contested,
-            };
+            result.outcome = KelsRecoveryOutcome::Recovered;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
             result.version = event.version;
@@ -792,6 +824,67 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
         Err(e) => {
             result.status = map_error_to_status(&e);
             result.outcome = KelsRecoveryOutcome::Failed;
+            result.error = to_c_string(&e.to_string());
+            set_last_error(&e.to_string());
+        }
+    }
+}
+
+/// Contest a malicious recovery by submitting a contest event (cnt)
+///
+/// Use this when an adversary has revealed your recovery key.
+/// The KEL will be permanently frozen after contesting.
+///
+/// # Safety
+/// - `ctx` must be a valid context pointer
+/// - `result` must be a valid pointer to a KelsEventResult
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+    clear_last_error();
+
+    if ctx.is_null() || result.is_null() {
+        if !result.is_null() {
+            unsafe {
+                (*result).status = KelsStatus::NotInitialized;
+                (*result).error = to_c_string("Context or result is null");
+            }
+        }
+        return;
+    }
+
+    let ctx = unsafe { &*ctx };
+    let result = unsafe { &mut *result };
+    *result = KelsEventResult::default();
+
+    let Ok(mut builder_guard) = ctx.builder.lock() else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to acquire builder lock");
+        return;
+    };
+
+    let contest_result = ctx
+        .runtime
+        .block_on(async { builder_guard.contest().await });
+
+    match contest_result {
+        Ok((event, _sig)) => {
+            // Save key state after contest (keys rotated during contest)
+            let save_result = ctx.runtime.block_on(save_key_state(
+                &builder_guard,
+                &ctx.state_dir,
+                &event.prefix,
+            ));
+            if let Err(e) = save_result {
+                set_last_error(&format!("Warning: Failed to save key state: {}", e));
+            }
+
+            result.status = KelsStatus::Ok;
+            result.prefix = to_c_string(&event.prefix);
+            result.said = to_c_string(&event.said);
+            result.version = event.version;
+        }
+        Err(e) => {
+            result.status = map_error_to_status(&e);
             result.error = to_c_string(&e.to_string());
             set_last_error(&e.to_string());
         }
@@ -908,7 +1001,7 @@ pub unsafe extern "C" fn kels_status(
         feature = "secure-enclave"
     ))]
     {
-        result.use_hardware = ctx.use_hardware;
+        result.use_hardware = true;
     }
 
     #[cfg(not(all(
@@ -1262,14 +1355,17 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         }
 
         // Clone key provider for adversary builder
-        // Note: We hold the lock during try_clone().await, but this is safe because
-        // we drop the guard immediately after and don't hold it during adversary operations
-        let Some(adversary_keys) = builder_guard.key_provider().try_clone().await else {
-            set_last_error(
-                "Cannot clone key provider - adversary injection requires cloneable keys",
-            );
-            return -1;
-        };
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        let adversary_keys = builder_guard.key_provider().clone_async().await;
+
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        let adversary_keys = builder_guard.key_provider().clone();
 
         let kel = builder_guard.kel().clone();
         drop(builder_guard);
@@ -1309,12 +1405,6 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
                 set_last_error(&format!("Failed to inject {} event: {}", event_type, e));
                 return -1;
             }
-        }
-
-        // Flush events to server (but not local store)
-        if let Err(e) = adversary_builder.flush().await {
-            set_last_error(&format!("Failed to flush adversary events: {}", e));
-            return -1;
         }
 
         0
@@ -1547,15 +1637,23 @@ struct NodeInfoJson {
 /// Returns a JSON array of node objects with status and latency info.
 /// Nodes are sorted by latency (fastest first), with Ready nodes prioritized.
 ///
+/// This function performs cryptographic verification:
+/// 1. Fetches the registry's KEL and verifies its integrity
+/// 2. Checks that the registry prefix matches the expected trust anchor
+/// 3. Verifies each peer's SAID is anchored in the registry's KEL
+///
 /// # Arguments
 /// * `registry_url` - URL of the kels-registry service
+/// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
 ///
 /// # Safety
 /// - `registry_url` must be a valid C string
+/// - `registry_prefix` must be a valid C string or NULL
 /// - `result` must be a valid pointer to a KelsNodesResult
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kels_discover_nodes(
     registry_url: *const c_char,
+    registry_prefix: *const c_char,
     result: *mut KelsNodesResult,
 ) {
     clear_last_error();
@@ -1573,6 +1671,9 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     };
 
+    // registry_prefix is optional - if provided, we verify against it
+    let expected_prefix = from_c_string(registry_prefix);
+
     // Create runtime for async operations
     let Ok(runtime) = Runtime::new() else {
         result.status = KelsStatus::Error;
@@ -1583,13 +1684,51 @@ pub unsafe extern "C" fn kels_discover_nodes(
     let discover_result = runtime.block_on(async {
         let client = KelsRegistryClient::new(&url);
 
+        // Build set of verified node_ids from peer records
+        let verified_node_ids: std::collections::HashSet<String> =
+            if let Some(ref expected) = expected_prefix {
+                // Verify registry and get the KEL for peer anchoring checks
+                let registry_kel = client.verify_registry(expected).await?;
+
+                // Fetch and verify peers, collecting verified node_ids
+                let peers_response: PeersResponse = client.fetch_peers().await?;
+
+                let mut verified = std::collections::HashSet::new();
+                for history in &peers_response.peers {
+                    if let Some(latest) = history.records.last() {
+                        // Skip peers with invalid SAID
+                        if latest.verify().is_err() {
+                            continue;
+                        }
+
+                        // Skip peers not anchored in registry's KEL
+                        if !registry_kel.contains_anchor(&latest.said) {
+                            continue;
+                        }
+
+                        // This peer is verified - trust its node_id
+                        if latest.active {
+                            verified.insert(latest.node_id.clone());
+                        }
+                    }
+                }
+                verified
+            } else {
+                // No verification - empty set means accept all nodes
+                std::collections::HashSet::new()
+            };
+
         // Fetch all nodes (paginated)
         let nodes = client.list_all_nodes().await?;
 
-        // Test latency to each Ready node
+        // Test latency to each Ready node, filtering to verified nodes if verification was performed
         let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());
 
         for node in nodes {
+            // If we have verified node_ids, only include nodes that passed verification
+            if !verified_node_ids.is_empty() && !verified_node_ids.contains(&node.node_id) {
+                continue;
+            }
             let latency_ms = if node.status == NodeStatus::Ready {
                 // Test latency with short timeout
                 let kels_client =
