@@ -249,8 +249,8 @@ run_test "Owner recovers KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX1
 # Verify KEL is now OK
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX1" "OK"
 
-# Verify recovery always ends with rec,rot (rotate away from potentially compromised signing key)
-run_test "KEL ends with rec,rot after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec"
+# Verify recovery ends with rec
+run_test "KEL ends with rec after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec"
 
 # Owner can now add events again
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX1" --said "EPostRecoveryAnchor_________________________"
