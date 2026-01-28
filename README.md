@@ -242,6 +242,16 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 make install-deny
 ```
 
+### IDE Setup
+
+For VSCode with rust-analyzer, copy the example settings to enable proper linting:
+
+```bash
+cp -r .vscode.example .vscode
+```
+
+This provides rust-analyzer with required environment variables (like `REGISTRY_PREFIX`) for analysis without affecting actual builds.
+
 ### Testing
 
 ```bash
