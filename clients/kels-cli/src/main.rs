@@ -912,7 +912,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     // Create adversary builder WITH KELS client but NO kel_store
     // Events submit to KELS but don't save locally (simulating adversary)
     let client = create_client(cli).await?;
-    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), None, kel);
+    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), None, kel)?;
 
     let mut saids = Vec::new();
     let mut counter = 0u32;

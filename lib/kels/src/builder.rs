@@ -42,7 +42,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
             _ => Kel::default(),
         };
-        let confirmed_cursor = kel.confirmed_cursor();
+        let confirmed_cursor = kel.confirmed_cursor()?;
 
         Ok(Self {
             key_provider,
@@ -58,15 +58,15 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
-    ) -> Self {
-        let confirmed_cursor = kel.confirmed_cursor();
-        Self {
+    ) -> Result<Self, KelsError> {
+        let confirmed_cursor = kel.confirmed_cursor()?;
+        Ok(Self {
             key_provider,
             kels_client,
             kel_store,
             kel,
             confirmed_cursor,
-        }
+        })
     }
 
     // ==================== Accessors ====================
@@ -137,7 +137,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         if let Some(kel) = store.load(&prefix).await? {
-            self.confirmed_cursor = kel.confirmed_cursor();
+            self.confirmed_cursor = kel.confirmed_cursor()?;
             self.kel = kel;
         }
         Ok(())
