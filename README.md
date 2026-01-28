@@ -30,16 +30,19 @@ can be requested alongside the recovered KEL in the form of an audit query.
 kels/
 ├── lib/
 │   ├── kels/           # Core library (libkels)
-│   └── kels-derive/    # Derive macros for storage traits
+│   ├── kels-derive/    # Derive macros for storage traits
+│   └── kels-ffi/       # FFI bindings (Swift/C interop)
 ├── services/
 │   ├── kels/           # HTTP API server
 │   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
 │   ├── kels-registry/  # Node registration and discovery service
 │   ├── identity/       # Registry identity service (single replica)
 │   ├── hsm/            # HSM service (SoftHSM2 wrapper)
-│   └── postgres/       # PostgreSQL configuration
+│   ├── postgres/       # PostgreSQL configuration
+│   └── redis/          # Redis configuration
 ├── clients/
 │   ├── kels-cli/       # Command-line interface
+│   ├── kels-client/    # Swift client (iOS/macOS)
 │   ├── kels-bench/     # Benchmarking tool
 │   └── test/           # Integration test scripts/container
 └── docs/               # Documentation
@@ -50,7 +53,7 @@ kels/
 - **Multiple key providers**:
   - `SoftwareKeyProvider` - In-memory keys for development/testing
   - `HardwareKeyProvider` - macOS/iOS Secure Enclave backed keys
-  - `ExternalKeyProvider` trait - Integrate with HSMs or other key management
+  - `KeyProvider` trait - Extensible interface for HSMs or other key management
 
 - **Platform support**:
   - Native (Linux, macOS, Windows)
