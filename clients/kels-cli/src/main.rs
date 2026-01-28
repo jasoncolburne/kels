@@ -179,17 +179,6 @@ enum AdversaryCommands {
         /// Comma-separated list of event types to inject (e.g., "ixn,ixn,rot")
         #[arg(long)]
         events: String,
-
-        /// Use a historical signing key from specified generation
-        /// (0 = inception key, 1 = after first rotation, etc.)
-        /// Simulates adversary who stole keys before owner rotated.
-        #[arg(long)]
-        generation: Option<usize>,
-
-        /// Start injecting at this version (chain from version-1)
-        /// Use with --generation to inject at a specific point in the KEL.
-        #[arg(long)]
-        event_version: Option<u64>,
     },
 }
 
@@ -500,7 +489,8 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder.recover().await.context("Recovery failed")?;
+    let add_rot = builder.should_add_rot_with_recover().await?;
+    let (event, _sig) = builder.recover(add_rot).await.context("Recovery failed")?;
     config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery successful!".green().bold());
@@ -889,13 +879,7 @@ async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 #[cfg(feature = "dev-tools")]
-async fn cmd_adversary_inject(
-    cli: &Cli,
-    prefix: &str,
-    events_str: &str,
-    _generation: Option<usize>,
-    event_version: Option<u64>,
-) -> Result<()> {
+async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Result<()> {
     println!(
         "{}",
         format!("ADVERSARY: Injecting events to {} (server only)...", prefix)
@@ -905,33 +889,13 @@ async fn cmd_adversary_inject(
 
     // Load the local KEL to get the chain state
     let kel_store = create_kel_store(cli, Some(prefix))?;
-    let mut kel = kel_store
+    let kel = kel_store
         .load(prefix)
         .await?
         .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
 
     // Load the key provider (adversary has the same keys as owner)
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-
-    // If event_version specified, truncate KEL to that point (simulates adversary with old state)
-    if let Some(version) = event_version {
-        let truncate_at = kel
-            .events()
-            .iter()
-            .position(|e| e.event.version >= version)
-            .unwrap_or(kel.len());
-
-        kel.truncate(truncate_at);
-        println!(
-            "{}",
-            format!(
-                "Truncated KEL to {} events (adversary chains from v{})",
-                truncate_at,
-                truncate_at.saturating_sub(1)
-            )
-            .yellow()
-        );
-    }
 
     // Parse event types
     let event_types: Vec<&str> = events_str.split(',').map(|s| s.trim()).collect();
@@ -1033,12 +997,9 @@ async fn main() -> Result<()> {
 
         #[cfg(feature = "dev-tools")]
         Commands::Adversary(adv_cmd) => match adv_cmd {
-            AdversaryCommands::Inject {
-                prefix,
-                events,
-                generation,
-                event_version,
-            } => cmd_adversary_inject(&cli, prefix, events, *generation, *event_version).await,
+            AdversaryCommands::Inject { prefix, events } => {
+                cmd_adversary_inject(&cli, prefix, events).await
+            }
         },
     }
 }

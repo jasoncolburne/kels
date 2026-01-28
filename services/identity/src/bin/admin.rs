@@ -409,7 +409,8 @@ async fn cmd_recover(
     }
 
     // Recover using the builder (authoritative mode)
-    let (event, _signature) = builder.recover().await?;
+    let add_rot = builder.should_add_rot_with_recover().await?;
+    let (event, _signature) = builder.recover(add_rot).await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder

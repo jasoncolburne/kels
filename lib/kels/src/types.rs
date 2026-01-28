@@ -2,7 +2,10 @@
 
 use crate::error::KelsError;
 use serde::{Deserialize, Serialize};
+use std::cmp::{Eq, PartialEq};
+use std::collections::HashSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use verifiable_storage::{SelfAddressed, StorageDatetime, Versioned};
 
@@ -40,6 +43,10 @@ impl EventKind {
     /// Establishment events have a public key
     pub fn is_establishment(&self) -> bool {
         !matches!(self, Self::Ixn)
+    }
+
+    pub fn reveals_rotation_key(&self) -> bool {
+        matches!(self, Self::Rot) || self.reveals_recovery_key()
     }
 
     pub fn reveals_recovery_key(&self) -> bool {
@@ -324,6 +331,9 @@ impl KeyEvent {
     pub fn is_establishment(&self) -> bool {
         self.kind.is_establishment()
     }
+    pub fn reveals_rotation_key(&self) -> bool {
+        self.kind.reveals_rotation_key()
+    }
     pub fn reveals_recovery_key(&self) -> bool {
         self.kind.reveals_recovery_key()
     }
@@ -537,6 +547,42 @@ pub struct KeyEventSignature {
 pub struct SignedKeyEvent {
     pub event: KeyEvent,
     pub signatures: Vec<KeyEventSignature>,
+}
+
+impl Eq for SignedKeyEvent {}
+
+impl PartialEq for SignedKeyEvent {
+    fn eq(&self, other: &Self) -> bool {
+        if self.event.said != other.event.said {
+            return false;
+        }
+
+        if self.signatures.len() != other.signatures.len() {
+            return false;
+        }
+
+        let actual_signatures: HashSet<_> = self
+            .signatures
+            .iter()
+            .map(|s| s.signature.clone())
+            .collect();
+        for signature in &other.signatures {
+            if !actual_signatures.contains(&signature.signature) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl Hash for SignedKeyEvent {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.event.said.hash(state);
+        for signature in self.signatures.clone() {
+            signature.signature.hash(state);
+        }
+    }
 }
 
 impl SignedKeyEvent {

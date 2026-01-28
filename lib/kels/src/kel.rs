@@ -4,6 +4,7 @@ use crate::error::KelsError;
 use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
 use cesr::{Digest, Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use verifiable_storage::{StorageDatetime, Versioned};
 
@@ -443,16 +444,15 @@ impl Kel {
                 });
             }
 
-            let mut next_tails: std::collections::HashSet<&str> = std::collections::HashSet::new();
-
             for signed_event in events_at_version {
                 let event = &signed_event.event;
                 Self::verify_event_basics(event, prefix, *version)?;
-                self.verify_chaining(event, *version, &valid_tails)?;
-                next_tails.insert(&event.said);
+                self.verify_chaining(event, *version, &events_by_version)?;
+                if let Some(previous) = &event.previous {
+                    valid_tails.remove(previous.as_str());
+                }
+                valid_tails.insert(&event.said);
             }
-
-            valid_tails = next_tails;
         }
 
         // BACKWARD PASS: For each tail, walk backward verifying cryptographic chain
@@ -601,7 +601,7 @@ impl Kel {
         &self,
         event: &KeyEvent,
         version: u64,
-        valid_tails: &std::collections::HashSet<&str>,
+        events: &BTreeMap<u64, Vec<&SignedKeyEvent>>,
     ) -> Result<(), KelsError> {
         if version == 0 {
             if !event.is_inception() && !event.is_delegated_inception() {
@@ -624,16 +624,24 @@ impl Kel {
             ))
         })?;
 
-        if !valid_tails.contains(prev) {
-            return Err(KelsError::InvalidKel(format!(
-                "Event at version {} chains from unknown previous {}, valid tails: {:?}",
-                version,
-                prev,
-                valid_tails.iter().collect::<Vec<_>>()
-            )));
-        }
+        let previous_version = event.version - 1;
+        let valid_events = events.get(&previous_version);
 
-        Ok(())
+        if let Some(events) = valid_events {
+            if !events.iter().any(|e| e.event.said == prev) {
+                return Err(KelsError::InvalidKel(format!(
+                    "Event at version {} chains from unknown previous {}, valid tails: {:?}",
+                    version, prev, events,
+                )));
+            }
+
+            Ok(())
+        } else {
+            Err(KelsError::InvalidKel(format!(
+                "No events for version {}",
+                previous_version
+            )))
+        }
     }
 
     fn verify_establishment_security(

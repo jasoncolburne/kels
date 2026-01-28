@@ -798,9 +798,10 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
         return;
     };
 
-    let recover_result = ctx
-        .runtime
-        .block_on(async { builder_guard.recover().await });
+    let recover_result = ctx.runtime.block_on(async {
+        let add_rot = builder_guard.should_add_rot_with_recover().await?;
+        builder_guard.recover(add_rot).await
+    });
 
     match recover_result {
         Ok((event, _sig)) => {

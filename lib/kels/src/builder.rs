@@ -1,5 +1,7 @@
 //! Key Event Builder
 
+use std::collections::HashSet;
+
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
 use crate::error::KelsError;
@@ -141,6 +143,45 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(())
     }
 
+    pub async fn should_add_rot_with_recover(&self) -> Result<bool, KelsError> {
+        if let Some(client) = &self.kels_client
+            && let Some(prefix) = self.prefix()
+        {
+            let mut kels_kel = client.fetch_full_kel(prefix).await?;
+            let local_events = self.events();
+            let local_set: HashSet<_> = local_events.iter().collect();
+            let local_vec: Vec<_> = local_events.to_vec();
+
+            let _ = kels_kel.merge(local_vec)?;
+            if let Some(divergence) = kels_kel.find_divergence() {
+                let owner_has_rot = local_events.iter().any(|e| {
+                    e.event.version >= divergence.diverged_at_version
+                        && e.event.reveals_rotation_key()
+                });
+
+                if owner_has_rot {
+                    // owner rotated
+                    Ok(false)
+                } else {
+                    let adversarial_events: Vec<_> = kels_kel
+                        .events()
+                        .iter()
+                        .filter(|e| !local_set.contains(e))
+                        .collect();
+                    Ok(adversarial_events
+                        .iter()
+                        .any(|e| e.event.reveals_rotation_key()))
+                }
+            } else {
+                // not divergent
+                Ok(false)
+            }
+        } else {
+            // fail secure
+            Ok(true)
+        }
+    }
+
     // ==================== Event Operations ====================
 
     pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
@@ -229,42 +270,50 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok((event, primary_signature))
     }
 
-    pub async fn recover(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn recover(&mut self, add_rot: bool) -> Result<(KeyEvent, Signature), KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_rec_event, rec_event) =
+        let (signed_rec_event, rec_event, rec_signature) =
             match self.create_signed_recovery_event(&last_event).await {
-                Ok((signed_event, event, _)) => (signed_event, event),
+                Ok((signed_event, event, signature)) => (signed_event, event, signature),
                 Err(e) => {
                     self.key_provider.rollback().await?;
                     return Err(e);
                 }
             };
 
-        // we add a rot intentionally in case the attacker determined the rotation key.
+        let mut events = vec![signed_rec_event];
+        // we can add a rot intentionally in case the attacker determined the rotation key.
         // after recovery, they'd still be able to inject ixn if we didn't.
         //
         // however, this is only necessary if they exposed the rotation key which
-        // is unlikely. our logic could be better - we could:
+        // is unlikely. our logic should be:
         //  1. ensure we didn't already rotate as the last, divergent event that will
         //     become authoritative after recovery
-        //  2. fetch from the server and determine if the attacker rotated
+        //  2. if we didn't rotate, fetch from the server and determine if the attacker rotated
+        //  3. if they did, we must rotate
         //
         // If we didn't rotate and the adversary did, we should add a rotation.
-        let (signed_event, event, signature) =
-            match self.create_signed_rotation_event(&rec_event).await {
-                Ok(r) => r,
-                Err(e) => {
-                    self.key_provider.rollback().await?;
-                    return Err(e);
-                }
-            };
+        let (event, signature) = if add_rot {
+            let (signed_rot_event, rot_event, rot_signature) =
+                match self.create_signed_rotation_event(&rec_event).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.key_provider.rollback().await?;
+                        return Err(e);
+                    }
+                };
 
-        self.add_and_flush(&[signed_rec_event, signed_event])
-            .await?;
+            events.push(signed_rot_event);
+            (rot_event, rot_signature)
+        } else {
+            (rec_event, rec_signature)
+        };
+
+        self.add_and_flush(&events).await?;
         Ok((event, signature))
     }
 

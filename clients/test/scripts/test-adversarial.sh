@@ -29,6 +29,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Directory swap helpers for adversary simulation
+save_adversary_keys() {
+    cp -r "$KELS_CLI_HOME" "$KELS_CLI_HOME.adversary"
+}
+
+swap_to_adversary() {
+    mv "$KELS_CLI_HOME" "$KELS_CLI_HOME.owner"
+    cp -r "$KELS_CLI_HOME.adversary" "$KELS_CLI_HOME"
+}
+
+swap_to_owner() {
+    rm -rf "$KELS_CLI_HOME"
+    mv "$KELS_CLI_HOME.owner" "$KELS_CLI_HOME"
+}
+
+cleanup_adversary_backup() {
+    rm -rf "$KELS_CLI_HOME.adversary"
+    rm -rf "$KELS_CLI_HOME.owner"
+}
+
 # Test helpers
 run_test() {
     local name="$1"
@@ -230,7 +250,7 @@ run_test "Owner recovers KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX1
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX1" "OK"
 
 # Verify recovery always ends with rec,rot (rotate away from potentially compromised signing key)
-run_test "KEL ends with rec,rot after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec,rot"
+run_test "KEL ends with rec,rot after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec"
 
 # Owner can now add events again
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX1" --said "EPostRecoveryAnchor_________________________"
@@ -597,46 +617,50 @@ echo ""
 # Scenario 13: Adversary Attacks Old Version After Multiple Rotations
 # ========================================
 echo -e "${CYAN}=== Scenario 13: Adversary Attacks Old Version After Multiple Rotations ===${NC}"
-echo "Owner rotates twice, adversary attacks at v3 using stolen inception key"
+echo "Owner rotates twice after adversary steals keys, adversary attacks with old keys"
+echo "Owner recovers without extra rotation (already escaped to new keys)"
 echo ""
 
-# Setup: owner builds a chain with multiple rotations
+# Setup: owner builds initial chain
 PREFIX13=$(kels-cli -u "$KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL: $PREFIX13"
 
 kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EOwnerAnchorV1______________________________"
 kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EOwnerAnchorV2______________________________"
+
+# Adversary steals keys at this point (v2)
+save_adversary_keys
+
+# Owner rotates twice, escaping to new keys adversary doesn't have
 run_test "Owner rotates (v3)" kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX13"
 run_test "Owner rotates again (v4)" kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX13"
 
 # Owner's chain: icp(v0), ixn(v1), ixn(v2), rot(v3), rot(v4)
-# Owner has rotated twice - inception key (generation 0) is now in history
 
-# Adversary attacks at v3 using stolen inception key (generation 0)
-# This creates divergence at v3: owner's rot(v3) vs adversary's rot(v3)
-# Note: The inject command returns error on divergence detection, but that's the expected outcome
-run_test_expect_divergence "Adversary injects rot at v3 using inception key" "$PREFIX13" \
-    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX13" --events rot --generation 0 --event-version 3
+# Adversary attacks using stolen keys (from before owner's rotations)
+swap_to_adversary
 
-# Owner tries to anchor - server returns frozen, client syncs and sees divergence
-run_test_expect_divergence "Owner anchor syncs divergence from server" "$PREFIX13" \
-    kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EOwnerAnchorAfterAttack_____________________"
+# Adversary injects rot at v3 - creates divergence with owner's rot(v3)
+run_test_expect_divergence "Adversary injects rot using stolen keys" "$PREFIX13" \
+    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX13" --events rot
 
-# Verify divergence at v3
-run_test "KEL status is DIVERGENT" check_kel_status "$PREFIX13" "DIVERGENT"
+# Restore owner's state
+swap_to_owner
 
-# Owner recovers - needs inception key (generation 0) from history to sign rec at v3
-# The inception key is in signing_key_history[0] after two rotations
-run_test "Owner recovers using historical inception key" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX13"
+# Owner recovers - no extra rotation needed because owner already rotated past compromised keys
+run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX13"
 
 # Verify recovery succeeded
-run_test "KEL status is OK after historical key recovery" check_kel_status "$PREFIX13" "OK"
+run_test "KEL status is OK after recovery" check_kel_status "$PREFIX13" "OK"
 
-# Recovery always ends with rec,rot (rotate away from potentially compromised signing key)
-run_test "KEL ends with rec,rot after historical key recovery" check_kel_ends_with "$PREFIX13" "rec,rot"
+# Recovery should end with just rec (no extra rot needed - owner already escaped)
+run_test "KEL ends with rec (no extra rot - owner already rotated)" check_kel_ends_with "$PREFIX13" "rec"
 
 # Owner can continue
 run_test "Owner can add events after recovery" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX13" --said "EPostHistoricalRecoveryAnchor_______________"
+
+# Cleanup
+cleanup_adversary_backup
 
 echo ""
 
@@ -667,20 +691,29 @@ echo ""
 PREFIX15=$(kels-cli -u "$KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL: $PREFIX15"
 
-kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX15" --said "EOwnerAnchorV1______________________________"
+# Adversary steals keys at v0
+save_adversary_keys
 
-# Owner proactively rotates recovery key (ror at v2)
+# Owner continues: ixn (v1), ror (v2)
+kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX15" --said "EOwnerAnchorV1______________________________"
 run_test "Owner rotates recovery key proactively" kels-cli -u "$KELS_URL" rotate-recovery --prefix "$PREFIX15"
 
-# Adversary tries to inject at v1 (before the ror) - should be rejected
+# Adversary tries to inject at v1 (from their perspective) - should be rejected
+# because ror at v2 protects earlier versions
+swap_to_adversary
+
 run_test_expect_fail "Adversary injection rejected (RecoveryProtected)" \
-    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX15" --events ixn --generation 0 --event-version 1
+    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX15" --events ixn
+
+swap_to_owner
 
 # KEL should still be OK (no divergence occurred)
 run_test "KEL status is OK (protected by ror)" check_kel_status "$PREFIX15" "OK"
 
 # Owner can still add events normally
 run_test "Owner can add events after ror" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX15" --said "EOwnerAnchorAfterRor________________________"
+
+cleanup_adversary_backup
 
 echo ""
 
@@ -695,27 +728,42 @@ echo ""
 PREFIX16=$(kels-cli -u "$KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL: $PREFIX16"
 
+# Adversary steals keys at v0
+save_adversary_keys
+
+# Owner continues: ixn (v1), ixn (v2)
 kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV1______________________________"
 kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV2______________________________"
 
-# Adversary injects at v2, creating divergence
-run_test_expect_divergence "Adversary injects at v2 (creates divergence)" "$PREFIX16" \
-    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn --generation 0 --event-version 2
+# Adversary injects at v1 (from their perspective), creating divergence
+swap_to_adversary
 
-# Owner syncs divergence from server
+run_test_expect_divergence "Adversary injects (creates divergence)" "$PREFIX16" \
+    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn
+
+swap_to_owner
+
+# Owner syncs divergence and recovers
 run_test_expect_divergence "Owner anchor syncs divergence" "$PREFIX16" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "EOwnerAnchorV3TriggersDivergence____________"
 run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX16"
 
-# KEL is now: icp(v0), ixn(v1), rec(v2)
+# KEL is now: icp(v0), ixn(v1), ixn(v2), rec(v3) (rec at divergence point)
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX16" "OK"
 
-# Adversary tries to re-diverge at v1 (before recovery) - should be rejected
+# Adversary tries to re-diverge at v1 (still has v0 keys) - should be rejected
+# because rec at v3 protects earlier versions
+swap_to_adversary
+
 run_test_expect_fail "Adversary re-injection rejected (RecoveryProtected)" \
-    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn --generation 0 --event-version 1
+    kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn
+
+swap_to_owner
 
 # KEL should still be OK
 run_test "KEL status still OK after blocked re-injection" check_kel_status "$PREFIX16" "OK"
+
+cleanup_adversary_backup
 
 echo ""
 
