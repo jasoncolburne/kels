@@ -19,9 +19,10 @@ can be requested alongside the recovered KEL in the form of an audit query.
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Re-implement gossip with kels crypto to remove dependence on libp2p.
-2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-3. Build a complete example with a use case that kels solves
+1. Make `lib/kels/src/kel.rs` nicer.
+2. Re-implement gossip with kels crypto to remove dependence on libp2p.
+3. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
+4. Build a complete example with a use case that kels solves
 
 ## Project Structure
 
