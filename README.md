@@ -230,7 +230,7 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 
 ### Prerequisites
 
-- Rust 2024 edition (nightly)
+- Rust 2024 edition
 - PostgreSQL (for server)
 - Redis (optional, for caching)
 - `cargo-deny` (for dependency auditing)

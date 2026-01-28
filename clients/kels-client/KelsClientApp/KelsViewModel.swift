@@ -345,7 +345,9 @@ class KelsViewModel: ObservableObject {
             await refreshStatus()
         } catch {
             log("ERROR: Interaction failed: \(error.localizedDescription)")
-            if !checkForDivergence(error: error) {
+            if checkForDivergence(error: error) {
+                await refreshStatus()
+            } else {
                 errorMessage = "Interaction failed: \(error.localizedDescription)"
             }
         }
@@ -371,7 +373,9 @@ class KelsViewModel: ObservableObject {
             await refreshStatus()
         } catch {
             log("ERROR: Key rotation failed: \(error.localizedDescription)")
-            if !checkForDivergence(error: error) {
+            if checkForDivergence(error: error) {
+                await refreshStatus()
+            } else {
                 errorMessage = "Key rotation failed: \(error.localizedDescription)"
             }
         }
@@ -395,7 +399,9 @@ class KelsViewModel: ObservableObject {
             await refreshStatus()
         } catch {
             log("ERROR: Recovery key rotation failed: \(error.localizedDescription)")
-            if !checkForDivergence(error: error) {
+            if checkForDivergence(error: error) {
+                await refreshStatus()
+            } else {
                 errorMessage = "Recovery key rotation failed: \(error.localizedDescription)"
             }
         }
