@@ -120,6 +120,16 @@ impl Kel {
 
     pub fn push(&mut self, event: SignedKeyEvent) {
         self.0.push(event);
+        self.sort_by_version();
+    }
+
+    pub fn extend(&mut self, events: impl IntoIterator<Item = SignedKeyEvent>) {
+        self.0.extend(events);
+        self.sort_by_version();
+    }
+
+    fn sort_by_version(&mut self) {
+        self.0.sort_by_key(|e| e.event.version);
     }
 
     pub fn truncate(&mut self, len: usize) {
@@ -232,14 +242,18 @@ impl Kel {
             .any(|e| e.event.version >= version && e.event.reveals_recovery_key())
     }
 
-    pub fn confirmed_cursor(&self) -> usize {
+    pub fn confirmed_cursor(&self) -> Result<usize, KelsError> {
         if let Some(divergence) = self.find_divergence() {
             self.0
                 .iter()
-                .position(|e| e.event.version >= divergence.diverged_at_version)
-                .unwrap_or(self.0.len())
+                .position(|e| e.event.version == divergence.diverged_at_version)
+                .ok_or_else(|| {
+                    KelsError::InvalidKel(
+                        "Divergence detected but no events at diverged version".to_string(),
+                    )
+                })
         } else {
-            self.0.len()
+            Ok(self.0.len())
         }
     }
 
@@ -283,7 +297,7 @@ impl Kel {
             if first.event.is_contest() {
                 // Contest: Just append cnt event, don't truncate. KEL stays divergent but frozen.
                 // This gives visibility to the contested state while preserving all events.
-                self.0.extend(events.iter().cloned());
+                self.extend(events.iter().cloned());
                 self.verify()?;
                 return Ok((vec![], KelMergeResult::Contested)); // Empty vec = nothing to archive
             } else {
@@ -297,7 +311,7 @@ impl Kel {
                 let adversary_events =
                     self.partition_by_owner_chain(&owner_chain_saids, div_info.diverged_at_version);
 
-                self.0.extend(events.iter().cloned());
+                self.extend(events.iter().cloned());
                 self.verify()?;
                 return Ok((adversary_events, KelMergeResult::Recovered));
             }
@@ -318,7 +332,7 @@ impl Kel {
             if self.is_decommissioned() {
                 return Err(KelsError::KelDecommissioned);
             }
-            self.0.extend(events.iter().cloned());
+            self.extend(events.iter().cloned());
             (vec![], KelMergeResult::Verified)
         } else if existing_length > index {
             // Overlap - check for matching or divergent events
@@ -359,25 +373,25 @@ impl Kel {
                             if old_has_recovery && rec.event.is_contest() {
                                 // Contest: Adversary revealed recovery key, owner contests.
                                 // Just append cnt event, don't truncate. KEL stays divergent but frozen.
-                                self.0.extend(divergent_new_events.iter().cloned());
+                                self.extend(divergent_new_events.iter().cloned());
                                 break (vec![], KelMergeResult::Contested);
                             } else if old_has_recovery {
                                 // FATAL: Adversary revealed recovery key, but owner submitted rec not cnt
                                 // Truncate and archive - this shouldn't normally happen
                                 self.0.truncate(offset);
-                                self.0.extend(divergent_new_events.iter().cloned());
+                                self.extend(divergent_new_events.iter().cloned());
                                 break (divergent_old_events, KelMergeResult::Contested);
                             } else {
                                 // Recovery: Owner recovers - truncate and archive adversary events
                                 self.0.truncate(offset);
-                                self.0.extend(divergent_new_events.iter().cloned());
+                                self.extend(divergent_new_events.iter().cloned());
                                 break (divergent_old_events, KelMergeResult::Recovered);
                             }
                         } else {
                             // No recovery event - accept divergent event and freeze KEL
                             // Add only the first divergent event (at the conflict version)
                             // Subsequent events in submission are rejected (KEL is frozen)
-                            self.0.push(new_event.clone());
+                            self.push(new_event.clone());
 
                             // Return the divergent event so handler can store it
                             // and get the diverged_at SAID
@@ -392,7 +406,7 @@ impl Kel {
                     }
                 } else {
                     // Past the overlap - just append remaining new events
-                    self.0.extend(events[i..].iter().cloned());
+                    self.extend(events[i..].iter().cloned());
                     break (vec![], KelMergeResult::Verified);
                 }
 
@@ -927,7 +941,8 @@ mod tests {
             None,
             None,
             kel.clone(),
-        );
+        )
+        .unwrap();
 
         let (ixn_event, _) = builder2.interact("anchor").await.unwrap();
         assert_eq!(ixn_event.prefix, icp_event.prefix);
@@ -966,7 +981,8 @@ mod tests {
             None,
             None,
             kel.clone(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(builder2.last_event().unwrap().said, ixn2.said);
         assert_eq!(
@@ -1092,7 +1108,8 @@ mod tests {
             None,
             None,
             kel_for_builder2.clone(),
-        );
+        )
+        .unwrap();
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         // Both ixn1 and ixn2 are at version 1, chaining from icp
@@ -1150,7 +1167,8 @@ mod tests {
             None,
             None,
             kel_for_builder2.clone(),
-        );
+        )
+        .unwrap();
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         // Create third divergent event
@@ -1163,7 +1181,8 @@ mod tests {
             None,
             None,
             kel_for_builder2.clone(),
-        );
+        )
+        .unwrap();
         let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
 
         // All three ixn events are at version 1
@@ -1225,7 +1244,8 @@ mod tests {
             None,
             None,
             kel_for_builder2.clone(),
-        );
+        )
+        .unwrap();
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         // Create divergent KEL with events at v0 (icp) and two at v1
@@ -1252,7 +1272,8 @@ mod tests {
             None,
             None,
             divergent_kel.clone(),
-        );
+        )
+        .unwrap();
 
         // last_event returns the actual last event in the KEL (one of the divergent events)
         // In divergent KEL, confirmed_cursor points to first divergent event
@@ -1294,7 +1315,8 @@ mod tests {
             None,
             None,
             kel_for_others.clone(),
-        );
+        )
+        .unwrap();
         let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
@@ -1306,7 +1328,8 @@ mod tests {
             None,
             None,
             kel_for_others.clone(),
-        );
+        )
+        .unwrap();
         let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
 
         // Create 3-way divergent KEL
@@ -1335,7 +1358,8 @@ mod tests {
             None,
             None,
             divergent_kel.clone(),
-        );
+        )
+        .unwrap();
 
         // confirmed_cursor should be 1, pending should have 3 events
         assert_eq!(loaded_builder.confirmed_count(), 1);
@@ -1375,7 +1399,8 @@ mod tests {
             None,
             None,
             adversary_kel.clone(),
-        );
+        )
+        .unwrap();
         let (adversary_rot, adversary_rot_sig) = adversary.rotate().await.unwrap();
 
         // Both events are at version 1
@@ -1464,7 +1489,8 @@ mod tests {
             None,
             None,
             adversary_kel.clone(),
-        );
+        )
+        .unwrap();
         let (adversary_ixn, adversary_ixn_sig) =
             adversary.interact("adversary-anchor").await.unwrap();
 
