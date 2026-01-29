@@ -277,6 +277,8 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 
 ## Documentation
 
+- [KEL Merge Protocol](docs/kel-merge.md) - Event submission and merge logic
+- [KEL Verification](docs/kel-verification.md) - Integrity and authenticity verification
 - [Divergence Detection and Recovery](docs/divergence-detection.md) - Detailed protocol documentation
 - [Attack Surface](docs/attack-surface.md) - Security analysis
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
