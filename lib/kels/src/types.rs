@@ -313,7 +313,7 @@ impl KeyEvent {
     pub fn is_rotation(&self) -> bool {
         self.kind == EventKind::Rot
     }
-    pub fn is_recovery(&self) -> bool {
+    pub fn is_recover(&self) -> bool {
         self.kind == EventKind::Rec
     }
     pub fn is_recovery_rotation(&self) -> bool {
@@ -658,7 +658,7 @@ impl SignedKeyEvent {
 #[must_use = "BatchSubmitResponse.accepted must be checked - events may be rejected"]
 pub struct BatchSubmitResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub diverged_at: Option<String>,
+    pub diverged_at: Option<u64>,
     pub accepted: bool,
 }
 
