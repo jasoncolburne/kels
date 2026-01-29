@@ -104,9 +104,20 @@ impl Kel {
         self.sort_by_version();
     }
 
-    pub fn remove_adversary_events(&mut self, owner_saids: &std::collections::HashSet<String>) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let owner_events = self.iter().filter(|e| owner_saids.contains(&e.event.said)).cloned().collect();
-        let adversary_events = self.iter().filter(|e| !owner_saids.contains(&e.event.said)).cloned().collect();
+    pub fn remove_adversary_events(
+        &mut self,
+        owner_saids: &std::collections::HashSet<String>,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let owner_events = self
+            .iter()
+            .filter(|e| owner_saids.contains(&e.event.said))
+            .cloned()
+            .collect();
+        let adversary_events = self
+            .iter()
+            .filter(|e| !owner_saids.contains(&e.event.said))
+            .cloned()
+            .collect();
         self.0 = owner_events;
         self.sort_by_version();
         Ok(adversary_events)
@@ -159,7 +170,10 @@ impl Kel {
         })
     }
 
-    pub fn get_owner_kel_saids_from_tail(&self, tail_said: &str) -> std::collections::HashSet<String> {
+    pub fn get_owner_kel_saids_from_tail(
+        &self,
+        tail_said: &str,
+    ) -> std::collections::HashSet<String> {
         let mut saids = std::collections::HashSet::new();
         let mut current_said = Some(tail_said.to_string());
         while let Some(said) = current_said {
@@ -250,8 +264,7 @@ impl Kel {
 
         // If KEL is divergent and we're receiving a recovery event, use special handling.
         // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
-        if divergence.is_some() && first.event.reveals_recovery_key()
-        {
+        if divergence.is_some() && first.event.reveals_recovery_key() {
             if first.event.is_contest() {
                 if events.len() > 1 {
                     return Err(KelsError::InvalidKel(
@@ -268,7 +281,9 @@ impl Kel {
                 // Recovery: Keep owner's chain, archive adversary events.
                 // Owner's chain is identified by tracing back from rec's previous field.
                 let Some(owner_tail_said) = &first.event.previous else {
-                    return Err(KelsError::InvalidKel("Recovery event has no previous".into()));
+                    return Err(KelsError::InvalidKel(
+                        "Recovery event has no previous".into(),
+                    ));
                 };
 
                 let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
