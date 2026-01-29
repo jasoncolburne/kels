@@ -313,7 +313,7 @@ impl KeyEvent {
     pub fn is_rotation(&self) -> bool {
         self.kind == EventKind::Rot
     }
-    pub fn is_recovery(&self) -> bool {
+    pub fn is_recover(&self) -> bool {
         self.kind == EventKind::Rec
     }
     pub fn is_recovery_rotation(&self) -> bool {

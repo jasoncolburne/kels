@@ -103,6 +103,12 @@ pub enum KelsError {
     #[error("KEL diverged at: {0}")]
     Diverged(String),
 
+    #[error("KEL frozen and requires recovery")]
+    Frozen,
+
+    #[error("KEL recovery key revealed, contest required")]
+    ContestRequired,
+
     #[error("Invalid SAID: {0}")]
     InvalidSaid(String),
 

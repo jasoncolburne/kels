@@ -264,34 +264,44 @@ impl Kel {
 
         // If KEL is divergent and we're receiving a recovery event, use special handling.
         // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
-        if divergence.is_some() && first.event.reveals_recovery_key() {
+        if let Some(divergence_info) = divergence && first.event.reveals_recovery_key() {
             if first.event.is_contest() {
-                if events.len() > 1 {
-                    return Err(KelsError::InvalidKel(
-                        "Cannot append events after contest".to_string(),
-                    ));
+                if self.reveals_recovery_at_or_after(divergence_info.diverged_at_version) {
+                    if events.len() > 1 {
+                        return Err(KelsError::InvalidKel(
+                            "Cannot append events after contest".to_string(),
+                        ));
+                    }
+
+                    // Contest: Just append cnt event, don't truncate. KEL stays divergent but frozen.
+                    // This gives visibility to the contested state while preserving all events.
+                    self.extend(events.iter().cloned());
+                    self.verify()?;
+                    return Ok((vec![], events, KelMergeResult::Contested)); // Empty vec = nothing to archive
+                } else {
+                    return Err(KelsError::Frozen);
                 }
+            } else if first.event.is_recover() {
+                if !self.reveals_recovery_at_or_after(divergence_info.diverged_at_version) {
+                    // Recovery: Keep owner's chain, archive adversary events.
+                    // Owner's chain is identified by tracing back from rec's previous field.
+                    let Some(owner_tail_said) = &first.event.previous else {
+                        return Err(KelsError::InvalidKel(
+                            "Recovery event has no previous".into(),
+                        ));
+                    };
 
-                // Contest: Just append cnt event, don't truncate. KEL stays divergent but frozen.
-                // This gives visibility to the contested state while preserving all events.
-                self.extend(events.iter().cloned());
-                self.verify()?;
-                return Ok((vec![], events, KelMergeResult::Contested)); // Empty vec = nothing to archive
+                    let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
+
+                    let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
+                    self.extend(events.iter().cloned());
+                    self.verify()?;
+                    return Ok((adversary_events, events, KelMergeResult::Recovered));
+                } else {
+                    return Err(KelsError::ContestRequired);
+                }
             } else {
-                // Recovery: Keep owner's chain, archive adversary events.
-                // Owner's chain is identified by tracing back from rec's previous field.
-                let Some(owner_tail_said) = &first.event.previous else {
-                    return Err(KelsError::InvalidKel(
-                        "Recovery event has no previous".into(),
-                    ));
-                };
-
-                let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
-
-                let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
-                self.extend(events.iter().cloned());
-                self.verify()?;
-                return Ok((adversary_events, events, KelMergeResult::Recovered));
+                return Err(KelsError::Frozen);
             }
         }
 
