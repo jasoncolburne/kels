@@ -57,7 +57,7 @@ pub enum KelsError {
 
     #[error("Divergence detected at: {diverged_at}, submission_accepted: {submission_accepted}")]
     DivergenceDetected {
-        diverged_at: String,
+        diverged_at: u64,
         submission_accepted: bool,
     },
 

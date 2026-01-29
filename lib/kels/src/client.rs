@@ -543,7 +543,7 @@ impl KelsClient {
                 let merge_result = kel.merge(new_events);
 
                 match merge_result {
-                    Ok((_, KelMergeResult::Verified)) => {
+                    Ok((_, _, KelMergeResult::Verified)) => {
                         self.cache_set(prefix, &kel).await?;
 
                         let all_anchors_present = anchors.iter().all(|a| kel.contains_anchor(a));
@@ -807,7 +807,7 @@ impl KelsClient {
                     && !events.is_empty()
                 {
                     match kel.merge(events.clone()) {
-                        Ok((_, KelMergeResult::Verified)) => {
+                        Ok((_, _, KelMergeResult::Verified)) => {
                             result_kels.insert((*prefix).to_string(), kel);
                         }
                         Ok(_) | Err(_) => {

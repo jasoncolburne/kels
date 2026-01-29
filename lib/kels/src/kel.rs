@@ -94,30 +94,6 @@ impl Kel {
         self.0.iter().any(|e| e.event.is_contest())
     }
 
-    pub fn current_public_key(&self) -> Result<PublicKey, KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::InvalidKel("KEL is decommissioned".to_string()));
-        }
-
-        let event = self
-            .last_establishment_event()
-            .ok_or_else(|| KelsError::InvalidKel("KEL has no establishment event".to_string()))?;
-
-        let qb64 = event.event.public_key.as_ref().ok_or_else(|| {
-            KelsError::InvalidKel("Establishment event has no public key".to_string())
-        })?;
-
-        PublicKey::from_qb64(qb64).map_err(KelsError::from)
-    }
-
-    pub fn verify_signature(&self, data: &[u8], signature: &Signature) -> Result<(), KelsError> {
-        let public_key = self.current_public_key()?;
-
-        public_key
-            .verify(data, signature)
-            .map_err(|_| KelsError::SignatureVerificationFailed)
-    }
-
     pub fn push(&mut self, event: SignedKeyEvent) {
         self.0.push(event);
         self.sort_by_version();
@@ -128,12 +104,20 @@ impl Kel {
         self.sort_by_version();
     }
 
-    fn sort_by_version(&mut self) {
-        self.0.sort_by_key(|e| e.event.version);
+    pub fn remove_adversary_events(&mut self, owner_saids: &std::collections::HashSet<String>) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let owner_events = self.iter().filter(|e| owner_saids.contains(&e.event.said)).cloned().collect();
+        let adversary_events = self.iter().filter(|e| !owner_saids.contains(&e.event.said)).cloned().collect();
+        self.0 = owner_events;
+        self.sort_by_version();
+        Ok(adversary_events)
     }
 
     pub fn truncate(&mut self, len: usize) {
         self.0.truncate(len);
+    }
+
+    fn sort_by_version(&mut self) {
+        self.0.sort_by_key(|e| e.event.version);
     }
 
     pub fn contains_anchor(&self, anchor: &str) -> bool {
@@ -146,12 +130,8 @@ impl Kel {
         anchors.iter().cloned().all(|a| self.contains_anchor(a))
     }
 
-    pub fn into_inner(self) -> Vec<SignedKeyEvent> {
-        self.0
-    }
-
     pub fn find_divergence(&self) -> Option<DivergenceInfo> {
-        if self.0.is_empty() {
+        if self.is_empty() {
             return None;
         }
 
@@ -179,7 +159,7 @@ impl Kel {
         })
     }
 
-    pub fn trace_chain_saids(&self, tail_said: &str) -> std::collections::HashSet<String> {
+    pub fn get_owner_kel_saids_from_tail(&self, tail_said: &str) -> std::collections::HashSet<String> {
         let mut saids = std::collections::HashSet::new();
         let mut current_said = Some(tail_said.to_string());
         while let Some(said) = current_said {
@@ -191,28 +171,6 @@ impl Kel {
                 .and_then(|e| e.event.previous.clone());
         }
         saids
-    }
-
-    pub fn partition_by_owner_chain(
-        &mut self,
-        owner_chain_saids: &std::collections::HashSet<String>,
-        divergence_version: u64,
-    ) -> Vec<SignedKeyEvent> {
-        let mut owner_events = Vec::new();
-        let mut adversary_events = Vec::new();
-
-        for event in self.0.drain(..) {
-            if event.event.version < divergence_version
-                || owner_chain_saids.contains(&event.event.said)
-            {
-                owner_events.push(event);
-            } else {
-                adversary_events.push(event);
-            }
-        }
-
-        self.0 = owner_events;
-        adversary_events
     }
 
     pub fn last_valid_version(&self) -> Option<u64> {
@@ -261,9 +219,15 @@ impl Kel {
     pub fn merge(
         &mut self,
         events: Vec<SignedKeyEvent>,
-    ) -> Result<(Vec<SignedKeyEvent>, KelMergeResult), KelsError> {
+    ) -> Result<(Vec<SignedKeyEvent>, Vec<SignedKeyEvent>, KelMergeResult), KelsError> {
         if events.is_empty() {
             return Err(KelsError::InvalidKel("No events to add".to_string()));
+        }
+
+        if self.is_contested() {
+            return Err(KelsError::ContestedKel(
+                "Kel is already contested".to_string(),
+            ));
         }
 
         // Validate event structure before processing
@@ -274,46 +238,45 @@ impl Kel {
                 .map_err(KelsError::InvalidKel)?;
         }
 
-        if self.is_contested() {
-            return Err(KelsError::ContestedKel(
-                "Kel is already contested".to_string(),
-            ));
-        }
-
+        // Safe due to empty check above
         let first = &events[0];
 
         // Check if KEL is already divergent (frozen)
         // Only recovery-revealing events (rec/ror/dec/cnt) can unfreeze
         let divergence = self.find_divergence();
         if divergence.is_some() && !first.event.reveals_recovery_key() {
-            return Ok((vec![], KelMergeResult::Frozen));
+            return Ok((vec![], vec![], KelMergeResult::Frozen));
         }
 
         // If KEL is divergent and we're receiving a recovery event, use special handling.
         // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
-        if let Some(ref div_info) = divergence
-            && first.event.reveals_recovery_key()
+        if divergence.is_some() && first.event.reveals_recovery_key()
         {
             if first.event.is_contest() {
+                if events.len() > 1 {
+                    return Err(KelsError::InvalidKel(
+                        "Cannot append events after contest".to_string(),
+                    ));
+                }
+
                 // Contest: Just append cnt event, don't truncate. KEL stays divergent but frozen.
                 // This gives visibility to the contested state while preserving all events.
                 self.extend(events.iter().cloned());
                 self.verify()?;
-                return Ok((vec![], KelMergeResult::Contested)); // Empty vec = nothing to archive
+                return Ok((vec![], events, KelMergeResult::Contested)); // Empty vec = nothing to archive
             } else {
                 // Recovery: Keep owner's chain, archive adversary events.
                 // Owner's chain is identified by tracing back from rec's previous field.
-                let owner_tail_said = first.event.previous.as_ref().ok_or_else(|| {
-                    KelsError::InvalidKel("Recovery event has no previous".into())
-                })?;
+                let Some(owner_tail_said) = &first.event.previous else {
+                    return Err(KelsError::InvalidKel("Recovery event has no previous".into()));
+                };
 
-                let owner_chain_saids = self.trace_chain_saids(owner_tail_said);
-                let adversary_events =
-                    self.partition_by_owner_chain(&owner_chain_saids, div_info.diverged_at_version);
+                let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
 
+                let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
                 self.extend(events.iter().cloned());
                 self.verify()?;
-                return Ok((adversary_events, KelMergeResult::Recovered));
+                return Ok((adversary_events, events, KelMergeResult::Recovered));
             }
         }
 
@@ -326,14 +289,14 @@ impl Kel {
         let events_length = events.len();
 
         // Track old events that get removed (for archiving) and the merge result
-        let (old_events_removed, result) = if existing_length == index {
+        let (old_events_removed, new_events_added, result) = if existing_length == index {
             // Normal append - no overlap, no divergence
             // Decommission blocks normal appends (but not divergence detection)
             if self.is_decommissioned() {
                 return Err(KelsError::KelDecommissioned);
             }
             self.extend(events.iter().cloned());
-            (vec![], KelMergeResult::Verified)
+            (vec![], events, KelMergeResult::Verified)
         } else if existing_length > index {
             // Overlap - check for matching or divergent events
             let mut i = 0;
@@ -356,7 +319,7 @@ impl Kel {
                         if self.reveals_recovery_at_or_after(old_event.event.version)
                             && !new_event.event.is_contest()
                         {
-                            return Ok((vec![], KelMergeResult::RecoveryProtected));
+                            return Ok((vec![], vec![], KelMergeResult::RecoveryProtected));
                         }
 
                         // Check for recovery event in new events
@@ -374,18 +337,24 @@ impl Kel {
                                 // Contest: Adversary revealed recovery key, owner contests.
                                 // Just append cnt event, don't truncate. KEL stays divergent but frozen.
                                 self.extend(divergent_new_events.iter().cloned());
-                                break (vec![], KelMergeResult::Contested);
+                                break (
+                                    vec![],
+                                    divergent_new_events.to_vec(),
+                                    KelMergeResult::Contested,
+                                );
                             } else if old_has_recovery {
                                 // FATAL: Adversary revealed recovery key, but owner submitted rec not cnt
                                 // Truncate and archive - this shouldn't normally happen
-                                self.0.truncate(offset);
-                                self.extend(divergent_new_events.iter().cloned());
-                                break (divergent_old_events, KelMergeResult::Contested);
+                                break (vec![], vec![], KelMergeResult::Contestable);
                             } else {
                                 // Recovery: Owner recovers - truncate and archive adversary events
-                                self.0.truncate(offset);
+                                self.truncate(offset);
                                 self.extend(divergent_new_events.iter().cloned());
-                                break (divergent_old_events, KelMergeResult::Recovered);
+                                break (
+                                    divergent_old_events,
+                                    divergent_new_events.to_vec(),
+                                    KelMergeResult::Recovered,
+                                );
                             }
                         } else {
                             // No recovery event - accept divergent event and freeze KEL
@@ -397,23 +366,31 @@ impl Kel {
                             // and get the diverged_at SAID
                             if old_has_recovery {
                                 // Adversary revealed recovery key - user must contest
-                                break (vec![new_event.clone()], KelMergeResult::Contestable);
+                                break (
+                                    vec![],
+                                    vec![new_event.clone()],
+                                    KelMergeResult::Contestable,
+                                );
                             } else {
                                 // Adversary has ixn/rot only - user can recover
-                                break (vec![new_event.clone()], KelMergeResult::Recoverable);
+                                break (
+                                    vec![],
+                                    vec![new_event.clone()],
+                                    KelMergeResult::Recoverable,
+                                );
                             }
                         }
                     }
                 } else {
                     // Past the overlap - just append remaining new events
                     self.extend(events[i..].iter().cloned());
-                    break (vec![], KelMergeResult::Verified);
+                    break (vec![], events[i..].to_vec(), KelMergeResult::Verified);
                 }
 
                 i += 1;
                 if i >= events_length {
                     // All submitted events matched existing - idempotent
-                    break (vec![], KelMergeResult::Verified);
+                    break (vec![], vec![], KelMergeResult::Verified);
                 }
             }
         } else {
@@ -423,21 +400,19 @@ impl Kel {
 
         self.verify()?;
 
-        Ok((old_events_removed, result))
+        Ok((old_events_removed, new_events_added, result))
     }
 
     /// Does NOT verify delegation anchoring for delegated KELs.
     pub fn verify(&self) -> Result<Option<DivergenceInfo>, KelsError> {
-        if self.0.is_empty() {
-            return Err(KelsError::InvalidKel("KEL is empty".to_string()));
+        if self.is_empty() {
+            return Err(KelsError::NotIncepted);
         }
 
         // Build SAID -> event lookup
-        let events_by_said: std::collections::HashMap<&str, &SignedKeyEvent> =
-            self.0.iter().map(|e| (e.event.said.as_str(), e)).collect();
-
+        let events_by_said = self.group_events_by_said();
         let events_by_version = self.group_events_by_version();
-        let prefix = self.get_prefix(&events_by_version)?;
+        let prefix = self.prefix().ok_or(KelsError::NotIncepted)?;
 
         // FORWARD PASS: Verify structure (SAID, prefix, chaining) and detect divergence
         let mut valid_tails: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -560,6 +535,10 @@ impl Kel {
         Ok(())
     }
 
+    fn group_events_by_said(&self) -> std::collections::HashMap<&str, &SignedKeyEvent> {
+        self.0.iter().map(|e| (e.event.said.as_str(), e)).collect()
+    }
+
     fn group_events_by_version(&self) -> std::collections::BTreeMap<u64, Vec<&SignedKeyEvent>> {
         let mut events_by_version = std::collections::BTreeMap::new();
         for event in &self.0 {
@@ -569,16 +548,6 @@ impl Kel {
                 .push(event);
         }
         events_by_version
-    }
-
-    fn get_prefix<'a>(
-        &self,
-        events_by_version: &'a std::collections::BTreeMap<u64, Vec<&SignedKeyEvent>>,
-    ) -> Result<&'a str, KelsError> {
-        let first_events = events_by_version
-            .get(&0)
-            .ok_or_else(|| KelsError::InvalidKel("KEL has no event at version 0".to_string()))?;
-        Ok(&first_events[0].event.prefix)
     }
 
     fn verify_version_continuity(version: u64, expected: u64) -> Result<(), KelsError> {
@@ -779,27 +748,12 @@ impl DerefMut for Kel {
     }
 }
 
-impl From<Vec<SignedKeyEvent>> for Kel {
-    fn from(events: Vec<SignedKeyEvent>) -> Self {
-        Self(events)
-    }
-}
-
 impl IntoIterator for Kel {
     type Item = SignedKeyEvent;
     type IntoIter = std::vec::IntoIter<SignedKeyEvent>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a Kel {
-    type Item = &'a SignedKeyEvent;
-    type IntoIter = std::slice::Iter<'a, SignedKeyEvent>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
     }
 }
 
