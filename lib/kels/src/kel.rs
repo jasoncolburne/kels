@@ -264,7 +264,9 @@ impl Kel {
 
         // If KEL is divergent and we're receiving a recovery event, use special handling.
         // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
-        if let Some(divergence_info) = divergence && first.event.reveals_recovery_key() {
+        if let Some(divergence_info) = divergence
+            && first.event.reveals_recovery_key()
+        {
             if first.event.is_contest() {
                 if self.reveals_recovery_at_or_after(divergence_info.diverged_at_version) {
                     if events.len() > 1 {
