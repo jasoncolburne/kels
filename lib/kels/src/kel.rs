@@ -415,6 +415,12 @@ impl Kel {
                 // now that we have all the information, return
                 if self.reveals_recovery_after_divergence(&divergent_old_saids) {
                     if divergent_new_event.event.is_contest() {
+                        if events.len() > 1 {
+                            return Err(KelsError::InvalidKel(
+                                "Cannot append events after contest".to_string(),
+                            ));
+                        }
+
                         self.push(divergent_new_event.clone());
                         (vec![], vec![divergent_new_event], KelMergeResult::Contested)
                     } else {

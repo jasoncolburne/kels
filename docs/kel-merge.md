@@ -11,7 +11,7 @@ The merge operation integrates new events into an existing KEL while handling:
 - Recovery from divergence
 - Contest when both parties have the recovery key
 
-Events are linked by their `previous` SAID field. Generation is the position in the chain, computed dynamically by following `previous` links from tail(s) to inception (generation 0).
+Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
 ## Return Values
 
@@ -52,7 +52,7 @@ If the KEL is already divergent (frozen):
 
 ```
 if KEL has divergence AND first event does NOT reveal recovery key:
-    return Frozen  // Only rec/ror/dec/cnt can unfreeze
+    return Frozen  // Only rec/cnt can resolve divergence
 ```
 
 ### 3. Recovery from Divergent KEL
@@ -62,18 +62,30 @@ If the KEL is divergent and receiving a recovery-revealing event:
 **Contest path** (`cnt` event):
 ```
 if first event is contest:
+    if KEL does NOT reveal recovery in divergent events:
+        return Error(Frozen)  // Can only contest if adversary also revealed recovery
+    if more than one event submitted:
+        return Error("Cannot append events after contest")
     append contest event
     verify KEL
     return Contested
 ```
 
-**Recovery path** (`rec`/`ror`/`dec` event):
+**Recovery path** (`rec` event):
 ```
-trace owner's chain from recovery event's previous field
-remove adversary events (those not in owner's chain)
-append recovery events
-verify KEL
-return Recovered
+if first event is recover:
+    if KEL reveals recovery in divergent events:
+        return Error(ContestRequired)  // Adversary has recovery key, must contest
+    trace owner's chain from recovery event's previous field
+    remove adversary events (those not in owner's chain)
+    append recovery events
+    verify KEL
+    return Recovered
+```
+
+**Other recovery-revealing events** (`ror`/`dec`):
+```
+return Error(Frozen)  // Only rec/cnt can be used on divergent KEL
 ```
 
 ### 4. Normal Merge (Non-divergent KEL)
@@ -111,36 +123,25 @@ if first_event.previous not found in KEL:
 When divergence is detected (multiple events share same `previous`):
 
 ```
-divergent_old_events = existing events from divergence point
-divergent_new_events = submitted events from divergence point
+divergent_old_events = existing events from divergence point (walk back from current tail)
+divergent_new_events = submitted events not already in KEL
 
-// Check if recovery already protects this generation
-if KEL reveals recovery at or after this generation:
-    if new event is NOT contest:
-        return RecoveryProtected
-    // Contest events are allowed through
-
-// Check what kind of events are involved
-old_has_recovery = any old event reveals recovery key
-new_has_recovery = any new event reveals recovery key
-
-if new_has_recovery:
-    if old_has_recovery AND new event is contest:
+// Check if existing divergent events reveal recovery key
+if old events reveal recovery:
+    if new event is contest:
         append contest event
         return Contested
-    else if old_has_recovery:
+    else:
         return RecoveryProtected  // Owner must contest, not recover
-    else:
-        remove adversary events (trace owner's chain via previous)
-        append recovery events
-        return Recovered
+else if new event is recover:
+    // Owner is recovering, adversary didn't have recovery key
+    append recovery events
+    remove adversary events (trace owner's chain via previous)
+    return Recovered
 else:
-    // No recovery event - freeze KEL
+    // No recovery event - freeze KEL, mark as divergent
     push single divergent event
-    if old_has_recovery:
-        return RecoveryProtected
-    else:
-        return Recoverable
+    return Recoverable
 ```
 
 ### 6. Post-merge Verification
@@ -171,7 +172,7 @@ return result
              │
     ┌────────┴────────┐
     │                 │
-  rec/ror/dec        cnt
+   rec               cnt
     │                 │
     ▼                 ▼
 ┌───────┐       ┌───────────┐
