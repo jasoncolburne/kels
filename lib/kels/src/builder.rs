@@ -152,9 +152,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             if let Some(divergence) = kels_kel.find_divergence() {
                 let owner_has_rot = local_events.iter().any(|e| {
                     divergence
-                        .divergent_saids
-                        .iter()
-                        .any(|said| *said == e.event.said)
+                        .divergent_saids.contains(&e.event.said)
                         && e.event.reveals_rotation_key()
                 });
 

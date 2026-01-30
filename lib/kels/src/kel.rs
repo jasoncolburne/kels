@@ -126,9 +126,7 @@ impl Kel {
         let mut new_self: Vec<SignedKeyEvent> = vec![];
 
         let mut current_events: Vec<_> = self
-            .iter()
-            .cloned()
-            .filter(|e| e.event.previous.is_none())
+            .iter().filter(|&e| e.event.previous.is_none()).cloned()
             .collect();
         while !current_events.is_empty() {
             new_self.extend(current_events.iter().cloned());
@@ -165,9 +163,7 @@ impl Kel {
 
         let mut event_generation: u64 = 0;
         let mut current_events: Vec<_> = self
-            .iter()
-            .cloned()
-            .filter(|e| e.event.previous.is_none())
+            .iter().filter(|&e| e.event.previous.is_none()).cloned()
             .collect();
         while !current_events.is_empty() {
             saids_by_generation.insert(
@@ -376,7 +372,7 @@ impl Kel {
                     .rev()
                     .map(|e| e.event.said.clone())
                     .collect();
-                let Some(divergent_new_event) = divergent_new_events.iter().cloned().find(|e| {
+                let Some(divergent_new_event) = divergent_new_events.iter().find(|&e| {
                     if let Some(p) = e.event.previous.clone()
                         && p == previous
                     {
@@ -384,7 +380,7 @@ impl Kel {
                     } else {
                         false
                     }
-                }) else {
+                }).cloned() else {
                     return Err(KelsError::InvalidKel(
                         "Cannot find divergent event".to_string(),
                     ));
@@ -397,31 +393,29 @@ impl Kel {
                     } else {
                         return Ok((vec![], vec![], KelMergeResult::Contestable));
                     }
+                } else if divergent_new_event.event.is_recover() {
+                    self.extend(divergent_new_events.iter().cloned());
+                    let Some(new_tail_said) =
+                        divergent_new_events.last().map(|e| e.event.said.clone())
+                    else {
+                        return Err(KelsError::InvalidKel(
+                            "Divergence detected but no new divergent events".to_string(),
+                        ));
+                    };
+                    let owner_saids = self.get_owner_kel_saids_from_tail(&new_tail_said);
+                    let removed_events = self.remove_adversary_events(&owner_saids)?;
+                    (
+                        removed_events,
+                        divergent_new_events,
+                        KelMergeResult::Recovered,
+                    )
                 } else {
-                    if divergent_new_event.event.is_recover() {
-                        self.extend(divergent_new_events.iter().cloned());
-                        let Some(new_tail_said) =
-                            divergent_new_events.last().map(|e| e.event.said.clone())
-                        else {
-                            return Err(KelsError::InvalidKel(
-                                "Divergence detected but no new divergent events".to_string(),
-                            ));
-                        };
-                        let owner_saids = self.get_owner_kel_saids_from_tail(&new_tail_said);
-                        let removed_events = self.remove_adversary_events(&owner_saids)?;
-                        (
-                            removed_events,
-                            divergent_new_events,
-                            KelMergeResult::Recovered,
-                        )
-                    } else {
-                        self.push(divergent_new_event.clone());
-                        (
-                            vec![],
-                            vec![divergent_new_event],
-                            KelMergeResult::Recoverable,
-                        )
-                    }
+                    self.push(divergent_new_event.clone());
+                    (
+                        vec![],
+                        vec![divergent_new_event],
+                        KelMergeResult::Recoverable,
+                    )
                 }
             }
         } else {
