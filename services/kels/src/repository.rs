@@ -39,7 +39,7 @@ impl KeyEventRepository {
     ) -> Result<PrefixListResponse, StorageError> {
         // Use DISTINCT ON to get latest event per prefix
         // Order by prefix ASC (for pagination), then version DESC (to get latest)
-        let mut query = Query::<KeyEvent>::new()
+        let mut query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
             .distinct_on("prefix")
             .order_by("prefix", Order::Asc)
             .limit(limit as u64 + 1);
@@ -97,8 +97,12 @@ pub struct KelTransaction {
 }
 
 impl KelTransaction {
+    const EVENTS_TABLE: &'static str = KeyEventRepository::TABLE_NAME;
+    const SIGNATURES_TABLE: &'static str = KeyEventRepository::SIGNATURES_TABLE_NAME;
+    const AUDIT_TABLE: &'static str = AuditRecordRepository::TABLE_NAME;
+
     pub async fn load_signed_events(&mut self) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        let query = Query::<KeyEvent>::new().eq("prefix", &self.prefix);
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE).eq("prefix", &self.prefix);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
 
         if events.is_empty() {
@@ -106,8 +110,8 @@ impl KelTransaction {
         }
 
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let query = Query::<EventSignature>::for_table("kels_key_event_signatures")
-            .r#in("event_said", saids);
+        let query =
+            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
         let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
@@ -132,7 +136,7 @@ impl KelTransaction {
         if saids.is_empty() {
             return Ok(0);
         }
-        let delete = Delete::<KeyEvent>::new().r#in("said", saids);
+        let delete = Delete::<KeyEvent>::for_table(Self::EVENTS_TABLE).r#in("said", saids);
         self.tx.delete(delete).await
     }
 
@@ -140,11 +144,15 @@ impl KelTransaction {
         &mut self,
         signed_event: &SignedKeyEvent,
     ) -> Result<(), StorageError> {
-        self.tx.insert(&signed_event.event).await?;
+        self.tx
+            .insert_with_table(&signed_event.event, Self::EVENTS_TABLE)
+            .await?;
         for sig in signed_event.event_signatures() {
             let mut event_sig: EventSignature = sig;
             event_sig.derive_said()?;
-            self.tx.insert(&event_sig).await?;
+            self.tx
+                .insert_with_table(&event_sig, Self::SIGNATURES_TABLE)
+                .await?;
         }
 
         Ok(())
@@ -154,7 +162,7 @@ impl KelTransaction {
         &mut self,
         record: &KelsAuditRecord,
     ) -> Result<(), StorageError> {
-        self.tx.insert(record).await?;
+        self.tx.insert_with_table(record, Self::AUDIT_TABLE).await?;
         Ok(())
     }
 

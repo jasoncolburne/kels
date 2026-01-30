@@ -28,7 +28,8 @@ impl Kel {
 
     /// Only use `skip_verify: true` for trusted sources (e.g., database reads).
     pub fn from_events(events: Vec<SignedKeyEvent>, skip_verify: bool) -> Result<Self, KelsError> {
-        let kel = Self(events);
+        let mut kel = Self(events);
+        kel.sort();
         if !skip_verify && !kel.is_empty() {
             kel.verify()?;
         }
@@ -126,7 +127,9 @@ impl Kel {
         let mut new_self: Vec<SignedKeyEvent> = vec![];
 
         let mut current_events: Vec<_> = self
-            .iter().filter(|&e| e.event.previous.is_none()).cloned()
+            .iter()
+            .filter(|&e| e.event.previous.is_none())
+            .cloned()
             .collect();
         while !current_events.is_empty() {
             new_self.extend(current_events.iter().cloned());
@@ -163,7 +166,9 @@ impl Kel {
 
         let mut event_generation: u64 = 0;
         let mut current_events: Vec<_> = self
-            .iter().filter(|&e| e.event.previous.is_none()).cloned()
+            .iter()
+            .filter(|&e| e.event.previous.is_none())
+            .cloned()
             .collect();
         while !current_events.is_empty() {
             saids_by_generation.insert(
@@ -206,9 +211,7 @@ impl Kel {
             .map(|(version, _)| *version)
             .min();
 
-        let Some(generation) = divergence_generation else {
-            return None;
-        };
+        let generation = divergence_generation?;
 
         let mut divergent_saids: Vec<String> = vec![];
         for (_, saids) in saids_by_generation
@@ -349,49 +352,68 @@ impl Kel {
             } else {
                 let divergent_new_events: Vec<_> = events
                     .iter()
-                    .filter(|e| events_by_said.contains_key(e.event.said.as_str()))
+                    .filter(|e| !events_by_said.contains_key(e.event.said.as_str()))
                     .cloned()
+                    .collect();
+
+                let new_event_previouses: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| e.event.previous.clone())
                     .collect();
                 let mut divergent_old_events: Vec<SignedKeyEvent> = vec![];
                 let mut previous_event = self.last();
+
                 while previous_event.is_some() {
-                    if let Some(event) = previous_event {
+                    let Some(event) = previous_event else {
+                        unreachable!();
+                    };
+
+                    // convergence
+                    if new_event_previouses.contains(&event.event.said) {
+                        previous_event = None
+                    } else {
                         divergent_old_events.push(event.clone());
 
                         if let Some(previous) = event.event.previous.clone() {
                             previous_event = events_by_said.get(previous.as_str()).map(|v| &**v);
                         } else {
                             return Err(KelsError::InvalidKel(
-                                "Reached inception without finding divergence".to_string(),
+                                "Reached inception without finding convergence".to_string(),
                             ));
                         }
                     }
                 }
-                let divergent_local_saids: Vec<_> = divergent_old_events
+
+                let divergent_old_saids: Vec<_> = divergent_old_events
                     .iter()
                     .rev()
                     .map(|e| e.event.said.clone())
                     .collect();
-                let Some(divergent_new_event) = divergent_new_events.iter().find(|&e| {
-                    if let Some(p) = e.event.previous.clone()
-                        && p == previous
-                    {
-                        true
-                    } else {
-                        false
-                    }
-                }).cloned() else {
+
+                let Some(divergent_new_event) = divergent_new_events
+                    .iter()
+                    .find(|&e| {
+                        if let Some(p) = e.event.previous.clone()
+                            && p == previous
+                        {
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                else {
                     return Err(KelsError::InvalidKel(
                         "Cannot find divergent event".to_string(),
                     ));
                 };
 
-                if self.reveals_recovery_after_divergence(divergent_local_saids) {
+                if self.reveals_recovery_after_divergence(divergent_old_saids) {
                     if divergent_new_event.event.is_contest() {
                         self.push(divergent_new_event.clone());
                         (vec![], vec![divergent_new_event], KelMergeResult::Contested)
                     } else {
-                        return Ok((vec![], vec![], KelMergeResult::Contestable));
+                        return Ok((vec![], vec![], KelMergeResult::RecoveryProtected));
                     }
                 } else if divergent_new_event.event.is_recover() {
                     self.extend(divergent_new_events.iter().cloned());
