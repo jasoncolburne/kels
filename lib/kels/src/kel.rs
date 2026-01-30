@@ -4,6 +4,7 @@ use crate::error::KelsError;
 use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
 use cesr::{Digest, Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use verifiable_storage::Chained;
 
@@ -15,7 +16,7 @@ pub fn compute_rotation_hash(public_key: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct DivergenceInfo {
     pub diverged_at_generation: u64,
-    pub divergent_saids: Vec<String>,
+    pub divergent_saids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -106,14 +107,14 @@ impl Kel {
         self.sort();
     }
 
-    pub fn reveals_recovery_after_divergence(&self, divergent_saids: Vec<String>) -> bool {
+    pub fn reveals_recovery_after_divergence(&self, divergent_saids: &HashSet<String>) -> bool {
         self.iter()
             .any(|e| e.event.reveals_recovery_key() && divergent_saids.contains(&e.event.said))
     }
 
     pub fn remove_adversary_events(
         &mut self,
-        owner_saids: &std::collections::HashSet<String>,
+        owner_saids: &HashSet<String>,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let owner_events = self
             .iter()
@@ -134,31 +135,56 @@ impl Kel {
         self.0.truncate(len);
     }
 
-    fn sort(&mut self) {
-        let mut new_self: Vec<SignedKeyEvent> = vec![];
+    /// Walk the KEL generation by generation, yielding events at each generation.
+    /// Returns an iterator of (generation, events_at_generation) tuples.
+    fn walk_generations(&self) -> impl Iterator<Item = (u64, Vec<&SignedKeyEvent>)> {
+        let events_by_said: HashMap<&str, &SignedKeyEvent> =
+            self.0.iter().map(|e| (e.event.said.as_str(), e)).collect();
 
-        let mut current_events: Vec<_> = self
+        let mut generations = Vec::new();
+        let mut generation: u64 = 0;
+
+        // Start with inception events (no previous)
+        let mut current_saids: HashSet<&str> = self
             .iter()
-            .filter(|&e| e.event.previous.is_none())
-            .cloned()
+            .filter(|e| e.event.previous.is_none())
+            .map(|e| e.event.said.as_str())
             .collect();
-        while !current_events.is_empty() {
-            new_self.extend(current_events.iter().cloned());
-            let new_events: Vec<_> = self
+
+        while !current_saids.is_empty() {
+            let events_at_gen: Vec<&SignedKeyEvent> = current_saids
+                .iter()
+                .filter_map(|said| events_by_said.get(said).copied())
+                .collect();
+
+            generations.push((generation, events_at_gen));
+
+            // Find next generation: events whose previous is in current_saids
+            let next_saids: HashSet<&str> = self
                 .iter()
                 .filter(|e| {
-                    if let Some(previous) = e.event.previous.clone() {
-                        current_events.iter().any(|e| e.event.said == previous)
-                    } else {
-                        false
-                    }
+                    e.event
+                        .previous
+                        .as_ref()
+                        .map(|p| current_saids.contains(p.as_str()))
+                        .unwrap_or(false)
                 })
-                .cloned()
+                .map(|e| e.event.said.as_str())
                 .collect();
-            current_events = new_events;
+
+            current_saids = next_saids;
+            generation += 1;
         }
 
-        self.0 = new_self;
+        generations.into_iter()
+    }
+
+    fn sort(&mut self) {
+        let sorted: Vec<SignedKeyEvent> = self
+            .walk_generations()
+            .flat_map(|(_, events)| events.into_iter().cloned())
+            .collect();
+        self.0 = sorted;
     }
 
     pub fn contains_anchor(&self, anchor: &str) -> bool {
@@ -171,40 +197,15 @@ impl Kel {
         anchors.iter().cloned().all(|a| self.contains_anchor(a))
     }
 
-    pub fn map_saids_by_event_generation(&self) -> std::collections::HashMap<u64, Vec<String>> {
-        let mut saids_by_generation: std::collections::HashMap<u64, Vec<String>> =
-            std::collections::HashMap::new();
-
-        let mut event_generation: u64 = 0;
-        let mut current_events: Vec<_> = self
-            .iter()
-            .filter(|&e| e.event.previous.is_none())
-            .cloned()
-            .collect();
-        while !current_events.is_empty() {
-            saids_by_generation.insert(
-                event_generation,
-                current_events
-                    .iter()
-                    .map(|e| e.event.said.clone())
-                    .collect(),
-            );
-            let new_events: Vec<_> = self
-                .iter()
-                .filter(|e| {
-                    if let Some(previous) = e.event.previous.clone() {
-                        current_events.iter().any(|e| e.event.said == previous)
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
-            current_events = new_events;
-            event_generation += 1;
-        }
-
-        saids_by_generation
+    pub fn map_saids_by_event_generation(&self) -> HashMap<u64, Vec<String>> {
+        self.walk_generations()
+            .map(|(generation, events)| {
+                (
+                    generation,
+                    events.iter().map(|e| e.event.said.clone()).collect(),
+                )
+            })
+            .collect()
     }
 
     pub fn find_divergence(&self) -> Option<DivergenceInfo> {
@@ -212,37 +213,32 @@ impl Kel {
             return None;
         }
 
-        // Build a map of version -> SAIDs
+        // Build a map of generation -> SAIDs
         let saids_by_generation = self.map_saids_by_event_generation();
 
-        // Find the first version with multiple SAIDs
+        // Find the first generation with multiple SAIDs
         let divergence_generation = saids_by_generation
             .iter()
             .filter(|(_, saids)| saids.len() > 1)
-            .map(|(version, _)| *version)
+            .map(|(generation, _)| *generation)
             .min();
 
         let generation = divergence_generation?;
 
-        let mut divergent_saids: Vec<String> = vec![];
-        for (_, saids) in saids_by_generation
+        let divergent_saids: HashSet<String> = saids_by_generation
             .iter()
             .filter(|(n, _)| **n >= generation)
-        {
-            divergent_saids.extend(saids.iter().cloned());
-        }
+            .flat_map(|(_, saids)| saids.iter().cloned())
+            .collect();
 
-        divergence_generation.map(|generation| DivergenceInfo {
+        Some(DivergenceInfo {
             diverged_at_generation: generation,
             divergent_saids,
         })
     }
 
-    pub fn get_owner_kel_saids_from_tail(
-        &self,
-        tail_said: &str,
-    ) -> std::collections::HashSet<String> {
-        let mut saids = std::collections::HashSet::new();
+    pub fn get_owner_kel_saids_from_tail(&self, tail_said: &str) -> HashSet<String> {
+        let mut saids = HashSet::new();
         let mut current_said = Some(tail_said.to_string());
         while let Some(said) = current_said {
             saids.insert(said.clone());
@@ -294,7 +290,7 @@ impl Kel {
             && first.event.reveals_recovery_key()
         {
             if first.event.is_contest() {
-                if self.reveals_recovery_after_divergence(divergence_info.divergent_saids) {
+                if self.reveals_recovery_after_divergence(&divergence_info.divergent_saids) {
                     if events.len() > 1 {
                         return Err(KelsError::InvalidKel(
                             "Cannot append events after contest".to_string(),
@@ -310,7 +306,7 @@ impl Kel {
                     return Err(KelsError::Frozen);
                 }
             } else if first.event.is_recover() {
-                if !self.reveals_recovery_after_divergence(divergence_info.divergent_saids) {
+                if !self.reveals_recovery_after_divergence(&divergence_info.divergent_saids) {
                     // Recovery: Keep owner's chain, archive adversary events.
                     // Owner's chain is identified by tracing back from rec's previous field.
                     let Some(owner_tail_said) = &first.event.previous else {
@@ -395,22 +391,19 @@ impl Kel {
                     }
                 }
 
-                let divergent_old_saids: Vec<_> = divergent_old_events
+                let divergent_old_saids: HashSet<String> = divergent_old_events
                     .iter()
-                    .rev()
                     .map(|e| e.event.said.clone())
                     .collect();
 
                 let Some(divergent_new_event) = divergent_new_events
                     .iter()
                     .find(|&e| {
-                        if let Some(p) = e.event.previous.clone()
-                            && p == previous
-                        {
-                            true
-                        } else {
-                            false
-                        }
+                        e.event
+                            .previous
+                            .as_ref()
+                            .map(|p| p == &previous)
+                            .unwrap_or(false)
                     })
                     .cloned()
                 else {
@@ -419,7 +412,8 @@ impl Kel {
                     ));
                 };
 
-                if self.reveals_recovery_after_divergence(divergent_old_saids) {
+                // now that we have all the information, return
+                if self.reveals_recovery_after_divergence(&divergent_old_saids) {
                     if divergent_new_event.event.is_contest() {
                         self.push(divergent_new_event.clone());
                         (vec![], vec![divergent_new_event], KelMergeResult::Contested)
@@ -452,7 +446,7 @@ impl Kel {
                 }
             }
         } else {
-            // Gap in indices - invalid
+            // Gap in chain - invalid
             return Err(KelsError::InvalidKel("Events not contiguous".to_string()));
         };
 
@@ -473,7 +467,7 @@ impl Kel {
         let prefix = self.prefix().ok_or(KelsError::NotIncepted)?;
 
         // FORWARD PASS: Verify structure (SAID, prefix) and detect divergence
-        let mut valid_tails: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut valid_tails: HashSet<&str> = HashSet::new();
         let mut divergence_info: Option<DivergenceInfo> = None;
 
         for (generation, saids) in saids_by_generation.iter() {
@@ -514,7 +508,7 @@ impl Kel {
     fn verify_branch_from_tail(
         &self,
         tail_said: &str,
-        events_by_said: &std::collections::HashMap<&str, &SignedKeyEvent>,
+        events_by_said: &HashMap<&str, &SignedKeyEvent>,
     ) -> Result<(), KelsError> {
         let mut current_said = tail_said;
 
@@ -594,7 +588,7 @@ impl Kel {
         Ok(())
     }
 
-    fn map_events_by_said(&self) -> std::collections::HashMap<&str, &SignedKeyEvent> {
+    fn map_events_by_said(&self) -> HashMap<&str, &SignedKeyEvent> {
         self.0.iter().map(|e| (e.event.said.as_str(), e)).collect()
     }
 
@@ -752,7 +746,20 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
+    use cesr::PrivateKey;
     use verifiable_storage::SelfAddressed;
+
+    /// Helper to clone all keys from a builder's key provider
+    fn clone_keys(
+        builder: &KeyEventBuilder<SoftwareKeyProvider>,
+    ) -> (PrivateKey, PrivateKey, PrivateKey) {
+        let software = builder.key_provider();
+        (
+            software.current_private_key().unwrap().clone(),
+            software.next_private_key().unwrap().clone(),
+            software.recovery_private_key().unwrap().clone(),
+        )
+    }
 
     #[tokio::test]
     async fn test_incept() {
@@ -860,10 +867,7 @@ mod tests {
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let public_key = icp_event.public_key.clone().unwrap();
 
-        let software = builder1.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let mut kel = Kel::new();
         kel.push(SignedKeyEvent::new(
@@ -906,10 +910,7 @@ mod tests {
         )
         .unwrap();
 
-        let software = builder.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder);
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
                 Some(current_key),
@@ -1023,10 +1024,7 @@ mod tests {
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
         // Create a second builder from the same icp to make a divergent event
-        let software = builder1.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1079,10 +1077,7 @@ mod tests {
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1154,10 +1149,7 @@ mod tests {
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_builder2 = Kel::new();
@@ -1225,10 +1217,7 @@ mod tests {
         let (icp_event, icp_sig) = builder1.incept().await.unwrap();
         let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
 
-        let software = builder1.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let icp_public_key = icp_event.public_key.clone().unwrap();
         let mut kel_for_others = Kel::new();
@@ -1308,10 +1297,7 @@ mod tests {
         let (owner_ixn, owner_ixn_sig) = owner.interact("owner-anchor").await.unwrap();
 
         // Save owner's keys for adversary simulation
-        let software = owner.key_provider();
-        let current_key = software.current_private_key().unwrap().clone();
-        let next_key = software.next_private_key().unwrap().clone();
-        let recovery_key = software.recovery_private_key().unwrap().clone();
+        let (current_key, next_key, recovery_key) = clone_keys(&owner);
         let icp_public_key = icp.public_key.clone().unwrap();
 
         // Adversary creates a rotation at v1 (same version as owner's ixn)
@@ -1364,8 +1350,7 @@ mod tests {
 
         // Owner's local events (what they know about)
         let owner_events = owner.kel();
-        let owner_saids: std::collections::HashSet<_> =
-            owner_events.iter().map(|e| &e.event.said).collect();
+        let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Check: adversary_rot should NOT be in owner's SAIDs (it's adversary's event)
         assert!(!owner_saids.contains(&adversary_rot.said));
@@ -1392,10 +1377,7 @@ mod tests {
         let (icp, icp_sig) = owner.incept().await.unwrap();
 
         // Save keys for adversary BEFORE rotation (adversary has inception-era keys)
-        let software = owner.key_provider();
-        let pre_rot_current = software.current_private_key().unwrap().clone(); // inception key
-        let pre_rot_next = software.next_private_key().unwrap().clone(); // first rotation key
-        let pre_rot_recovery = software.recovery_private_key().unwrap().clone();
+        let (pre_rot_current, pre_rot_next, pre_rot_recovery) = clone_keys(&owner);
 
         let (owner_rot, owner_rot_sig) = owner.rotate().await.unwrap();
 
@@ -1452,8 +1434,7 @@ mod tests {
 
         // Owner's local events
         let owner_events = owner.kel();
-        let owner_saids: std::collections::HashSet<_> =
-            owner_events.iter().map(|e| &e.event.said).collect();
+        let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Owner's rot IS in owner's SAIDs
         assert!(owner_saids.contains(&owner_rot.said));

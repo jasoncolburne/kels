@@ -721,7 +721,7 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Status:       {}", "DECOMMISSIONED".red());
     } else if let Some(div) = kel.find_divergence() {
         println!("  Status:       {}", "DIVERGENT".yellow());
-        println!("  Diverged At:  v{}", div.diverged_at_generation);
+        println!("  Diverged At:  g{}", div.diverged_at_generation);
     } else {
         println!("  Status:       {}", "OK".green());
     }
