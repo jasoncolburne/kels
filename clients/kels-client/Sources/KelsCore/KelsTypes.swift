@@ -8,13 +8,11 @@ public struct KelEvent: Identifiable, Equatable, Sendable {
     public let id: String
     public let prefix: String
     public let said: String
-    public let version: UInt64
 
-    public init(prefix: String, said: String, version: UInt64) {
+    public init(prefix: String, said: String) {
         self.id = said
         self.prefix = prefix
         self.said = said
-        self.version = version
     }
 }
 

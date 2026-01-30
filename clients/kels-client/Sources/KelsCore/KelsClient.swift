@@ -138,7 +138,7 @@ public final class KelsClient: @unchecked Sendable {
             let prefix = result.prefix.map { String(cString: $0) } ?? ""
             let said = result.said.map { String(cString: $0) } ?? ""
 
-            return (outcome, KelEvent(prefix: prefix, said: said, version: result.version))
+            return (outcome, KelEvent(prefix: prefix, said: said))
         }
     }
 
@@ -348,7 +348,7 @@ public final class KelsClient: @unchecked Sendable {
         let prefix = result.prefix.map { String(cString: $0) } ?? ""
         let said = result.said.map { String(cString: $0) } ?? ""
 
-        return KelEvent(prefix: prefix, said: said, version: result.version)
+        return KelEvent(prefix: prefix, said: said)
     }
 
     private func parseStatus(_ status: KelsStatus, error: UnsafeMutablePointer<CChar>?) -> KelsClientError {
