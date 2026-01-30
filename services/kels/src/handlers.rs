@@ -251,8 +251,7 @@ pub async fn submit_events(
         KelMergeResult::Verified
         | KelMergeResult::Recovered
         | KelMergeResult::Contested
-        | KelMergeResult::Recoverable
-        | KelMergeResult::Contestable => true,
+        | KelMergeResult::Recoverable => true,
         KelMergeResult::Frozen => false,
         KelMergeResult::RecoveryProtected => {
             // Adversary used recovery key - owner should contest

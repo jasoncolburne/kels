@@ -27,7 +27,6 @@ The merge function returns a tuple of three elements:
 | `Verified` | Events accepted normally | OK |
 | `Recovered` | Recovery succeeded, adversary events archived | OK |
 | `Recoverable` | Divergence detected, owner can submit `rec` | Frozen (divergent) |
-| `Contestable` | Adversary revealed recovery key, owner must submit `cnt` | Frozen (divergent) |
 | `Contested` | Both parties revealed recovery keys, KEL permanently frozen | Contested |
 | `Frozen` | KEL already divergent, only recovery events accepted | Frozen (divergent) |
 | `RecoveryProtected` | Recovery event protects this generation from re-divergence | Unchanged |
@@ -130,7 +129,7 @@ if new_has_recovery:
         append contest event
         return Contested
     else if old_has_recovery:
-        return Contestable  // Owner must contest, not recover
+        return RecoveryProtected  // Owner must contest, not recover
     else:
         remove adversary events (trace owner's chain via previous)
         append recovery events
@@ -139,7 +138,7 @@ else:
     // No recovery event - freeze KEL
     push single divergent event
     if old_has_recovery:
-        return Contestable
+        return RecoveryProtected
     else:
         return Recoverable
 ```

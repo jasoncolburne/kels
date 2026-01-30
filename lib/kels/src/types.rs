@@ -94,7 +94,6 @@ pub enum KelMergeResult {
     Verified,          // Events accepted
     Recovered,         // Recovery succeeded
     Recoverable,       // Divergence - user can submit rec
-    Contestable,       // Adversary revealed recovery key - user should submit cnt
     Contested,         // Both revealed recovery keys, KEL frozen
     Frozen,            // Already divergent, only rec/cnt allowed
     RecoveryProtected, // Recovery event protects this version
