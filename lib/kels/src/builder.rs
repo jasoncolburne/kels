@@ -42,7 +42,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
             _ => Kel::default(),
         };
-        let confirmed_cursor = kel.len();
+        let confirmed_cursor = kel.confirmed_length();
 
         Ok(Self {
             key_provider,
@@ -59,7 +59,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
     ) -> Result<Self, KelsError> {
-        let confirmed_cursor = kel.len();
+        let confirmed_cursor = kel.confirmed_length();
         Ok(Self {
             key_provider,
             kels_client,
@@ -88,7 +88,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     }
 
     pub fn is_fully_confirmed(&self) -> bool {
-        self.confirmed_cursor == self.kel.events().len()
+        self.confirmed_cursor == self.kel.confirmed_length()
     }
 
     pub fn kel(&self) -> &Kel {
@@ -133,7 +133,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         if let Some(kel) = store.load(&prefix).await? {
-            self.confirmed_cursor = kel.len();
+            self.confirmed_cursor = kel.confirmed_length();
             self.kel = kel;
         }
         Ok(())
@@ -382,7 +382,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
             None => {
-                self.confirmed_cursor = self.kel.len();
+                self.confirmed_cursor = self.kel.confirmed_length();
                 return Ok(());
             }
         };
@@ -399,7 +399,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                 submission_accepted: response.accepted,
             })
         } else if response.accepted {
-            self.confirmed_cursor = self.kel.len();
+            self.confirmed_cursor = self.kel.confirmed_length();
             Ok(())
         } else {
             Err(KelsError::InvalidKel(

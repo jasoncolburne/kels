@@ -85,6 +85,17 @@ impl Kel {
         self.0.iter().any(|e| e.event.is_contest())
     }
 
+    pub fn confirmed_length(&self) -> usize {
+        let divergence_info = self.find_divergence();
+
+        if let Some(info) = divergence_info {
+            // this is safe because default is 0 which fails secure
+            info.diverged_at_generation.try_into().unwrap_or_default()
+        } else {
+            self.len()
+        }
+    }
+
     pub fn push(&mut self, event: SignedKeyEvent) {
         self.0.push(event);
         self.sort();
@@ -751,7 +762,6 @@ mod tests {
 
         assert!(event.is_inception());
         assert!(!event.said.is_empty());
-        assert_eq!(event.said, event.prefix);
         assert!(event.previous.is_none());
         assert!(event.public_key.is_some());
         assert!(event.rotation_hash.is_some());

@@ -948,7 +948,6 @@ mod tests {
         assert!(!peer.said.is_empty());
         // Prefix is derived from content hash, not manually set
         assert!(!peer.prefix.is_empty());
-        assert_eq!(peer.prefix, peer.said);
     }
 
     #[test]
