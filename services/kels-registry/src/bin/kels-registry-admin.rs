@@ -7,7 +7,7 @@ use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
 use kels::Peer;
 use std::sync::Arc;
-use verifiable_storage::VersionedRepository;
+use verifiable_storage::ChainedRepository;
 use verifiable_storage_postgres::PgPool;
 
 use kels_registry::identity_client::IdentityClient;
@@ -108,7 +108,7 @@ impl AdminContext {
 }
 
 async fn add_peer(ctx: &AdminContext, peer_id: &str, node_id: &str) -> anyhow::Result<()> {
-    use verifiable_storage::Versioned;
+    use verifiable_storage::Chained;
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
     // Upsert pattern: load latest by node_id, if none create(), if some modify and increment()
@@ -298,14 +298,12 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         .await
         .context("Failed to get identity KEL")?;
 
-    let version = kel.last_event().map(|e| e.event.version).unwrap_or(0);
     let is_decommissioned = kel.is_decommissioned();
 
     if json {
         let status = serde_json::json!({
             "initialized": true,
             "prefix": prefix,
-            "version": version,
             "eventCount": kel.len(),
             "decommissioned": is_decommissioned
         });
@@ -314,7 +312,6 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         println!("Registry Identity Status");
         println!("{}", "=".repeat(40));
         println!("Prefix: {}", prefix);
-        println!("Version: {}", version);
         println!("Event count: {}", kel.len());
         println!("Decommissioned: {}", is_decommissioned);
         println!();

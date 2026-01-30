@@ -25,7 +25,6 @@ pub struct AnchorRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AnchorResponse {
     pub event_said: String,
-    pub event_version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,13 +125,12 @@ pub async fn anchor(
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
     tracing::info!(
-        "Anchored {} in registry KEL at version {}",
+        "Anchored {} in registry KEL at {}",
         request.said,
-        event.version
+        event.said,
     );
 
     Ok(Json(AnchorResponse {
         event_said: event.said,
-        event_version: event.version,
     }))
 }

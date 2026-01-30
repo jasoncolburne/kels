@@ -211,7 +211,7 @@ pub enum AllowlistRefreshError {
 
 // Use types from kels library
 use kels::KelsRegistryClient;
-use verifiable_storage::Versioned;
+use verifiable_storage::Chained;
 
 /// Shared allowlist type
 pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;

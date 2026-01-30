@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use verifiable_storage::StorageDatetime;
 
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
@@ -529,10 +528,7 @@ impl KelsClient {
                     return Ok(cached_kel);
                 }
 
-                let max_timestamp = cached_kel
-                    .max_event_timestamp()
-                    .ok_or(KelsError::KeyNotFound(prefix.to_string()))?;
-                let new_events = self.get_kel_since(prefix, max_timestamp).await?;
+                let new_events = self.fetch_full_kel(prefix).await?;
                 if new_events.is_empty() {
                     return Err(KelsError::AnchorVerificationFailed(
                         "Some anchors not found in KEL".to_string(),
@@ -540,7 +536,7 @@ impl KelsClient {
                 }
 
                 let mut kel = cached_kel;
-                let merge_result = kel.merge(new_events);
+                let merge_result = kel.merge(new_events.events().to_vec());
 
                 match merge_result {
                     Ok((_, _, KelMergeResult::Verified)) => {
@@ -655,47 +651,6 @@ impl KelsClient {
         }
     }
 
-    async fn get_kel_since(
-        &self,
-        prefix: &str,
-        since_timestamp: &StorageDatetime,
-    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}/api/kels/kel/{}/since/{}",
-                self.base_url, prefix, since_timestamp
-            ))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
-        }
-    }
-
-    pub async fn get_event(&self, said: &str) -> Result<SignedKeyEvent, KelsError> {
-        let resp = self
-            .client
-            .get(format!("{}/api/kels/events/{}", self.base_url, said))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::InvalidSaid(said.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
-        }
-    }
-
     pub async fn get_kels(
         &self,
         prefixes: &[&str],
@@ -755,19 +710,9 @@ impl KelsClient {
         let request = BatchKelsRequest {
             prefixes: batch_prefixes
                 .iter()
-                .map(|p| {
-                    // Use timestamp-based since to catch divergent events at earlier versions
-                    let since = if missing_prefixes.contains(p) {
-                        None
-                    } else {
-                        cached_kels
-                            .get(*p)
-                            .and_then(|kel| kel.max_event_timestamp().map(|ts| ts.0.to_rfc3339()))
-                    };
-                    BatchKelPrefixRequest {
-                        prefix: (*p).to_string(),
-                        since,
-                    }
+                .map(|p| BatchKelPrefixRequest {
+                    prefix: (*p).to_string(),
+                    since: None,
                 })
                 .collect(),
         };

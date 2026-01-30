@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
-use verifiable_storage::{SelfAddressed, StorageDatetime, Versioned};
+use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -121,7 +121,7 @@ pub struct ErrorResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "kels_key_events")]
+#[storable]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEvent {
     #[said]
@@ -131,8 +131,6 @@ pub struct KeyEvent {
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
-    #[version]
-    pub version: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
     /// Digest of next signing key
@@ -150,8 +148,6 @@ pub struct KeyEvent {
     /// Only for dip events
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegating_prefix: Option<String>,
-    #[created_at]
-    pub created_at: StorageDatetime,
 }
 
 impl KeyEvent {
@@ -164,7 +160,6 @@ impl KeyEvent {
             said: String::new(),
             prefix: String::new(),
             previous: None,
-            version: 0,
             public_key: Some(public_key),
             rotation_hash: Some(rotation_hash),
             recovery_key: None,
@@ -172,9 +167,9 @@ impl KeyEvent {
             kind: EventKind::Icp,
             anchor: None,
             delegating_prefix: None,
-            created_at: StorageDatetime::now(),
         };
         icp.derive_prefix()?;
+        icp.derive_said()?;
         Ok(icp)
     }
 
@@ -188,7 +183,6 @@ impl KeyEvent {
             said: String::new(),
             prefix: String::new(),
             previous: None,
-            version: 0,
             public_key: Some(public_key),
             rotation_hash: Some(rotation_hash),
             recovery_key: None,
@@ -196,9 +190,9 @@ impl KeyEvent {
             kind: EventKind::Dip,
             anchor: None,
             delegating_prefix: Some(delegating_prefix),
-            created_at: StorageDatetime::now(),
         };
         dip.derive_prefix()?;
+        dip.derive_said()?;
         Ok(dip)
     }
 
@@ -415,9 +409,6 @@ impl KeyEvent {
         match self.kind {
             EventKind::Icp => {
                 // Inception: version=0, no previous, has public_key, rotation_hash, recovery_hash
-                if self.version != 0 {
-                    return Err("icp event must have version 0".to_string());
-                }
                 forbid("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("rotationHash", self.rotation_hash.is_some())?;
@@ -428,9 +419,6 @@ impl KeyEvent {
             }
             EventKind::Dip => {
                 // Delegated inception: same as icp but requires delegatingPrefix
-                if self.version != 0 {
-                    return Err("dip event must have version 0".to_string());
-                }
                 forbid("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("rotationHash", self.rotation_hash.is_some())?;
@@ -441,9 +429,6 @@ impl KeyEvent {
             }
             EventKind::Rot => {
                 // Rotation: version>0, has previous, public_key, rotation_hash
-                if self.version == 0 {
-                    return Err("rot event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("rotationHash", self.rotation_hash.is_some())?;
@@ -454,9 +439,6 @@ impl KeyEvent {
             }
             EventKind::Ixn => {
                 // Interaction: version>0, has previous and anchor, no keys
-                if self.version == 0 {
-                    return Err("ixn event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("anchor", self.anchor.is_some())?;
                 forbid("publicKey", self.public_key.is_some())?;
@@ -467,9 +449,6 @@ impl KeyEvent {
             }
             EventKind::Rec => {
                 // Recovery: version>0, has previous, all key fields
-                if self.version == 0 {
-                    return Err("rec event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("rotationHash", self.rotation_hash.is_some())?;
@@ -480,9 +459,6 @@ impl KeyEvent {
             }
             EventKind::Ror => {
                 // Recovery rotation: same as rec
-                if self.version == 0 {
-                    return Err("ror event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("rotationHash", self.rotation_hash.is_some())?;
@@ -494,9 +470,6 @@ impl KeyEvent {
             EventKind::Dec => {
                 // Decommission: version>0, has previous, public_key, recovery_key
                 // No future keys (rotation_hash, recovery_hash) since KEL ends
-                if self.version == 0 {
-                    return Err("dec event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("recoveryKey", self.recovery_key.is_some())?;
@@ -507,9 +480,6 @@ impl KeyEvent {
             }
             EventKind::Cnt => {
                 // Contest: same as dec
-                if self.version == 0 {
-                    return Err("cnt event must have version > 0".to_string());
-                }
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
                 require("recoveryKey", self.recovery_key.is_some())?;

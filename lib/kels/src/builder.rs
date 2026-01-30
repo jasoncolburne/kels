@@ -42,7 +42,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
             _ => Kel::default(),
         };
-        let confirmed_cursor = kel.confirmed_cursor()?;
+        let confirmed_cursor = kel.len();
 
         Ok(Self {
             key_provider,
@@ -59,7 +59,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
     ) -> Result<Self, KelsError> {
-        let confirmed_cursor = kel.confirmed_cursor()?;
+        let confirmed_cursor = kel.len();
         Ok(Self {
             key_provider,
             kels_client,
@@ -123,10 +123,6 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         self.kel.prefix()
     }
 
-    pub fn version(&self) -> u64 {
-        self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
-    }
-
     /// Reload the KEL from the store, if one is configured.
     /// This is useful when the KEL may have been modified externally (e.g., by a CLI tool).
     pub async fn reload(&mut self) -> Result<(), KelsError> {
@@ -137,7 +133,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         if let Some(kel) = store.load(&prefix).await? {
-            self.confirmed_cursor = kel.confirmed_cursor()?;
+            self.confirmed_cursor = kel.len();
             self.kel = kel;
         }
         Ok(())
@@ -155,7 +151,10 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             let _ = kels_kel.merge(local_vec)?;
             if let Some(divergence) = kels_kel.find_divergence() {
                 let owner_has_rot = local_events.iter().any(|e| {
-                    e.event.version >= divergence.diverged_at_version
+                    divergence
+                        .divergent_saids
+                        .iter()
+                        .any(|said| *said == e.event.said)
                         && e.event.reveals_rotation_key()
                 });
 

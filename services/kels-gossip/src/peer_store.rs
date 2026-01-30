@@ -4,7 +4,7 @@
 //! bootstrap from cached peers when the registry is unavailable.
 
 use tracing::{debug, info, warn};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, Versioned};
+use verifiable_storage::{Chained, SelfAddressed, StorageDatetime, StorageError};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored, Value};
 
 /// A known peer discovered from the registry.

@@ -20,7 +20,6 @@ struct AnchorRequest {
 #[serde(rename_all = "camelCase")]
 struct AnchorResponse {
     event_said: String,
-    event_version: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,7 +71,7 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn anchor(&self, said: &str) -> Result<(String, u64), KelsError> {
+    pub async fn anchor(&self, said: &str) -> Result<String, KelsError> {
         let url = format!("{}/api/identity/anchor", self.base_url);
 
         let response = self
@@ -86,6 +85,6 @@ impl IdentityClient {
 
         let resp: AnchorResponse = self.parse_response(response).await?;
 
-        Ok((resp.event_said, resp.event_version))
+        Ok(resp.event_said)
     }
 }

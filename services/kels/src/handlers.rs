@@ -13,7 +13,6 @@ use kels::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use verifiable_storage::VersionedRepository;
 
 use crate::repository::KelsRepository;
 
@@ -268,7 +267,7 @@ pub async fn submit_events(
 
     let diverged_at = match result {
         KelMergeResult::Contested => None,
-        _ => kel.find_divergence().map(|d| d.diverged_at_version),
+        _ => kel.find_divergence().map(|d| d.diverged_at_generation),
     };
 
     // Update cache outside transaction
@@ -349,69 +348,6 @@ pub async fn get_kel(
     }
 
     Ok(Json(signed_events).into_response())
-}
-
-/// Returns events with created_at > since_timestamp (RFC3339 format).
-pub async fn get_kel_since(
-    State(state): State<Arc<AppState>>,
-    Path((prefix, since_timestamp)): Path<(String, String)>,
-) -> Result<Response, ApiError> {
-    use chrono::{DateTime, Utc};
-    use verifiable_storage::StorageDatetime;
-
-    // Parse the timestamp (RFC3339/ISO8601 format)
-    let chrono_dt: DateTime<Utc> = DateTime::parse_from_rfc3339(&since_timestamp)
-        .map_err(|e| ApiError::bad_request(format!("Invalid timestamp format: {}", e)))?
-        .with_timezone(&Utc);
-    let since_dt = StorageDatetime::from(chrono_dt);
-
-    // Query database for events since timestamp
-    let signed_events: Vec<SignedKeyEvent> = state
-        .repo
-        .key_events
-        .get_signed_history_since(&prefix, &since_dt)
-        .await?;
-
-    // Note: We don't error if empty - an empty list means no new events since the timestamp
-    Ok(Json(signed_events).into_response())
-}
-
-pub async fn get_event(
-    State(state): State<Arc<AppState>>,
-    Path(said): Path<String>,
-) -> Result<Json<SignedKeyEvent>, ApiError> {
-    // We need to query DB first to get the prefix (SAID doesn't tell us the KEL prefix)
-    let event = state
-        .repo
-        .key_events
-        .get_by_said(&said)
-        .await?
-        .ok_or_else(|| ApiError::not_found(format!("Event {} not found", said)))?;
-
-    let prefix = &event.prefix;
-
-    // Try cache first
-    if let Ok(events) = state.kel_cache.get_full(prefix).await
-        && !events.is_empty()
-        && let Some(cached_event) = events.into_iter().find(|e| e.event.said == said)
-    {
-        return Ok(Json(cached_event));
-    }
-
-    // Cache miss - get full KEL from DB and populate cache
-    let signed_events = state.repo.key_events.get_signed_history(prefix).await?;
-
-    // Store in cache
-    if let Err(e) = state.kel_cache.store(prefix, &signed_events).await {
-        tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
-    }
-
-    // Find and return the requested event
-    signed_events
-        .into_iter()
-        .find(|e| e.event.said == said)
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("Event {} not found", said)))
 }
 
 // ==================== Prefix Listing ====================
@@ -505,15 +441,7 @@ pub async fn get_kels_batch(
                 }
 
                 // Filter by timestamp if specified
-                let bytes = if let Some(ref dt) = since_dt {
-                    let filtered: Vec<_> = events
-                        .into_iter()
-                        .filter(|e| e.event.created_at > *dt)
-                        .collect();
-                    serde_json::to_vec(&filtered).unwrap_or_else(|_| b"[]".to_vec())
-                } else {
-                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec())
-                };
+                let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
 
                 Ok((prefix, bytes))
             }

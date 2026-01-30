@@ -592,14 +592,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for signed_event in &response.events {
+        for (i, signed_event) in response.events.iter().enumerate() {
             let event = &signed_event.event;
             println!(
-                "  [{}] {} - {} ({})",
-                event.version,
+                "  [{}] {} - {}",
+                i,
                 event.kind.as_str().to_uppercase(),
-                &event.said[..16],
-                event.created_at
+                &event.said[..16]
             );
         }
 
@@ -655,14 +654,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     }
     println!();
     println!("{}", "Events:".yellow().bold());
-    for signed_event in kel.events().iter() {
+    for (i, signed_event) in kel.events().iter().enumerate() {
         let event = &signed_event.event;
         println!(
-            "  [{}] {} - {} ({})",
-            event.version,
+            "  [{}] {} - {}",
+            i,
             event.kind.as_str().to_uppercase(),
-            &event.said[..16],
-            event.created_at
+            &event.said[..16]
         );
     }
 
@@ -716,7 +714,6 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     if let Some(last) = kel.last() {
         println!("  Latest SAID:  {}", last.event.said);
         println!("  Latest Type:  {}", last.event.kind);
-        println!("  Created At:   {}", last.event.created_at);
     }
     if kel.is_contested() {
         println!("  Status:       {}", "CONTESTED".red());
@@ -724,7 +721,7 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Status:       {}", "DECOMMISSIONED".red());
     } else if let Some(div) = kel.find_divergence() {
         println!("  Status:       {}", "DIVERGENT".yellow());
-        println!("  Diverged At:  v{}", div.diverged_at_version);
+        println!("  Diverged At:  v{}", div.diverged_at_generation);
     } else {
         println!("  Status:       {}", "OK".green());
     }

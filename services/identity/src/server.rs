@@ -15,7 +15,7 @@ use crate::repository::{
     AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository,
 };
 use kels::{KelStore, RepositoryKelStore};
-use verifiable_storage::{RepositoryConnection, VersionedRepository};
+use verifiable_storage::{ChainedRepository, RepositoryConnection};
 
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
