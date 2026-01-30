@@ -6,46 +6,48 @@ This document describes the verification protocol used to validate the integrity
 
 KEL verification ensures:
 - All events have valid self-addressing identifiers (SAIDs)
-- Events chain correctly from inception to current state
+- Events chain correctly from inception to current state via `previous` links
 - Pre-rotation commitments are honored (rotation hash → public key)
 - Recovery key commitments are honored (recovery hash → recovery key)
 - All signatures are valid
-- Version numbers are contiguous
+
+Events are linked by their `previous` SAID field. Generation is computed dynamically by following the chain from inception (generation 0).
 
 ## Verification Phases
 
 ### Phase 1: Forward Pass (Structure Verification)
 
-The forward pass iterates through events in version order, validating structural properties.
+The forward pass iterates through events by following `previous` links, validating structural properties.
 
-#### 1.1 Version Continuity
+#### 1.1 Chain Building
+
+Events are sorted by following the `previous` chain from inception:
 
 ```
-for each (expected_version, (actual_version, events)):
-    if actual_version != expected_version:
-        return Error("Missing version")
+start with inception events (previous = None)
+for each generation:
+    find events whose previous matches current generation's SAIDs
+    add to sorted list
 ```
-
-Versions must be contiguous starting from 0. Gaps indicate missing events.
 
 #### 1.2 Divergence Detection
 
 ```
-if events_at_version.len() > 1 AND no divergence detected yet:
+if multiple events share the same previous AND no divergence detected yet:
     record divergence_info = {
-        diverged_at_version: version,
-        divergent_saids: [event SAIDs at this version]
+        diverged_at_generation: generation,
+        divergent_saids: [event SAIDs at this generation]
     }
 ```
 
-Multiple events at the same version indicates divergence (conflicting event chains).
+Multiple events with the same `previous` indicates divergence (conflicting event chains).
 
 #### 1.3 Event Basics
 
-For each event at each version:
+For each event:
 
 ```
-verify_event_basics(event, prefix, version):
+verify_event_basics(event, prefix):
     // Verify SAID is self-consistent
     event.verify()  // Computes SAID and compares to stored SAID
 
@@ -57,21 +59,15 @@ verify_event_basics(event, prefix, version):
 #### 1.4 Chaining Verification
 
 ```
-verify_chaining(event, version, events_by_version):
-    if version == 0:
+verify_chaining(event, all_events):
+    if event.previous is None:
         // Must be inception (icp or dip)
         if not event.is_inception():
-            return Error("KEL does not start with inception")
-        if event.previous is not None:
-            return Error("Inception has previous field")
+            return Error("Non-inception event has no previous")
         return OK
 
     // Non-inception must chain from valid previous
-    if event.previous is None:
-        return Error("Event has no previous field")
-
-    previous_events = events_by_version[version - 1]
-    if event.previous not in [e.said for e in previous_events]:
+    if event.previous not in [e.said for e in all_events]:
         return Error("Chains from unknown previous")
 ```
 
@@ -208,7 +204,7 @@ Success cases:
 - Ok(Some(DivergenceInfo)) = KEL is valid but divergent
 
 DivergenceInfo:
-    diverged_at_version: u64
+    diverged_at_generation: u64
     divergent_saids: Vec<String>
 ```
 
@@ -218,8 +214,8 @@ DivergenceInfo:
 |----------|---------------------|
 | SAID integrity | Recompute and compare |
 | Prefix consistency | All events have same prefix |
-| Version continuity | No gaps in version sequence |
-| Event chaining | Previous field points to valid prior event |
+| Event chaining | Previous field points to valid prior event SAID |
+| Chain completeness | All `previous` references resolve to existing events |
 | Pre-rotation commitment | rotation_hash matches next public_key |
 | Recovery commitment | recovery_hash matches revealed recovery_key |
 | Signature validity | Cryptographic signature verification |

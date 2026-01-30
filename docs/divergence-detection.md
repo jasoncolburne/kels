@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-In a distributed KELS deployment, an adversary who has compromised a signing key can submit conflicting events to different nodes simultaneously. Before nodes synchronize via gossip, both nodes may accept different events at the same version, creating a fork in the KEL.
+In a distributed KELS deployment, an adversary who has compromised a signing key can submit conflicting events to different nodes simultaneously. Before nodes synchronize via gossip, both nodes may accept different events at the same generation (position in the chain), creating a fork in the KEL.
 
 The legitimate owner must be able to:
 1. Detect that divergence has occurred
@@ -21,15 +21,17 @@ The legitimate owner must be able to:
 
 ### Divergence Detection
 
-Divergence is detected when multiple events exist at the same version:
+Divergence is detected when multiple events share the same `previous` SAID (i.e., multiple events at the same generation):
 
 ```
-Normal KEL:     v0 → v1 → v2 → v3
-Divergent KEL:  v0 → v1 → v2 → v3(owner)
-                           ↘ v3(adversary)
+Normal KEL:     g0 → g1 → g2 → g3
+Divergent KEL:  g0 → g1 → g2 → g3(owner)
+                           ↘ g3(adversary)
 ```
 
-The `Kel::find_divergence()` method returns the first version with multiple SAIDs.
+Events are linked by their `previous` field (the SAID of the prior event). Generation is the position in the chain, computed dynamically by following `previous` links from inception.
+
+The `Kel::find_divergence()` method returns the first generation with multiple SAIDs.
 
 ### Owner Tail Tracking
 
@@ -62,11 +64,11 @@ On divergence (event causes divergence but is accepted):
 Client                              KELS Server
   │                                      │
   │──── submit_events([event]) ─────────>│
-  │                                      │ detect SAID mismatch at version N
+  │                                      │ detect SAID mismatch at generation N
   │                                      │ store as divergent event
   │<──── BatchSubmitResponse ────────────│
   │      { accepted: true,               │
-  │        diverged_at: Some("E...") }   │
+  │        diverged_at: Some(N) }        │
   │                                      │
   │──── fetch_full_kel() ───────────────>│
   │<──── [all events including forks] ───│
@@ -91,7 +93,7 @@ Client                              KELS Server
   │                                      │ reject event (not stored)
   │<──── BatchSubmitResponse ────────────│
   │      { accepted: false,              │
-  │        diverged_at: Some("E...") }   │
+  │        diverged_at: Some(N) }        │
   │                                      │
   │──── fetch_full_kel() ───────────────>│
   │<──── [all events including forks] ───│
@@ -177,13 +179,15 @@ A KEL is considered contested if it contains **any** `cnt` event (not just if th
 
 ## Database Schema
 
-### Non-Unique Version Index
+### Prefix Index
 
 ```sql
--- Allows multiple events at same version
-CREATE INDEX kels_key_events_prefix_version_idx
-  ON kels_key_events(prefix, version);
+-- Index for querying events by prefix
+CREATE INDEX kels_key_events_prefix_idx
+  ON kels_key_events(prefix);
 ```
+
+Events are linked by their `previous` SAID field rather than a version number. Multiple events can share the same `previous` value, indicating divergence.
 
 ### Audit Records
 
@@ -212,9 +216,11 @@ Content-Type: application/json
 Response:
 {
   "accepted": true,
-  "divergedAt": "ESaid..." | null
+  "divergedAt": <generation> | null
 }
 ```
+
+Where `divergedAt` is the generation number (0-indexed position in chain) where divergence was detected, or null if no divergence.
 
 ### Fetch KEL
 
@@ -235,15 +241,15 @@ Response: {
 }
 ```
 
-### Fetch Since Timestamp
+### Fetch Since SAID
 
 ```
-GET /api/kels/kel/:prefix/since/:timestamp
+GET /api/kels/kel/:prefix/since/:said
 
 Response: [SignedKeyEvent, ...]
 ```
 
-Timestamp-based queries ensure clients see all new events, including divergent events at earlier versions.
+SAID-based queries return all events added after a given event, including divergent events.
 
 ## CLI Commands
 
@@ -263,14 +269,16 @@ kels-cli list                                # List local KELs
 
 ### Testing (dev-tools feature)
 
+The test scripts simulate adversaries by backing up and swapping the local state directory:
+
 ```bash
-kels-cli inject --prefix <prefix> --events ixn,rot
-kels-cli inject --prefix <prefix> --events rot --generation 0 --event-version 3
+# In test scripts (test-adversarial.sh):
+swap_to_adversary    # Switch to backed-up adversary state
+kels-cli adversary inject --prefix <prefix> --events ixn,rot
+swap_to_owner        # Switch back to owner state
 ```
 
-Injects events to server without updating local state, simulating an adversary.
-- `--generation N`: Use signing key from generation N (0 = inception key)
-- `--event-version N`: Truncate local KEL to version N before injecting (simulates adversary with old state)
+The `adversary inject` command submits events to the server without updating local state. Combined with state directory swapping, this simulates an adversary who captured the owner's keys at a point in time.
 
 ## Security Considerations
 
@@ -279,14 +287,14 @@ Injects events to server without updating local state, simulating an adversary.
 Once divergence is detected, the KEL is frozen:
 - No new events accepted except `rec` or `cnt`
 - Prevents adversary from extending their fork
-- Server returns `{ accepted: false, diverged_at: "E..." }` for rejected submissions, allowing client to sync
+- Server returns `{ accepted: false, diverged_at: N }` for rejected submissions, allowing client to sync
 
 ### Recovery Protection
 
-Any recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at version N protects version N and all earlier versions:
-- All events except `cnt` at version <= N are rejected with `RecoveryProtected`
-- Prevents re-divergence at the recovery version
-- Enables proactive protection: rotating recovery key (`ror`) prevents adversary from injecting events at earlier versions
+Any recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at generation N protects generation N and all earlier generations:
+- All events except `cnt` at generation <= N are rejected with `RecoveryProtected`
+- Prevents re-divergence at the recovery generation
+- Enables proactive protection: rotating recovery key (`ror`) prevents adversary from injecting events at earlier generations
 - Only contest (`cnt`) events are allowed through - once anyone reveals recovery, the only valid response is to contest
 
 ### Contest Finality
@@ -324,7 +332,7 @@ A KEL with any `cnt` event is permanently frozen and will reject all new submiss
 10. **Owner Rotates, Then Adversary Attacks** - Post-rotation ixn attack, owner recovers (no extra rot)
 11. **Adversary Decommissions After Owner Anchors** - dec attack on data, owner contests
 12. **Adversary Injects Recovery (rec)** - rec attack, owner contests
-13. **Adversary Attacks Old Version After Multiple Rotations** - Owner already rotated twice, adversary injects at old version, owner recovers (no extra rot - owner already escaped)
+13. **Adversary Attacks Old Generation After Multiple Rotations** - Owner already rotated twice, adversary injects at old generation, owner recovers (no extra rot - owner already escaped)
 14. **Submission When Frozen** - All operations rejected on contested KEL
 15. **Proactive Recovery Protection via ROR** - Owner rotates recovery key, preventing historical injection
-16. **Post-Recovery Protection** - After recovery, adversary cannot re-diverge at earlier versions
+16. **Post-Recovery Protection** - After recovery, adversary cannot re-diverge at earlier generations

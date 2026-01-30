@@ -7,9 +7,11 @@ This document describes the merge protocol used when new events are submitted to
 The merge operation integrates new events into an existing KEL while handling:
 - Normal event appends
 - Idempotent resubmissions
-- Divergence detection (conflicting events at the same version)
+- Divergence detection (conflicting events at the same generation)
 - Recovery from divergence
 - Contest when both parties have the recovery key
+
+Events are linked by their `previous` SAID field. Generation is the position in the chain, computed dynamically by following `previous` links from inception (generation 0).
 
 ## Return Values
 
@@ -28,7 +30,7 @@ The merge function returns a tuple of three elements:
 | `Contestable` | Adversary revealed recovery key, owner must submit `cnt` | Frozen (divergent) |
 | `Contested` | Both parties revealed recovery keys, KEL permanently frozen | Contested |
 | `Frozen` | KEL already divergent, only recovery events accepted | Frozen (divergent) |
-| `RecoveryProtected` | Recovery event protects this version from re-divergence | Unchanged |
+| `RecoveryProtected` | Recovery event protects this generation from re-divergence | Unchanged |
 
 ## Merge Flow
 
@@ -77,11 +79,11 @@ return Recovered
 
 ### 4. Normal Merge (Non-divergent KEL)
 
-Calculate where new events should be inserted based on version:
+Determine where new events fit by following `previous` links:
 
-**Case A: Append (no overlap)**
+**Case A: Append (chains from current tail)**
 ```
-if existing_length == first_event.version:
+if first_event.previous == current_tail.said:
     if KEL is decommissioned:
         return Error("KEL decommissioned")
     append all events
@@ -90,32 +92,31 @@ if existing_length == first_event.version:
 
 **Case B: Overlap (potential divergence)**
 ```
-for each overlapping position:
-    if old_event.said != new_event.said:
+for each event where previous already has a successor:
+    if existing_successor.said != new_event.said:
         // Divergence detected!
         goto divergence_handling
 
-if all overlapping events match:
-    append any remaining new events
+if all events already exist (same SAIDs):
     return Verified  // Idempotent submission
 ```
 
 **Case C: Gap**
 ```
-if first_event.version > existing_length:
-    return Error("Events not contiguous")
+if first_event.previous not found in KEL:
+    return Error("Events not contiguous - missing previous event")
 ```
 
 ### 5. Divergence Handling
 
-When divergence is detected during overlap checking:
+When divergence is detected (multiple events share same `previous`):
 
 ```
 divergent_old_events = existing events from divergence point
 divergent_new_events = submitted events from divergence point
 
-// Check if recovery already protects this version
-if KEL reveals recovery at or after this version:
+// Check if recovery already protects this generation
+if KEL reveals recovery at or after this generation:
     if new event is NOT contest:
         return RecoveryProtected
     // Contest events are allowed through
@@ -131,7 +132,7 @@ if new_has_recovery:
     else if old_has_recovery:
         return Contestable  // Owner must contest, not recover
     else:
-        truncate at divergence point
+        remove adversary events (trace owner's chain via previous)
         append recovery events
         return Recovered
 else:
@@ -182,8 +183,8 @@ return result
 
 ## Key Invariants
 
-1. **Events are sorted by version** - The internal event list is always sorted
+1. **Events are sorted by chain order** - The internal event list is sorted by following `previous` links from inception
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
-3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at version N, divergence at version <= N is rejected
+3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at generation N, divergence at generation <= N is rejected
 4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)
 5. **Contested KELs are permanently frozen** - No events can be added after contest

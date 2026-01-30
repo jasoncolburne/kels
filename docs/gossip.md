@@ -59,8 +59,8 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 ### Why SAID comparison?
 
 - Simple equality check - if SAIDs match, nodes are in sync
-- Divergent events at the same version have different SAIDs
-- No timestamp or version tracking needed
+- Divergent events at the same generation have different SAIDs
+- No timestamp or generation tracking needed
 - Works correctly with divergence detection
 
 ## Components
@@ -146,7 +146,7 @@ Gossip nodes use persistent HSM-backed identities:
 
 ### Full KEL fetch (not incremental)
 
-- Simpler implementation - no version tracking needed
+- Simpler implementation - no generation tracking needed
 - KELS handles duplicate events idempotently
 - Works correctly with divergence scenarios
 - Bandwidth overhead acceptable for typical KEL sizes
