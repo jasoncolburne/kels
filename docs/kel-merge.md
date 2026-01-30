@@ -11,7 +11,7 @@ The merge operation integrates new events into an existing KEL while handling:
 - Recovery from divergence
 - Contest when both parties have the recovery key
 
-Events are linked by their `previous` SAID field. Generation is the position in the chain, computed dynamically by following `previous` links from inception (generation 0).
+Events are linked by their `previous` SAID field. Generation is the position in the chain, computed dynamically by following `previous` links from tail(s) to inception (generation 0).
 
 ## Return Values
 
