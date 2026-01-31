@@ -93,10 +93,6 @@ impl Kel {
             .any(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(anchor))
     }
 
-    pub fn contains_anchors(&self, anchors: &[&str]) -> bool {
-        anchors.iter().cloned().all(|a| self.contains_anchor(a))
-    }
-
     /// A contested KEL has a `cnt` event, meaning both parties used the recovery key.
     pub fn is_contested(&self) -> bool {
         self.0.iter().any(|e| e.event.is_contest())

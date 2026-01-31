@@ -34,10 +34,6 @@ pub struct KelAnnouncement {
 }
 
 impl KelAnnouncement {
-    pub fn new(prefix: String, said: String) -> Self {
-        Self { prefix, said }
-    }
-
     /// Parse from Redis pub/sub message format "{prefix}:{said}"
     pub fn from_pubsub_message(message: &str) -> Option<Self> {
         let mut parts = message.splitn(2, ':');
@@ -76,7 +72,10 @@ mod tests {
 
     #[test]
     fn test_announcement_serialization() {
-        let ann = KelAnnouncement::new("Eprefix".to_string(), "Esaid".to_string());
+        let ann = KelAnnouncement {
+            prefix: "Eprefix".to_string(),
+            said: "Esaid".to_string(),
+        };
         let json = serde_json::to_string(&ann).unwrap();
         let parsed: KelAnnouncement = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.prefix, ann.prefix);

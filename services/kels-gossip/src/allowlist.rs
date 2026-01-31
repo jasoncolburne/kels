@@ -194,19 +194,8 @@ impl NetworkBehaviour for AllowlistBehaviour {
 pub enum AllowlistRefreshError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("Invalid PeerId: {0}")]
-    InvalidPeerId(String),
     #[error("KEL verification failed: {0}")]
     KelVerificationFailed(String),
-    #[error("JSON parse error: {0}")]
-    JsonParseError(String),
-    #[error("Registry prefix mismatch: expected {expected}, got {actual:?}")]
-    PrefixMismatch {
-        expected: String,
-        actual: Option<String>,
-    },
-    #[error("Peer SAID not anchored in registry KEL: {0}")]
-    SaidNotAnchored(String),
 }
 
 // Use types from kels library

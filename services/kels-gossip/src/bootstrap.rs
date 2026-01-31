@@ -58,8 +58,6 @@ pub struct BootstrapConfig {
     pub kels_advertise_url_internal: Option<String>,
     /// Gossip multiaddr for registration
     pub gossip_multiaddr: String,
-    /// Registry service URL
-    pub registry_url: String,
     /// Page size for prefix listing
     pub page_size: usize,
     /// Heartbeat interval in seconds
@@ -74,7 +72,6 @@ impl Default for BootstrapConfig {
             kels_advertise_url: String::new(),
             kels_advertise_url_internal: None,
             gossip_multiaddr: String::new(),
-            registry_url: String::new(),
             page_size: 100,
             heartbeat_interval_secs: 30,
         }
@@ -208,20 +205,6 @@ impl BootstrapSync {
             peers,
             registry_available,
         })
-    }
-
-    /// Phase 2: Initial sync of KELs from discovered peers.
-    /// Call this AFTER the gossip swarm is running so we receive events during sync.
-    pub async fn sync_kels(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
-        if peers.is_empty() {
-            return Ok(());
-        }
-
-        info!("Starting initial KEL sync from {} peer(s)", peers.len());
-        self.sync_from_peers(peers).await?;
-        info!("Initial KEL sync complete");
-
-        Ok(())
     }
 
     /// Preload KELs from Ready peers while not yet in the allowlist.

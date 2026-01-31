@@ -591,10 +591,6 @@ impl SignedKeyEvent {
         self.signatures.iter().find(|s| s.public_key == public_key)
     }
 
-    pub fn has_dual_signatures(&self) -> bool {
-        self.signatures.len() >= 2
-    }
-
     pub fn from_signatures(event: KeyEvent, sigs: Vec<(String, String)>) -> Self {
         Self {
             event,
@@ -862,16 +858,6 @@ impl Peer {
 pub struct PeerHistory {
     pub prefix: String,
     pub records: Vec<Peer>,
-}
-
-impl PeerHistory {
-    pub fn latest(&self) -> Option<&Peer> {
-        self.records.last()
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.latest().is_some_and(|p| p.active)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

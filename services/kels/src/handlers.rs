@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::repository::KelsRepository;
 
-pub struct PreSerializedJson(pub Arc<Vec<u8>>);
+pub(crate) struct PreSerializedJson(pub Arc<Vec<u8>>);
 
 impl IntoResponse for PreSerializedJson {
     fn into_response(self) -> Response {
@@ -29,17 +29,17 @@ impl IntoResponse for PreSerializedJson {
     }
 }
 
-pub struct AppState {
-    pub repo: Arc<KelsRepository>,
-    pub kel_cache: ServerKelCache,
+pub(crate) struct AppState {
+    pub(crate) repo: Arc<KelsRepository>,
+    pub(crate) kel_cache: ServerKelCache,
 }
 
 // ==================== Error Handling ====================
 
-pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
+pub(crate) struct ApiError(StatusCode, Json<ErrorResponse>);
 
 impl ApiError {
-    pub fn not_found(msg: impl Into<String>) -> Self {
+    fn not_found(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -49,17 +49,7 @@ impl ApiError {
         )
     }
 
-    pub fn conflict(msg: impl Into<String>) -> Self {
-        ApiError(
-            StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: msg.into(),
-                code: Some(ErrorCode::Conflict),
-            }),
-        )
-    }
-
-    pub fn bad_request(msg: impl Into<String>) -> Self {
+    fn bad_request(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -69,7 +59,7 @@ impl ApiError {
         )
     }
 
-    pub fn unauthorized(msg: impl Into<String>) -> Self {
+    fn unauthorized(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -79,17 +69,7 @@ impl ApiError {
         )
     }
 
-    pub fn contested(msg: impl Into<String>) -> Self {
-        ApiError(
-            StatusCode::GONE,
-            Json(ErrorResponse {
-                error: msg.into(),
-                code: Some(ErrorCode::Gone),
-            }),
-        )
-    }
-
-    pub fn recovery_protected(msg: impl Into<String>) -> Self {
+    fn recovery_protected(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::CONFLICT,
             Json(ErrorResponse {
@@ -132,7 +112,7 @@ impl IntoResponse for ApiError {
 
 // ==================== Health Check ====================
 
-pub async fn health() -> StatusCode {
+pub(crate) async fn health() -> StatusCode {
     StatusCode::OK
 }
 
@@ -155,7 +135,7 @@ pub async fn health() -> StatusCode {
 /// Note: Delegation verification is NOT performed here. KELS accepts any valid KEL
 /// starting with `icp` or `dip`. Delegation trust is verified by consumers when they need to
 /// verify the trust chain.
-pub async fn submit_events(
+pub(crate) async fn submit_events(
     State(state): State<Arc<AppState>>,
     Json(events): Json<Vec<SignedKeyEvent>>,
 ) -> Result<Json<BatchSubmitResponse>, ApiError> {
@@ -282,12 +262,12 @@ pub async fn submit_events(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GetKelParams {
+pub(crate) struct GetKelParams {
     #[serde(default)]
     pub audit: bool,
 }
 
-pub async fn get_kel(
+pub(crate) async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
     Query(params): Query<GetKelParams>,
@@ -349,7 +329,7 @@ pub async fn get_kel(
 // ==================== Prefix Listing ====================
 
 #[derive(Debug, Deserialize)]
-pub struct ListPrefixesParams {
+pub(crate) struct ListPrefixesParams {
     /// Cursor to start after (prefix string)
     pub since: Option<String>,
     /// Maximum prefixes to return (default: 100, max: 1000)
@@ -362,7 +342,7 @@ fn default_prefix_limit() -> usize {
 }
 
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
-pub async fn list_prefixes(
+pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListPrefixesParams>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
@@ -384,7 +364,7 @@ pub async fn list_prefixes(
 const MAX_BATCH_PREFIXES: usize = 50;
 
 /// Batch fetch KELs. Returns map of prefix -> events.
-pub async fn get_kels_batch(
+pub(crate) async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Response, ApiError> {

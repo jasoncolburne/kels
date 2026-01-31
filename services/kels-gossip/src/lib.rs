@@ -27,13 +27,13 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
-pub mod allowlist;
-pub mod bootstrap;
-pub mod gossip;
-pub mod hsm_signer;
-pub mod peer_store;
-pub mod protocol;
-pub mod sync;
+mod allowlist;
+mod bootstrap;
+mod gossip;
+mod hsm_signer;
+mod peer_store;
+mod protocol;
+mod sync;
 
 use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
@@ -247,7 +247,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         kels_advertise_url: config.kels_advertise_url.clone(),
         kels_advertise_url_internal: config.kels_advertise_url_internal.clone(),
         gossip_multiaddr: config.advertise_addr.to_string(),
-        registry_url: registry_url.clone(),
         page_size: 100,
         heartbeat_interval_secs: config.heartbeat_interval_secs,
     };
