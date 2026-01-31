@@ -87,10 +87,6 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         self.kel.is_decommissioned()
     }
 
-    pub fn is_fully_confirmed(&self) -> bool {
-        self.confirmed_cursor == self.kel.confirmed_length()
-    }
-
     pub fn kel(&self) -> &Kel {
         &self.kel
     }
