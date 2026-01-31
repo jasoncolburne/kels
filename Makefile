@@ -64,15 +64,16 @@ coverage:
 		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
 		exit 1; \
 	fi
+	@printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
+	@echo ""
 	@cargo llvm-cov --workspace 2>&1 | awk '\
-		BEGIN { printf "%-60s %8s %8s\n", "File", "Coverage", "Missed"; print "" } \
 		NR == 1 { next } \
 		/^-+$$/ { next } \
-		/^TOTAL/ { total = $$10; next } \
-		NF >= 13 && $$10 ~ /%$$/ { \
-			printf "%-60s %8s %8s\n", $$1, $$10, $$9 \
-		} \
-		END { print ""; print "TOTAL: " total }'
+		/^TOTAL/ { print $$10 > "/tmp/cov_total"; next } \
+		NF >= 13 && $$10 ~ /%$$/ { printf "%-60s %8s %8d\n", $$1, $$10, $$9 }' \
+		| sort -k3 -rn
+	@echo ""
+	@echo "TOTAL: $$(cat /tmp/cov_total)"
 	@cargo llvm-cov --workspace --html --no-run >/dev/null 2>&1
 	@echo ""
 	@echo "Full report: target/llvm-cov/html/index.html"
