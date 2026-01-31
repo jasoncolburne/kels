@@ -231,11 +231,11 @@ Verification does NOT fail on divergence. Instead:
 
 | Event Type | Primary Signature | Recovery Signature |
 |------------|-------------------|-------------------|
-| `icp` (inception) | Signing key | - |
-| `ixn` (interaction) | Signing key | - |
-| `rot` (rotation) | Next signing key (pre-committed) | - |
-| `ror` (recovery rotation) | Next signing key | Recovery key |
-| `rec` (recovery) | Next signing key | Recovery key |
+| `icp` (incept) | Signing key | - |
+| `ixn` (interact) | Signing key | - |
+| `rot` (rotate) | Next signing key (pre-committed) | - |
+| `ror` (rotate recovery) | Next signing key | Recovery key |
+| `rec` (recover) | Next signing key | Recovery key |
 | `cnt` (contest) | Next signing key | Recovery key |
 | `dec` (decommission) | Next signing key | Recovery key |
 
