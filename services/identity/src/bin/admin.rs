@@ -10,7 +10,7 @@ use identity::{
 };
 use kels::{KelStore, KeyEventBuilder, KeyProvider, RepositoryKelStore};
 use std::sync::Arc;
-use verifiable_storage::{RepositoryConnection, VersionedRepository};
+use verifiable_storage::{ChainedRepository, RepositoryConnection};
 
 #[derive(Parser)]
 #[command(name = "identity-admin")]
@@ -109,18 +109,12 @@ async fn cmd_status(repo: &IdentityRepository, json: bool) -> anyhow::Result<()>
         .await?
         .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
 
-    let kel = repo.kel.get_kel(&authority.kel_prefix).await?;
-    let latest_event = kel
-        .last_event()
-        .ok_or_else(|| anyhow::anyhow!("KEL is empty"))?;
-
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "initialized": true,
                 "prefix": authority.kel_prefix,
-                "kel_version": latest_event.event.version,
                 "last_said": authority.last_said,
                 "current_key_handle": binding.current_key_handle,
                 "next_key_handle": binding.next_key_handle,
@@ -130,7 +124,6 @@ async fn cmd_status(repo: &IdentityRepository, json: bool) -> anyhow::Result<()>
         println!("{}", "Registry Identity Status".cyan().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), authority.kel_prefix.yellow());
-        println!("  {}: {}", "KEL Version".cyan(), latest_event.event.version);
         println!("  {}: {}", "Last SAID".cyan(), authority.last_said);
         println!("  {}: {}", "Current Key".cyan(), binding.current_key_handle);
         println!("  {}: {}", "Next Key".cyan(), binding.next_key_handle);
@@ -225,7 +218,6 @@ async fn cmd_rotate(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "kel_version": event.version,
                 "said": event.said,
                 "current_key_handle": new_current_handle,
                 "next_key_handle": new_next_handle,
@@ -235,7 +227,6 @@ async fn cmd_rotate(
         println!("{}", "Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New KEL Version".cyan(), event.version);
         println!("  {}: {}", "New SAID".cyan(), event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
@@ -333,7 +324,6 @@ async fn cmd_rotate_recovery(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "kel_version": event.version,
                 "said": event.said,
                 "current_key_handle": new_current_handle,
                 "next_key_handle": new_next_handle,
@@ -344,7 +334,6 @@ async fn cmd_rotate_recovery(
         println!("{}", "Recovery Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New KEL Version".cyan(), event.version);
         println!("  {}: {}", "New SAID".cyan(), event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
@@ -445,7 +434,6 @@ async fn cmd_recover(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "kel_version": event.version,
                 "said": event.said,
                 "event_kind": "REC",
                 "current_key_handle": new_current_handle,
@@ -457,7 +445,6 @@ async fn cmd_recover(
         println!("{}", "Recovery Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New KEL Version".cyan(), event.version);
         println!("  {}: REC (Recovery)", "Event Kind".cyan());
         println!("  {}: {}", "New SAID".cyan(), event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
@@ -541,7 +528,6 @@ async fn cmd_contest(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "kel_version": event.version,
                 "said": event.said,
                 "event_kind": "CNT",
                 "contested_at_version": at_version,
@@ -551,7 +537,6 @@ async fn cmd_contest(
         println!("{}", "Contest Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New KEL Version".cyan(), event.version);
         println!("  {}: CNT (Contest)", "Event Kind".cyan());
         println!("  {}: {}", "New SAID".cyan(), event.said);
         println!("  {}: {}", "Contested at Version".cyan(), at_version);
@@ -634,7 +619,6 @@ async fn cmd_decommission(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "kel_version": event.version,
                 "said": event.said,
                 "decommissioned": true,
             })
@@ -643,7 +627,6 @@ async fn cmd_decommission(
         println!("{}", "Identity Decommissioned!".red().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "Final KEL Version".cyan(), event.version);
         println!("  {}: {}", "Final SAID".cyan(), event.said);
         println!();
         println!("{}", "This identity can no longer be used.".red());

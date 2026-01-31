@@ -138,10 +138,10 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 &self,
                 prefix: &str,
             ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
-                use verifiable_storage::VersionedRepository;
+                use verifiable_storage::ChainedRepository;
 
                 let events =
-                    <Self as verifiable_storage::VersionedRepository<kels::KeyEvent>>::get_history(self, prefix).await?;
+                    <Self as verifiable_storage::ChainedRepository<kels::KeyEvent>>::get_history(self, prefix).await?;
                 let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
                 let signatures = self.get_signatures_by_saids(&saids).await?;
 

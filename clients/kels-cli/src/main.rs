@@ -104,10 +104,6 @@ enum Commands {
         /// Include audit records in response
         #[arg(long)]
         audit: bool,
-
-        /// Fetch events since timestamp (RFC3339 format)
-        #[arg(long)]
-        since: Option<String>,
     },
 
     /// List all local KELs
@@ -559,7 +555,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> Result<()> {
+async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
 
     if audit {
@@ -592,14 +588,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for signed_event in &response.events {
+        for (i, signed_event) in response.events.iter().enumerate() {
             let event = &signed_event.event;
             println!(
-                "  [{}] {} - {} ({})",
-                event.version,
+                "  [{}] {} - {}",
+                i,
                 event.kind.as_str().to_uppercase(),
-                &event.said[..16],
-                event.created_at
+                &event.said[..16]
             );
         }
 
@@ -625,16 +620,8 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
         return Ok(());
     }
 
-    let kel = if let Some(since_ts) = since {
-        println!(
-            "{}",
-            format!("Fetching KEL {} since {}...", prefix, since_ts).green()
-        );
-        client.fetch_full_kel(prefix).await?
-    } else {
-        println!("{}", format!("Fetching KEL {}...", prefix).green());
-        client.fetch_full_kel(prefix).await?
-    };
+    println!("{}", format!("Fetching KEL {}...", prefix).green());
+    let kel = client.get_kel(prefix).await?;
 
     println!();
     println!("{}", format!("KEL: {}", prefix).cyan().bold());
@@ -655,14 +642,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
     }
     println!();
     println!("{}", "Events:".yellow().bold());
-    for signed_event in kel.events().iter() {
+    for (i, signed_event) in kel.events().iter().enumerate() {
         let event = &signed_event.event;
         println!(
-            "  [{}] {} - {} ({})",
-            event.version,
+            "  [{}] {} - {}",
+            i,
             event.kind.as_str().to_uppercase(),
-            &event.said[..16],
-            event.created_at
+            &event.said[..16]
         );
     }
 
@@ -716,7 +702,6 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     if let Some(last) = kel.last() {
         println!("  Latest SAID:  {}", last.event.said);
         println!("  Latest Type:  {}", last.event.kind);
-        println!("  Created At:   {}", last.event.created_at);
     }
     if kel.is_contested() {
         println!("  Status:       {}", "CONTESTED".red());
@@ -724,7 +709,7 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         println!("  Status:       {}", "DECOMMISSIONED".red());
     } else if let Some(div) = kel.find_divergence() {
         println!("  Status:       {}", "DIVERGENT".yellow());
-        println!("  Diverged At:  v{}", div.diverged_at_version);
+        println!("  Diverged At:  g{}", div.diverged_at_generation);
     } else {
         println!("  Status:       {}", "OK".green());
     }
@@ -979,11 +964,7 @@ async fn main() -> Result<()> {
         Commands::Recover { prefix } => cmd_recover(&cli, prefix).await,
         Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
         Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
-        Commands::Get {
-            prefix,
-            audit,
-            since,
-        } => cmd_get(&cli, prefix, *audit, since.as_deref()).await,
+        Commands::Get { prefix, audit } => cmd_get(&cli, prefix, *audit).await,
         Commands::List => cmd_list(&cli).await,
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,

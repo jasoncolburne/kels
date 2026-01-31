@@ -286,7 +286,7 @@ impl SyncHandler {
 
     /// Fetch a KEL from local KELS using the client library
     async fn fetch_local_kel(&self, prefix: &str) -> Result<Vec<SignedKeyEvent>, SyncError> {
-        match self.kels_client.fetch_full_kel(prefix).await {
+        match self.kels_client.get_kel(prefix).await {
             Ok(kel) => Ok(kel.events().to_vec()),
             Err(KelsError::KeyNotFound(_)) => Ok(vec![]),
             Err(e) => Err(SyncError::Kels(e)),

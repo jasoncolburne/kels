@@ -8,7 +8,7 @@ KELS implements a key event log system where:
 
 - **Pre-rotation commitment**: Each event commits to the *next* signing key before it's needed
 - **Recovery keys**: A separate recovery key enables recovery from signing key compromise
-- **Divergence detection**: Conflicting events at the same version are detected and stored
+- **Divergence detection**: Conflicting events at the same generation are detected and stored
 - **Recovery protocol**: Legitimate owners can recover from adversarial events using their recovery key
 - **Contest mechanism**: When both parties perform recovery operations, the KEL is permanently frozen
 
@@ -222,9 +222,8 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 | `POST` | `/api/kels/events` | Submit signed events |
 | `GET` | `/api/kels/kel/:prefix` | Fetch KEL by prefix |
 | `GET` | `/api/kels/kel/:prefix?audit=true` | Fetch KEL with audit records |
-| `GET` | `/api/kels/kel/:prefix/since/:timestamp` | Incremental fetch |
-| `GET` | `/api/kels/event/:said` | Fetch single event |
-| `POST` | `/api/kels/batch` | Batch fetch multiple KELs |
+| `POST` | `/api/kels/kels` | Batch fetch multiple KELs |
+| `GET` | `/api/kels/prefixes` | List prefixes (for bootstrap sync) |
 
 ## Development
 
@@ -277,6 +276,8 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 
 ## Documentation
 
+- [KEL Merge Protocol](docs/kel-merge.md) - Event submission and merge logic
+- [KEL Verification](docs/kel-verification.md) - Integrity and authenticity verification
 - [Divergence Detection and Recovery](docs/divergence-detection.md) - Detailed protocol documentation
 - [Attack Surface](docs/attack-surface.md) - Security analysis
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization

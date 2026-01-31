@@ -5,9 +5,7 @@ use kels::{
 };
 use libkels_derive::SignedEvents;
 use std::collections::HashMap;
-use verifiable_storage::{
-    SelfAddressed, StorageDatetime, StorageError, TransactionExecutor, Value,
-};
+use verifiable_storage::{SelfAddressed, StorageError, TransactionExecutor, Value};
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
 #[derive(Stored, SignedEvents)]
@@ -41,10 +39,9 @@ impl KeyEventRepository {
     ) -> Result<PrefixListResponse, StorageError> {
         // Use DISTINCT ON to get latest event per prefix
         // Order by prefix ASC (for pagination), then version DESC (to get latest)
-        let mut query = Query::<KeyEvent>::new()
+        let mut query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
             .distinct_on("prefix")
             .order_by("prefix", Order::Asc)
-            .order_by("version", Order::Desc)
             .limit(limit as u64 + 1);
 
         if let Some(cursor) = since {
@@ -79,127 +76,6 @@ impl KeyEventRepository {
         })
     }
 
-    /// Batch fetch KELs. For each prefix with since value, returns events with version > since.
-    pub async fn get_signed_histories_since(
-        &self,
-        prefixes: &[&str],
-        since_map: &HashMap<&str, u64>,
-    ) -> Result<HashMap<String, Vec<SignedKeyEvent>>, StorageError> {
-        if prefixes.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Convert to owned strings for the query
-        let prefixes_owned: Vec<String> = prefixes.iter().map(|s| s.to_string()).collect();
-
-        // Single query for all events across all prefixes using Query abstraction
-        let query = Query::<KeyEvent>::new()
-            .r#in("prefix", prefixes_owned)
-            .order_by("prefix", Order::Asc)
-            .order_by("version", Order::Asc);
-        let all_events = self.pool.fetch(query).await?;
-
-        // Filter: keep only events newer than client's cached version
-        let events: Vec<KeyEvent> = all_events
-            .into_iter()
-            .filter(|e| {
-                since_map
-                    .get(e.prefix.as_str())
-                    .map(|since| e.version > *since)
-                    .unwrap_or(true) // No since = fetch all
-            })
-            .collect();
-
-        if events.is_empty() {
-            return Ok(prefixes.iter().map(|p| (p.to_string(), vec![])).collect());
-        }
-
-        // Only fetch signatures for filtered events
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let signatures = self.get_signatures_by_saids(&saids).await?;
-
-        // Build result from filtered events only
-        let mut result: HashMap<String, Vec<SignedKeyEvent>> =
-            prefixes.iter().map(|p| (p.to_string(), vec![])).collect();
-
-        for event in events {
-            let sigs = signatures.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let signed_event = SignedKeyEvent::from_signatures(
-                event.clone(),
-                sigs.iter()
-                    .map(|s| (s.public_key.clone(), s.signature.clone()))
-                    .collect(),
-            );
-
-            result
-                .entry(event.prefix.clone())
-                .or_default()
-                .push(signed_event);
-        }
-
-        Ok(result)
-    }
-
-    /// Delete events >= version. Signatures remain for audit purposes.
-    pub async fn delete_events_from_version(
-        &self,
-        prefix: &str,
-        from_version: u64,
-    ) -> Result<(), StorageError> {
-        // Delete from key_events only (signatures remain for audit)
-        let delete = Delete::<KeyEvent>::new()
-            .eq("prefix", prefix)
-            .gte("version", from_version);
-        self.pool.delete(delete).await?;
-
-        Ok(())
-    }
-
-    /// Timestamp-based incremental sync: returns events where created_at > since_timestamp.
-    pub async fn get_signed_history_since(
-        &self,
-        prefix: &str,
-        since_timestamp: &StorageDatetime,
-    ) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        // Query events created after the timestamp
-        let query = Query::<KeyEvent>::new()
-            .eq("prefix", prefix)
-            .filter(verifiable_storage::Filter::Gt(
-                "created_at".to_string(),
-                Value::Datetime(since_timestamp.clone()),
-            ))
-            .order_by("version", Order::Asc);
-
-        let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
-
-        if events.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Fetch signatures for filtered events
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let signatures = self.get_signatures_by_saids(&saids).await?;
-
-        // Build signed events
-        let mut result = Vec::with_capacity(events.len());
-        for event in events {
-            let sigs = signatures.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let signed_event = SignedKeyEvent::from_signatures(
-                event.clone(),
-                sigs.iter()
-                    .map(|s| (s.public_key.clone(), s.signature.clone()))
-                    .collect(),
-            );
-            result.push(signed_event);
-        }
-
-        Ok(result)
-    }
-
     /// Begin transaction with advisory lock on prefix. Serializes all operations on this prefix.
     pub async fn begin_locked_transaction(
         &self,
@@ -221,10 +97,12 @@ pub struct KelTransaction {
 }
 
 impl KelTransaction {
+    const EVENTS_TABLE: &'static str = KeyEventRepository::TABLE_NAME;
+    const SIGNATURES_TABLE: &'static str = KeyEventRepository::SIGNATURES_TABLE_NAME;
+    const AUDIT_TABLE: &'static str = AuditRecordRepository::TABLE_NAME;
+
     pub async fn load_signed_events(&mut self) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        let query = Query::<KeyEvent>::new()
-            .eq("prefix", &self.prefix)
-            .order_by("version", Order::Asc);
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE).eq("prefix", &self.prefix);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
 
         if events.is_empty() {
@@ -232,8 +110,8 @@ impl KelTransaction {
         }
 
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let query = Query::<EventSignature>::for_table("kels_key_event_signatures")
-            .r#in("event_said", saids);
+        let query =
+            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
         let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
@@ -254,18 +132,11 @@ impl KelTransaction {
         Ok(result)
     }
 
-    pub async fn delete_from_version(&mut self, from_version: u64) -> Result<u64, StorageError> {
-        let delete = Delete::<KeyEvent>::new()
-            .eq("prefix", &self.prefix)
-            .gte("version", from_version);
-        self.tx.delete(delete).await
-    }
-
     pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {
         if saids.is_empty() {
             return Ok(0);
         }
-        let delete = Delete::<KeyEvent>::new().r#in("said", saids);
+        let delete = Delete::<KeyEvent>::for_table(Self::EVENTS_TABLE).r#in("said", saids);
         self.tx.delete(delete).await
     }
 
@@ -273,11 +144,15 @@ impl KelTransaction {
         &mut self,
         signed_event: &SignedKeyEvent,
     ) -> Result<(), StorageError> {
-        self.tx.insert(&signed_event.event).await?;
+        self.tx
+            .insert_with_table(&signed_event.event, Self::EVENTS_TABLE)
+            .await?;
         for sig in signed_event.event_signatures() {
             let mut event_sig: EventSignature = sig;
             event_sig.derive_said()?;
-            self.tx.insert(&event_sig).await?;
+            self.tx
+                .insert_with_table(&event_sig, Self::SIGNATURES_TABLE)
+                .await?;
         }
 
         Ok(())
@@ -287,7 +162,7 @@ impl KelTransaction {
         &mut self,
         record: &KelsAuditRecord,
     ) -> Result<(), StorageError> {
-        self.tx.insert(record).await?;
+        self.tx.insert_with_table(record, Self::AUDIT_TABLE).await?;
         Ok(())
     }
 

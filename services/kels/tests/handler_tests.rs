@@ -23,12 +23,7 @@ fn create_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/kels/events", post(handlers::submit_events))
-        .route("/api/kels/events/:said", get(handlers::get_event))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
-        .route(
-            "/api/kels/kel/:prefix/since/:since_version",
-            get(handlers::get_kel_since),
-        )
         .with_state(state)
 }
 use kels::{BatchSubmitResponse, KeyEvent, KeyEventBuilder, SignedKeyEvent, SoftwareKeyProvider};
@@ -705,7 +700,7 @@ async fn test_event_with_wrong_previous_rejected() {
     bad_event.previous = Some("wrong_said".to_string());
 
     // We need to re-derive the SAID since we changed the content
-    use verifiable_storage::Versioned;
+    use verifiable_storage::Chained;
     bad_event.increment().unwrap(); // This will recompute the SAID
 
     // Use a null signature - the event will be rejected regardless (bad chain or bad sig)

@@ -37,7 +37,7 @@ of the kel. if this happens, the owner's only recourse is to contest and permane
 ## KEL States
 
 - **Normal** - single chain of events, all operations allowed
-- **Divergent** - multiple events at same version, KEL is frozen until recovery
+- **Divergent** - multiple events at same generation, KEL is frozen until recovery
 - **Contested** - both parties revealed recovery keys, KEL is permanently frozen
 - **Decommissioned** - KEL ended normally, no further events allowed
 
@@ -53,7 +53,7 @@ There are 4 kinds of events that reveal the recovery key:
 Recovery-revealing events require dual signatures: the current rotation key AND the recovery key. The
 event commits to both a new signing key (via rotation_hash) and a new recovery key (via recovery_hash).
 
-After a recovery event at version N, no events other than contest can be inserted at version ≤ N. This is
+After a recovery event at generation N, no events other than contest can be inserted at generation ≤ N. This is
 an important security property that prevents re-divergence and recovery battles.
 
 Contest is the ultimate recovery event, and no change to the kel is possible if contest is submitted

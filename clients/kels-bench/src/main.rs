@@ -232,7 +232,7 @@ async fn run_worker(
         let result: Result<u64, _> = match &benchmark_type {
             BenchmarkType::Health => client.health().await.map(|_| 0),
             BenchmarkType::GetKel { prefix } => {
-                client.fetch_full_kel_unverified(prefix).await.map(|kel| {
+                client.fetch_full_kel(prefix, true).await.map(|kel| {
                     serde_json::to_string(&kel)
                         .map(|s| s.len() as u64)
                         .unwrap_or(0)

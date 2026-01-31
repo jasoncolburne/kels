@@ -25,7 +25,7 @@ use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
-use verifiable_storage::Versioned;
+use verifiable_storage::Chained;
 
 // ==================== Key State Persistence ====================
 
@@ -125,8 +125,6 @@ pub struct KelsEventResult {
     pub prefix: *mut c_char,
     /// Event SAID (owned, must be freed with kels_free_string)
     pub said: *mut c_char,
-    /// Event version number
-    pub version: u64,
     /// Error message if status != Ok (owned, must be freed with kels_free_string)
     pub error: *mut c_char,
 }
@@ -137,7 +135,6 @@ impl Default for KelsEventResult {
             status: KelsStatus::Error,
             prefix: std::ptr::null_mut(),
             said: std::ptr::null_mut(),
-            version: 0,
             error: std::ptr::null_mut(),
         }
     }
@@ -587,7 +584,6 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -643,7 +639,6 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -701,7 +696,6 @@ pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mu
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -763,7 +757,6 @@ pub unsafe extern "C" fn kels_interact(
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -825,7 +818,6 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
             result.outcome = KelsRecoveryOutcome::Recovered;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -887,7 +879,6 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -935,7 +926,6 @@ pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut K
             result.status = KelsStatus::Ok;
             result.prefix = to_c_string(&event.prefix);
             result.said = to_c_string(&event.said);
-            result.version = event.version;
         }
         Err(e) => {
             result.status = map_error_to_status(&e);

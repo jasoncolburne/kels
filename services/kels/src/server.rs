@@ -19,12 +19,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/kels/events", post(handlers::submit_events))
-        .route("/api/kels/events/:said", get(handlers::get_event))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
-        .route(
-            "/api/kels/kel/:prefix/since/:since_timestamp",
-            get(handlers::get_kel_since),
-        )
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .route("/api/kels/prefixes", get(handlers::list_prefixes))
         .with_state(state)

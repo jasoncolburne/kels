@@ -47,10 +47,9 @@ pub use repository_store::RepositoryKelStore;
 pub use server::shutdown_signal;
 pub use store::KelStore;
 pub use types::{
-    BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix,
-    DeregisterRequest, ErrorCode, ErrorResponse, EventKind, EventSignature, HeartbeatRequest,
-    KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
-    NodeRegistration, NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeersResponse,
-    PrefixListResponse, PrefixState, RegisterNodeRequest, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest,
+    BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix, DeregisterRequest,
+    ErrorCode, ErrorResponse, EventKind, EventSignature, HeartbeatRequest, KelMergeResult,
+    KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration,
+    NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeersResponse, PrefixListResponse,
+    PrefixState, RegisterNodeRequest, SignedKeyEvent, SignedRequest, StatusUpdateRequest,
 };

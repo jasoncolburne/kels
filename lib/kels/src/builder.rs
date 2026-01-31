@@ -42,7 +42,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
             _ => Kel::default(),
         };
-        let confirmed_cursor = kel.confirmed_cursor()?;
+        let confirmed_cursor = kel.confirmed_length();
 
         Ok(Self {
             key_provider,
@@ -59,7 +59,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         kel: Kel,
     ) -> Result<Self, KelsError> {
-        let confirmed_cursor = kel.confirmed_cursor()?;
+        let confirmed_cursor = kel.confirmed_length();
         Ok(Self {
             key_provider,
             kels_client,
@@ -85,10 +85,6 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     pub fn is_decommissioned(&self) -> bool {
         self.kel.is_decommissioned()
-    }
-
-    pub fn is_fully_confirmed(&self) -> bool {
-        self.confirmed_cursor == self.kel.events().len()
     }
 
     pub fn kel(&self) -> &Kel {
@@ -123,10 +119,6 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         self.kel.prefix()
     }
 
-    pub fn version(&self) -> u64 {
-        self.kel.last_event().map(|e| e.event.version).unwrap_or(0)
-    }
-
     /// Reload the KEL from the store, if one is configured.
     /// This is useful when the KEL may have been modified externally (e.g., by a CLI tool).
     pub async fn reload(&mut self) -> Result<(), KelsError> {
@@ -137,7 +129,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         if let Some(kel) = store.load(&prefix).await? {
-            self.confirmed_cursor = kel.confirmed_cursor()?;
+            self.confirmed_cursor = kel.confirmed_length();
             self.kel = kel;
         }
         Ok(())
@@ -147,7 +139,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         if let Some(client) = &self.kels_client
             && let Some(prefix) = self.prefix()
         {
-            let mut kels_kel = client.fetch_full_kel(prefix).await?;
+            let mut kels_kel = client.get_kel(prefix).await?;
             let local_events = self.events();
             let local_set: HashSet<_> = local_events.iter().collect();
             let local_vec: Vec<_> = local_events.to_vec();
@@ -155,7 +147,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             let _ = kels_kel.merge(local_vec)?;
             if let Some(divergence) = kels_kel.find_divergence() {
                 let owner_has_rot = local_events.iter().any(|e| {
-                    e.event.version >= divergence.diverged_at_version
+                    divergence.divergent_saids.contains(&e.event.said)
                         && e.event.reveals_rotation_key()
                 });
 
@@ -331,8 +323,26 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                     return Err(e);
                 }
             };
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+
+        match self.add_and_flush(&[signed_event]).await {
+            Err(e) => {
+                match e {
+                    // in this case, we expect and welcome divergence
+                    KelsError::DivergenceDetected {
+                        diverged_at: _,
+                        submission_accepted,
+                    } => {
+                        if submission_accepted {
+                            Ok((event, signature))
+                        } else {
+                            Err(e)
+                        }
+                    }
+                    _ => Err(e),
+                }
+            }
+            _ => Ok((event, signature)),
+        }
     }
 
     // ==================== Operations ====================
@@ -386,7 +396,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
             None => {
-                self.confirmed_cursor = self.kel.len();
+                self.confirmed_cursor = self.kel.confirmed_length();
                 return Ok(());
             }
         };
@@ -397,18 +407,22 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         }
 
         let response = client.submit_events(&pending).await?;
+
+        if response.accepted {
+            self.confirmed_cursor = self.kel.confirmed_length();
+        }
+
         if let Some(diverged_at) = response.diverged_at {
             Err(KelsError::DivergenceDetected {
                 diverged_at,
                 submission_accepted: response.accepted,
             })
-        } else if response.accepted {
-            self.confirmed_cursor = self.kel.len();
-            Ok(())
-        } else {
+        } else if !response.accepted {
             Err(KelsError::InvalidKel(
                 "Rejected without divergence".to_string(),
             ))
+        } else {
+            Ok(())
         }
     }
 

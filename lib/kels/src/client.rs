@@ -3,14 +3,13 @@
 use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
-    BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult,
-    KelResponse, KeyEvent, NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult, KelResponse, NodeInfo,
+    NodeStatus, NodesResponse, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use verifiable_storage::StorageDatetime;
 
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
@@ -511,93 +510,20 @@ impl KelsClient {
         }
     }
 
-    pub async fn submit_event(
-        &self,
-        event: KeyEvent,
-        public_key: String,
-        signature: String,
-    ) -> Result<BatchSubmitResponse, KelsError> {
-        self.submit_events(&[SignedKeyEvent::new(event, public_key, signature)])
-            .await
-    }
-
-    pub async fn get_kel(&self, prefix: &str, anchors: &[&str]) -> Result<Kel, KelsError> {
-        if self.cache.is_some() {
-            if let Some(cached_kel) = self.cache_get(prefix).await? {
-                let all_anchors_present = anchors.iter().all(|a| cached_kel.contains_anchor(a));
-                if all_anchors_present {
-                    return Ok(cached_kel);
-                }
-
-                let max_timestamp = cached_kel
-                    .max_event_timestamp()
-                    .ok_or(KelsError::KeyNotFound(prefix.to_string()))?;
-                let new_events = self.get_kel_since(prefix, max_timestamp).await?;
-                if new_events.is_empty() {
-                    return Err(KelsError::AnchorVerificationFailed(
-                        "Some anchors not found in KEL".to_string(),
-                    ));
-                }
-
-                let mut kel = cached_kel;
-                let merge_result = kel.merge(new_events);
-
-                match merge_result {
-                    Ok((_, KelMergeResult::Verified)) => {
-                        self.cache_set(prefix, &kel).await?;
-
-                        let all_anchors_present = anchors.iter().all(|a| kel.contains_anchor(a));
-                        if !all_anchors_present {
-                            return Err(KelsError::AnchorVerificationFailed(
-                                "Some anchors not found in KEL".to_string(),
-                            ));
-                        }
-
-                        return Ok(kel);
-                    }
-                    Ok(_) | Err(_) => {
-                        self.invalidate_cache_async(prefix).await?;
-                        let fresh_kel = self.fetch_full_kel(prefix).await?;
-                        self.cache_set(prefix, &fresh_kel).await?;
-
-                        let all_anchors_present =
-                            anchors.iter().all(|a| fresh_kel.contains_anchor(a));
-                        if !all_anchors_present {
-                            return Err(KelsError::AnchorVerificationFailed(
-                                "Some anchors not found in KEL".to_string(),
-                            ));
-                        }
-
-                        return Ok(fresh_kel);
-                    }
-                }
-            }
-
-            let kel = self.fetch_full_kel(prefix).await?;
-            self.cache_set(prefix, &kel).await?;
-
-            let all_anchors_present = anchors.iter().all(|a| kel.contains_anchor(a));
-            if !all_anchors_present {
-                return Err(KelsError::AnchorVerificationFailed(
-                    "Some anchors not found in KEL".to_string(),
-                ));
-            }
-
-            return Ok(kel);
+    pub async fn get_kel(&self, prefix: &str) -> Result<Kel, KelsError> {
+        if self.cache.is_some()
+            && let Some(cached_kel) = self.cache_get(prefix).await?
+        {
+            return Ok(cached_kel);
         }
 
-        let kel = self.fetch_full_kel(prefix).await?;
-        let all_anchors_present = anchors.iter().all(|a| kel.contains_anchor(a));
-        if !all_anchors_present {
-            return Err(KelsError::AnchorVerificationFailed(
-                "Some anchors not found in KEL".to_string(),
-            ));
-        }
+        let kel = self.fetch_full_kel(prefix, false).await?;
+        self.cache_set(prefix, &kel).await?;
 
         Ok(kel)
     }
 
-    pub async fn fetch_full_kel(&self, prefix: &str) -> Result<Kel, KelsError> {
+    pub async fn fetch_full_kel(&self, prefix: &str, skip_verify: bool) -> Result<Kel, KelsError> {
         let resp = self
             .client
             .get(format!("{}/api/kels/kel/{}", self.base_url, prefix))
@@ -606,7 +532,7 @@ impl KelsClient {
 
         if resp.status().is_success() {
             let signed_events: Vec<SignedKeyEvent> = resp.json().await?;
-            Kel::from_events(signed_events, false)
+            Kel::from_events(signed_events, skip_verify)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(prefix.to_string()))
         } else {
@@ -629,67 +555,6 @@ impl KelsClient {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
-        }
-    }
-
-    /// Skips signature verification - only for benchmarking/testing
-    #[cfg(feature = "dev-tools")]
-    pub async fn fetch_full_kel_unverified(&self, prefix: &str) -> Result<Kel, KelsError> {
-        let resp = self
-            .client
-            .get(format!("{}/api/kels/kel/{}", self.base_url, prefix))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            let signed_events: Vec<SignedKeyEvent> = resp.json().await?;
-            Kel::from_events(signed_events, true)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
-        }
-    }
-
-    async fn get_kel_since(
-        &self,
-        prefix: &str,
-        since_timestamp: &StorageDatetime,
-    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}/api/kels/kel/{}/since/{}",
-                self.base_url, prefix, since_timestamp
-            ))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
-        }
-    }
-
-    pub async fn get_event(&self, said: &str) -> Result<SignedKeyEvent, KelsError> {
-        let resp = self
-            .client
-            .get(format!("{}/api/kels/events/{}", self.base_url, said))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::InvalidSaid(said.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error))
@@ -753,23 +618,7 @@ impl KelsClient {
             .collect();
 
         let request = BatchKelsRequest {
-            prefixes: batch_prefixes
-                .iter()
-                .map(|p| {
-                    // Use timestamp-based since to catch divergent events at earlier versions
-                    let since = if missing_prefixes.contains(p) {
-                        None
-                    } else {
-                        cached_kels
-                            .get(*p)
-                            .and_then(|kel| kel.max_event_timestamp().map(|ts| ts.0.to_rfc3339()))
-                    };
-                    BatchKelPrefixRequest {
-                        prefix: (*p).to_string(),
-                        since,
-                    }
-                })
-                .collect(),
+            prefixes: batch_prefixes.iter().map(|p| (*p).to_string()).collect(),
         };
 
         let resp = self
@@ -807,7 +656,7 @@ impl KelsClient {
                     && !events.is_empty()
                 {
                     match kel.merge(events.clone()) {
-                        Ok((_, KelMergeResult::Verified)) => {
+                        Ok((_, _, KelMergeResult::Verified)) => {
                             result_kels.insert((*prefix).to_string(), kel);
                         }
                         Ok(_) | Err(_) => {
@@ -828,7 +677,7 @@ impl KelsClient {
         // Re-fetch diverged KELs from scratch
         for prefix in &diverged_prefixes {
             self.invalidate_cache_async(prefix).await?;
-            let fresh_kel = self.fetch_full_kel(prefix).await?;
+            let fresh_kel = self.get_kel(prefix).await?;
             result_kels.insert(prefix.clone(), fresh_kel);
         }
 
@@ -873,13 +722,7 @@ impl KelsClient {
         }
 
         let request = BatchKelsRequest {
-            prefixes: prefixes
-                .iter()
-                .map(|p| BatchKelPrefixRequest {
-                    prefix: p.to_string(),
-                    since: None,
-                })
-                .collect(),
+            prefixes: prefixes.iter().map(|p| p.to_string()).collect(),
         };
 
         let resp = self
