@@ -177,7 +177,7 @@ pub(crate) async fn submit_events(
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
 
-    tracing::info!(
+    tracing::debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
         prefix,
         events.len(),
@@ -199,7 +199,7 @@ pub(crate) async fn submit_events(
         .cloned()
         .collect();
 
-    tracing::info!(
+    tracing::debug!(
         "submit_events: new_events={} (kinds: {:?})",
         new_events.len(),
         new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
@@ -219,7 +219,7 @@ pub(crate) async fn submit_events(
         .merge(new_events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
-    tracing::info!("submit_events: merge result={:?}", result);
+    tracing::debug!("submit_events: merge result={:?}", result);
 
     for event in &events_to_add {
         tx.insert_signed_event(event).await?;
