@@ -23,9 +23,7 @@ pub struct DivergenceInfo {
 pub struct Kel(Vec<SignedKeyEvent>);
 
 impl Kel {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
+    // ==================== Constructors ====================
 
     /// Only use `skip_verify: true` for trusted sources (e.g., database reads).
     pub fn from_events(events: Vec<SignedKeyEvent>, skip_verify: bool) -> Result<Self, KelsError> {
@@ -37,12 +35,20 @@ impl Kel {
         Ok(kel)
     }
 
-    pub fn events(&self) -> &[SignedKeyEvent] {
-        &self.0
+    pub fn new() -> Self {
+        Self(Vec::new())
     }
 
-    pub fn prefix(&self) -> Option<&str> {
-        self.0.first().map(|e| e.event.prefix.as_str())
+    // ==================== Basic Accessors ====================
+
+    pub fn delegating_prefix(&self) -> Option<&str> {
+        self.0
+            .first()
+            .and_then(|e| e.event.delegating_prefix.as_deref())
+    }
+
+    pub fn events(&self) -> &[SignedKeyEvent] {
+        &self.0
     }
 
     pub fn is_delegated(&self) -> bool {
@@ -52,10 +58,8 @@ impl Kel {
             .unwrap_or(false)
     }
 
-    pub fn delegating_prefix(&self) -> Option<&str> {
-        self.0
-            .first()
-            .and_then(|e| e.event.delegating_prefix.as_deref())
+    pub fn last_establishment_event(&self) -> Option<&SignedKeyEvent> {
+        self.0.iter().rev().find(|e| e.event.is_establishment())
     }
 
     pub fn last_event(&self) -> Option<&SignedKeyEvent> {
@@ -66,8 +70,36 @@ impl Kel {
         self.0.last().map(|e| e.event.said.as_str())
     }
 
-    pub fn last_establishment_event(&self) -> Option<&SignedKeyEvent> {
-        self.0.iter().rev().find(|e| e.event.is_establishment())
+    pub fn prefix(&self) -> Option<&str> {
+        self.0.first().map(|e| e.event.prefix.as_str())
+    }
+
+    // ==================== State Queries ====================
+
+    pub fn confirmed_length(&self) -> usize {
+        let divergence_info = self.find_divergence();
+
+        if let Some(info) = divergence_info {
+            // this is safe because default is 0 which fails secure
+            info.diverged_at_generation.try_into().unwrap_or_default()
+        } else {
+            self.len()
+        }
+    }
+
+    pub fn contains_anchor(&self, anchor: &str) -> bool {
+        self.0
+            .iter()
+            .any(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(anchor))
+    }
+
+    pub fn contains_anchors(&self, anchors: &[&str]) -> bool {
+        anchors.iter().cloned().all(|a| self.contains_anchor(a))
+    }
+
+    /// A contested KEL has a `cnt` event, meaning both parties used the recovery key.
+    pub fn is_contested(&self) -> bool {
+        self.0.iter().any(|e| e.event.is_contest())
     }
 
     pub fn is_decommissioned(&self) -> bool {
@@ -81,132 +113,7 @@ impl Kel {
             || self.iter().any(|e| e.event.is_contest())
     }
 
-    /// A contested KEL has a `cnt` event, meaning both parties used the recovery key.
-    pub fn is_contested(&self) -> bool {
-        self.0.iter().any(|e| e.event.is_contest())
-    }
-
-    pub fn confirmed_length(&self) -> usize {
-        let divergence_info = self.find_divergence();
-
-        if let Some(info) = divergence_info {
-            // this is safe because default is 0 which fails secure
-            info.diverged_at_generation.try_into().unwrap_or_default()
-        } else {
-            self.len()
-        }
-    }
-
-    pub fn push(&mut self, event: SignedKeyEvent) {
-        self.0.push(event);
-        self.sort();
-    }
-
-    pub fn extend(&mut self, events: impl IntoIterator<Item = SignedKeyEvent>) {
-        self.0.extend(events);
-        self.sort();
-    }
-
-    pub fn reveals_recovery_after_divergence(&self, divergent_saids: &HashSet<String>) -> bool {
-        self.iter()
-            .any(|e| e.event.reveals_recovery_key() && divergent_saids.contains(&e.event.said))
-    }
-
-    pub fn remove_adversary_events(
-        &mut self,
-        owner_saids: &HashSet<String>,
-    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let owner_events = self
-            .iter()
-            .filter(|e| owner_saids.contains(&e.event.said))
-            .cloned()
-            .collect();
-        let adversary_events = self
-            .iter()
-            .filter(|e| !owner_saids.contains(&e.event.said))
-            .cloned()
-            .collect();
-        self.0 = owner_events;
-        self.sort();
-        Ok(adversary_events)
-    }
-
-    pub fn truncate(&mut self, len: usize) {
-        self.0.truncate(len);
-    }
-
-    /// Walk the KEL generation by generation, yielding events at each generation.
-    /// Returns an iterator of (generation, events_at_generation) tuples.
-    fn walk_generations(&self) -> impl Iterator<Item = (u64, Vec<&SignedKeyEvent>)> {
-        let events_by_said: HashMap<&str, &SignedKeyEvent> =
-            self.0.iter().map(|e| (e.event.said.as_str(), e)).collect();
-
-        let mut generations = Vec::new();
-        let mut generation: u64 = 0;
-
-        // Start with inception events (no previous)
-        let mut current_saids: HashSet<&str> = self
-            .iter()
-            .filter(|e| e.event.previous.is_none())
-            .map(|e| e.event.said.as_str())
-            .collect();
-
-        while !current_saids.is_empty() {
-            let events_at_gen: Vec<&SignedKeyEvent> = current_saids
-                .iter()
-                .filter_map(|said| events_by_said.get(said).copied())
-                .collect();
-
-            generations.push((generation, events_at_gen));
-
-            // Find next generation: events whose previous is in current_saids
-            let next_saids: HashSet<&str> = self
-                .iter()
-                .filter(|e| {
-                    e.event
-                        .previous
-                        .as_ref()
-                        .map(|p| current_saids.contains(p.as_str()))
-                        .unwrap_or(false)
-                })
-                .map(|e| e.event.said.as_str())
-                .collect();
-
-            current_saids = next_saids;
-            generation += 1;
-        }
-
-        generations.into_iter()
-    }
-
-    fn sort(&mut self) {
-        let sorted: Vec<SignedKeyEvent> = self
-            .walk_generations()
-            .flat_map(|(_, events)| events.into_iter().cloned())
-            .collect();
-        self.0 = sorted;
-    }
-
-    pub fn contains_anchor(&self, anchor: &str) -> bool {
-        self.0
-            .iter()
-            .any(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(anchor))
-    }
-
-    pub fn contains_anchors(&self, anchors: &[&str]) -> bool {
-        anchors.iter().cloned().all(|a| self.contains_anchor(a))
-    }
-
-    pub fn map_saids_by_event_generation(&self) -> HashMap<u64, Vec<String>> {
-        self.walk_generations()
-            .map(|(generation, events)| {
-                (
-                    generation,
-                    events.iter().map(|e| e.event.said.clone()).collect(),
-                )
-            })
-            .collect()
-    }
+    // ==================== Divergence Detection ====================
 
     pub fn find_divergence(&self) -> Option<DivergenceInfo> {
         if self.is_empty() {
@@ -251,7 +158,49 @@ impl Kel {
         saids
     }
 
-    /// Returns `(archived_events, KelMergeResult)`.
+    pub fn reveals_recovery_after_divergence(&self, divergent_saids: &HashSet<String>) -> bool {
+        self.iter()
+            .any(|e| e.event.reveals_recovery_key() && divergent_saids.contains(&e.event.said))
+    }
+
+    // ==================== Mutation ====================
+
+    pub fn extend(&mut self, events: impl IntoIterator<Item = SignedKeyEvent>) {
+        self.0.extend(events);
+        self.sort();
+    }
+
+    pub fn push(&mut self, event: SignedKeyEvent) {
+        self.0.push(event);
+        self.sort();
+    }
+
+    pub fn remove_adversary_events(
+        &mut self,
+        owner_saids: &HashSet<String>,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let owner_events = self
+            .iter()
+            .filter(|e| owner_saids.contains(&e.event.said))
+            .cloned()
+            .collect();
+        let adversary_events = self
+            .iter()
+            .filter(|e| !owner_saids.contains(&e.event.said))
+            .cloned()
+            .collect();
+        self.0 = owner_events;
+        self.sort();
+        Ok(adversary_events)
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+
+    // ==================== Core Operations ====================
+
+    /// Returns `(archived_events, added_events, KelMergeResult)`.
     pub fn merge(
         &mut self,
         events: Vec<SignedKeyEvent>,
@@ -316,8 +265,8 @@ impl Kel {
                     };
 
                     let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
-
                     let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
+
                     self.extend(events.iter().cloned());
                     self.verify()?;
                     return Ok((adversary_events, events, KelMergeResult::Recovered));
@@ -511,6 +460,77 @@ impl Kel {
         Ok(divergence_info)
     }
 
+    // ==================== Private Helpers - Chain Walking ====================
+
+    fn map_events_by_said(&self) -> HashMap<&str, &SignedKeyEvent> {
+        self.0.iter().map(|e| (e.event.said.as_str(), e)).collect()
+    }
+
+    pub fn map_saids_by_event_generation(&self) -> HashMap<u64, Vec<String>> {
+        self.walk_generations()
+            .map(|(generation, events)| {
+                (
+                    generation,
+                    events.iter().map(|e| e.event.said.clone()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn sort(&mut self) {
+        let sorted: Vec<SignedKeyEvent> = self
+            .walk_generations()
+            .flat_map(|(_, events)| events.into_iter().cloned())
+            .collect();
+        self.0 = sorted;
+    }
+
+    /// Walk the KEL generation by generation, yielding events at each generation.
+    /// Returns an iterator of (generation, events_at_generation) tuples.
+    fn walk_generations(&self) -> impl Iterator<Item = (u64, Vec<&SignedKeyEvent>)> {
+        let events_by_said: HashMap<&str, &SignedKeyEvent> =
+            self.0.iter().map(|e| (e.event.said.as_str(), e)).collect();
+
+        let mut generations = Vec::new();
+        let mut generation: u64 = 0;
+
+        // Start with inception events (no previous)
+        let mut current_saids: HashSet<&str> = self
+            .iter()
+            .filter(|e| e.event.previous.is_none())
+            .map(|e| e.event.said.as_str())
+            .collect();
+
+        while !current_saids.is_empty() {
+            let events_at_gen: Vec<&SignedKeyEvent> = current_saids
+                .iter()
+                .filter_map(|said| events_by_said.get(said).copied())
+                .collect();
+
+            generations.push((generation, events_at_gen));
+
+            // Find next generation: events whose previous is in current_saids
+            let next_saids: HashSet<&str> = self
+                .iter()
+                .filter(|e| {
+                    e.event
+                        .previous
+                        .as_ref()
+                        .map(|p| current_saids.contains(p.as_str()))
+                        .unwrap_or(false)
+                })
+                .map(|e| e.event.said.as_str())
+                .collect();
+
+            current_saids = next_saids;
+            generation += 1;
+        }
+
+        generations.into_iter()
+    }
+
+    // ==================== Private Helpers - Verification ====================
+
     fn verify_branch_from_tail(
         &self,
         tail_said: &str,
@@ -592,10 +612,6 @@ impl Kel {
         }
 
         Ok(())
-    }
-
-    fn map_events_by_said(&self) -> HashMap<&str, &SignedKeyEvent> {
-        self.0.iter().map(|e| (e.event.said.as_str(), e)).collect()
     }
 
     fn verify_event_basics(event: &KeyEvent, prefix: &str) -> Result<(), KelsError> {

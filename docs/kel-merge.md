@@ -129,6 +129,8 @@ divergent_new_events = submitted events not already in KEL
 // Check if existing divergent events reveal recovery key
 if old events reveal recovery:
     if new event is contest:
+        if more than one event submitted:
+            return Error("Cannot append events after contest")
         append contest event
         return Contested
     else:
