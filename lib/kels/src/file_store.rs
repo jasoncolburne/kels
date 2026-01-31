@@ -260,4 +260,42 @@ mod tests {
         assert!(store.load(&prefix1).await.unwrap().is_none());
         assert!(store.load(&prefix2).await.unwrap().is_some());
     }
+
+    #[tokio::test]
+    async fn test_cache_skips_owner_prefix() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel = create_test_kel().await;
+        let prefix = kel.prefix().unwrap().to_string();
+
+        // Set this KEL's prefix as the owner
+        store.set_owner_prefix(Some(&prefix));
+
+        // Cache should skip saving because it's the owner's KEL
+        store.cache(&kel).await.unwrap();
+
+        // KEL should NOT be saved
+        let loaded = store.load(&prefix).await.unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_saves_non_owner_kel() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel = create_test_kel().await;
+        let prefix = kel.prefix().unwrap().to_string();
+
+        // Set a different owner prefix
+        store.set_owner_prefix(Some("different_prefix"));
+
+        // Cache should save because it's not the owner's KEL
+        store.cache(&kel).await.unwrap();
+
+        // KEL should be saved
+        let loaded = store.load(&prefix).await.unwrap();
+        assert!(loaded.is_some());
+    }
 }

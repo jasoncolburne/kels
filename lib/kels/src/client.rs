@@ -924,4 +924,97 @@ mod tests {
         let client = KelsClient::new("http://localhost:8080");
         assert!(client.cache.is_none());
     }
+
+    #[test]
+    fn test_client_with_timeout() {
+        let client = KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60));
+        assert_eq!(client.base_url(), "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_client_with_cache_config_disabled() {
+        let config = KelCacheConfig {
+            max_entries: 100,
+            enabled: false,
+        };
+        let client = KelsClient::with_cache_config("http://localhost:8080", config);
+        assert!(client.cache.is_none());
+    }
+
+    #[test]
+    fn test_client_with_cache_config_enabled() {
+        let config = KelCacheConfig {
+            max_entries: 50,
+            enabled: true,
+        };
+        let client = KelsClient::with_cache_config("http://localhost:8080", config);
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_clear_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        // Should not panic even when cache is empty
+        client.clear_cache();
+
+        // Test with no cache
+        let client_no_cache = KelsClient::new("http://localhost:8080");
+        client_no_cache.clear_cache(); // Should not panic
+    }
+
+    #[test]
+    fn test_client_invalidate_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        // Should not panic on nonexistent prefix
+        client.invalidate_cache("nonexistent");
+
+        // Test with no cache
+        let client_no_cache = KelsClient::new("http://localhost:8080");
+        client_no_cache.invalidate_cache("prefix"); // Should not panic
+    }
+
+    #[test]
+    fn test_client_save_and_load_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("cache.json");
+
+        // Create client with cache and save
+        let client = KelsClient::with_cache_config(
+            "http://localhost:8080",
+            KelCacheConfig {
+                max_entries: 10,
+                enabled: true,
+            },
+        );
+        client.save_cache(&cache_path);
+
+        // Load from file
+        let client2 = KelsClient::with_cache_file("http://localhost:8080", &cache_path, 10);
+        assert!(client2.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_with_cache_file_nonexistent() {
+        let path = std::path::PathBuf::from("/nonexistent/path/cache.json");
+        let client = KelsClient::with_cache_file("http://localhost:8080", &path, 10);
+        // Should create new cache when file doesn't exist
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_save_cache_no_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("cache.json");
+
+        // Client without cache
+        let client = KelsClient::new("http://localhost:8080");
+        client.save_cache(&cache_path);
+
+        // File should not be created
+        assert!(!cache_path.exists());
+    }
 }

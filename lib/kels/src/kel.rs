@@ -1469,4 +1469,377 @@ mod tests {
             "Should NOT detect owner rotation as adversary rotation"
         );
     }
+
+    // ==================== Basic Kel tests ====================
+
+    #[test]
+    fn test_compute_rotation_hash() {
+        let public_key = "1AAACk1SoB-PO_xcbaR6LgKHVgojABYjAhd4kEk7-qeS";
+        let hash = compute_rotation_hash(public_key);
+        // Should produce a Blake3-256 digest (starts with 'E')
+        assert!(hash.starts_with('E'));
+        assert_eq!(hash.len(), 44);
+
+        // Same input should produce same output
+        let hash2 = compute_rotation_hash(public_key);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_kel_new_is_empty() {
+        let kel = Kel::new();
+        assert!(kel.is_empty());
+        assert_eq!(kel.len(), 0);
+        assert!(kel.prefix().is_none());
+        assert!(kel.last_said().is_none());
+        assert!(kel.last_event().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kel_truncate() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn1, ixn1_sig) = builder.interact("anchor1").await.unwrap();
+        let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let mut kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn1.clone(), public_key.clone(), ixn1_sig.qb64()),
+                SignedKeyEvent::new(ixn2.clone(), public_key.clone(), ixn2_sig.qb64()),
+            ],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(kel.len(), 3);
+        kel.truncate(2);
+        assert_eq!(kel.len(), 2);
+        assert_eq!(kel.last_said(), Some(ixn1.said.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_kel_confirmed_length_no_divergence() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn.clone(), public_key.clone(), ixn_sig.qb64()),
+            ],
+            true,
+        )
+        .unwrap();
+
+        // No divergence, so confirmed length equals total length
+        assert_eq!(kel.confirmed_length(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_kel_confirmed_length_with_divergence() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder1.incept().await.unwrap();
+        let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+        let public_key = icp.public_key.clone().unwrap();
+
+        let mut kel_for_builder2 = Kel::new();
+        kel_for_builder2.push(SignedKeyEvent::new(
+            icp.clone(),
+            public_key.clone(),
+            icp_sig.qb64(),
+        ));
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(
+                Some(current_key),
+                Some(next_key),
+                Some(recovery_key),
+            ),
+            None,
+            None,
+            kel_for_builder2,
+        )
+        .unwrap();
+        let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
+
+        // Divergent KEL at generation 1
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn1.clone(), public_key.clone(), ixn1_sig.qb64()),
+                SignedKeyEvent::new(ixn2.clone(), public_key.clone(), ixn2_sig.qb64()),
+            ],
+            true,
+        )
+        .unwrap();
+
+        // Divergence at generation 1, so confirmed length is 1 (just inception)
+        assert_eq!(kel.confirmed_length(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_kel_last_establishment_event() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+        let (rot, rot_sig) = builder.rotate().await.unwrap();
+        let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
+
+        let icp_key = icp.public_key.clone().unwrap();
+        let rot_key = rot.public_key.clone().unwrap();
+
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), icp_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn.clone(), icp_key.clone(), ixn_sig.qb64()),
+                SignedKeyEvent::new(rot.clone(), rot_key.clone(), rot_sig.qb64()),
+                SignedKeyEvent::new(ixn2.clone(), rot_key.clone(), ixn2_sig.qb64()),
+            ],
+            false,
+        )
+        .unwrap();
+
+        // Last event is ixn2, but last establishment is rot
+        assert_eq!(kel.last_event().unwrap().event.said, ixn2.said);
+        assert_eq!(kel.last_establishment_event().unwrap().event.said, rot.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_from_events_empty_with_verify_succeeds() {
+        // Empty events with skip_verify=false should succeed (no verification needed)
+        let kel = Kel::from_events(vec![], false).unwrap();
+        assert!(kel.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_kel_verify_empty_fails() {
+        let kel = Kel::new();
+        let result = kel.verify();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_extend() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn1, ixn1_sig) = builder.interact("anchor1").await.unwrap();
+        let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+
+        let mut kel = Kel::new();
+        kel.push(SignedKeyEvent::new(
+            icp.clone(),
+            public_key.clone(),
+            icp_sig.qb64(),
+        ));
+        assert_eq!(kel.len(), 1);
+
+        // Extend with multiple events
+        kel.extend(vec![
+            SignedKeyEvent::new(ixn1.clone(), public_key.clone(), ixn1_sig.qb64()),
+            SignedKeyEvent::new(ixn2.clone(), public_key.clone(), ixn2_sig.qb64()),
+        ]);
+        assert_eq!(kel.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_kel_into_iterator() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn.clone(), public_key.clone(), ixn_sig.qb64()),
+            ],
+            true,
+        )
+        .unwrap();
+
+        let events: Vec<_> = kel.into_iter().collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event.said, icp.said);
+        assert_eq!(events[1].event.said, ixn.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_deref() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let kel = Kel::from_events(
+            vec![SignedKeyEvent::new(
+                icp.clone(),
+                public_key.clone(),
+                icp_sig.qb64(),
+            )],
+            true,
+        )
+        .unwrap();
+
+        // Test Deref - can use Vec methods
+        assert_eq!(kel.first().unwrap().event.said, icp.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_empty_events_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let mut kel = Kel::from_events(
+            vec![SignedKeyEvent::new(
+                icp.clone(),
+                public_key.clone(),
+                icp_sig.qb64(),
+            )],
+            true,
+        )
+        .unwrap();
+
+        let result = kel.merge(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_gap_in_chain_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (_ixn1, _) = builder.interact("anchor1").await.unwrap();
+        let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
+
+        let icp_key = icp.public_key.clone().unwrap();
+
+        let mut kel = Kel::from_events(
+            vec![SignedKeyEvent::new(
+                icp.clone(),
+                icp_key.clone(),
+                icp_sig.qb64(),
+            )],
+            true,
+        )
+        .unwrap();
+
+        // Try to add ixn2 directly (skipping ixn1) - should fail due to gap
+        let result = kel.merge(vec![SignedKeyEvent::new(
+            ixn2.clone(),
+            icp_key.clone(),
+            ixn2_sig.qb64(),
+        )]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_map_saids_by_event_generation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+        let (rot, rot_sig) = builder.rotate().await.unwrap();
+
+        let icp_key = icp.public_key.clone().unwrap();
+        let rot_key = rot.public_key.clone().unwrap();
+
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), icp_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn.clone(), icp_key.clone(), ixn_sig.qb64()),
+                SignedKeyEvent::new(rot.clone(), rot_key.clone(), rot_sig.qb64()),
+            ],
+            false,
+        )
+        .unwrap();
+
+        let saids = kel.map_saids_by_event_generation();
+        assert_eq!(saids.len(), 3);
+        assert!(saids.get(&0).unwrap().contains(&icp.said));
+        assert!(saids.get(&1).unwrap().contains(&ixn.said));
+        assert!(saids.get(&2).unwrap().contains(&rot.said));
+    }
+
+    #[tokio::test]
+    async fn test_kel_get_owner_kel_saids_from_tail() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+        let kel = Kel::from_events(
+            vec![
+                SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+                SignedKeyEvent::new(ixn.clone(), public_key.clone(), ixn_sig.qb64()),
+            ],
+            true,
+        )
+        .unwrap();
+
+        // Get owner SAIDs starting from ixn (tail)
+        let owner_saids = kel.get_owner_kel_saids_from_tail(&ixn.said);
+        assert_eq!(owner_saids.len(), 2);
+        assert!(owner_saids.contains(&icp.said));
+        assert!(owner_saids.contains(&ixn.said));
+    }
+
+    #[tokio::test]
+    async fn test_kel_sort_orders_by_generation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let (ixn, ixn_sig) = builder.interact("anchor").await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+
+        // Create KEL with events in wrong order
+        let mut kel = Kel(vec![
+            SignedKeyEvent::new(ixn.clone(), public_key.clone(), ixn_sig.qb64()),
+            SignedKeyEvent::new(icp.clone(), public_key.clone(), icp_sig.qb64()),
+        ]);
+
+        // Sort should reorder them
+        kel.sort();
+        assert_eq!(kel.0[0].event.said, icp.said);
+        assert_eq!(kel.0[1].event.said, ixn.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_normal_append() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        // Use a valid Blake3 anchor (computed from test data)
+        let anchor = Digest::blake3_256(b"test_anchor").qb64();
+        let (ixn, ixn_sig) = builder.interact(&anchor).await.unwrap();
+
+        let public_key = icp.public_key.clone().unwrap();
+
+        let mut kel = Kel::from_events(
+            vec![SignedKeyEvent::new(
+                icp.clone(),
+                public_key.clone(),
+                icp_sig.qb64(),
+            )],
+            true,
+        )
+        .unwrap();
+
+        // Normal append
+        let result = kel.merge(vec![SignedKeyEvent::new(
+            ixn.clone(),
+            public_key.clone(),
+            ixn_sig.qb64(),
+        )]);
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert!(archived.is_empty());
+        assert_eq!(added.len(), 1);
+        assert_eq!(merge_result, KelMergeResult::Verified);
+        assert_eq!(kel.len(), 2);
+    }
 }

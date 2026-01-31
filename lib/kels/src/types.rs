@@ -1389,4 +1389,425 @@ mod tests {
             .is_establishment()
         );
     }
+
+    // ==================== EventKind tests ====================
+
+    #[test]
+    fn test_event_kind_as_str() {
+        assert_eq!(EventKind::Icp.as_str(), "icp");
+        assert_eq!(EventKind::Dip.as_str(), "dip");
+        assert_eq!(EventKind::Rot.as_str(), "rot");
+        assert_eq!(EventKind::Ixn.as_str(), "ixn");
+        assert_eq!(EventKind::Rec.as_str(), "rec");
+        assert_eq!(EventKind::Ror.as_str(), "ror");
+        assert_eq!(EventKind::Dec.as_str(), "dec");
+        assert_eq!(EventKind::Cnt.as_str(), "cnt");
+    }
+
+    #[test]
+    fn test_event_kind_display() {
+        assert_eq!(format!("{}", EventKind::Icp), "icp");
+        assert_eq!(format!("{}", EventKind::Cnt), "cnt");
+    }
+
+    #[test]
+    fn test_event_kind_from_str() {
+        assert_eq!("icp".parse::<EventKind>().unwrap(), EventKind::Icp);
+        assert_eq!("ICP".parse::<EventKind>().unwrap(), EventKind::Icp);
+        assert_eq!("dip".parse::<EventKind>().unwrap(), EventKind::Dip);
+        assert_eq!("rot".parse::<EventKind>().unwrap(), EventKind::Rot);
+        assert_eq!("ixn".parse::<EventKind>().unwrap(), EventKind::Ixn);
+        assert_eq!("rec".parse::<EventKind>().unwrap(), EventKind::Rec);
+        assert_eq!("ror".parse::<EventKind>().unwrap(), EventKind::Ror);
+        assert_eq!("dec".parse::<EventKind>().unwrap(), EventKind::Dec);
+        assert_eq!("cnt".parse::<EventKind>().unwrap(), EventKind::Cnt);
+    }
+
+    #[test]
+    fn test_event_kind_from_str_invalid() {
+        let result = "invalid".parse::<EventKind>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_event_kind_is_inception() {
+        assert!(EventKind::Icp.is_inception());
+        assert!(EventKind::Dip.is_inception());
+        assert!(!EventKind::Rot.is_inception());
+        assert!(!EventKind::Ixn.is_inception());
+    }
+
+    #[test]
+    fn test_event_kind_decommissions() {
+        assert!(EventKind::Dec.decommissions());
+        assert!(EventKind::Cnt.decommissions());
+        assert!(!EventKind::Icp.decommissions());
+        assert!(!EventKind::Rec.decommissions());
+    }
+
+    #[test]
+    fn test_event_kind_reveals_rotation_key() {
+        assert!(EventKind::Rot.reveals_rotation_key());
+        assert!(EventKind::Rec.reveals_rotation_key());
+        assert!(EventKind::Ror.reveals_rotation_key());
+        assert!(!EventKind::Icp.reveals_rotation_key());
+        assert!(!EventKind::Ixn.reveals_rotation_key());
+    }
+
+    #[test]
+    fn test_event_kind_reveals_recovery_key() {
+        assert!(EventKind::Rec.reveals_recovery_key());
+        assert!(EventKind::Ror.reveals_recovery_key());
+        assert!(EventKind::Dec.reveals_recovery_key());
+        assert!(EventKind::Cnt.reveals_recovery_key());
+        assert!(!EventKind::Icp.reveals_recovery_key());
+        assert!(!EventKind::Rot.reveals_recovery_key());
+    }
+
+    // ==================== More KeyEvent predicate tests ====================
+
+    #[test]
+    fn test_key_event_is_rotation() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rot,
+                ..make_valid_icp()
+            }
+            .is_rotation()
+        );
+        assert!(!make_valid_icp().is_rotation());
+    }
+
+    #[test]
+    fn test_key_event_is_recover() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rec,
+                ..make_valid_icp()
+            }
+            .is_recover()
+        );
+        assert!(!make_valid_icp().is_recover());
+    }
+
+    #[test]
+    fn test_key_event_is_recovery_rotation() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Ror,
+                ..make_valid_icp()
+            }
+            .is_recovery_rotation()
+        );
+        assert!(!make_valid_icp().is_recovery_rotation());
+    }
+
+    #[test]
+    fn test_key_event_is_decommission() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Dec,
+                ..make_valid_icp()
+            }
+            .is_decommission()
+        );
+        assert!(!make_valid_icp().is_decommission());
+    }
+
+    #[test]
+    fn test_key_event_is_contest() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Cnt,
+                ..make_valid_icp()
+            }
+            .is_contest()
+        );
+        assert!(!make_valid_icp().is_contest());
+    }
+
+    #[test]
+    fn test_key_event_is_interaction() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Ixn,
+                ..make_valid_icp()
+            }
+            .is_interaction()
+        );
+        assert!(!make_valid_icp().is_interaction());
+    }
+
+    #[test]
+    fn test_key_event_reveals_rotation_key() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rot,
+                ..make_valid_icp()
+            }
+            .reveals_rotation_key()
+        );
+        assert!(!make_valid_icp().reveals_rotation_key());
+    }
+
+    #[test]
+    fn test_key_event_reveals_recovery_key() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rec,
+                ..make_valid_icp()
+            }
+            .reveals_recovery_key()
+        );
+        assert!(!make_valid_icp().reveals_recovery_key());
+    }
+
+    #[test]
+    fn test_key_event_has_recovery_hash() {
+        assert!(make_valid_icp().has_recovery_hash());
+        let mut event = make_valid_icp();
+        event.recovery_hash = None;
+        assert!(!event.has_recovery_hash());
+    }
+
+    #[test]
+    fn test_key_event_decommissions() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Dec,
+                ..make_valid_icp()
+            }
+            .decommissions()
+        );
+        assert!(
+            KeyEvent {
+                kind: EventKind::Cnt,
+                ..make_valid_icp()
+            }
+            .decommissions()
+        );
+        assert!(!make_valid_icp().decommissions());
+    }
+
+    // ==================== SignedKeyEvent additional tests ====================
+
+    #[test]
+    fn test_signed_key_event_new() {
+        let event = make_valid_icp();
+        let signed = SignedKeyEvent::new(event.clone(), "pubkey".to_string(), "sig".to_string());
+        assert_eq!(signed.event.said, event.said);
+        assert_eq!(signed.signatures.len(), 1);
+        assert_eq!(signed.signatures[0].public_key, "pubkey");
+        assert_eq!(signed.signatures[0].signature, "sig");
+    }
+
+    #[test]
+    fn test_signed_key_event_new_recovery() {
+        let event = make_valid_icp();
+        let signed = SignedKeyEvent::new_recovery(
+            event.clone(),
+            "primary_key".to_string(),
+            "primary_sig".to_string(),
+            "recovery_key".to_string(),
+            "recovery_sig".to_string(),
+        );
+        assert_eq!(signed.signatures.len(), 2);
+        assert_eq!(signed.signatures[0].public_key, "primary_key");
+        assert_eq!(signed.signatures[1].public_key, "recovery_key");
+    }
+
+    #[test]
+    fn test_signed_key_event_from_signatures() {
+        let event = make_valid_icp();
+        let sigs = vec![
+            ("key1".to_string(), "sig1".to_string()),
+            ("key2".to_string(), "sig2".to_string()),
+        ];
+        let signed = SignedKeyEvent::from_signatures(event, sigs);
+        assert_eq!(signed.signatures.len(), 2);
+        assert_eq!(signed.signatures[0].public_key, "key1");
+        assert_eq!(signed.signatures[1].signature, "sig2");
+    }
+
+    #[test]
+    fn test_signed_key_event_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let event = make_valid_icp();
+        let signed = SignedKeyEvent::new(event, "key".to_string(), "sig".to_string());
+
+        let mut hasher = DefaultHasher::new();
+        signed.hash(&mut hasher);
+        let hash1 = hasher.finish();
+
+        // Same event should produce same hash
+        let signed2 = signed.clone();
+        let mut hasher2 = DefaultHasher::new();
+        signed2.hash(&mut hasher2);
+        let hash2 = hasher2.finish();
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_signed_key_event_equality_different_signature_count() {
+        let event = make_valid_icp();
+        let sig = KeyEventSignature {
+            public_key: "key".to_string(),
+            signature: "sig".to_string(),
+        };
+
+        let signed1 = SignedKeyEvent {
+            event: event.clone(),
+            signatures: vec![sig.clone()],
+        };
+        let signed2 = SignedKeyEvent {
+            event,
+            signatures: vec![sig.clone(), sig],
+        };
+
+        assert_ne!(signed1, signed2);
+    }
+
+    #[test]
+    fn test_signed_key_event_equality_different_signatures() {
+        let event = make_valid_icp();
+
+        let signed1 = SignedKeyEvent {
+            event: event.clone(),
+            signatures: vec![KeyEventSignature {
+                public_key: "key".to_string(),
+                signature: "sig1".to_string(),
+            }],
+        };
+        let signed2 = SignedKeyEvent {
+            event,
+            signatures: vec![KeyEventSignature {
+                public_key: "key".to_string(),
+                signature: "sig2".to_string(),
+            }],
+        };
+
+        assert_ne!(signed1, signed2);
+    }
+
+    // ==================== Validate structure additional tests ====================
+
+    #[test]
+    fn test_validate_structure_dip_complete() {
+        let event = KeyEvent {
+            kind: EventKind::Dip,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: None,
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: Some(make_blake3_digest("delegator")),
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_dip_missing_delegating_prefix() {
+        let event = KeyEvent {
+            kind: EventKind::Dip,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: None,
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires delegatingPrefix"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_ror() {
+        let event = KeyEvent {
+            kind: EventKind::Ror,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: Some(make_secp256r1_key()),
+            anchor: None,
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_valid_cnt() {
+        let event = KeyEvent {
+            kind: EventKind::Cnt,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: None,
+            recovery_hash: None,
+            recovery_key: Some(make_secp256r1_key()),
+            anchor: None,
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    // ==================== NodeInfo tests ====================
+
+    #[test]
+    fn test_node_info_from_registration() {
+        let reg = NodeRegistration {
+            node_id: "node1".to_string(),
+            node_type: NodeType::Kels,
+            kels_url: "http://localhost:8080".to_string(),
+            kels_url_internal: Some("http://internal:8080".to_string()),
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/9000".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Ready,
+        };
+
+        let info: NodeInfo = reg.into();
+        assert_eq!(info.node_id, "node1");
+        assert_eq!(info.kels_url, "http://localhost:8080");
+        assert_eq!(
+            info.kels_url_internal,
+            Some("http://internal:8080".to_string())
+        );
+        assert_eq!(info.status, NodeStatus::Ready);
+        assert!(info.latency_ms.is_none());
+    }
+
+    // ==================== BatchSubmitResponse tests ====================
+
+    #[test]
+    fn test_batch_submit_response_accepted() {
+        let response = BatchSubmitResponse {
+            accepted: true,
+            diverged_at: None,
+        };
+        assert!(response.accepted);
+        assert!(response.diverged_at.is_none());
+    }
+
+    #[test]
+    fn test_batch_submit_response_diverged() {
+        let response = BatchSubmitResponse {
+            accepted: false,
+            diverged_at: Some(5),
+        };
+        assert!(!response.accepted);
+        assert_eq!(response.diverged_at, Some(5));
+    }
 }

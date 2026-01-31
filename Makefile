@@ -65,7 +65,7 @@ coverage:
 		exit 1; \
 	fi
 	@cargo llvm-cov --workspace 2>&1 | awk '\
-		BEGIN { printf "%-60s %8s %8s\n", "File", "Coverage", "Missed"; print "" } \
+		BEGIN { printf "%-60s %8s %8s\n", "File (<80% coverage)", "Coverage", "Missed"; print "" } \
 		NR == 1 { next } \
 		/^-+$$/ { next } \
 		/^TOTAL/ { total = $$10; next } \

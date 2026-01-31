@@ -654,3 +654,299 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok((signed_rec_event, rec_event, rec_primary_signature))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::SoftwareKeyProvider;
+    use cesr::{Digest, Matter};
+
+    fn make_anchor() -> String {
+        Digest::blake3_256(b"test_anchor").qb64()
+    }
+
+    #[tokio::test]
+    async fn test_builder_new() {
+        let builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        assert!(builder.prefix().is_none());
+        assert!(builder.last_event().is_none());
+        assert_eq!(builder.confirmed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_builder_incept() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (event, sig) = builder.incept().await.unwrap();
+
+        assert!(event.is_inception());
+        assert!(builder.prefix().is_some());
+        assert_eq!(builder.prefix(), Some(event.prefix.as_str()));
+        assert_eq!(builder.events().len(), 1);
+
+        let pub_key = builder.current_public_key().await.unwrap();
+        assert!(pub_key.verify(event.said.as_bytes(), &sig).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_builder_incept_delegated() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
+        let (event, _sig) = builder.incept_delegated(&delegating_prefix).await.unwrap();
+
+        assert!(event.is_delegated_inception());
+        assert_eq!(event.delegating_prefix, Some(delegating_prefix));
+    }
+
+    #[tokio::test]
+    async fn test_builder_interact() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let anchor = make_anchor();
+        let (event, _sig) = builder.interact(&anchor).await.unwrap();
+
+        assert!(event.is_interaction());
+        assert_eq!(event.anchor, Some(anchor));
+        assert_eq!(builder.events().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, _) = builder.incept().await.unwrap();
+        let original_pub = builder.current_public_key().await.unwrap();
+
+        let (rot, _sig) = builder.rotate().await.unwrap();
+
+        assert!(rot.is_rotation());
+        assert_eq!(rot.previous, Some(icp.said));
+
+        let new_pub = builder.current_public_key().await.unwrap();
+        assert_ne!(original_pub.qb64(), new_pub.qb64());
+    }
+
+    #[tokio::test]
+    async fn test_builder_interact_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.interact(&make_anchor()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.rotate().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_decommission() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let (event, _sig) = builder.decommission().await.unwrap();
+
+        assert!(event.is_decommission());
+        assert!(builder.is_decommissioned());
+    }
+
+    #[tokio::test]
+    async fn test_builder_decommission_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.decommission().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_interact_after_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        let result = builder.interact(&make_anchor()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate_after_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        let result = builder.rotate().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate_recovery() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let (event, _sig) = builder.rotate_recovery().await.unwrap();
+
+        assert!(event.is_recovery_rotation());
+        assert!(event.recovery_key.is_some());
+        assert!(event.recovery_hash.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate_recovery_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.rotate_recovery().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_recover() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let (event, _sig) = builder.recover(false).await.unwrap();
+
+        assert!(event.is_recover());
+        assert!(event.recovery_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_builder_recover_with_rotation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let (event, _sig) = builder.recover(true).await.unwrap();
+
+        // When add_rot=true, we get a rotation event back (not the recovery event)
+        assert!(event.is_rotation());
+        // KEL should have: icp, rec, rot
+        assert_eq!(builder.events().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_builder_recover_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.recover(false).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_contest() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let (event, _sig) = builder.contest().await.unwrap();
+
+        assert!(event.is_contest());
+        assert!(event.recovery_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_builder_contest_before_incept_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let result = builder.contest().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_accessors() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, _) = builder.incept().await.unwrap();
+        let (ixn, _) = builder.interact(&make_anchor()).await.unwrap();
+
+        assert_eq!(builder.last_said(), Some(ixn.said.as_str()));
+        assert_eq!(builder.last_event().unwrap().said, ixn.said);
+        assert_eq!(builder.last_establishment_event().unwrap().said, icp.said);
+        assert_eq!(builder.events().len(), 2);
+        assert!(!builder.is_decommissioned());
+    }
+
+    #[tokio::test]
+    async fn test_builder_pending_events_no_client() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&make_anchor()).await.unwrap();
+
+        // Without a client, all events are "confirmed" locally
+        assert!(builder.pending_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_builder_key_provider_accessors() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        // Test key_provider accessor
+        let _provider = builder.key_provider();
+        let _provider_mut = builder.key_provider_mut();
+    }
+
+    #[tokio::test]
+    async fn test_builder_kel_accessor() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let kel = builder.kel();
+        assert_eq!(kel.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_was_flush_accepted() {
+        let builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+
+        // Ok result is accepted
+        assert!(builder.was_flush_accepted(&Ok(())));
+
+        // Divergence with accepted=true is accepted
+        assert!(
+            builder.was_flush_accepted(&Err(KelsError::DivergenceDetected {
+                diverged_at: 1,
+                submission_accepted: true,
+            }))
+        );
+
+        // Divergence with accepted=false is not accepted
+        assert!(
+            !builder.was_flush_accepted(&Err(KelsError::DivergenceDetected {
+                diverged_at: 1,
+                submission_accepted: false,
+            }))
+        );
+
+        // Other errors are not accepted
+        assert!(!builder.was_flush_accepted(&Err(KelsError::NotIncepted)));
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_kel() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder1.incept().await.unwrap();
+        let icp_pub = icp.public_key.clone().unwrap();
+
+        let kel = Kel::from_events(
+            vec![SignedKeyEvent::new(icp.clone(), icp_pub, icp_sig.qb64())],
+            true,
+        )
+        .unwrap();
+
+        let builder2 =
+            KeyEventBuilder::with_kel(SoftwareKeyProvider::new(), None, None, kel).unwrap();
+
+        assert_eq!(builder2.prefix(), Some(icp.prefix.as_str()));
+        assert_eq!(builder2.events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_builder_reload_no_store() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        // Reload without store should succeed (no-op)
+        builder.reload().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_builder_reload_no_prefix() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+
+        // No prefix yet, reload should succeed (no-op)
+        builder.reload().await.unwrap();
+    }
+}

@@ -526,3 +526,222 @@ async fn test_batch_get_kels_with_missing_prefixes() {
     assert!(!result.get(&existing_prefix).unwrap().is_empty());
     assert!(result.get("nonexistent_prefix").unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn test_submit_event_invalid_signature_format() {
+    let harness = get_harness().await;
+
+    // Create inception and corrupt signature format
+    let (mut inception, _) = create_inception().await;
+    inception.signatures[0].signature = "invalid_not_cesr_signature".to_string();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .expect("Failed to submit events");
+
+    assert_eq!(response.status(), 400);
+    let error: kels::ErrorResponse = response.json().await.unwrap();
+    assert!(error.error.contains("Invalid signature format"));
+}
+
+#[tokio::test]
+async fn test_submit_rotation_event() {
+    let harness = get_harness().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create rotation event
+    let (rot_event, rot_sig) = builder.rotate().await.unwrap();
+    let rot_public_key = builder.current_public_key().await.unwrap();
+    let signed_rot = SignedKeyEvent::new(rot_event, rot_public_key.qb64(), rot_sig.qb64());
+
+    // Submit rotation
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![signed_rot])
+        .send()
+        .await
+        .expect("Failed to submit rotation");
+
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.accepted);
+
+    // Verify KEL now has 2 events
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+
+    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn test_list_prefixes_pagination_with_cursor() {
+    let harness = get_harness().await;
+
+    // Create several KELs
+    let mut prefixes = Vec::new();
+    for _ in 0..3 {
+        let (inception, _) = create_inception().await;
+        prefixes.push(inception.event.prefix.clone());
+        harness
+            .client()
+            .post(harness.url("/api/kels/events"))
+            .json(&vec![inception])
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Get first page with limit=1
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/prefixes?limit=1"))
+        .send()
+        .await
+        .expect("Failed to list prefixes");
+
+    assert_eq!(response.status(), 200);
+    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    assert_eq!(result.prefixes.len(), 1);
+
+    // Use cursor to get next page if available
+    if let Some(cursor) = &result.next_cursor {
+        let response = harness
+            .client()
+            .get(harness.url(&format!("/api/kels/prefixes?since={}&limit=1", cursor)))
+            .send()
+            .await
+            .expect("Failed to list prefixes with cursor");
+
+        assert_eq!(response.status(), 200);
+        let next_result: kels::PrefixListResponse = response.json().await.unwrap();
+        // Second page should have different prefix(es) than first page
+        if !next_result.prefixes.is_empty() {
+            assert_ne!(result.prefixes[0].prefix, next_result.prefixes[0].prefix);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_submit_decommission_event() {
+    let harness = get_harness().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create decommission event - decommission() adds the dual-signed event to internal KEL
+    let _ = builder.decommission().await.unwrap();
+
+    // Get the properly signed decommission event from builder's KEL
+    let events = builder.events();
+    let signed_dec = events.last().unwrap().clone();
+
+    // Submit decommission
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![signed_dec])
+        .send()
+        .await
+        .expect("Failed to submit decommission");
+
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.accepted);
+
+    // Verify KEL now has 2 events (icp + dec)
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+
+    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn test_get_kel_not_found_with_audit() {
+    let harness = get_harness().await;
+
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn test_submit_recovery_event_requires_dual_signature() {
+    let harness = get_harness().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create recovery event (with rotation) - this creates dual-signed event internally
+    let _ = builder.recover(true).await.unwrap();
+
+    // Get the properly signed recovery event and strip one signature for testing
+    let events = builder.events();
+    // Recovery creates a rec event first, then a rot event
+    let rec_event = events.iter().find(|e| e.event.is_recover()).unwrap();
+    let mut signed_rec = rec_event.clone();
+    // Remove one signature to trigger dual signature validation error
+    signed_rec.signatures.truncate(1);
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![signed_rec])
+        .send()
+        .await
+        .expect("Failed to submit recovery");
+
+    assert_eq!(response.status(), 400);
+    let error: kels::ErrorResponse = response.json().await.unwrap();
+    assert!(error.error.contains("Dual signatures required"));
+}

@@ -136,3 +136,32 @@ impl From<verifiable_storage::StorageError> for KelsError {
         KelsError::StorageError(e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cesr::Matter;
+
+    #[test]
+    fn test_error_display() {
+        let err = KelsError::KeyNotFound("test_key".to_string());
+        assert!(err.to_string().contains("test_key"));
+
+        let err = KelsError::NoCurrentKey;
+        assert!(err.to_string().contains("current key"));
+
+        let err = KelsError::DivergenceDetected {
+            diverged_at: 5,
+            submission_accepted: true,
+        };
+        assert!(err.to_string().contains("5"));
+    }
+
+    #[test]
+    fn test_from_cesr_error() {
+        // Create a CESR error by parsing invalid data
+        let cesr_err = cesr::Signature::from_qb64("invalid").unwrap_err();
+        let kels_err: KelsError = cesr_err.into();
+        assert!(matches!(kels_err, KelsError::CryptoError(_)));
+    }
+}

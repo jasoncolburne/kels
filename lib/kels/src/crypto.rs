@@ -615,4 +615,147 @@ mod tests {
         assert!(!provider.has_staged_recovery().await);
         assert!(!provider.has_staged().await);
     }
+
+    #[test]
+    fn test_software_key_provider_default() {
+        let provider = SoftwareKeyProvider::default();
+        assert!(provider.keys.is_empty());
+        assert!(provider.recovery_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sign_with_recovery_without_key_fails() {
+        let provider = SoftwareKeyProvider::new();
+        let result = provider.sign_with_recovery(b"test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stage_recovery_rotation_without_key_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        let result = provider.stage_recovery_rotation().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_commit_without_staged_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let result = provider.commit().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_without_staged_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let result = provider.rollback().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_current_public_key_without_next_fails() {
+        let provider = SoftwareKeyProvider::new();
+        let result = provider.current_public_key().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_roundtrip() {
+        use tempfile::TempDir;
+
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let original_pub = provider.current_public_key().await.unwrap();
+
+        let temp = TempDir::new().unwrap();
+        provider.save_to_dir(temp.path()).await.unwrap();
+
+        let loaded = SoftwareKeyProvider::load_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            loaded.current_public_key().await.unwrap().qb64(),
+            original_pub.qb64()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_without_current_fails() {
+        use tempfile::TempDir;
+
+        let provider = SoftwareKeyProvider::new();
+        let temp = TempDir::new().unwrap();
+        let result = provider.save_to_dir(temp.path()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_while_staged_fails() {
+        use tempfile::TempDir;
+
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        provider.stage_rotation().await.unwrap();
+
+        let temp = TempDir::new().unwrap();
+        let result = provider.save_to_dir(temp.path()).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_nonexistent_dir() {
+        let result = SoftwareKeyProvider::load_from_dir(Path::new("/nonexistent/path/12345"));
+        // Should succeed with empty provider if files don't exist
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_software_provider_config_new() {
+        let config = SoftwareProviderConfig::new(PathBuf::from("/tmp/keys"));
+        assert_eq!(config.key_dir, PathBuf::from("/tmp/keys"));
+    }
+
+    #[tokio::test]
+    async fn test_software_provider_config_load_new() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let nonexistent = temp.path().join("nonexistent");
+        let config = SoftwareProviderConfig::new(nonexistent);
+
+        let provider = config.load_provider().await.unwrap();
+        assert!(!provider.has_current().await);
+    }
+
+    #[tokio::test]
+    async fn test_software_provider_config_save_and_load() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_dir = temp.path().join("keys");
+        let config = SoftwareProviderConfig::new(key_dir.clone());
+
+        // Create and save a provider
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let original_pub = provider.current_public_key().await.unwrap();
+        config.save_provider(&provider).await.unwrap();
+
+        // Load it back
+        let config2 = SoftwareProviderConfig::new(key_dir);
+        let loaded = config2.load_provider().await.unwrap();
+        assert_eq!(
+            loaded.current_public_key().await.unwrap().qb64(),
+            original_pub.qb64()
+        );
+    }
+
+    #[test]
+    fn test_with_all_keys_missing_one() {
+        let (_, priv1) = generate_secp256r1().unwrap();
+        let (_, priv2) = generate_secp256r1().unwrap();
+
+        // Missing recovery - should return empty provider
+        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), None);
+        assert!(provider.keys.is_empty());
+    }
 }
