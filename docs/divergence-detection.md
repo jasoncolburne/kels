@@ -70,7 +70,7 @@ Client                              KELS Server
   │      { accepted: true,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │──── fetch_full_kel() ───────────────>│
+  │───── get_kel() ─────────────────────>│
   │<──── [all events including forks] ───│
   │                                      │
   │ detect divergence locally            │
@@ -95,7 +95,7 @@ Client                              KELS Server
   │      { accepted: false,              │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │──── fetch_full_kel() ───────────────>│
+  │───── get_kel() ─────────────────────>│
   │<──── [all events including forks] ───│
   │                                      │
   │ sync local state with server         │

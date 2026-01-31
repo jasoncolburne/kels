@@ -143,7 +143,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         if let Some(client) = &self.kels_client
             && let Some(prefix) = self.prefix()
         {
-            let mut kels_kel = client.fetch_full_kel(prefix).await?;
+            let mut kels_kel = client.get_kel(prefix).await?;
             let local_events = self.events();
             let local_set: HashSet<_> = local_events.iter().collect();
             let local_vec: Vec<_> = local_events.to_vec();
@@ -327,8 +327,26 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                     return Err(e);
                 }
             };
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+
+        match self.add_and_flush(&[signed_event]).await {
+            Err(e) => {
+                match e {
+                    // in this case, we expect and welcome divergence
+                    KelsError::DivergenceDetected {
+                        diverged_at: _,
+                        submission_accepted,
+                    } => {
+                        if submission_accepted {
+                            Ok((event, signature))
+                        } else {
+                            Err(e)
+                        }
+                    }
+                    _ => Err(e),
+                }
+            }
+            _ => Ok((event, signature)),
+        }
     }
 
     // ==================== Operations ====================
@@ -393,18 +411,22 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         }
 
         let response = client.submit_events(&pending).await?;
+
+        if response.accepted {
+            self.confirmed_cursor = self.kel.confirmed_length();
+        }
+
         if let Some(diverged_at) = response.diverged_at {
             Err(KelsError::DivergenceDetected {
                 diverged_at,
                 submission_accepted: response.accepted,
             })
-        } else if response.accepted {
-            self.confirmed_cursor = self.kel.confirmed_length();
-            Ok(())
-        } else {
+        } else if !response.accepted {
             Err(KelsError::InvalidKel(
                 "Rejected without divergence".to_string(),
             ))
+        } else {
+            Ok(())
         }
     }
 

@@ -534,7 +534,7 @@ impl BootstrapSync {
 
     /// Check if a prefix needs syncing by comparing with local state.
     async fn needs_sync(&self, remote_state: &PrefixState, local_client: &KelsClient) -> bool {
-        match local_client.fetch_full_kel(&remote_state.prefix).await {
+        match local_client.get_kel(&remote_state.prefix).await {
             Ok(kel) => {
                 // Check if latest local SAID matches remote
                 kel.events()

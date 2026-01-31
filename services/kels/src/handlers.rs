@@ -264,10 +264,7 @@ pub async fn submit_events(
     // Commit the transaction - this releases the advisory lock
     tx.commit().await?;
 
-    let diverged_at = match result {
-        KelMergeResult::Contested => None,
-        _ => kel.find_divergence().map(|d| d.diverged_at_generation),
-    };
+    let diverged_at = kel.find_divergence().map(|d| d.diverged_at_generation);
 
     // Update cache outside transaction
     if accepted {

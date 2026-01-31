@@ -621,7 +621,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     }
 
     println!("{}", format!("Fetching KEL {}...", prefix).green());
-    let kel = client.fetch_full_kel(prefix).await?;
+    let kel = client.get_kel(prefix).await?;
 
     println!();
     println!("{}", format!("KEL: {}", prefix).cyan().bold());
