@@ -176,6 +176,7 @@ pub(crate) async fn submit_events(
     // Load existing KEL within transaction (sees latest committed state)
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
+    kel.sort();
 
     tracing::debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",

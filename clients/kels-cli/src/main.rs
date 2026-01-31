@@ -575,6 +575,11 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!("  Latest Type: {}", last.event.kind);
         }
 
+        match kel.verify() {
+            Ok(_) => println!("Verified: Yes"),
+            Err(e) => println!("Verified: {}", e),
+        }
+
         // Check contested/decommissioned first since they take precedence over divergent
         if kel.is_contested() {
             println!("  Status: {}", "CONTESTED".red());

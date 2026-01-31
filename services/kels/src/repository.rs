@@ -16,7 +16,7 @@ pub struct KeyEventRepository {
 }
 
 #[derive(Stored)]
-#[stored(item_type = KelsAuditRecord, table = "kels_audit_records", versioned = false)]
+#[stored(item_type = KelsAuditRecord, table = "kels_audit_records", chained = false)]
 pub struct AuditRecordRepository {
     pub pool: PgPool,
 }
