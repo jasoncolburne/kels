@@ -942,4 +942,451 @@ mod tests {
         assert_eq!(deactivated.previous, Some(peer.said.clone()));
         assert_eq!(deactivated.prefix, peer.prefix);
     }
+
+    // ==================== Test Helpers ====================
+
+    fn make_blake3_digest(data: &str) -> String {
+        use cesr::{Digest, Matter};
+        Digest::blake3_256(data.as_bytes()).qb64()
+    }
+
+    fn make_secp256r1_key() -> String {
+        use cesr::{KeyCode, Matter, PublicKey};
+        // Valid compressed secp256r1 public key (33 bytes)
+        let key_bytes = [
+            0x02, // compressed prefix
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        PublicKey::from_raw(KeyCode::Secp256r1, key_bytes.to_vec())
+            .unwrap()
+            .qb64()
+    }
+
+    fn make_valid_icp() -> KeyEvent {
+        KeyEvent {
+            kind: EventKind::Icp,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: None,
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        }
+    }
+
+    // ==================== validate_structure tests ====================
+
+    #[test]
+    fn test_validate_structure_valid_icp() {
+        let event = make_valid_icp();
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_icp_missing_public_key() {
+        let mut event = make_valid_icp();
+        event.public_key = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires publicKey"));
+    }
+
+    #[test]
+    fn test_validate_structure_icp_missing_rotation_hash() {
+        let mut event = make_valid_icp();
+        event.rotation_hash = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires rotationHash"));
+    }
+
+    #[test]
+    fn test_validate_structure_icp_missing_recovery_hash() {
+        let mut event = make_valid_icp();
+        event.recovery_hash = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires recoveryHash"));
+    }
+
+    #[test]
+    fn test_validate_structure_icp_forbids_previous() {
+        let mut event = make_valid_icp();
+        event.previous = Some(make_blake3_digest("prev"));
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have previous"));
+    }
+
+    #[test]
+    fn test_validate_structure_icp_forbids_recovery_key() {
+        let mut event = make_valid_icp();
+        event.recovery_key = Some(make_secp256r1_key());
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have recoveryKey"));
+    }
+
+    #[test]
+    fn test_validate_structure_icp_forbids_anchor() {
+        let mut event = make_valid_icp();
+        event.anchor = Some(make_blake3_digest("anchor"));
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have anchor"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_dip() {
+        let mut event = make_valid_icp();
+        event.kind = EventKind::Dip;
+        event.delegating_prefix = Some(make_blake3_digest("delegator"));
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_dip_requires_delegating_prefix() {
+        let mut event = make_valid_icp();
+        event.kind = EventKind::Dip;
+        // Missing delegating_prefix
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires delegatingPrefix"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_rot() {
+        let event = KeyEvent {
+            kind: EventKind::Rot,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: None,
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_rot_missing_previous() {
+        let event = KeyEvent {
+            kind: EventKind::Rot,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: None,
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: None,
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires previous"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_ixn() {
+        let event = KeyEvent {
+            kind: EventKind::Ixn,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: None,
+            rotation_hash: None,
+            recovery_hash: None,
+            recovery_key: None,
+            anchor: Some(make_blake3_digest("anchor")),
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_ixn_forbids_public_key() {
+        let event = KeyEvent {
+            kind: EventKind::Ixn,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: None,
+            recovery_hash: None,
+            recovery_key: None,
+            anchor: Some(make_blake3_digest("anchor")),
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have publicKey"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_rec() {
+        let event = KeyEvent {
+            kind: EventKind::Rec,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: Some(make_secp256r1_key()),
+            anchor: None,
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_rec_missing_recovery_key() {
+        let event = KeyEvent {
+            kind: EventKind::Rec,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: Some(make_blake3_digest("recovery")),
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires recoveryKey"));
+    }
+
+    #[test]
+    fn test_validate_structure_valid_dec() {
+        let event = KeyEvent {
+            kind: EventKind::Dec,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: None,
+            recovery_hash: None,
+            recovery_key: Some(make_secp256r1_key()),
+            anchor: None,
+            delegating_prefix: None,
+        };
+        assert!(event.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_dec_forbids_rotation_hash() {
+        let event = KeyEvent {
+            kind: EventKind::Dec,
+            said: make_blake3_digest("said"),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(make_blake3_digest("prev")),
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: None,
+            recovery_key: Some(make_secp256r1_key()),
+            anchor: None,
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have rotationHash"));
+    }
+
+    #[test]
+    fn test_validate_structure_self_referencing_previous() {
+        let said = make_blake3_digest("said");
+        let event = KeyEvent {
+            kind: EventKind::Rot,
+            said: said.clone(),
+            prefix: make_blake3_digest("prefix"),
+            previous: Some(said), // Same as said - circular!
+            public_key: Some(make_secp256r1_key()),
+            rotation_hash: Some(make_blake3_digest("rotation")),
+            recovery_hash: None,
+            recovery_key: None,
+            anchor: None,
+            delegating_prefix: None,
+        };
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("self-referencing"));
+    }
+
+    #[test]
+    fn test_validate_structure_invalid_said_format() {
+        let mut event = make_valid_icp();
+        event.said = "not_a_valid_cesr_digest".to_string();
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("not a valid CESR digest"));
+    }
+
+    #[test]
+    fn test_validate_structure_invalid_public_key_format() {
+        let mut event = make_valid_icp();
+        event.public_key = Some("not_a_valid_key".to_string());
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("not a valid CESR public key"));
+    }
+
+    // ==================== SignedKeyEvent tests ====================
+
+    #[test]
+    fn test_signed_key_event_equality_same_said() {
+        let event = make_valid_icp();
+        let sig1 = KeyEventSignature {
+            public_key: "key1".to_string(),
+            signature: "sig1".to_string(),
+        };
+        let sig2 = KeyEventSignature {
+            public_key: "key2".to_string(),
+            signature: "sig2".to_string(),
+        };
+
+        let signed1 = SignedKeyEvent {
+            event: event.clone(),
+            signatures: vec![sig1.clone(), sig2.clone()],
+        };
+        let signed2 = SignedKeyEvent {
+            event: event.clone(),
+            signatures: vec![sig2, sig1], // Different order
+        };
+
+        // Same SAID = equal (signature order doesn't matter)
+        assert_eq!(signed1, signed2);
+    }
+
+    #[test]
+    fn test_signed_key_event_equality_different_said() {
+        let event1 = make_valid_icp();
+        let mut event2 = make_valid_icp();
+        event2.said = make_blake3_digest("different");
+
+        let sig = KeyEventSignature {
+            public_key: "key".to_string(),
+            signature: "sig".to_string(),
+        };
+
+        let signed1 = SignedKeyEvent {
+            event: event1,
+            signatures: vec![sig.clone()],
+        };
+        let signed2 = SignedKeyEvent {
+            event: event2,
+            signatures: vec![sig],
+        };
+
+        assert_ne!(signed1, signed2);
+    }
+
+    #[test]
+    fn test_signed_key_event_signature_lookup() {
+        let event = make_valid_icp();
+        let sig1 = KeyEventSignature {
+            public_key: "key1".to_string(),
+            signature: "sig1".to_string(),
+        };
+        let sig2 = KeyEventSignature {
+            public_key: "key2".to_string(),
+            signature: "sig2".to_string(),
+        };
+
+        let signed = SignedKeyEvent {
+            event,
+            signatures: vec![sig1.clone(), sig2.clone()],
+        };
+
+        assert_eq!(
+            signed.signature("key1").map(|s| &s.signature),
+            Some(&"sig1".to_string())
+        );
+        assert_eq!(
+            signed.signature("key2").map(|s| &s.signature),
+            Some(&"sig2".to_string())
+        );
+        assert!(signed.signature("key3").is_none());
+    }
+
+    // ==================== KeyEvent predicate tests ====================
+
+    #[test]
+    fn test_key_event_requires_dual_signature() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rec,
+                ..make_valid_icp()
+            }
+            .requires_dual_signature()
+        );
+        assert!(
+            KeyEvent {
+                kind: EventKind::Ror,
+                ..make_valid_icp()
+            }
+            .requires_dual_signature()
+        );
+        assert!(
+            KeyEvent {
+                kind: EventKind::Dec,
+                ..make_valid_icp()
+            }
+            .requires_dual_signature()
+        );
+        assert!(
+            KeyEvent {
+                kind: EventKind::Cnt,
+                ..make_valid_icp()
+            }
+            .requires_dual_signature()
+        );
+        assert!(!make_valid_icp().requires_dual_signature());
+        assert!(
+            !KeyEvent {
+                kind: EventKind::Rot,
+                ..make_valid_icp()
+            }
+            .requires_dual_signature()
+        );
+    }
+
+    #[test]
+    fn test_key_event_is_inception() {
+        assert!(make_valid_icp().is_inception());
+        assert!(
+            !KeyEvent {
+                kind: EventKind::Rot,
+                ..make_valid_icp()
+            }
+            .is_inception()
+        );
+    }
+
+    #[test]
+    fn test_key_event_is_delegated_inception() {
+        assert!(
+            KeyEvent {
+                kind: EventKind::Dip,
+                ..make_valid_icp()
+            }
+            .is_delegated_inception()
+        );
+        assert!(!make_valid_icp().is_delegated_inception());
+    }
+
+    #[test]
+    fn test_key_event_is_establishment() {
+        assert!(make_valid_icp().is_establishment());
+        assert!(
+            KeyEvent {
+                kind: EventKind::Rot,
+                ..make_valid_icp()
+            }
+            .is_establishment()
+        );
+        assert!(
+            !KeyEvent {
+                kind: EventKind::Ixn,
+                ..make_valid_icp()
+            }
+            .is_establishment()
+        );
+    }
 }

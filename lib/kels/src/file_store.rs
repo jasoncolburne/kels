@@ -94,3 +94,170 @@ impl KelStore for FileKelStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SoftwareKeyProvider;
+    use crate::builder::KeyEventBuilder;
+    use cesr::Matter;
+    use tempfile::TempDir;
+
+    async fn create_test_kel() -> Kel {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let public_key = icp.public_key.clone().unwrap();
+        let signed = crate::types::SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+        Kel::from_events(vec![signed], true).unwrap()
+    }
+
+    #[test]
+    fn test_new_creates_directory() {
+        let temp = TempDir::new().unwrap();
+        let subdir = temp.path().join("kels");
+        assert!(!subdir.exists());
+
+        let _store = FileKelStore::new(&subdir).unwrap();
+        assert!(subdir.exists());
+    }
+
+    #[test]
+    fn test_new_with_existing_directory() {
+        let temp = TempDir::new().unwrap();
+        let _store = FileKelStore::new(temp.path()).unwrap();
+        assert!(temp.path().exists());
+    }
+
+    #[test]
+    fn test_with_owner_sets_prefix() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::with_owner(temp.path(), "my_prefix".to_string()).unwrap();
+        assert_eq!(store.owner_prefix(), Some("my_prefix".to_string()));
+    }
+
+    #[test]
+    fn test_owner_prefix_initially_none() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+        assert_eq!(store.owner_prefix(), None);
+    }
+
+    #[test]
+    fn test_set_owner_prefix() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        store.set_owner_prefix(Some("new_owner"));
+        assert_eq!(store.owner_prefix(), Some("new_owner".to_string()));
+
+        store.set_owner_prefix(None);
+        assert_eq!(store.owner_prefix(), None);
+    }
+
+    #[tokio::test]
+    async fn test_load_nonexistent_returns_none() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let result = store.load("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel = create_test_kel().await;
+        let prefix = kel.prefix().unwrap().to_string();
+
+        store.save(&kel).await.unwrap();
+
+        let loaded = store.load(&prefix).await.unwrap().unwrap();
+        assert_eq!(loaded.len(), kel.len());
+        assert_eq!(loaded.prefix(), kel.prefix());
+    }
+
+    #[tokio::test]
+    async fn test_save_creates_json_file() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel = create_test_kel().await;
+        let prefix = kel.prefix().unwrap().to_string();
+
+        store.save(&kel).await.unwrap();
+
+        let expected_path = temp.path().join(format!("{}.kel.json", prefix));
+        assert!(expected_path.exists());
+
+        // Verify it's valid JSON
+        let contents = std::fs::read_to_string(&expected_path).unwrap();
+        let _: Vec<SignedKeyEvent> = serde_json::from_str(&contents).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_removes_file() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel = create_test_kel().await;
+        let prefix = kel.prefix().unwrap().to_string();
+
+        store.save(&kel).await.unwrap();
+
+        let path = temp.path().join(format!("{}.kel.json", prefix));
+        assert!(path.exists());
+
+        store.delete(&prefix).await.unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_succeeds() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        // Should not error when deleting non-existent
+        store.delete("nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_load_invalid_json_returns_error() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        // Write invalid JSON
+        let path = temp.path().join("bad.kel.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let result = store.load("bad").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_path_isolation_between_prefixes() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let kel1 = create_test_kel().await;
+        let kel2 = create_test_kel().await;
+        let prefix1 = kel1.prefix().unwrap().to_string();
+        let prefix2 = kel2.prefix().unwrap().to_string();
+
+        store.save(&kel1).await.unwrap();
+        store.save(&kel2).await.unwrap();
+
+        // Both should be loadable independently
+        let loaded1 = store.load(&prefix1).await.unwrap().unwrap();
+        let loaded2 = store.load(&prefix2).await.unwrap().unwrap();
+
+        assert_eq!(loaded1.prefix(), kel1.prefix());
+        assert_eq!(loaded2.prefix(), kel2.prefix());
+
+        // Delete one shouldn't affect the other
+        store.delete(&prefix1).await.unwrap();
+        assert!(store.load(&prefix1).await.unwrap().is_none());
+        assert!(store.load(&prefix2).await.unwrap().is_some());
+    }
+}

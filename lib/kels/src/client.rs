@@ -756,6 +756,9 @@ impl KelsClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SoftwareKeyProvider;
+    use crate::builder::KeyEventBuilder;
+    use cesr::Matter;
 
     #[test]
     fn test_kels_client_creation() {
@@ -767,5 +770,158 @@ mod tests {
     fn test_kels_client_strips_trailing_slash() {
         let client = KelsClient::new("http://kels:8091/");
         assert_eq!(client.base_url(), "http://kels:8091");
+    }
+
+    #[test]
+    fn test_kels_client_strips_multiple_trailing_slashes() {
+        let client = KelsClient::new("http://kels:8091///");
+        assert_eq!(client.base_url(), "http://kels:8091");
+    }
+
+    // ==================== LRU Cache Tests ====================
+
+    async fn create_test_kel_with_prefix(_data: &str) -> Kel {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let public_key = icp.public_key.clone().unwrap();
+        let signed = crate::types::SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+        Kel::from_events(vec![signed], true).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_cache_set_and_get() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("kel1").await;
+        let kel2 = create_test_kel_with_prefix("kel2").await;
+
+        cache.set("prefix1".to_string(), kel1);
+        cache.set("prefix2".to_string(), kel2);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.entries.contains_key("prefix1"));
+        assert!(cache.entries.contains_key("prefix2"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_lru_eviction_when_full() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel3 = create_test_kel_with_prefix("k3").await;
+
+        cache.set("p1".to_string(), kel1); // access_counter: 1
+        cache.set("p2".to_string(), kel2); // access_counter: 2
+        cache.set("p3".to_string(), kel3); // access_counter: 3, should evict p1
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(!cache.entries.contains_key("p1")); // LRU evicted
+        assert!(cache.entries.contains_key("p2"));
+        assert!(cache.entries.contains_key("p3"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_update_existing_doesnt_evict() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel1_new = create_test_kel_with_prefix("k1new").await;
+
+        cache.set("p1".to_string(), kel1);
+        cache.set("p2".to_string(), kel2);
+
+        // Update p1 - should not trigger eviction
+        cache.set("p1".to_string(), kel1_new);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.entries.contains_key("p1"));
+        assert!(cache.entries.contains_key("p2"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate() {
+        let mut cache = KelCacheInner::new(2);
+        let kel = create_test_kel_with_prefix("k").await;
+
+        cache.set("prefix1".to_string(), kel);
+        assert_eq!(cache.entries.len(), 1);
+
+        cache.invalidate("prefix1");
+        assert_eq!(cache.entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate_nonexistent() {
+        let mut cache = KelCacheInner::new(2);
+        // Should not panic
+        cache.invalidate("nonexistent");
+        assert_eq!(cache.entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_resize_shrink_evicts_lru() {
+        let mut cache = KelCacheInner::new(3);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel3 = create_test_kel_with_prefix("k3").await;
+
+        cache.set("p1".to_string(), kel1); // access: 1
+        cache.set("p2".to_string(), kel2); // access: 2
+        cache.set("p3".to_string(), kel3); // access: 3
+
+        cache.resize(2); // Should evict p1 (lowest access)
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(!cache.entries.contains_key("p1"));
+        assert!(cache.entries.contains_key("p2"));
+        assert!(cache.entries.contains_key("p3"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_resize_expand() {
+        let mut cache = KelCacheInner::new(2);
+        let kel = create_test_kel_with_prefix("k").await;
+
+        cache.set("p1".to_string(), kel);
+
+        cache.resize(5);
+        assert_eq!(cache.max_entries, 5);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear() {
+        let mut cache = KelCacheInner::new(3);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+
+        cache.set("p1".to_string(), kel1);
+        cache.set("p2".to_string(), kel2);
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.access_counter, 2);
+
+        cache.clear();
+        assert_eq!(cache.entries.len(), 0);
+        assert_eq!(cache.access_counter, 0);
+    }
+
+    // ==================== Cache Config Tests ====================
+
+    #[test]
+    fn test_default_cache_config() {
+        let config = KelCacheConfig::default();
+        assert_eq!(config.max_entries, 256);
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_client_with_caching_creates_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_without_caching_no_cache() {
+        let client = KelsClient::new("http://localhost:8080");
+        assert!(client.cache.is_none());
     }
 }

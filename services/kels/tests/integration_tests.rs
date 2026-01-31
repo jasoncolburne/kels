@@ -418,3 +418,111 @@ async fn test_get_kel_with_audit() {
     // No audit records for a simple KEL
     assert!(result.audit_records.is_none());
 }
+
+#[tokio::test]
+async fn test_list_prefixes_with_limit() {
+    let harness = get_harness().await;
+
+    // Create a few KELs
+    for _ in 0..3 {
+        let (inception, _) = create_inception().await;
+        harness
+            .client()
+            .post(harness.url("/api/kels/events"))
+            .json(&vec![inception])
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // List with limit=2
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/prefixes?limit=2"))
+        .send()
+        .await
+        .expect("Failed to list prefixes");
+
+    assert_eq!(response.status(), 200);
+    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    assert!(result.prefixes.len() <= 2);
+}
+
+#[tokio::test]
+async fn test_batch_kels_exceeds_max_prefixes() {
+    let harness = get_harness().await;
+
+    // Create request with 51 prefixes (max is 50)
+    let prefixes: Vec<String> = (0..51).map(|i| format!("prefix_{}", i)).collect();
+    let request = BatchKelsRequest { prefixes };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to send batch request");
+
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_submit_event_missing_signature() {
+    let harness = get_harness().await;
+
+    // Create inception but clear signatures
+    let (mut inception, _) = create_inception().await;
+    inception.signatures.clear();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .expect("Failed to submit events");
+
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_batch_get_kels_with_missing_prefixes() {
+    let harness = get_harness().await;
+
+    // Create one KEL
+    let (inception, _) = create_inception().await;
+    let existing_prefix = inception.event.prefix.clone();
+
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Request with both existing and non-existing prefixes
+    let request = BatchKelsRequest {
+        prefixes: vec![existing_prefix.clone(), "nonexistent_prefix".to_string()],
+    };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to batch fetch");
+
+    assert_eq!(response.status(), 200);
+
+    let result: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
+        response.json().await.unwrap();
+
+    // Both prefixes should be in result, but nonexistent will have empty array
+    assert!(result.contains_key(&existing_prefix));
+    assert!(result.contains_key("nonexistent_prefix"));
+    assert!(!result.get(&existing_prefix).unwrap().is_empty());
+    assert!(result.get("nonexistent_prefix").unwrap().is_empty());
+}

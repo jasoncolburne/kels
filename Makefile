@@ -15,7 +15,7 @@ REGISTRY_PREFIX_FILE := .kels/registry_prefix
 REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
 export REGISTRY_PREFIX
 
-.PHONY: all build clean clippy deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
 
@@ -58,6 +58,14 @@ install-deny:
 
 test:
 	cargo test --workspace
+
+coverage:
+	@if ! command -v cargo-llvm-cov &> /dev/null; then \
+		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
+		exit 1; \
+	fi
+	cargo llvm-cov --workspace --html
+	@echo "Coverage report generated at target/llvm-cov/html/index.html"
 
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
