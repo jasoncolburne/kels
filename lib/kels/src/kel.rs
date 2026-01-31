@@ -27,8 +27,7 @@ impl Kel {
 
     /// Only use `skip_verify: true` for trusted sources (e.g., database reads).
     pub fn from_events(events: Vec<SignedKeyEvent>, skip_verify: bool) -> Result<Self, KelsError> {
-        let mut kel = Self(events);
-        kel.sort();
+        let kel = Self(events);
         if !skip_verify && !kel.is_empty() {
             kel.verify()?;
         }
@@ -473,7 +472,7 @@ impl Kel {
             .collect()
     }
 
-    fn sort(&mut self) {
+    pub fn sort(&mut self) {
         let sorted: Vec<SignedKeyEvent> = self
             .walk_generations()
             .flat_map(|(_, events)| events.into_iter().cloned())
@@ -1197,7 +1196,7 @@ mod tests {
                 SignedKeyEvent::new(ixn1.clone(), icp_public_key.clone(), ixn1_sig.qb64()),
                 SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
             ],
-            true,
+            true, // skip verify
         )
         .unwrap();
 
@@ -1279,7 +1278,7 @@ mod tests {
                 SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
                 SignedKeyEvent::new(ixn3.clone(), icp_public_key.clone(), ixn3_sig.qb64()),
             ],
-            true,
+            true, // skip verify
         )
         .unwrap();
 
@@ -1443,7 +1442,7 @@ mod tests {
                     adversary_ixn_sig.qb64(),
                 ),
             ],
-            true,
+            true, // skip verify
         )
         .unwrap();
 

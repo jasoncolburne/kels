@@ -176,8 +176,9 @@ pub(crate) async fn submit_events(
     // Load existing KEL within transaction (sees latest committed state)
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
+    kel.sort();
 
-    tracing::info!(
+    tracing::debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
         prefix,
         events.len(),
@@ -199,18 +200,27 @@ pub(crate) async fn submit_events(
         .cloned()
         .collect();
 
-    tracing::info!(
+    tracing::debug!(
         "submit_events: new_events={} (kinds: {:?})",
         new_events.len(),
         new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
     );
+
+    // If all events were duplicates, nothing to do
+    if new_events.is_empty() {
+        tx.commit().await?;
+        return Ok(Json(BatchSubmitResponse {
+            diverged_at: kel.find_divergence().map(|d| d.diverged_at_generation),
+            accepted: true,
+        }));
+    }
 
     // Merge only new events into KEL
     let (events_to_remove, events_to_add, result) = kel
         .merge(new_events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
-    tracing::info!("submit_events: merge result={:?}", result);
+    tracing::debug!("submit_events: merge result={:?}", result);
 
     for event in &events_to_add {
         tx.insert_signed_event(event).await?;
