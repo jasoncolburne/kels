@@ -528,15 +528,15 @@ impl KelsClient {
                     return Ok(cached_kel);
                 }
 
-                let new_events = self.fetch_full_kel(prefix).await?;
-                if new_events.is_empty() {
+                let kels_kel = self.fetch_full_kel(prefix).await?;
+                if kels_kel.is_empty() {
                     return Err(KelsError::AnchorVerificationFailed(
                         "Some anchors not found in KEL".to_string(),
                     ));
                 }
 
                 let mut kel = cached_kel;
-                let merge_result = kel.merge(new_events.events().to_vec());
+                let merge_result = kel.merge(kels_kel.events().to_vec());
 
                 match merge_result {
                     Ok((_, _, KelMergeResult::Verified)) => {
