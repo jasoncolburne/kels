@@ -387,6 +387,10 @@ impl KeyEvent {
         if let Some(ref prev) = self.previous {
             validate_blake3_said("previous", prev)?;
         }
+        forbid(
+            "self-referencing previous",
+            self.previous.as_ref() == Some(&self.said),
+        )?;
         if let Some(ref hash) = self.rotation_hash {
             validate_blake3_said("rotationHash", hash)?;
         }
