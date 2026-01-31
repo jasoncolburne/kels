@@ -64,8 +64,19 @@ coverage:
 		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
 		exit 1; \
 	fi
-	cargo llvm-cov --workspace --html
-	@echo "Coverage report generated at target/llvm-cov/html/index.html"
+	@cargo llvm-cov --workspace 2>&1 | awk '\
+		BEGIN { printf "%-60s %8s %8s\n", "File", "Coverage", "Missed"; print "" } \
+		NR == 1 { next } \
+		/^-+$$/ { next } \
+		/^TOTAL/ { total = $$10; next } \
+		NF >= 13 && $$10 ~ /%$$/ { \
+			cov = $$10; gsub(/%/, "", cov); \
+			if (cov + 0 < 80) printf "%-60s %8s %8s\n", $$1, $$10, $$9 \
+		} \
+		END { print ""; print "TOTAL: " total }'
+	@cargo llvm-cov --workspace --html --no-run >/dev/null 2>&1
+	@echo ""
+	@echo "Full report: target/llvm-cov/html/index.html"
 
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
