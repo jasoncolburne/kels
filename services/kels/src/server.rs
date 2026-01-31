@@ -15,7 +15,7 @@ use verifiable_storage_postgres::RepositoryConnection;
 use crate::handlers::{self, AppState};
 use crate::repository::KelsRepository;
 
-pub fn create_router(state: Arc<AppState>) -> Router {
+pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/kels/events", post(handlers::submit_events))

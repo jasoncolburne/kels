@@ -30,13 +30,6 @@ pub enum SyncError {
     ChannelClosed,
 }
 
-/// Configuration for the sync service
-#[derive(Clone)]
-pub struct SyncConfig {
-    pub kels_url: String,
-    pub redis_url: String,
-}
-
 /// Runs the Redis subscriber that listens for local KEL updates
 /// and broadcasts them to the gossip network.
 ///
