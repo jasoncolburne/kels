@@ -25,8 +25,8 @@
 
 use crate::peer_store::PeerRepository;
 use kels::{
-    BatchKelPrefixRequest, BatchKelsRequest, KelsClient, KelsError, KelsRegistryClient,
-    NodeRegistration, NodeStatus, PrefixListResponse, PrefixState, SignedKeyEvent,
+    BatchKelsRequest, KelsClient, KelsError, KelsRegistryClient, NodeRegistration, NodeStatus,
+    PrefixListResponse, PrefixState, SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -446,13 +446,7 @@ impl BootstrapSync {
 
         // Build batch request
         let request = BatchKelsRequest {
-            prefixes: prefixes
-                .iter()
-                .map(|p| BatchKelPrefixRequest {
-                    prefix: p.clone(),
-                    since: None,
-                })
-                .collect(),
+            prefixes: prefixes.to_vec(),
         };
 
         // Fetch all KELs in a single request

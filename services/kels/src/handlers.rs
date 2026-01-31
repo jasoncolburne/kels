@@ -386,14 +386,12 @@ pub async fn list_prefixes(
 /// Maximum number of prefixes allowed in a single batch request.
 const MAX_BATCH_PREFIXES: usize = 50;
 
-/// Batch fetch KELs with optional `since` filtering per prefix. Returns map of prefix -> events.
+/// Batch fetch KELs. Returns map of prefix -> events.
 pub async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Response, ApiError> {
-    use chrono::{DateTime, Utc};
     use futures_util::future::join_all;
-    use verifiable_storage::StorageDatetime;
 
     if request.prefixes.len() > MAX_BATCH_PREFIXES {
         return Err(ApiError::bad_request(format!(
@@ -406,40 +404,26 @@ pub async fn get_kels_batch(
     let futures: Vec<_> = request
         .prefixes
         .iter()
-        .map(|req| {
-            let prefix = req.prefix.clone();
-            let since_timestamp = req.since.clone();
+        .map(|prefix| {
+            let prefix = prefix.clone();
             let state = Arc::clone(&state);
 
             async move {
-                // Parse timestamp filter if provided
-                let since_dt = if let Some(ref ts) = since_timestamp {
-                    let chrono_dt: DateTime<Utc> = DateTime::parse_from_rfc3339(ts)
-                        .map_err(|e| ApiError::bad_request(format!("Invalid timestamp: {}", e)))?
-                        .with_timezone(&Utc);
-                    Some(StorageDatetime::from(chrono_dt))
-                } else {
-                    None
-                };
-
-                // Fast path: no filtering needed, return cached bytes directly
-                if since_dt.is_none()
-                    && let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
-                {
+                // Fast path: return cached bytes directly
+                if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
                     return Ok((prefix, (*bytes).clone()));
                 }
 
-                // Cache miss or filtering needed - fetch from DB
+                // Cache miss - fetch from DB
                 let events = state.repo.key_events.get_signed_history(&prefix).await?;
 
-                // Store in cache (full KEL)
+                // Store in cache
                 if !events.is_empty()
                     && let Err(e) = state.kel_cache.store(&prefix, &events).await
                 {
                     tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
                 }
 
-                // Filter by timestamp if specified
                 let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
 
                 Ok((prefix, bytes))

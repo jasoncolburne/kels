@@ -667,16 +667,8 @@ impl KelsAuditRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BatchKelPrefixRequest {
-    pub prefix: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<String>, // RFC3339 timestamp filter
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BatchKelsRequest {
-    pub prefixes: Vec<BatchKelPrefixRequest>,
+    pub prefixes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

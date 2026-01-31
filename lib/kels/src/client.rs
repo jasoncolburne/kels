@@ -3,8 +3,8 @@
 use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
-    BatchKelPrefixRequest, BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult,
-    KelResponse, KeyEvent, NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult, KelResponse, KeyEvent,
+    NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -708,13 +708,7 @@ impl KelsClient {
             .collect();
 
         let request = BatchKelsRequest {
-            prefixes: batch_prefixes
-                .iter()
-                .map(|p| BatchKelPrefixRequest {
-                    prefix: (*p).to_string(),
-                    since: None,
-                })
-                .collect(),
+            prefixes: batch_prefixes.iter().map(|p| (*p).to_string()).collect(),
         };
 
         let resp = self
@@ -818,13 +812,7 @@ impl KelsClient {
         }
 
         let request = BatchKelsRequest {
-            prefixes: prefixes
-                .iter()
-                .map(|p| BatchKelPrefixRequest {
-                    prefix: p.to_string(),
-                    since: None,
-                })
-                .collect(),
+            prefixes: prefixes.iter().map(|p| p.to_string()).collect(),
         };
 
         let resp = self

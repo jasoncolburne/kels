@@ -104,10 +104,6 @@ enum Commands {
         /// Include audit records in response
         #[arg(long)]
         audit: bool,
-
-        /// Fetch events since timestamp (RFC3339 format)
-        #[arg(long)]
-        since: Option<String>,
     },
 
     /// List all local KELs
@@ -559,7 +555,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> Result<()> {
+async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
 
     if audit {
@@ -624,16 +620,8 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool, since: Option<&str>) -> R
         return Ok(());
     }
 
-    let kel = if let Some(since_ts) = since {
-        println!(
-            "{}",
-            format!("Fetching KEL {} since {}...", prefix, since_ts).green()
-        );
-        client.fetch_full_kel(prefix).await?
-    } else {
-        println!("{}", format!("Fetching KEL {}...", prefix).green());
-        client.fetch_full_kel(prefix).await?
-    };
+    println!("{}", format!("Fetching KEL {}...", prefix).green());
+    let kel = client.fetch_full_kel(prefix).await?;
 
     println!();
     println!("{}", format!("KEL: {}", prefix).cyan().bold());
@@ -976,11 +964,7 @@ async fn main() -> Result<()> {
         Commands::Recover { prefix } => cmd_recover(&cli, prefix).await,
         Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
         Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
-        Commands::Get {
-            prefix,
-            audit,
-            since,
-        } => cmd_get(&cli, prefix, *audit, since.as_deref()).await,
+        Commands::Get { prefix, audit } => cmd_get(&cli, prefix, *audit).await,
         Commands::List => cmd_list(&cli).await,
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
