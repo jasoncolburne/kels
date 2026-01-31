@@ -205,6 +205,15 @@ pub(crate) async fn submit_events(
         new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
     );
 
+    // If all events were duplicates, nothing to do
+    if new_events.is_empty() {
+        tx.commit().await?;
+        return Ok(Json(BatchSubmitResponse {
+            diverged_at: kel.find_divergence().map(|d| d.diverged_at_generation),
+            accepted: true,
+        }));
+    }
+
     // Merge only new events into KEL
     let (events_to_remove, events_to_add, result) = kel
         .merge(new_events.clone())

@@ -52,9 +52,11 @@ futures-util = "0.3"
 # Testing
 tokio-test = "0.4"
 testcontainers = "0.26"
-testcontainers-modules = { version = "0.14", features = ["postgres"] }
+testcontainers-modules = { version = "0.14", features = ["postgres", "redis"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 
 [lints.clippy]
 unwrap_used = "deny"
