@@ -600,4 +600,62 @@ mod tests {
         assert!(json.contains("nodes"));
         assert!(json.contains("null"));
     }
+
+    // ==================== health Tests ====================
+
+    #[tokio::test]
+    async fn test_health() {
+        let status = health().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn test_max_page_size_constant() {
+        assert_eq!(MAX_PAGE_SIZE, 1000);
+    }
+
+    #[test]
+    fn test_default_page_size_constant() {
+        assert_eq!(DEFAULT_PAGE_SIZE, 100);
+    }
+
+    // ==================== PaginationQuery Serde Tests ====================
+
+    #[test]
+    fn test_pagination_query_deserialization_empty() {
+        let json = "{}";
+        let query: PaginationQuery = serde_json::from_str(json).unwrap();
+        assert!(query.cursor.is_none());
+        assert!(query.limit.is_none());
+    }
+
+    #[test]
+    fn test_pagination_query_deserialization_full() {
+        let json = r#"{"cursor": "abc", "limit": 50}"#;
+        let query: PaginationQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.cursor, Some("abc".to_string()));
+        assert_eq!(query.limit, Some(50));
+    }
+
+    // ==================== BootstrapQuery Serde Tests ====================
+
+    #[test]
+    fn test_bootstrap_query_deserialization_empty() {
+        let json = "{}";
+        let query: BootstrapQuery = serde_json::from_str(json).unwrap();
+        assert!(query.exclude.is_none());
+        assert!(query.cursor.is_none());
+        assert!(query.limit.is_none());
+    }
+
+    #[test]
+    fn test_bootstrap_query_deserialization_full() {
+        let json = r#"{"exclude": "node-1", "cursor": "xyz", "limit": 25}"#;
+        let query: BootstrapQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.exclude, Some("node-1".to_string()));
+        assert_eq!(query.cursor, Some("xyz".to_string()));
+        assert_eq!(query.limit, Some(25));
+    }
 }

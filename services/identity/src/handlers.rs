@@ -208,4 +208,69 @@ mod tests {
         assert!(json.contains("error"));
         assert!(json.contains("Something failed"));
     }
+
+    // ==================== health Tests ====================
+
+    #[tokio::test]
+    async fn test_health() {
+        let status = health().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // ==================== More KelsError Conversions ====================
+
+    #[test]
+    fn test_api_error_from_kels_key_not_found() {
+        let kels_err = KelsError::KeyNotFound("test-key".to_string());
+        let api_err: ApiError = kels_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(api_err.1.error.contains("test-key"));
+    }
+
+    #[test]
+    fn test_api_error_from_kels_no_current_key() {
+        let kels_err = KelsError::NoCurrentKey;
+        let api_err: ApiError = kels_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_from_kels_hardware_error() {
+        let kels_err = KelsError::HardwareError("HSM failed".to_string());
+        let api_err: ApiError = kels_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(api_err.1.error.contains("HSM failed"));
+    }
+
+    // ==================== Request/Response Roundtrip Tests ====================
+
+    #[test]
+    fn test_anchor_request_roundtrip() {
+        let original = AnchorRequest {
+            said: "ESAID123".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: AnchorRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.said, parsed.said);
+    }
+
+    #[test]
+    fn test_anchor_response_roundtrip() {
+        let original = AnchorResponse {
+            event_said: "EEVENT456".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: AnchorResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.event_said, parsed.event_said);
+    }
+
+    #[test]
+    fn test_identity_info_roundtrip() {
+        let original = IdentityInfo {
+            prefix: "EPREFIX".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.prefix, parsed.prefix);
+    }
 }

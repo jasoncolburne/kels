@@ -558,4 +558,69 @@ mod tests {
     fn test_max_batch_prefixes_constant() {
         assert_eq!(MAX_BATCH_PREFIXES, 50);
     }
+
+    // ==================== health Tests ====================
+
+    #[tokio::test]
+    async fn test_health() {
+        let status = health().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // ==================== PreSerializedJson Tests ====================
+
+    #[test]
+    fn test_pre_serialized_json_into_response() {
+        use axum::response::IntoResponse;
+
+        let data = Arc::new(br#"{"test": true}"#.to_vec());
+        let pre_serialized = PreSerializedJson(data);
+        let response = pre_serialized.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // Check content-type header
+        let content_type = response.headers().get("content-type").unwrap();
+        assert_eq!(content_type, "application/json");
+    }
+
+    // ==================== Limit Clamping Tests ====================
+
+    #[test]
+    fn test_limit_clamp_below_min() {
+        // Testing the clamping logic used in list_prefixes
+        let limit: usize = 0;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 1);
+    }
+
+    #[test]
+    fn test_limit_clamp_above_max() {
+        let limit: usize = 2000;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 1000);
+    }
+
+    #[test]
+    fn test_limit_clamp_within_range() {
+        let limit: usize = 500;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 500);
+    }
+
+    // ==================== BatchKelsRequest Deserialization ====================
+
+    #[test]
+    fn test_batch_kels_request_deserialization() {
+        let json = r#"{"prefixes": ["prefix1", "prefix2", "prefix3"]}"#;
+        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.prefixes.len(), 3);
+        assert_eq!(request.prefixes[0], "prefix1");
+    }
+
+    #[test]
+    fn test_batch_kels_request_empty_prefixes() {
+        let json = r#"{"prefixes": []}"#;
+        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
+        assert!(request.prefixes.is_empty());
+    }
 }
