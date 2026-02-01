@@ -326,4 +326,76 @@ mod tests {
         let (behaviour, _refresh_rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.pending_disconnects.is_empty());
     }
+
+    #[test]
+    fn test_allowlist_behaviour_initial_state() {
+        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+        assert!(behaviour.pending_verification.is_empty());
+        assert!(behaviour.pending_disconnects.is_empty());
+    }
+
+    #[test]
+    fn test_is_peer_allowed_empty_allowlist() {
+        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+        // Generate a random PeerId
+        let peer_id = PeerId::random();
+        assert!(!behaviour.is_peer_allowed(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_allowed_with_peer() {
+        let peer_id = PeerId::random();
+        let mut set = HashSet::new();
+        set.insert(peer_id);
+        let allowlist = Arc::new(RwLock::new(set));
+        let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+        assert!(behaviour.is_peer_allowed(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn test_verify_pending_peers_removes_unauthorized() {
+        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+
+        let peer_id = PeerId::random();
+        behaviour.pending_verification.insert(peer_id);
+
+        behaviour.verify_pending_peers().await;
+
+        assert!(behaviour.pending_verification.is_empty());
+        assert!(behaviour.pending_disconnects.contains(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn test_verify_pending_peers_keeps_authorized() {
+        let peer_id = PeerId::random();
+        let mut set = HashSet::new();
+        set.insert(peer_id);
+        let allowlist = Arc::new(RwLock::new(set));
+        let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+
+        behaviour.pending_verification.insert(peer_id);
+
+        behaviour.verify_pending_peers().await;
+
+        assert!(behaviour.pending_verification.is_empty());
+        assert!(!behaviour.pending_disconnects.contains(&peer_id));
+    }
+
+    // ==================== AllowlistRefreshError Tests ====================
+
+    #[test]
+    fn test_allowlist_refresh_error_http_display() {
+        // We can't easily create a reqwest::Error, so test the KelVerificationFailed variant
+        let err = AllowlistRefreshError::KelVerificationFailed("Invalid KEL".to_string());
+        assert_eq!(err.to_string(), "KEL verification failed: Invalid KEL");
+    }
+
+    #[test]
+    fn test_allowlist_refresh_error_kel_verification_display() {
+        let err = AllowlistRefreshError::KelVerificationFailed("SAID mismatch".to_string());
+        assert!(err.to_string().contains("SAID mismatch"));
+    }
 }
