@@ -2119,9 +2119,7 @@ mod tests {
         };
 
         // Save
-        state
-            .save(&temp_dir, "test_prefix")
-            .expect("save failed");
+        state.save(&temp_dir, "test_prefix").expect("save failed");
 
         // Load
         let loaded = KeyState::load(&temp_dir, "test_prefix");
