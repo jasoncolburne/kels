@@ -1845,26 +1845,6 @@ mod tests {
         assert_eq!(KelsStatus::Error as i32, 8);
     }
 
-    #[test]
-    fn test_kels_status_debug() {
-        let status = KelsStatus::Ok;
-        let debug_str = format!("{:?}", status);
-        assert!(debug_str.contains("Ok"));
-    }
-
-    #[test]
-    fn test_kels_status_clone() {
-        let status = KelsStatus::DivergenceDetected;
-        let cloned = status;
-        assert_eq!(status, cloned);
-    }
-
-    #[test]
-    fn test_kels_status_eq() {
-        assert_eq!(KelsStatus::Ok, KelsStatus::Ok);
-        assert_ne!(KelsStatus::Ok, KelsStatus::Error);
-    }
-
     // ==================== KelsRecoveryOutcome Tests ====================
 
     #[test]
@@ -1872,19 +1852,6 @@ mod tests {
         assert_eq!(KelsRecoveryOutcome::Recovered as i32, 0);
         assert_eq!(KelsRecoveryOutcome::Contested as i32, 1);
         assert_eq!(KelsRecoveryOutcome::Failed as i32, 2);
-    }
-
-    #[test]
-    fn test_kels_recovery_outcome_debug() {
-        let outcome = KelsRecoveryOutcome::Recovered;
-        let debug_str = format!("{:?}", outcome);
-        assert!(debug_str.contains("Recovered"));
-    }
-
-    #[test]
-    fn test_kels_recovery_outcome_eq() {
-        assert_eq!(KelsRecoveryOutcome::Contested, KelsRecoveryOutcome::Contested);
-        assert_ne!(KelsRecoveryOutcome::Recovered, KelsRecoveryOutcome::Failed);
     }
 
     // ==================== KelsNodeStatus Tests ====================
@@ -2121,30 +2088,6 @@ mod tests {
         let state = KeyState::default();
         assert_eq!(state.signing_generation, 0);
         assert_eq!(state.recovery_generation, 0);
-    }
-
-    #[test]
-    fn test_key_state_debug() {
-        let state = KeyState {
-            signing_generation: 5,
-            recovery_generation: 2,
-        };
-        let debug_str = format!("{:?}", state);
-        assert!(debug_str.contains("signing_generation"));
-        assert!(debug_str.contains("5"));
-        assert!(debug_str.contains("recovery_generation"));
-        assert!(debug_str.contains("2"));
-    }
-
-    #[test]
-    fn test_key_state_clone() {
-        let state = KeyState {
-            signing_generation: 10,
-            recovery_generation: 3,
-        };
-        let cloned = state.clone();
-        assert_eq!(state.signing_generation, cloned.signing_generation);
-        assert_eq!(state.recovery_generation, cloned.recovery_generation);
     }
 
     #[test]

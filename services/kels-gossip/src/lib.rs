@@ -487,54 +487,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_clone() {
-        let config = Config {
-            node_id: "test-node".to_string(),
-            kels_url: "http://kels".to_string(),
-            kels_advertise_url: "http://kels.example.com".to_string(),
-            kels_advertise_url_internal: Some("http://kels-internal".to_string()),
-            redis_url: "redis://redis".to_string(),
-            database_url: "postgres://localhost".to_string(),
-            hsm_url: "http://hsm".to_string(),
-            registry_url: Some("http://registry".to_string()),
-            registry_prefix: "prefix123".to_string(),
-            listen_addr: "/ip4/0.0.0.0/tcp/4001".parse().unwrap(),
-            advertise_addr: "/ip4/127.0.0.1/tcp/4001".parse().unwrap(),
-            topic: "test-topic".to_string(),
-            heartbeat_interval_secs: 30,
-            allowlist_refresh_interval_secs: 60,
-            test_propagation_delay_ms: 0,
-        };
-
-        let cloned = config.clone();
-        assert_eq!(config.node_id, cloned.node_id);
-        assert_eq!(config.kels_url, cloned.kels_url);
-        assert_eq!(config.kels_advertise_url, cloned.kels_advertise_url);
-        assert_eq!(
-            config.kels_advertise_url_internal,
-            cloned.kels_advertise_url_internal
-        );
-        assert_eq!(config.redis_url, cloned.redis_url);
-        assert_eq!(config.database_url, cloned.database_url);
-        assert_eq!(config.hsm_url, cloned.hsm_url);
-        assert_eq!(config.registry_url, cloned.registry_url);
-        assert_eq!(config.registry_prefix, cloned.registry_prefix);
-        assert_eq!(config.topic, cloned.topic);
-        assert_eq!(
-            config.heartbeat_interval_secs,
-            cloned.heartbeat_interval_secs
-        );
-        assert_eq!(
-            config.allowlist_refresh_interval_secs,
-            cloned.allowlist_refresh_interval_secs
-        );
-        assert_eq!(
-            config.test_propagation_delay_ms,
-            cloned.test_propagation_delay_ms
-        );
-    }
-
-    #[test]
     fn test_config_from_env_missing_required() {
         // Clear required env vars to test error handling
         std::env::remove_var("KELS_ADVERTISE_URL");

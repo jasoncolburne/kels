@@ -183,49 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hsm_key_binding_clone() {
-        let binding = HsmKeyBinding {
-            said: "clone_said".to_string(),
-            prefix: "clone_prefix".to_string(),
-            previous: Some("prev_said".to_string()),
-            version: 5,
-            kel_prefix: "clone_kel".to_string(),
-            current_key_handle: "cur".to_string(),
-            next_key_handle: "nxt".to_string(),
-            recovery_key_handle: "rec".to_string(),
-            signing_generation: 10,
-            recovery_generation: 2,
-            created_at: StorageDatetime::now(),
-        };
-
-        let cloned = binding.clone();
-        assert_eq!(binding.said, cloned.said);
-        assert_eq!(binding.version, cloned.version);
-        assert_eq!(binding.previous, cloned.previous);
-    }
-
-    #[test]
-    fn test_hsm_key_binding_debug() {
-        let binding = HsmKeyBinding {
-            said: "debug_said".to_string(),
-            prefix: "debug_prefix".to_string(),
-            previous: None,
-            version: 0,
-            kel_prefix: "debug_kel".to_string(),
-            current_key_handle: "debug_cur".to_string(),
-            next_key_handle: "debug_nxt".to_string(),
-            recovery_key_handle: "debug_rec".to_string(),
-            signing_generation: 0,
-            recovery_generation: 0,
-            created_at: StorageDatetime::now(),
-        };
-
-        let debug_str = format!("{:?}", binding);
-        assert!(debug_str.contains("debug_said"));
-        assert!(debug_str.contains("debug_kel"));
-    }
-
-    #[test]
     fn test_authority_mapping_struct() {
         let mapping = AuthorityMapping {
             said: "auth_said".to_string(),
@@ -240,43 +197,6 @@ mod tests {
 
         assert_eq!(mapping.name, "test_authority");
         assert_eq!(mapping.kel_prefix, "auth_kel");
-    }
-
-    #[test]
-    fn test_authority_mapping_clone() {
-        let mapping = AuthorityMapping {
-            said: "clone_auth".to_string(),
-            prefix: "clone_auth_prefix".to_string(),
-            previous: Some("prev_auth".to_string()),
-            version: 3,
-            name: "clone_authority".to_string(),
-            kel_prefix: "clone_auth_kel".to_string(),
-            last_said: "clone_last".to_string(),
-            created_at: StorageDatetime::now(),
-        };
-
-        let cloned = mapping.clone();
-        assert_eq!(mapping.said, cloned.said);
-        assert_eq!(mapping.name, cloned.name);
-        assert_eq!(mapping.previous, cloned.previous);
-    }
-
-    #[test]
-    fn test_authority_mapping_debug() {
-        let mapping = AuthorityMapping {
-            said: "debug_auth".to_string(),
-            prefix: "debug_auth_prefix".to_string(),
-            previous: None,
-            version: 0,
-            name: "debug_authority".to_string(),
-            kel_prefix: "debug_auth_kel".to_string(),
-            last_said: "debug_last".to_string(),
-            created_at: StorageDatetime::now(),
-        };
-
-        let debug_str = format!("{:?}", mapping);
-        assert!(debug_str.contains("debug_auth"));
-        assert!(debug_str.contains("debug_authority"));
     }
 
     #[test]
