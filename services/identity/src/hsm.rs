@@ -183,6 +183,24 @@ impl std::fmt::Debug for HsmKeyProvider {
     }
 }
 
+impl Clone for HsmKeyProvider {
+    fn clone(&self) -> Self {
+        let signing_gen = *self.signing_generation.blocking_read();
+        let recovery_gen = *self.recovery_generation.blocking_read();
+        let key_handles = self.key_handles.blocking_read().clone();
+        let recovery_handles = self.recovery_handles.blocking_read().clone();
+
+        Self {
+            hsm: Arc::clone(&self.hsm),
+            label_prefix: self.label_prefix.clone(),
+            signing_generation: RwLock::new(signing_gen),
+            recovery_generation: RwLock::new(recovery_gen),
+            key_handles: RwLock::new(key_handles),
+            recovery_handles: RwLock::new(recovery_handles),
+        }
+    }
+}
+
 impl HsmKeyProvider {
     pub fn new(
         hsm: Arc<dyn HsmOperations>,

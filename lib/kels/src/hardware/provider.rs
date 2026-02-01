@@ -20,6 +20,24 @@ pub struct HardwareKeyProvider {
     recovery_handles: RwLock<Vec<SecureEnclaveKeyHandle>>,
 }
 
+impl Clone for HardwareKeyProvider {
+    fn clone(&self) -> Self {
+        let signing_gen = *self.signing_generation.blocking_read();
+        let recovery_gen = *self.recovery_generation.blocking_read();
+        let key_handles = self.key_handles.blocking_read().clone();
+        let recovery_handles = self.recovery_handles.blocking_read().clone();
+
+        Self {
+            enclave: Arc::clone(&self.enclave),
+            key_namespace: self.key_namespace.clone(),
+            signing_generation: RwLock::new(signing_gen),
+            recovery_generation: RwLock::new(recovery_gen),
+            key_handles: RwLock::new(key_handles),
+            recovery_handles: RwLock::new(recovery_handles),
+        }
+    }
+}
+
 impl HardwareKeyProvider {
     // ==================== Constructors ====================
 

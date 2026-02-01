@@ -286,7 +286,7 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
 }
 
 /// Save key state from the builder's key provider
-async fn save_key_state<K: KeyProvider>(
+async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     state_dir: &Path,
     prefix: &str,

@@ -10,7 +10,7 @@ use crate::store::KelStore;
 use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey, Signature};
 
-pub struct KeyEventBuilder<K: KeyProvider> {
+pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
     #[allow(dead_code)]
     kels_client: Option<KelsClient>,
@@ -19,7 +19,19 @@ pub struct KeyEventBuilder<K: KeyProvider> {
     confirmed_cursor: usize,
 }
 
-impl<K: KeyProvider> KeyEventBuilder<K> {
+impl<K: KeyProvider + Clone> Clone for KeyEventBuilder<K> {
+    fn clone(&self) -> Self {
+        Self {
+            key_provider: self.key_provider.clone(),
+            kels_client: self.kels_client.clone(),
+            kel_store: self.kel_store.clone(),
+            kel: self.kel.clone(),
+            confirmed_cursor: self.confirmed_cursor,
+        }
+    }
+}
+
+impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     // ==================== Constructors ====================
 
     pub fn new(key_provider: K, kels_client: Option<KelsClient>) -> Self {
