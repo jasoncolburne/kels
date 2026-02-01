@@ -756,6 +756,9 @@ impl KelsClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SoftwareKeyProvider;
+    use crate::builder::KeyEventBuilder;
+    use cesr::Matter;
 
     #[test]
     fn test_kels_client_creation() {
@@ -767,5 +770,671 @@ mod tests {
     fn test_kels_client_strips_trailing_slash() {
         let client = KelsClient::new("http://kels:8091/");
         assert_eq!(client.base_url(), "http://kels:8091");
+    }
+
+    #[test]
+    fn test_kels_client_strips_multiple_trailing_slashes() {
+        let client = KelsClient::new("http://kels:8091///");
+        assert_eq!(client.base_url(), "http://kels:8091");
+    }
+
+    // ==================== LRU Cache Tests ====================
+
+    async fn create_test_kel_with_prefix(_data: &str) -> Kel {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let public_key = icp.public_key.clone().unwrap();
+        let signed = crate::types::SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+        Kel::from_events(vec![signed], true).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_cache_set_and_get() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("kel1").await;
+        let kel2 = create_test_kel_with_prefix("kel2").await;
+
+        cache.set("prefix1".to_string(), kel1);
+        cache.set("prefix2".to_string(), kel2);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.entries.contains_key("prefix1"));
+        assert!(cache.entries.contains_key("prefix2"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_lru_eviction_when_full() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel3 = create_test_kel_with_prefix("k3").await;
+
+        cache.set("p1".to_string(), kel1); // access_counter: 1
+        cache.set("p2".to_string(), kel2); // access_counter: 2
+        cache.set("p3".to_string(), kel3); // access_counter: 3, should evict p1
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(!cache.entries.contains_key("p1")); // LRU evicted
+        assert!(cache.entries.contains_key("p2"));
+        assert!(cache.entries.contains_key("p3"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_update_existing_doesnt_evict() {
+        let mut cache = KelCacheInner::new(2);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel1_new = create_test_kel_with_prefix("k1new").await;
+
+        cache.set("p1".to_string(), kel1);
+        cache.set("p2".to_string(), kel2);
+
+        // Update p1 - should not trigger eviction
+        cache.set("p1".to_string(), kel1_new);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.entries.contains_key("p1"));
+        assert!(cache.entries.contains_key("p2"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate() {
+        let mut cache = KelCacheInner::new(2);
+        let kel = create_test_kel_with_prefix("k").await;
+
+        cache.set("prefix1".to_string(), kel);
+        assert_eq!(cache.entries.len(), 1);
+
+        cache.invalidate("prefix1");
+        assert_eq!(cache.entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate_nonexistent() {
+        let mut cache = KelCacheInner::new(2);
+        // Should not panic
+        cache.invalidate("nonexistent");
+        assert_eq!(cache.entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_resize_shrink_evicts_lru() {
+        let mut cache = KelCacheInner::new(3);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+        let kel3 = create_test_kel_with_prefix("k3").await;
+
+        cache.set("p1".to_string(), kel1); // access: 1
+        cache.set("p2".to_string(), kel2); // access: 2
+        cache.set("p3".to_string(), kel3); // access: 3
+
+        cache.resize(2); // Should evict p1 (lowest access)
+
+        assert_eq!(cache.entries.len(), 2);
+        assert!(!cache.entries.contains_key("p1"));
+        assert!(cache.entries.contains_key("p2"));
+        assert!(cache.entries.contains_key("p3"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_resize_expand() {
+        let mut cache = KelCacheInner::new(2);
+        let kel = create_test_kel_with_prefix("k").await;
+
+        cache.set("p1".to_string(), kel);
+
+        cache.resize(5);
+        assert_eq!(cache.max_entries, 5);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear() {
+        let mut cache = KelCacheInner::new(3);
+        let kel1 = create_test_kel_with_prefix("k1").await;
+        let kel2 = create_test_kel_with_prefix("k2").await;
+
+        cache.set("p1".to_string(), kel1);
+        cache.set("p2".to_string(), kel2);
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.access_counter, 2);
+
+        cache.clear();
+        assert_eq!(cache.entries.len(), 0);
+        assert_eq!(cache.access_counter, 0);
+    }
+
+    // ==================== Cache Config Tests ====================
+
+    #[test]
+    fn test_default_cache_config() {
+        let config = KelCacheConfig::default();
+        assert_eq!(config.max_entries, 256);
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_client_with_caching_creates_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_without_caching_no_cache() {
+        let client = KelsClient::new("http://localhost:8080");
+        assert!(client.cache.is_none());
+    }
+
+    #[test]
+    fn test_client_with_timeout() {
+        let client = KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60));
+        assert_eq!(client.base_url(), "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_client_with_cache_config_disabled() {
+        let config = KelCacheConfig {
+            max_entries: 100,
+            enabled: false,
+        };
+        let client = KelsClient::with_cache_config("http://localhost:8080", config);
+        assert!(client.cache.is_none());
+    }
+
+    #[test]
+    fn test_client_with_cache_config_enabled() {
+        let config = KelCacheConfig {
+            max_entries: 50,
+            enabled: true,
+        };
+        let client = KelsClient::with_cache_config("http://localhost:8080", config);
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_clear_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        // Should not panic even when cache is empty
+        client.clear_cache();
+
+        // Test with no cache
+        let client_no_cache = KelsClient::new("http://localhost:8080");
+        client_no_cache.clear_cache(); // Should not panic
+    }
+
+    #[test]
+    fn test_client_invalidate_cache() {
+        let client = KelsClient::with_caching("http://localhost:8080");
+        // Should not panic on nonexistent prefix
+        client.invalidate_cache("nonexistent");
+
+        // Test with no cache
+        let client_no_cache = KelsClient::new("http://localhost:8080");
+        client_no_cache.invalidate_cache("prefix"); // Should not panic
+    }
+
+    #[test]
+    fn test_client_save_and_load_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("cache.json");
+
+        // Create client with cache and save
+        let client = KelsClient::with_cache_config(
+            "http://localhost:8080",
+            KelCacheConfig {
+                max_entries: 10,
+                enabled: true,
+            },
+        );
+        client.save_cache(&cache_path);
+
+        // Load from file
+        let client2 = KelsClient::with_cache_file("http://localhost:8080", &cache_path, 10);
+        assert!(client2.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_with_cache_file_nonexistent() {
+        let path = std::path::PathBuf::from("/nonexistent/path/cache.json");
+        let client = KelsClient::with_cache_file("http://localhost:8080", &path, 10);
+        // Should create new cache when file doesn't exist
+        assert!(client.cache.is_some());
+    }
+
+    #[test]
+    fn test_client_save_cache_no_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("cache.json");
+
+        // Client without cache
+        let client = KelsClient::new("http://localhost:8080");
+        client.save_cache(&cache_path);
+
+        // File should not be created
+        assert!(!cache_path.exists());
+    }
+
+    // ==================== HTTP Client Tests with Mock Server ====================
+
+    mod http_tests {
+        use super::*;
+        use crate::types::{BatchSubmitResponse, ErrorCode, ErrorResponse, KelResponse};
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn test_health_success() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/health"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.health().await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "OK");
+        }
+
+        #[tokio::test]
+        async fn test_health_failure() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/health"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.health().await;
+
+            assert!(result.is_err());
+            assert!(matches!(result, Err(KelsError::ServerError(_))));
+        }
+
+        #[tokio::test]
+        async fn test_test_latency() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/health"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.test_latency().await;
+
+            assert!(result.is_ok());
+            // Latency should be positive
+            assert!(result.unwrap().as_micros() > 0);
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_success() {
+            let mock_server = MockServer::start().await;
+
+            let response = BatchSubmitResponse {
+                accepted: true,
+                diverged_at: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .mount(&mock_server)
+                .await;
+
+            // Create a test event
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events(&[signed]).await;
+
+            assert!(result.is_ok());
+            let resp = result.unwrap();
+            assert!(resp.accepted);
+            assert!(resp.diverged_at.is_none());
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_divergence() {
+            let mock_server = MockServer::start().await;
+
+            let response = BatchSubmitResponse {
+                accepted: true,
+                diverged_at: Some(1),
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events(&[signed]).await;
+
+            assert!(result.is_ok());
+            let resp = result.unwrap();
+            assert!(resp.accepted);
+            assert_eq!(resp.diverged_at, Some(1));
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_contested() {
+            let mock_server = MockServer::start().await;
+
+            let error = ErrorResponse {
+                error: "KEL is contested".to_string(),
+                code: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(410).set_body_json(&error))
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events(&[signed]).await;
+
+            assert!(matches!(result, Err(KelsError::ContestedKel(_))));
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_recovery_protected() {
+            let mock_server = MockServer::start().await;
+
+            let error = ErrorResponse {
+                error: "Recovery protected".to_string(),
+                code: Some(ErrorCode::RecoveryProtected),
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(&error))
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events(&[signed]).await;
+
+            assert!(matches!(result, Err(KelsError::RecoveryProtected)));
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_server_error() {
+            let mock_server = MockServer::start().await;
+
+            let error = ErrorResponse {
+                error: "Internal error".to_string(),
+                code: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(&error))
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events(&[signed]).await;
+
+            assert!(matches!(result, Err(KelsError::ServerError(_))));
+        }
+
+        #[tokio::test]
+        async fn test_fetch_full_kel_success() {
+            let mock_server = MockServer::start().await;
+
+            // Create a test KEL
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let prefix = icp.prefix.clone();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(vec![signed.clone()]))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.fetch_full_kel(&prefix, true).await;
+
+            assert!(result.is_ok());
+            let kel = result.unwrap();
+            assert_eq!(kel.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn test_fetch_full_kel_not_found() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.fetch_full_kel("nonexistent", true).await;
+
+            assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+        }
+
+        #[tokio::test]
+        async fn test_fetch_full_kel_server_error() {
+            let mock_server = MockServer::start().await;
+
+            let error = ErrorResponse {
+                error: "Database error".to_string(),
+                code: None,
+            };
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(&error))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.fetch_full_kel("prefix", true).await;
+
+            assert!(matches!(result, Err(KelsError::ServerError(_))));
+        }
+
+        #[tokio::test]
+        async fn test_get_kel_with_cache_miss() {
+            let mock_server = MockServer::start().await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let prefix = icp.prefix.clone();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(vec![signed.clone()]))
+                .expect(1) // Should only be called once
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::with_caching(&mock_server.uri());
+
+            // First call - cache miss, fetches from server
+            let result1 = client.get_kel(&prefix).await;
+            assert!(result1.is_ok());
+
+            // Second call - should be cached (mock expects only 1 call)
+            let result2 = client.get_kel(&prefix).await;
+            assert!(result2.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_fetch_kel_with_audit_success() {
+            let mock_server = MockServer::start().await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let prefix = icp.prefix.clone();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let response = KelResponse {
+                events: vec![signed],
+                audit_records: Some(vec![]),
+            };
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.fetch_kel_with_audit(&prefix).await;
+
+            assert!(result.is_ok());
+            let resp = result.unwrap();
+            assert_eq!(resp.events.len(), 1);
+            assert!(resp.audit_records.as_ref().is_none_or(|v| v.is_empty()));
+        }
+
+        #[tokio::test]
+        async fn test_fetch_kel_with_audit_not_found() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path_regex(r"/api/kels/kel/.*"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.fetch_kel_with_audit("nonexistent").await;
+
+            assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+        }
+
+        #[tokio::test]
+        async fn test_cache_get_no_cache() {
+            let client = KelsClient::new("http://localhost:8080");
+            let result = client.cache_get("prefix").await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn test_cache_set_no_cache() {
+            let kel = Kel::new();
+            let client = KelsClient::new("http://localhost:8080");
+            let result = client.cache_set("prefix", &kel).await;
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_invalidate_cache_async_no_cache() {
+            let client = KelsClient::new("http://localhost:8080");
+            let result = client.invalidate_cache_async("prefix").await;
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_invalidate_cache_async_with_cache() {
+            let client = KelsClient::with_caching("http://localhost:8080");
+            let result = client.invalidate_cache_async("prefix").await;
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_get_kels_empty_prefixes() {
+            let client = KelsClient::new("http://localhost:8080");
+            let result = client.get_kels(&[], &HashMap::new()).await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_get_kels_from_server() {
+            let mock_server = MockServer::start().await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let (icp, icp_sig) = builder.incept().await.unwrap();
+            let public_key = icp.public_key.clone().unwrap();
+            let prefix = icp.prefix.clone();
+            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+
+            let mut response: HashMap<String, Vec<SignedKeyEvent>> = HashMap::new();
+            response.insert(prefix.clone(), vec![signed]);
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/kels"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.get_kels(&[&prefix], &HashMap::new()).await;
+
+            assert!(result.is_ok());
+            let kels = result.unwrap();
+            assert_eq!(kels.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn test_get_kels_server_error() {
+            let mock_server = MockServer::start().await;
+
+            let error = ErrorResponse {
+                error: "Server error".to_string(),
+                code: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/kels"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(&error))
+                .mount(&mock_server)
+                .await;
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.get_kels(&["prefix"], &HashMap::new()).await;
+
+            assert!(matches!(result, Err(KelsError::ServerError(_))));
+        }
     }
 }

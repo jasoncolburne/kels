@@ -293,4 +293,90 @@ mod tests {
         // DER signatures start with 0x30 (SEQUENCE)
         assert_eq!(der[0], 0x30);
     }
+
+    #[test]
+    fn test_raw_to_der_wrong_length_short() {
+        let raw = vec![1u8; 32]; // Too short
+        let result = HsmSigner::raw_to_der(&raw);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, HsmSignerError::Signature(_)));
+        assert!(err.to_string().contains("64-byte"));
+    }
+
+    #[test]
+    fn test_raw_to_der_wrong_length_long() {
+        let raw = vec![1u8; 128]; // Too long
+        let result = HsmSigner::raw_to_der(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_raw_to_der_empty() {
+        let result = HsmSigner::raw_to_der(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decompress_public_key_valid() {
+        // Use a valid compressed public key
+        // Generate using p256
+        use p256::ecdsa::SigningKey;
+
+        let seed: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let signing_key = SigningKey::from_slice(&seed).unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let compressed = verifying_key.to_encoded_point(true);
+
+        let cesr_key =
+            CesrPublicKey::from_raw(cesr::KeyCode::Secp256r1, compressed.as_bytes().to_vec())
+                .unwrap();
+
+        let result = HsmSigner::decompress_public_key(&cesr_key);
+        assert!(result.is_ok());
+        let uncompressed = result.unwrap();
+        // Uncompressed SEC1 format is 65 bytes (0x04 || x || y)
+        assert_eq!(uncompressed.len(), 65);
+        assert_eq!(uncompressed[0], 0x04);
+    }
+
+    // ==================== HsmSignerError Display Tests ====================
+
+    #[test]
+    fn test_hsm_signer_error_hsm_display() {
+        let err = HsmSignerError::Hsm("HSM unavailable".to_string());
+        assert_eq!(err.to_string(), "HSM error: HSM unavailable");
+    }
+
+    #[test]
+    fn test_hsm_signer_error_key_display() {
+        let err = HsmSignerError::Key("Invalid key format".to_string());
+        assert_eq!(err.to_string(), "Key error: Invalid key format");
+    }
+
+    #[test]
+    fn test_hsm_signer_error_signature_display() {
+        let err = HsmSignerError::Signature("Bad signature".to_string());
+        assert_eq!(err.to_string(), "Signature error: Bad signature");
+    }
+
+    // ==================== HsmRegistrySigner Tests ====================
+
+    #[test]
+    fn test_hsm_registry_signer_new() {
+        let signer = HsmRegistrySigner::new("http://localhost:8080".to_string(), "node-1");
+        assert_eq!(signer.hsm_url, "http://localhost:8080");
+        assert_eq!(signer.key_label, "kels-gossip-node-1");
+    }
+
+    #[test]
+    fn test_hsm_registry_signer_key_label_format() {
+        let signer = HsmRegistrySigner::new("http://hsm".to_string(), "my-node-id");
+        assert!(signer.key_label.starts_with("kels-gossip-"));
+        assert!(signer.key_label.ends_with("my-node-id"));
+    }
 }

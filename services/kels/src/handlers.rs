@@ -458,3 +458,169 @@ pub(crate) async fn get_kels_batch(
     )
         .into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== default_prefix_limit Tests ====================
+
+    #[test]
+    fn test_default_prefix_limit() {
+        assert_eq!(default_prefix_limit(), 100);
+    }
+
+    // ==================== ListPrefixesParams Tests ====================
+
+    #[test]
+    fn test_list_prefixes_params_defaults() {
+        let json = "{}";
+        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
+        assert!(params.since.is_none());
+        assert_eq!(params.limit, 100);
+    }
+
+    #[test]
+    fn test_list_prefixes_params_with_values() {
+        let json = r#"{"since": "prefix123", "limit": 50}"#;
+        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.since, Some("prefix123".to_string()));
+        assert_eq!(params.limit, 50);
+    }
+
+    // ==================== GetKelParams Tests ====================
+
+    #[test]
+    fn test_get_kel_params_defaults() {
+        let json = "{}";
+        let params: GetKelParams = serde_json::from_str(json).unwrap();
+        assert!(!params.audit);
+    }
+
+    #[test]
+    fn test_get_kel_params_with_audit() {
+        let json = r#"{"audit": true}"#;
+        let params: GetKelParams = serde_json::from_str(json).unwrap();
+        assert!(params.audit);
+    }
+
+    // ==================== ApiError Tests ====================
+
+    #[test]
+    fn test_api_error_not_found() {
+        let err = ApiError::not_found("KEL not found");
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.1.code, Some(ErrorCode::NotFound));
+        assert_eq!(err.1.error, "KEL not found");
+    }
+
+    #[test]
+    fn test_api_error_bad_request() {
+        let err = ApiError::bad_request("Invalid signature");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.code, Some(ErrorCode::BadRequest));
+        assert_eq!(err.1.error, "Invalid signature");
+    }
+
+    #[test]
+    fn test_api_error_unauthorized() {
+        let err = ApiError::unauthorized("Merge failed");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.1.code, Some(ErrorCode::Unauthorized));
+    }
+
+    #[test]
+    fn test_api_error_recovery_protected() {
+        let err = ApiError::recovery_protected("Cannot submit");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1.code, Some(ErrorCode::RecoveryProtected));
+    }
+
+    #[test]
+    fn test_api_error_from_kels_error() {
+        let kels_err = KelsError::SigningFailed("test".to_string());
+        let api_err: ApiError = kels_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api_err.1.code, Some(ErrorCode::InternalError));
+    }
+
+    #[test]
+    fn test_api_error_from_storage_error() {
+        let storage_err = verifiable_storage::StorageError::NotFound("key_events:abc".to_string());
+        let api_err: ApiError = storage_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api_err.1.code, Some(ErrorCode::InternalError));
+    }
+
+    // ==================== MAX_BATCH_PREFIXES Tests ====================
+
+    #[test]
+    fn test_max_batch_prefixes_constant() {
+        assert_eq!(MAX_BATCH_PREFIXES, 50);
+    }
+
+    // ==================== health Tests ====================
+
+    #[tokio::test]
+    async fn test_health() {
+        let status = health().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // ==================== PreSerializedJson Tests ====================
+
+    #[test]
+    fn test_pre_serialized_json_into_response() {
+        use axum::response::IntoResponse;
+
+        let data = Arc::new(br#"{"test": true}"#.to_vec());
+        let pre_serialized = PreSerializedJson(data);
+        let response = pre_serialized.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // Check content-type header
+        let content_type = response.headers().get("content-type").unwrap();
+        assert_eq!(content_type, "application/json");
+    }
+
+    // ==================== Limit Clamping Tests ====================
+
+    #[test]
+    fn test_limit_clamp_below_min() {
+        // Testing the clamping logic used in list_prefixes
+        let limit: usize = 0;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 1);
+    }
+
+    #[test]
+    fn test_limit_clamp_above_max() {
+        let limit: usize = 2000;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 1000);
+    }
+
+    #[test]
+    fn test_limit_clamp_within_range() {
+        let limit: usize = 500;
+        let clamped = limit.clamp(1, 1000);
+        assert_eq!(clamped, 500);
+    }
+
+    // ==================== BatchKelsRequest Deserialization ====================
+
+    #[test]
+    fn test_batch_kels_request_deserialization() {
+        let json = r#"{"prefixes": ["prefix1", "prefix2", "prefix3"]}"#;
+        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.prefixes.len(), 3);
+        assert_eq!(request.prefixes[0], "prefix1");
+    }
+
+    #[test]
+    fn test_batch_kels_request_empty_prefixes() {
+        let json = r#"{"prefixes": []}"#;
+        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
+        assert!(request.prefixes.is_empty());
+    }
+}

@@ -106,3 +106,329 @@ pub struct IdentityRepository {
     pub authority: AuthorityRepository,
     pub kel: KeyEventRepository,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testcontainers::{ContainerAsync, runners::AsyncRunner};
+    use testcontainers_modules::postgres::Postgres;
+    use verifiable_storage::ChainedRepository;
+    use verifiable_storage_postgres::RepositoryConnection;
+
+    /// Test harness with container and repository.
+    /// Container is cleaned up when harness is dropped.
+    struct TestHarness {
+        repo: IdentityRepository,
+        _postgres: ContainerAsync<Postgres>,
+    }
+
+    impl TestHarness {
+        async fn new() -> Self {
+            let postgres = Postgres::default()
+                .start()
+                .await
+                .expect("Failed to start Postgres container");
+
+            let pg_host = postgres
+                .get_host()
+                .await
+                .expect("Failed to get Postgres host");
+            let pg_port = postgres
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("Failed to get Postgres port");
+
+            let database_url = format!(
+                "postgres://postgres:postgres@{}:{}/postgres",
+                pg_host, pg_port
+            );
+
+            let repo = IdentityRepository::connect(&database_url)
+                .await
+                .expect("Failed to connect to database");
+            repo.initialize().await.expect("Failed to run migrations");
+
+            Self {
+                repo,
+                _postgres: postgres,
+            }
+        }
+    }
+
+    #[test]
+    fn test_authority_identity_name_constant() {
+        assert_eq!(AUTHORITY_IDENTITY_NAME, "identity");
+    }
+
+    #[test]
+    fn test_hsm_key_binding_struct() {
+        let binding = HsmKeyBinding {
+            said: "test_said".to_string(),
+            prefix: "test_prefix".to_string(),
+            previous: None,
+            version: 0,
+            kel_prefix: "kel_test_prefix".to_string(),
+            current_key_handle: "current_handle".to_string(),
+            next_key_handle: "next_handle".to_string(),
+            recovery_key_handle: "recovery_handle".to_string(),
+            signing_generation: 1,
+            recovery_generation: 0,
+            created_at: StorageDatetime::now(),
+        };
+
+        assert_eq!(binding.kel_prefix, "kel_test_prefix");
+        assert_eq!(binding.version, 0);
+        assert_eq!(binding.signing_generation, 1);
+        assert_eq!(binding.recovery_generation, 0);
+    }
+
+    #[test]
+    fn test_authority_mapping_struct() {
+        let mapping = AuthorityMapping {
+            said: "auth_said".to_string(),
+            prefix: "auth_prefix".to_string(),
+            previous: None,
+            version: 0,
+            name: "test_authority".to_string(),
+            kel_prefix: "auth_kel".to_string(),
+            last_said: "last_event_said".to_string(),
+            created_at: StorageDatetime::now(),
+        };
+
+        assert_eq!(mapping.name, "test_authority");
+        assert_eq!(mapping.kel_prefix, "auth_kel");
+    }
+
+    #[test]
+    fn test_hsm_key_binding_serialization_camel_case() {
+        let binding = HsmKeyBinding {
+            said: "ser_said".to_string(),
+            prefix: "ser_prefix".to_string(),
+            previous: None,
+            version: 0,
+            kel_prefix: "ser_kel".to_string(),
+            current_key_handle: "ser_cur".to_string(),
+            next_key_handle: "ser_nxt".to_string(),
+            recovery_key_handle: "ser_rec".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            created_at: StorageDatetime::now(),
+        };
+
+        let json = serde_json::to_string(&binding).expect("Serialization failed");
+        assert!(json.contains("kelPrefix"));
+        assert!(json.contains("currentKeyHandle"));
+        assert!(json.contains("nextKeyHandle"));
+        assert!(json.contains("recoveryKeyHandle"));
+        assert!(json.contains("signingGeneration"));
+        assert!(json.contains("recoveryGeneration"));
+        assert!(json.contains("createdAt"));
+    }
+
+    #[test]
+    fn test_authority_mapping_serialization_camel_case() {
+        let mapping = AuthorityMapping {
+            said: "ser_auth".to_string(),
+            prefix: "ser_auth_prefix".to_string(),
+            previous: None,
+            version: 0,
+            name: "ser_authority".to_string(),
+            kel_prefix: "ser_auth_kel".to_string(),
+            last_said: "ser_last".to_string(),
+            created_at: StorageDatetime::now(),
+        };
+
+        let json = serde_json::to_string(&mapping).expect("Serialization failed");
+        assert!(json.contains("kelPrefix"));
+        assert!(json.contains("lastSaid"));
+        assert!(json.contains("createdAt"));
+    }
+
+    #[tokio::test]
+    async fn test_hsm_binding_get_latest_by_kel_prefix_empty() {
+        let harness = TestHarness::new().await;
+
+        let result = harness
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix("nonexistent_prefix")
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_hsm_binding_store_and_retrieve() {
+        let harness = TestHarness::new().await;
+
+        // Use the constructor provided by the derive macro
+        let binding = HsmKeyBinding::new(
+            "store_kel_prefix".to_string(),
+            "store_cur".to_string(),
+            "store_nxt".to_string(),
+            "store_rec".to_string(),
+            0,
+            0,
+        );
+
+        harness
+            .repo
+            .hsm_bindings
+            .create(binding.clone())
+            .await
+            .expect("Failed to store binding");
+
+        let retrieved = harness
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix("store_kel_prefix")
+            .await
+            .expect("Query failed")
+            .expect("Binding not found");
+
+        // CHAR(44) columns pad with spaces, so use trim() for comparison
+        assert_eq!(retrieved.kel_prefix.trim(), "store_kel_prefix");
+        assert_eq!(retrieved.current_key_handle, "store_cur");
+        assert_eq!(retrieved.version, 0);
+    }
+
+    #[tokio::test]
+    async fn test_hsm_binding_returns_latest_version() {
+        let harness = TestHarness::new().await;
+
+        // Store version 0
+        let binding_v0 = HsmKeyBinding::new(
+            "versioned_kel".to_string(),
+            "cur_v0".to_string(),
+            "nxt_v0".to_string(),
+            "rec_v0".to_string(),
+            0,
+            0,
+        );
+
+        harness
+            .repo
+            .hsm_bindings
+            .create(binding_v0.clone())
+            .await
+            .expect("Failed to store v0");
+
+        // Update to create next version (update calls increment internally)
+        let mut binding_v1 = binding_v0.clone();
+        binding_v1.current_key_handle = "cur_v1".to_string();
+        binding_v1.next_key_handle = "nxt_v1".to_string();
+        binding_v1.signing_generation = 1;
+
+        harness
+            .repo
+            .hsm_bindings
+            .update(binding_v1)
+            .await
+            .expect("Failed to store v1");
+
+        // get_latest_by_kel_prefix should return updated version
+        let retrieved = harness
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix("versioned_kel")
+            .await
+            .expect("Query failed")
+            .expect("Binding not found");
+
+        // Update increments version from 0 to 1
+        assert!(retrieved.version >= 1);
+        assert_eq!(retrieved.current_key_handle, "cur_v1");
+        assert_eq!(retrieved.signing_generation, 1);
+    }
+
+    #[tokio::test]
+    async fn test_authority_get_by_name_empty() {
+        let harness = TestHarness::new().await;
+
+        let result = harness
+            .repo
+            .authority
+            .get_by_name("nonexistent_authority")
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_authority_store_and_retrieve() {
+        let harness = TestHarness::new().await;
+
+        let mapping = AuthorityMapping::new(
+            "test_auth_name".to_string(),
+            "test_auth_kel".to_string(),
+            "test_last_said".to_string(),
+        );
+
+        harness
+            .repo
+            .authority
+            .create(mapping.clone())
+            .await
+            .expect("Failed to store mapping");
+
+        let retrieved = harness
+            .repo
+            .authority
+            .get_by_name("test_auth_name")
+            .await
+            .expect("Query failed")
+            .expect("Mapping not found");
+
+        assert_eq!(retrieved.name, "test_auth_name");
+        // CHAR(44) columns pad with spaces, so use trim() for comparison
+        assert_eq!(retrieved.kel_prefix.trim(), "test_auth_kel");
+        assert_eq!(retrieved.last_said.trim(), "test_last_said");
+    }
+
+    #[tokio::test]
+    async fn test_authority_returns_latest_version() {
+        let harness = TestHarness::new().await;
+
+        // Store version 0
+        let mapping_v0 = AuthorityMapping::new(
+            "versioned_auth".to_string(),
+            "auth_kel_v0".to_string(),
+            "last_v0".to_string(),
+        );
+
+        harness
+            .repo
+            .authority
+            .create(mapping_v0.clone())
+            .await
+            .expect("Failed to store v0");
+
+        // Update to create next version (update calls increment internally)
+        let mut mapping_v1 = mapping_v0.clone();
+        mapping_v1.kel_prefix = "auth_kel_v1".to_string();
+        mapping_v1.last_said = "last_v1".to_string();
+
+        harness
+            .repo
+            .authority
+            .update(mapping_v1)
+            .await
+            .expect("Failed to store v1");
+
+        // get_by_name should return updated version
+        let retrieved = harness
+            .repo
+            .authority
+            .get_by_name("versioned_auth")
+            .await
+            .expect("Query failed")
+            .expect("Mapping not found");
+
+        // Update increments version from 0 to 1
+        assert!(retrieved.version >= 1);
+        assert_eq!(retrieved.kel_prefix.trim(), "auth_kel_v1");
+        assert_eq!(retrieved.last_said.trim(), "last_v1");
+    }
+}

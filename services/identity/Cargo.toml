@@ -74,6 +74,7 @@ testcontainers = "0.26"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+p256 = "0.13"
 
 [lints.clippy]
 unwrap_used = "deny"

@@ -15,7 +15,7 @@ REGISTRY_PREFIX_FILE := .kels/registry_prefix
 REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
 export REGISTRY_PREFIX
 
-.PHONY: all build clean clippy deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
 
@@ -58,6 +58,25 @@ install-deny:
 
 test:
 	cargo test --workspace
+
+coverage:
+	@if ! command -v cargo-llvm-cov &> /dev/null; then \
+		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
+		exit 1; \
+	fi
+	@printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
+	@echo ""
+	@cargo llvm-cov --workspace 2>&1 | awk '\
+		NR == 1 { next } \
+		/^-+$$/ { next } \
+		/^TOTAL/ { print $$10 > "/tmp/cov_total"; next } \
+		NF >= 13 && $$10 ~ /%$$/ { printf "%-60s %8s %8d\n", $$1, $$10, $$9 }' \
+		| sort -k3 -rn
+	@echo ""
+	@echo "TOTAL: $$(cat /tmp/cov_total)"
+	@cargo llvm-cov --workspace --html --no-run >/dev/null 2>&1
+	@echo ""
+	@echo "Full report: target/llvm-cov/html/index.html"
 
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1

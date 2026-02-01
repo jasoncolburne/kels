@@ -77,3 +77,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate coverage report
+        run: |
+          printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
+          echo ""
+          cargo llvm-cov --workspace 2>&1 | awk '
+            NR == 1 { next }
+            /^-+$/ { next }
+            /^TOTAL/ { print $10 > "/tmp/cov_total"; next }
+            NF >= 13 && $10 ~ /%$/ { printf "%-60s %8s %8d\n", $1, $10, $9 }' \
+            | sort -k3 -rn
+          echo ""
+          echo "TOTAL: $(cat /tmp/cov_total)"

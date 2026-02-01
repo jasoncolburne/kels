@@ -247,3 +247,206 @@ pub async fn list_keys(
     let keys = hsm.list_keys()?;
     Ok(Json(ListKeysResponse { keys }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== compress_public_key Tests ====================
+
+    #[test]
+    fn test_compress_public_key_raw_uncompressed_even_y() {
+        // 65-byte uncompressed point starting with 0x04
+        // Y coordinate is even (last byte is even)
+        let mut point = vec![0x04]; // uncompressed marker
+        point.extend_from_slice(&[0x01; 32]); // X coordinate
+        let mut y = [0x02; 32]; // Y coordinate (even)
+        y[31] = 0x02; // Ensure even
+        point.extend_from_slice(&y);
+
+        let result = compress_public_key(&point);
+        assert!(result.is_ok());
+        let compressed = result.unwrap();
+        assert_eq!(compressed.len(), 33);
+        assert_eq!(compressed[0], 0x02); // Even Y -> 0x02 prefix
+        assert_eq!(&compressed[1..], &[0x01; 32]); // X coordinate preserved
+    }
+
+    #[test]
+    fn test_compress_public_key_raw_uncompressed_odd_y() {
+        // 65-byte uncompressed point with odd Y
+        let mut point = vec![0x04];
+        point.extend_from_slice(&[0xAB; 32]); // X coordinate
+        let mut y = [0xCD; 32]; // Y coordinate
+        y[31] = 0x03; // Ensure odd
+        point.extend_from_slice(&y);
+
+        let result = compress_public_key(&point);
+        assert!(result.is_ok());
+        let compressed = result.unwrap();
+        assert_eq!(compressed.len(), 33);
+        assert_eq!(compressed[0], 0x03); // Odd Y -> 0x03 prefix
+        assert_eq!(&compressed[1..], &[0xAB; 32]);
+    }
+
+    #[test]
+    fn test_compress_public_key_der_wrapped() {
+        // 67-byte DER-wrapped OCTET STRING: 04 41 <65-byte point>
+        let mut der_wrapped = vec![0x04, 0x41]; // DER OCTET STRING header
+        der_wrapped.push(0x04); // Uncompressed marker
+        der_wrapped.extend_from_slice(&[0x11; 32]); // X
+        let mut y = [0x22; 32];
+        y[31] = 0x00; // Even
+        der_wrapped.extend_from_slice(&y);
+
+        let result = compress_public_key(&der_wrapped);
+        assert!(result.is_ok());
+        let compressed = result.unwrap();
+        assert_eq!(compressed.len(), 33);
+        assert_eq!(compressed[0], 0x02); // Even Y
+    }
+
+    #[test]
+    fn test_compress_public_key_wrong_length() {
+        let point = vec![0x04; 50]; // Wrong length
+        let result = compress_public_key(&point);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unexpected EC point format"));
+    }
+
+    #[test]
+    fn test_compress_public_key_wrong_prefix() {
+        // 65 bytes but wrong prefix (not 0x04)
+        let mut point = vec![0x02]; // compressed prefix instead of uncompressed
+        point.extend_from_slice(&[0x00; 64]);
+        let result = compress_public_key(&point);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unexpected EC point format"));
+    }
+
+    #[test]
+    fn test_compress_public_key_empty() {
+        let result = compress_public_key(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unexpected EC point format"));
+    }
+
+    #[test]
+    fn test_compress_public_key_der_wrong_inner_marker() {
+        // DER wrapper present but inner marker wrong
+        let mut der_wrapped = vec![0x04, 0x41]; // DER header
+        der_wrapped.push(0x02); // Wrong - should be 0x04
+        der_wrapped.extend_from_slice(&[0x00; 64]);
+
+        let result = compress_public_key(&der_wrapped);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Invalid uncompressed point"));
+    }
+
+    // ==================== validate_label Tests ====================
+
+    #[test]
+    fn test_validate_label_empty() {
+        let result = validate_label("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_label_too_long() {
+        let long_label = "a".repeat(MAX_LABEL_LENGTH + 1);
+        let result = validate_label(&long_label);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_label_max_length() {
+        let max_label = "a".repeat(MAX_LABEL_LENGTH);
+        let result = validate_label(&max_label);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_label_valid_alphanumeric() {
+        assert!(validate_label("abc123").is_ok());
+        assert!(validate_label("ABC").is_ok());
+        assert!(validate_label("123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_label_valid_special_chars() {
+        assert!(validate_label("my-key").is_ok());
+        assert!(validate_label("my_key").is_ok());
+        assert!(validate_label("my.key").is_ok());
+        assert!(validate_label("a-b_c.d").is_ok());
+    }
+
+    #[test]
+    fn test_validate_label_invalid_chars() {
+        assert!(validate_label("my key").is_err()); // space
+        assert!(validate_label("my@key").is_err()); // @
+        assert!(validate_label("my/key").is_err()); // /
+        assert!(validate_label("my:key").is_err()); // colon
+        assert!(validate_label("key!").is_err()); // !
+    }
+
+    #[test]
+    fn test_validate_label_unicode() {
+        assert!(validate_label("キー").is_err()); // Japanese
+        assert!(validate_label("ключ").is_err()); // Russian
+    }
+
+    // ==================== ApiError Tests ====================
+
+    #[test]
+    fn test_api_error_not_found() {
+        let err = ApiError::not_found("Key not found");
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.1.error, "Key not found");
+    }
+
+    #[test]
+    fn test_api_error_bad_request() {
+        let err = ApiError::bad_request("Invalid input");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.error, "Invalid input");
+    }
+
+    #[test]
+    fn test_api_error_internal() {
+        let err = ApiError::internal("Something broke");
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.1.error, "Something broke");
+    }
+
+    #[test]
+    fn test_api_error_from_hsm_key_not_found() {
+        let hsm_err = HsmError::KeyNotFound("mykey".to_string());
+        let api_err: ApiError = hsm_err.into();
+        assert_eq!(api_err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_api_error_from_hsm_signing_failed() {
+        let hsm_err = HsmError::SigningFailed("HSM error".to_string());
+        let api_err: ApiError = hsm_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_from_hsm_internal_error() {
+        let hsm_err = HsmError::InternalError("Lock poisoned".to_string());
+        let api_err: ApiError = hsm_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_from_hsm_no_slot() {
+        let hsm_err = HsmError::NoSlotAvailable;
+        let api_err: ApiError = hsm_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
