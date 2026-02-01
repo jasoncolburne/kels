@@ -456,3 +456,153 @@ async fn handle_swarm_event(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_topic_constant() {
+        assert_eq!(DEFAULT_TOPIC, "kels/events/v1");
+    }
+
+    #[test]
+    fn test_gossip_error_display() {
+        let transport_err = GossipError::Transport("connection failed".to_string());
+        assert!(transport_err.to_string().contains("Transport error"));
+        assert!(transport_err.to_string().contains("connection failed"));
+
+        let gossipsub_err = GossipError::Gossipsub("subscription failed".to_string());
+        assert!(gossipsub_err.to_string().contains("Gossipsub error"));
+
+        let channel_err = GossipError::ChannelClosed;
+        assert_eq!(channel_err.to_string(), "Channel closed");
+
+        let io_err = GossipError::Io(io::Error::new(io::ErrorKind::NotFound, "file not found"));
+        assert!(io_err.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_gossip_error_from_serde_json() {
+        let json_result: Result<String, serde_json::Error> = serde_json::from_str("invalid");
+        let json_err = json_result.expect_err("Expected JSON parse error");
+        let gossip_err: GossipError = json_err.into();
+        assert!(matches!(gossip_err, GossipError::Serialization(_)));
+    }
+
+    #[test]
+    fn test_gossip_error_from_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+        let gossip_err: GossipError = io_err.into();
+        assert!(matches!(gossip_err, GossipError::Io(_)));
+    }
+
+    #[test]
+    fn test_gossip_event_debug() {
+        let peer_id = PeerId::random();
+
+        let connected = GossipEvent::PeerConnected(peer_id);
+        let debug_str = format!("{:?}", connected);
+        assert!(debug_str.contains("PeerConnected"));
+
+        let disconnected = GossipEvent::PeerDisconnected(peer_id);
+        let debug_str = format!("{:?}", disconnected);
+        assert!(debug_str.contains("PeerDisconnected"));
+
+        let announcement = KelAnnouncement {
+            prefix: "test_prefix".to_string(),
+            said: "test_said".to_string(),
+        };
+        let received = GossipEvent::AnnouncementReceived {
+            peer_id,
+            announcement,
+        };
+        let debug_str = format!("{:?}", received);
+        assert!(debug_str.contains("AnnouncementReceived"));
+        assert!(debug_str.contains("test_prefix"));
+
+        let response = KelResponse {
+            prefix: "resp_prefix".to_string(),
+            events: vec![],
+        };
+        let resp_received = GossipEvent::KelResponseReceived { peer_id, response };
+        let debug_str = format!("{:?}", resp_received);
+        assert!(debug_str.contains("KelResponseReceived"));
+    }
+
+    #[test]
+    fn test_gossip_command_debug() {
+        let announcement = KelAnnouncement {
+            prefix: "cmd_prefix".to_string(),
+            said: "cmd_said".to_string(),
+        };
+        let announce = GossipCommand::Announce(announcement);
+        let debug_str = format!("{:?}", announce);
+        assert!(debug_str.contains("Announce"));
+        assert!(debug_str.contains("cmd_prefix"));
+
+        let peer_id = PeerId::random();
+        let request = GossipCommand::RequestKel {
+            peer_id,
+            prefix: "request_prefix".to_string(),
+        };
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("RequestKel"));
+        assert!(debug_str.contains("request_prefix"));
+    }
+
+    #[test]
+    fn test_json_codec_debug() {
+        let codec = JsonCodec;
+        let debug_str = format!("{:?}", codec);
+        assert!(debug_str.contains("JsonCodec"));
+    }
+
+    #[test]
+    fn test_json_codec_clone() {
+        let codec = JsonCodec;
+        let cloned = codec.clone();
+        // Both should format the same way
+        assert_eq!(format!("{:?}", codec), format!("{:?}", cloned));
+    }
+
+    #[test]
+    fn test_kel_request_serialization() {
+        let request = KelRequest {
+            prefix: "test_prefix_123".to_string(),
+        };
+
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let parsed: KelRequest = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(parsed.prefix, "test_prefix_123");
+    }
+
+    #[test]
+    fn test_kel_response_serialization() {
+        let response = KelResponse {
+            prefix: "resp_prefix_456".to_string(),
+            events: vec![],
+        };
+
+        let bytes = serde_json::to_vec(&response).unwrap();
+        let parsed: KelResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(parsed.prefix, "resp_prefix_456");
+        assert!(parsed.events.is_empty());
+    }
+
+    #[test]
+    fn test_kel_request_invalid_json() {
+        let invalid_bytes = b"not valid json";
+        let result: Result<KelRequest, _> = serde_json::from_slice(invalid_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kel_response_invalid_json() {
+        let invalid_bytes = b"not valid json";
+        let result: Result<KelResponse, _> = serde_json::from_slice(invalid_bytes);
+        assert!(result.is_err());
+    }
+}

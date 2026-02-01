@@ -443,3 +443,186 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_error_display() {
+        let config_err = ServiceError::Config("missing variable".to_string());
+        assert!(config_err.to_string().contains("Configuration error"));
+        assert!(config_err.to_string().contains("missing variable"));
+
+        let gossip_err = ServiceError::Gossip(gossip::GossipError::ChannelClosed);
+        assert!(gossip_err.to_string().contains("Gossip error"));
+
+        let sync_err = ServiceError::Sync(sync::SyncError::ChannelClosed);
+        assert!(sync_err.to_string().contains("Sync error"));
+
+        let bootstrap_err =
+            ServiceError::Bootstrap(bootstrap::BootstrapError::Failed("failed".to_string()));
+        assert!(bootstrap_err.to_string().contains("Bootstrap error"));
+    }
+
+    #[test]
+    fn test_service_error_from_gossip_error() {
+        let gossip_err = gossip::GossipError::ChannelClosed;
+        let service_err: ServiceError = gossip_err.into();
+        assert!(matches!(service_err, ServiceError::Gossip(_)));
+    }
+
+    #[test]
+    fn test_service_error_from_sync_error() {
+        let sync_err = sync::SyncError::ChannelClosed;
+        let service_err: ServiceError = sync_err.into();
+        assert!(matches!(service_err, ServiceError::Sync(_)));
+    }
+
+    #[test]
+    fn test_service_error_from_bootstrap_error() {
+        let bootstrap_err = bootstrap::BootstrapError::Failed("test".to_string());
+        let service_err: ServiceError = bootstrap_err.into();
+        assert!(matches!(service_err, ServiceError::Bootstrap(_)));
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config {
+            node_id: "test-node".to_string(),
+            kels_url: "http://kels".to_string(),
+            kels_advertise_url: "http://kels.example.com".to_string(),
+            kels_advertise_url_internal: Some("http://kels-internal".to_string()),
+            redis_url: "redis://redis".to_string(),
+            database_url: "postgres://localhost".to_string(),
+            hsm_url: "http://hsm".to_string(),
+            registry_url: Some("http://registry".to_string()),
+            registry_prefix: "prefix123".to_string(),
+            listen_addr: "/ip4/0.0.0.0/tcp/4001".parse().unwrap(),
+            advertise_addr: "/ip4/127.0.0.1/tcp/4001".parse().unwrap(),
+            topic: "test-topic".to_string(),
+            heartbeat_interval_secs: 30,
+            allowlist_refresh_interval_secs: 60,
+            test_propagation_delay_ms: 0,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(config.node_id, cloned.node_id);
+        assert_eq!(config.kels_url, cloned.kels_url);
+        assert_eq!(config.kels_advertise_url, cloned.kels_advertise_url);
+        assert_eq!(
+            config.kels_advertise_url_internal,
+            cloned.kels_advertise_url_internal
+        );
+        assert_eq!(config.redis_url, cloned.redis_url);
+        assert_eq!(config.database_url, cloned.database_url);
+        assert_eq!(config.hsm_url, cloned.hsm_url);
+        assert_eq!(config.registry_url, cloned.registry_url);
+        assert_eq!(config.registry_prefix, cloned.registry_prefix);
+        assert_eq!(config.topic, cloned.topic);
+        assert_eq!(
+            config.heartbeat_interval_secs,
+            cloned.heartbeat_interval_secs
+        );
+        assert_eq!(
+            config.allowlist_refresh_interval_secs,
+            cloned.allowlist_refresh_interval_secs
+        );
+        assert_eq!(
+            config.test_propagation_delay_ms,
+            cloned.test_propagation_delay_ms
+        );
+    }
+
+    #[test]
+    fn test_config_from_env_missing_required() {
+        // Clear required env vars to test error handling
+        std::env::remove_var("KELS_ADVERTISE_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REGISTRY_PREFIX");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        // Check it's a config error by converting to string
+        let err_str = result.err().expect("Expected error").to_string();
+        assert!(err_str.contains("Configuration error"));
+    }
+
+    #[test]
+    fn test_config_from_env_with_required_vars() {
+        // Set required env vars
+        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
+        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
+
+        let result = Config::from_env();
+        // Clean up before asserting
+        std::env::remove_var("KELS_ADVERTISE_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REGISTRY_PREFIX");
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+        assert_eq!(config.database_url, "postgres://localhost/test");
+        assert_eq!(config.registry_prefix, "test_prefix");
+    }
+
+    #[test]
+    fn test_config_from_env_defaults() {
+        // Set required env vars
+        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
+        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
+
+        // Clear optional vars to test defaults
+        std::env::remove_var("NODE_ID");
+        std::env::remove_var("KELS_URL");
+        std::env::remove_var("REDIS_URL");
+        std::env::remove_var("HSM_URL");
+        std::env::remove_var("GOSSIP_LISTEN_ADDR");
+        std::env::remove_var("GOSSIP_TOPIC");
+        std::env::remove_var("REGISTRY_HEARTBEAT_INTERVAL_SECS");
+        std::env::remove_var("ALLOWLIST_REFRESH_INTERVAL_SECS");
+        std::env::remove_var("GOSSIP_TEST_PROPAGATION_DELAY_MS");
+
+        let result = Config::from_env();
+        // Clean up
+        std::env::remove_var("KELS_ADVERTISE_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REGISTRY_PREFIX");
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+
+        // Check defaults
+        assert_eq!(config.node_id, "node-unknown");
+        assert_eq!(config.kels_url, "http://kels");
+        assert_eq!(config.redis_url, "redis://redis:6379");
+        assert_eq!(config.hsm_url, "http://hsm");
+        assert_eq!(config.heartbeat_interval_secs, 30);
+        assert_eq!(config.allowlist_refresh_interval_secs, 60);
+        assert_eq!(config.test_propagation_delay_ms, 0);
+    }
+
+    #[test]
+    fn test_config_from_env_invalid_listen_addr() {
+        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
+        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
+        std::env::set_var("GOSSIP_LISTEN_ADDR", "not-a-valid-multiaddr");
+
+        let result = Config::from_env();
+
+        // Clean up
+        std::env::remove_var("KELS_ADVERTISE_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REGISTRY_PREFIX");
+        std::env::remove_var("GOSSIP_LISTEN_ADDR");
+
+        assert!(result.is_err(), "Expected error but got Ok");
+        if let Err(e) = result {
+            assert!(e.to_string().contains("Invalid listen address"));
+        }
+    }
+}

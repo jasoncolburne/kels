@@ -575,3 +575,108 @@ pub async fn run_heartbeat_loop(config: BootstrapConfig, client: KelsRegistryCli
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bootstrap_config_default() {
+        let config = BootstrapConfig::default();
+        assert!(config.node_id.is_empty());
+        assert!(config.kels_url.is_empty());
+        assert!(config.kels_advertise_url.is_empty());
+        assert!(config.kels_advertise_url_internal.is_none());
+        assert!(config.gossip_multiaddr.is_empty());
+        assert_eq!(config.page_size, 100);
+        assert_eq!(config.heartbeat_interval_secs, 30);
+    }
+
+    #[test]
+    fn test_bootstrap_config_custom() {
+        let config = BootstrapConfig {
+            node_id: "node-1".to_string(),
+            kels_url: "http://localhost:8080".to_string(),
+            kels_advertise_url: "http://kels.example.com".to_string(),
+            kels_advertise_url_internal: Some("http://kels-internal:8080".to_string()),
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+            page_size: 50,
+            heartbeat_interval_secs: 60,
+        };
+        assert_eq!(config.node_id, "node-1");
+        assert_eq!(config.kels_url, "http://localhost:8080");
+        assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+        assert_eq!(
+            config.kels_advertise_url_internal,
+            Some("http://kels-internal:8080".to_string())
+        );
+        assert_eq!(config.gossip_multiaddr, "/ip4/127.0.0.1/tcp/4001");
+        assert_eq!(config.page_size, 50);
+        assert_eq!(config.heartbeat_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_bootstrap_error_display() {
+        let kels_error = BootstrapError::Kels(KelsError::ServerError("test".to_string()));
+        assert!(kels_error.to_string().contains("KELS/Registry error"));
+
+        let failed_error = BootstrapError::Failed("bootstrap failed".to_string());
+        assert_eq!(
+            failed_error.to_string(),
+            "Bootstrap failed: bootstrap failed"
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_error_from_kels_error() {
+        let kels_error = KelsError::ServerError("server error".to_string());
+        let bootstrap_error: BootstrapError = kels_error.into();
+        assert!(matches!(bootstrap_error, BootstrapError::Kels(_)));
+    }
+
+    #[test]
+    fn test_discovery_result_creation() {
+        let result = DiscoveryResult {
+            peers: vec![],
+            registry_available: true,
+        };
+        assert!(result.peers.is_empty());
+        assert!(result.registry_available);
+
+        let result_no_registry = DiscoveryResult {
+            peers: vec![],
+            registry_available: false,
+        };
+        assert!(!result_no_registry.registry_available);
+    }
+
+    #[test]
+    fn test_get_sync_url_with_internal() {
+        let peer = NodeRegistration {
+            node_id: "node-1".to_string(),
+            node_type: kels::NodeType::Kels,
+            kels_url: "http://external:8080".to_string(),
+            kels_url_internal: Some("http://internal:8080".to_string()),
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Ready,
+        };
+        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://internal:8080");
+    }
+
+    #[test]
+    fn test_get_sync_url_without_internal() {
+        let peer = NodeRegistration {
+            node_id: "node-1".to_string(),
+            node_type: kels::NodeType::Kels,
+            kels_url: "http://external:8080".to_string(),
+            kels_url_internal: None,
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Ready,
+        };
+        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://external:8080");
+    }
+}
