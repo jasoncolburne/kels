@@ -8,7 +8,7 @@ use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::store::KelStore;
 use crate::types::{KeyEvent, SignedKeyEvent};
-use cesr::{Matter, PublicKey, Signature};
+use cesr::{Matter, PublicKey};
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
@@ -188,79 +188,82 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
     // ==================== Event Operations ====================
 
-    pub async fn incept(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        let (signed_event, event, signature) = self.create_signed_inception_event().await?;
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+    pub async fn incept(&mut self) -> Result<SignedKeyEvent, KelsError> {
+        let signed_event = self.create_signed_inception_event().await?;
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
     pub async fn incept_delegated(
         &mut self,
         delegating_prefix: &str,
-    ) -> Result<(KeyEvent, Signature), KelsError> {
-        let (signed_event, event, signature) = self
+    ) -> Result<SignedKeyEvent, KelsError> {
+        let signed_event = self
             .create_signed_delegated_inception_event(delegating_prefix)
             .await?;
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
-    pub async fn interact(&mut self, anchor: &str) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn interact(&mut self, anchor: &str) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, signature) = self
+        let signed_event = self
             .create_signed_interaction_event(&last_event, anchor)
             .await?;
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
-    pub async fn rotate(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn rotate(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, signature) =
-            match self.create_signed_rotation_event(&last_event).await {
-                Ok(r) => r,
-                Err(e) => {
-                    self.key_provider.rollback().await?;
-                    return Err(e);
-                }
-            };
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, signature))
+        let signed_event = match self.create_signed_rotation_event(&last_event).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.key_provider.rollback().await?;
+                return Err(e);
+            }
+        };
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
-    pub async fn decommission(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn decommission(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, primary_signature) =
-            match self.create_signed_decommission_event(&last_event).await {
-                Ok(r) => r,
-                Err(e) => {
-                    self.key_provider.rollback().await?;
-                    return Err(e);
-                }
-            };
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, primary_signature))
+        let signed_event = match self.create_signed_decommission_event(&last_event).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.key_provider.rollback().await?;
+                return Err(e);
+            }
+        };
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
-    pub async fn rotate_recovery(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn rotate_recovery(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, primary_signature) = match self
+        let signed_event = match self
             .create_signed_recovery_rotation_event(&last_event)
             .await
         {
@@ -270,26 +273,26 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                 return Err(e);
             }
         };
-        self.add_and_flush(&[signed_event]).await?;
-        Ok((event, primary_signature))
+        self.add_and_flush(std::slice::from_ref(&signed_event))
+            .await?;
+        Ok(signed_event)
     }
 
-    pub async fn recover(&mut self, add_rot: bool) -> Result<(KeyEvent, Signature), KelsError> {
+    pub async fn recover(&mut self, add_rot: bool) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_rec_event, rec_event, rec_signature) =
-            match self.create_signed_recovery_event(&last_event).await {
-                Ok((signed_event, event, signature)) => (signed_event, event, signature),
-                Err(e) => {
-                    self.key_provider.rollback().await?;
-                    return Err(e);
-                }
-            };
+        let signed_rec_event = match self.create_signed_recovery_event(&last_event).await {
+            Ok(signed_event) => signed_event,
+            Err(e) => {
+                self.key_provider.rollback().await?;
+                return Err(e);
+            }
+        };
 
-        let mut events = vec![signed_rec_event];
+        let mut events = vec![signed_rec_event.clone()];
         // we can add a rot intentionally in case the attacker determined the rotation key.
         // after recovery, they'd still be able to inject ixn if we didn't.
         //
@@ -301,34 +304,11 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         //  3. if they did, we must rotate
         //
         // If we didn't rotate and the adversary did, we should add a rotation.
-        let (event, signature) = if add_rot {
-            let (signed_rot_event, rot_event, rot_signature) =
-                match self.create_signed_rotation_event(&rec_event).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.key_provider.rollback().await?;
-                        return Err(e);
-                    }
-                };
-
-            events.push(signed_rot_event);
-            (rot_event, rot_signature)
-        } else {
-            (rec_event, rec_signature)
-        };
-
-        self.add_and_flush(&events).await?;
-        Ok((event, signature))
-    }
-
-    pub async fn contest(&mut self) -> Result<(KeyEvent, Signature), KelsError> {
-        if self.is_decommissioned() {
-            return Err(KelsError::KelDecommissioned);
-        }
-
-        let last_event = self.get_owner_tail().await?.event.clone();
-        let (signed_event, event, signature) =
-            match self.create_signed_contest_event(&last_event).await {
+        let result = if add_rot {
+            let signed_rot_event = match self
+                .create_signed_rotation_event(&signed_rec_event.event)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     self.key_provider.rollback().await?;
@@ -336,7 +316,34 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                 }
             };
 
-        match self.add_and_flush(&[signed_event]).await {
+            events.push(signed_rot_event.clone());
+            signed_rot_event
+        } else {
+            signed_rec_event
+        };
+
+        self.add_and_flush(&events).await?;
+        Ok(result)
+    }
+
+    pub async fn contest(&mut self) -> Result<SignedKeyEvent, KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+
+        let last_event = self.get_owner_tail().await?.event.clone();
+        let signed_event = match self.create_signed_contest_event(&last_event).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.key_provider.rollback().await?;
+                return Err(e);
+            }
+        };
+
+        match self
+            .add_and_flush(std::slice::from_ref(&signed_event))
+            .await
+        {
             Err(e) => {
                 match e {
                     // in this case, we expect and welcome divergence
@@ -345,7 +352,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                         submission_accepted,
                     } => {
                         if submission_accepted {
-                            Ok((event, signature))
+                            Ok(signed_event)
                         } else {
                             Err(e)
                         }
@@ -353,7 +360,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                     _ => Err(e),
                 }
             }
-            _ => Ok((event, signature)),
+            _ => Ok(signed_event),
         }
     }
 
@@ -460,7 +467,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     async fn create_signed_contest_event(
         &mut self,
         base_event: &KeyEvent,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (rotation_key, _next_hash) = self.key_provider.stage_rotation().await?;
         let (current_recovery_pub, _recovery_hash) =
             self.key_provider.stage_recovery_rotation().await?;
@@ -474,41 +481,33 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             .sign_with_recovery(cnt_event.said.as_bytes())
             .await?;
 
-        let signed_cnt_event = SignedKeyEvent::new_recovery(
-            cnt_event.clone(),
+        Ok(SignedKeyEvent::new_recovery(
+            cnt_event,
             rotation_key.qb64(),
             cnt_primary_signature.qb64(),
             current_recovery_pub.qb64(),
             cnt_secondary_signature.qb64(),
-        );
-
-        Ok((signed_cnt_event, cnt_event, cnt_primary_signature))
+        ))
     }
 
-    /// Create a signed inception event.
-    /// Generates all keys. Caller should handle any cleanup on failure.
-    /// Returns (signed_event, event, signature).
-    async fn create_signed_inception_event(
-        &mut self,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    async fn create_signed_inception_event(&mut self) -> Result<SignedKeyEvent, KelsError> {
         let (current_key, rotation_hash, recovery_hash) =
             self.key_provider.generate_initial_keys().await?;
 
         let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
-
-        Ok((signed_event, event, signature))
+        Ok(SignedKeyEvent::new(
+            event,
+            current_key.qb64(),
+            signature.qb64(),
+        ))
     }
 
-    /// Create a signed delegated inception event.
-    /// Generates all keys. Caller should handle any cleanup on failure.
-    /// Returns (signed_event, event, signature).
     async fn create_signed_delegated_inception_event(
         &mut self,
         delegating_prefix: &str,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (current_key, rotation_hash, recovery_hash) =
             self.key_provider.generate_initial_keys().await?;
 
@@ -520,52 +519,50 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         )?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
-
-        Ok((signed_event, event, signature))
+        Ok(SignedKeyEvent::new(
+            event,
+            current_key.qb64(),
+            signature.qb64(),
+        ))
     }
 
-    /// Create a signed interaction event from a base event.
-    /// Returns (signed_event, event, signature).
     async fn create_signed_interaction_event(
         &self,
         base_event: &KeyEvent,
         anchor: &str,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let current_key = self.key_provider.current_public_key().await?;
 
         let event = KeyEvent::create_interaction(base_event, anchor.to_string())?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let signed_event = SignedKeyEvent::new(event.clone(), current_key.qb64(), signature.qb64());
-
-        Ok((signed_event, event, signature))
+        Ok(SignedKeyEvent::new(
+            event,
+            current_key.qb64(),
+            signature.qb64(),
+        ))
     }
 
-    /// Create a signed rotation event from a base event.
-    /// Prepares key rotation. Caller must commit/rollback.
-    /// Returns (signed_event, event, signature).
     async fn create_signed_rotation_event(
         &mut self,
         base_event: &KeyEvent,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
 
         let event = KeyEvent::create_rotation(base_event, new_current.qb64(), Some(rotation_hash))?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
-        let signed_event = SignedKeyEvent::new(event.clone(), new_current.qb64(), signature.qb64());
-
-        Ok((signed_event, event, signature))
+        Ok(SignedKeyEvent::new(
+            event,
+            new_current.qb64(),
+            signature.qb64(),
+        ))
     }
 
-    /// Create a signed decommission event from a base event.
-    /// Prepares key rotation. Caller must commit/rollback.
-    /// Returns (signed_event, event, primary_signature).
     async fn create_signed_decommission_event(
         &mut self,
         base_event: &KeyEvent,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (new_current, _rotation_hash) = self.key_provider.stage_rotation().await?;
         let (current_recovery_pub, _recovery_hash) =
             self.key_provider.stage_recovery_rotation().await?;
@@ -582,24 +579,19 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             .sign_with_recovery(event.said.as_bytes())
             .await?;
 
-        let signed_event = SignedKeyEvent::new_recovery(
-            event.clone(),
+        Ok(SignedKeyEvent::new_recovery(
+            event,
             new_current.qb64(),
             primary_signature.qb64(),
             current_recovery_pub.qb64(),
             secondary_signature.qb64(),
-        );
-
-        Ok((signed_event, event, primary_signature))
+        ))
     }
 
-    /// Create a signed recovery rotation event from a base event.
-    /// Prepares key rotation and recovery rotation. Caller must commit/rollback.
-    /// Returns (signed_event, event, primary_signature).
     async fn create_signed_recovery_rotation_event(
         &mut self,
         base_event: &KeyEvent,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
 
         let (current_recovery_pub, new_recovery_hash) =
@@ -619,24 +611,19 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             .sign_with_recovery(event.said.as_bytes())
             .await?;
 
-        let signed_event = SignedKeyEvent::new_recovery(
-            event.clone(),
+        Ok(SignedKeyEvent::new_recovery(
+            event,
             new_current.qb64(),
             primary_signature.qb64(),
             current_recovery_pub.qb64(),
             secondary_signature.qb64(),
-        );
-
-        Ok((signed_event, event, primary_signature))
+        ))
     }
 
-    /// Create a signed recovery event from a base event.
-    /// Prepares key rotation and recovery rotation. Caller must commit/rollback.
-    /// Returns (signed_event, event, primary_signature).
     async fn create_signed_recovery_event(
         &mut self,
         base_event: &KeyEvent,
-    ) -> Result<(SignedKeyEvent, KeyEvent, Signature), KelsError> {
+    ) -> Result<SignedKeyEvent, KelsError> {
         let (rotation_key, new_rotation_hash) = self.key_provider.stage_rotation().await?;
         let (current_recovery_pub, new_recovery_hash) =
             self.key_provider.stage_recovery_rotation().await?;
@@ -655,15 +642,13 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             .sign_with_recovery(rec_event.said.as_bytes())
             .await?;
 
-        let signed_rec_event = SignedKeyEvent::new_recovery(
-            rec_event.clone(),
+        Ok(SignedKeyEvent::new_recovery(
+            rec_event,
             rotation_key.qb64(),
             rec_primary_signature.qb64(),
             current_recovery_pub.qb64(),
             rec_secondary_signature.qb64(),
-        );
-
-        Ok((signed_rec_event, rec_event, rec_primary_signature))
+        ))
     }
 }
 
@@ -688,25 +673,22 @@ mod tests {
     #[tokio::test]
     async fn test_builder_incept() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (event, sig) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
 
-        assert!(event.is_inception());
+        assert!(icp.event.is_inception());
         assert!(builder.prefix().is_some());
-        assert_eq!(builder.prefix(), Some(event.prefix.as_str()));
+        assert_eq!(builder.prefix(), Some(icp.event.prefix.as_str()));
         assert_eq!(builder.events().len(), 1);
-
-        let pub_key = builder.current_public_key().await.unwrap();
-        assert!(pub_key.verify(event.said.as_bytes(), &sig).is_ok());
     }
 
     #[tokio::test]
     async fn test_builder_incept_delegated() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
-        let (event, _sig) = builder.incept_delegated(&delegating_prefix).await.unwrap();
+        let dip = builder.incept_delegated(&delegating_prefix).await.unwrap();
 
-        assert!(event.is_delegated_inception());
-        assert_eq!(event.delegating_prefix, Some(delegating_prefix));
+        assert!(dip.event.is_delegated_inception());
+        assert_eq!(dip.event.delegating_prefix, Some(delegating_prefix));
     }
 
     #[tokio::test]
@@ -715,23 +697,23 @@ mod tests {
         builder.incept().await.unwrap();
 
         let anchor = make_anchor();
-        let (event, _sig) = builder.interact(&anchor).await.unwrap();
+        let ixn = builder.interact(&anchor).await.unwrap();
 
-        assert!(event.is_interaction());
-        assert_eq!(event.anchor, Some(anchor));
+        assert!(ixn.event.is_interaction());
+        assert_eq!(ixn.event.anchor, Some(anchor));
         assert_eq!(builder.events().len(), 2);
     }
 
     #[tokio::test]
     async fn test_builder_rotate() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, _) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
         let original_pub = builder.current_public_key().await.unwrap();
 
-        let (rot, _sig) = builder.rotate().await.unwrap();
+        let rot = builder.rotate().await.unwrap();
 
-        assert!(rot.is_rotation());
-        assert_eq!(rot.previous, Some(icp.said));
+        assert!(rot.event.is_rotation());
+        assert_eq!(rot.event.previous, Some(icp.event.said));
 
         let new_pub = builder.current_public_key().await.unwrap();
         assert_ne!(original_pub.qb64(), new_pub.qb64());
@@ -756,9 +738,9 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let (event, _sig) = builder.decommission().await.unwrap();
+        let dec = builder.decommission().await.unwrap();
 
-        assert!(event.is_decommission());
+        assert!(dec.event.is_decommission());
         assert!(builder.is_decommissioned());
     }
 
@@ -794,11 +776,11 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let (event, _sig) = builder.rotate_recovery().await.unwrap();
+        let ror = builder.rotate_recovery().await.unwrap();
 
-        assert!(event.is_recovery_rotation());
-        assert!(event.recovery_key.is_some());
-        assert!(event.recovery_hash.is_some());
+        assert!(ror.event.is_recovery_rotation());
+        assert!(ror.event.recovery_key.is_some());
+        assert!(ror.event.recovery_hash.is_some());
     }
 
     #[tokio::test]
@@ -813,10 +795,10 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let (event, _sig) = builder.recover(false).await.unwrap();
+        let rec = builder.recover(false).await.unwrap();
 
-        assert!(event.is_recover());
-        assert!(event.recovery_key.is_some());
+        assert!(rec.event.is_recover());
+        assert!(rec.event.recovery_key.is_some());
     }
 
     #[tokio::test]
@@ -824,10 +806,10 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let (event, _sig) = builder.recover(true).await.unwrap();
+        let rot = builder.recover(true).await.unwrap();
 
         // When add_rot=true, we get a rotation event back (not the recovery event)
-        assert!(event.is_rotation());
+        assert!(rot.event.is_rotation());
         // KEL should have: icp, rec, rot
         assert_eq!(builder.events().len(), 3);
     }
@@ -844,10 +826,10 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let (event, _sig) = builder.contest().await.unwrap();
+        let cnt = builder.contest().await.unwrap();
 
-        assert!(event.is_contest());
-        assert!(event.recovery_key.is_some());
+        assert!(cnt.event.is_contest());
+        assert!(cnt.event.recovery_key.is_some());
     }
 
     #[tokio::test]
@@ -860,12 +842,15 @@ mod tests {
     #[tokio::test]
     async fn test_builder_accessors() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, _) = builder.incept().await.unwrap();
-        let (ixn, _) = builder.interact(&make_anchor()).await.unwrap();
+        let icp = builder.incept().await.unwrap();
+        let ixn = builder.interact(&make_anchor()).await.unwrap();
 
-        assert_eq!(builder.last_said(), Some(ixn.said.as_str()));
-        assert_eq!(builder.last_event().unwrap().said, ixn.said);
-        assert_eq!(builder.last_establishment_event().unwrap().said, icp.said);
+        assert_eq!(builder.last_said(), Some(ixn.event.said.as_str()));
+        assert_eq!(builder.last_event().unwrap().said, ixn.event.said);
+        assert_eq!(
+            builder.last_establishment_event().unwrap().said,
+            icp.event.said
+        );
         assert_eq!(builder.events().len(), 2);
         assert!(!builder.is_decommissioned());
     }
@@ -929,19 +914,14 @@ mod tests {
     #[tokio::test]
     async fn test_builder_with_kel() {
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder1.incept().await.unwrap();
-        let icp_pub = icp.public_key.clone().unwrap();
+        let icp = builder1.incept().await.unwrap();
 
-        let kel = Kel::from_events(
-            vec![SignedKeyEvent::new(icp.clone(), icp_pub, icp_sig.qb64())],
-            true,
-        )
-        .unwrap();
+        let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
         let builder2 =
             KeyEventBuilder::with_kel(SoftwareKeyProvider::new(), None, None, kel).unwrap();
 
-        assert_eq!(builder2.prefix(), Some(icp.prefix.as_str()));
+        assert_eq!(builder2.prefix(), Some(icp.event.prefix.as_str()));
         assert_eq!(builder2.events().len(), 1);
     }
 
@@ -1042,12 +1022,15 @@ mod tests {
     #[tokio::test]
     async fn test_builder_last_establishment_after_interactions() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, _) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
         builder.interact(&make_anchor()).await.unwrap();
         builder.interact(&make_anchor()).await.unwrap();
 
         // Last establishment should still be icp
-        assert_eq!(builder.last_establishment_event().unwrap().said, icp.said);
+        assert_eq!(
+            builder.last_establishment_event().unwrap().said,
+            icp.event.said
+        );
     }
 
     #[tokio::test]
@@ -1055,10 +1038,13 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
         builder.interact(&make_anchor()).await.unwrap();
-        let (rot, _) = builder.rotate().await.unwrap();
+        let rot = builder.rotate().await.unwrap();
 
         // Last establishment should now be rot
-        assert_eq!(builder.last_establishment_event().unwrap().said, rot.said);
+        assert_eq!(
+            builder.last_establishment_event().unwrap().said,
+            rot.event.said
+        );
     }
 
     #[tokio::test]
@@ -1067,9 +1053,9 @@ mod tests {
         let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
 
         // Can incept as delegated
-        let (event, _) = builder.incept_delegated(&delegating_prefix).await.unwrap();
-        assert!(event.is_delegated_inception());
-        assert_eq!(event.delegating_prefix, Some(delegating_prefix));
+        let dip = builder.incept_delegated(&delegating_prefix).await.unwrap();
+        assert!(dip.event.is_delegated_inception());
+        assert_eq!(dip.event.delegating_prefix, Some(delegating_prefix));
         assert!(builder.prefix().is_some());
     }
 }

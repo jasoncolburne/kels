@@ -753,7 +753,6 @@ mod tests {
     use super::*;
     use crate::SoftwareKeyProvider;
     use crate::builder::KeyEventBuilder;
-    use cesr::Matter;
 
     #[test]
     fn test_kels_client_creation() {
@@ -777,10 +776,8 @@ mod tests {
 
     async fn create_test_kel_with_prefix(_data: &str) -> Kel {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder.incept().await.unwrap();
-        let public_key = icp.public_key.clone().unwrap();
-        let signed = crate::types::SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
-        Kel::from_events(vec![signed], true).unwrap()
+        let icp = builder.incept().await.unwrap();
+        Kel::from_events(vec![icp], true).unwrap()
     }
 
     #[tokio::test]
@@ -1090,9 +1087,7 @@ mod tests {
 
             // Create a test event
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
@@ -1119,9 +1114,7 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
@@ -1148,9 +1141,7 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
@@ -1174,9 +1165,7 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
@@ -1200,9 +1189,7 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
@@ -1216,14 +1203,12 @@ mod tests {
 
             // Create a test KEL
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let prefix = icp.prefix.clone();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let icp = builder.incept().await.unwrap();
+            let prefix = icp.event.prefix.clone();
 
             Mock::given(method("GET"))
                 .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(vec![signed.clone()]))
+                .respond_with(ResponseTemplate::new(200).set_body_json(vec![icp.clone()]))
                 .mount(&mock_server)
                 .await;
 
@@ -1277,14 +1262,12 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let prefix = icp.prefix.clone();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let icp = builder.incept().await.unwrap();
+            let prefix = icp.event.prefix.clone();
 
             Mock::given(method("GET"))
                 .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(vec![signed.clone()]))
+                .respond_with(ResponseTemplate::new(200).set_body_json(vec![icp.clone()]))
                 .expect(1) // Should only be called once
                 .mount(&mock_server)
                 .await;
@@ -1305,13 +1288,11 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let prefix = icp.prefix.clone();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let icp = builder.incept().await.unwrap();
+            let prefix = icp.event.prefix.clone();
 
             let response = KelResponse {
-                events: vec![signed],
+                events: vec![icp],
                 audit_records: Some(vec![]),
             };
 
@@ -1389,13 +1370,11 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let (icp, icp_sig) = builder.incept().await.unwrap();
-            let public_key = icp.public_key.clone().unwrap();
-            let prefix = icp.prefix.clone();
-            let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
+            let icp = builder.incept().await.unwrap();
+            let prefix = icp.event.prefix.clone();
 
             let mut response: HashMap<String, Vec<SignedKeyEvent>> = HashMap::new();
-            response.insert(prefix.clone(), vec![signed]);
+            response.insert(prefix.clone(), vec![icp]);
 
             Mock::given(method("POST"))
                 .and(path("/api/kels/kels"))

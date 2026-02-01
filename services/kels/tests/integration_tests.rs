@@ -121,10 +121,8 @@ impl TestHarness {
 /// Helper to create a signed inception event.
 async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvider>) {
     let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-    let (event, signature) = builder.incept().await.unwrap();
-    let public_key = event.public_key.clone().unwrap();
-    let signed = SignedKeyEvent::new(event, public_key, signature.qb64());
-    (signed, builder)
+    let icp = builder.incept().await.unwrap();
+    (icp, builder)
 }
 
 /// Generate a valid CESR Blake3 digest to use as an anchor.
@@ -137,9 +135,7 @@ async fn create_interaction(
     builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
     anchor: &str,
 ) -> SignedKeyEvent {
-    let (event, signature) = builder.interact(anchor).await.unwrap();
-    let public_key = builder.current_public_key().await.unwrap();
-    SignedKeyEvent::new(event, public_key.qb64(), signature.qb64())
+    builder.interact(anchor).await.unwrap()
 }
 
 // ==================== Tests ====================
@@ -551,15 +547,13 @@ async fn test_submit_rotation_event() {
         .unwrap();
 
     // Create rotation event
-    let (rot_event, rot_sig) = builder.rotate().await.unwrap();
-    let rot_public_key = builder.current_public_key().await.unwrap();
-    let signed_rot = SignedKeyEvent::new(rot_event, rot_public_key.qb64(), rot_sig.qb64());
+    let rot = builder.rotate().await.unwrap();
 
     // Submit rotation
     let response = harness
         .client()
         .post(harness.url("/api/kels/events"))
-        .json(&vec![signed_rot])
+        .json(&vec![rot])
         .send()
         .await
         .expect("Failed to submit rotation");

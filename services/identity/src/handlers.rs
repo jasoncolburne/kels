@@ -119,7 +119,7 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
-    let (event, _signature) = builder
+    let ixn = builder
         .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
@@ -127,11 +127,11 @@ pub async fn anchor(
     tracing::info!(
         "Anchored {} in registry KEL at {}",
         request.said,
-        event.said,
+        ixn.event.said,
     );
 
     Ok(Json(AnchorResponse {
-        event_said: event.said,
+        event_said: ixn.event.said,
     }))
 }
 

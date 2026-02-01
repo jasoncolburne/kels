@@ -566,15 +566,15 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
     let incept_result = ctx.runtime.block_on(async { builder_guard.incept().await });
 
     match incept_result {
-        Ok((event, _sig)) => {
+        Ok(icp) => {
             // Set owner prefix after successful inception
-            ctx.store.set_owner_prefix(Some(&event.prefix));
+            ctx.store.set_owner_prefix(Some(&icp.event.prefix));
 
             // Save key state for future restarts
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &icp.event.prefix,
             ));
             if let Err(e) = save_result {
                 // Log but don't fail - the event was created successfully
@@ -582,8 +582,8 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&icp.event.prefix);
+            result.said = to_c_string(&icp.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -625,20 +625,20 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
     let rotate_result = ctx.runtime.block_on(async { builder_guard.rotate().await });
 
     match rotate_result {
-        Ok((event, _sig)) => {
+        Ok(rot) => {
             // Save key state after rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &rot.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&rot.event.prefix);
+            result.said = to_c_string(&rot.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -682,20 +682,20 @@ pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mu
         .block_on(async { builder_guard.rotate_recovery().await });
 
     match rotate_result {
-        Ok((event, _sig)) => {
+        Ok(ror) => {
             // Save key state after recovery rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &ror.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&ror.event.prefix);
+            result.said = to_c_string(&ror.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -753,10 +753,10 @@ pub unsafe extern "C" fn kels_interact(
         .block_on(async { builder_guard.interact(&anchor_str).await });
 
     match interact_result {
-        Ok((event, _sig)) => {
+        Ok(ixn) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&ixn.event.prefix);
+            result.said = to_c_string(&ixn.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -803,12 +803,12 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
     });
 
     match recover_result {
-        Ok((event, _sig)) => {
+        Ok(rec) => {
             // Save key state after recovery
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &rec.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
@@ -816,8 +816,8 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
 
             result.status = KelsStatus::Ok;
             result.outcome = KelsRecoveryOutcome::Recovered;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&rec.event.prefix);
+            result.said = to_c_string(&rec.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -865,20 +865,20 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
         .block_on(async { builder_guard.contest().await });
 
     match contest_result {
-        Ok((event, _sig)) => {
+        Ok(cnt) => {
             // Save key state after contest (keys rotated during contest)
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &cnt.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&cnt.event.prefix);
+            result.said = to_c_string(&cnt.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -922,10 +922,10 @@ pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut K
         .block_on(async { builder_guard.decommission().await });
 
     match decommission_result {
-        Ok((event, _sig)) => {
+        Ok(dec) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&dec.event.prefix);
+            result.said = to_c_string(&dec.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);

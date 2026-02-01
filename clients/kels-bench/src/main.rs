@@ -167,8 +167,8 @@ impl Stats {
 
 async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<String> {
     let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), Some(client.clone()));
-    let (icp_event, _) = builder.incept().await?;
-    let prefix = icp_event.prefix.clone();
+    let icp = builder.incept().await?;
+    let prefix = icp.event.prefix.clone();
 
     for i in 1..event_count {
         if i % 5 == 0 {

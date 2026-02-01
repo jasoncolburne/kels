@@ -42,8 +42,6 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
-    use crate::types::SignedKeyEvent;
-    use cesr::Matter;
     use std::collections::HashMap;
     use std::sync::RwLock;
 
@@ -95,13 +93,8 @@ mod tests {
 
     async fn create_test_kel() -> Kel {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder.incept().await.unwrap();
-        let public_key = icp.public_key.clone().unwrap();
-        Kel::from_events(
-            vec![SignedKeyEvent::new(icp, public_key, icp_sig.qb64())],
-            true,
-        )
-        .unwrap()
+        let icp = builder.incept().await.unwrap();
+        Kel::from_events(vec![icp], true).unwrap()
     }
 
     #[tokio::test]

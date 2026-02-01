@@ -401,8 +401,7 @@ mod tests {
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
     use crate::kel::Kel;
-    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory, SignedKeyEvent};
-    use cesr::Matter;
+    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1049,10 +1048,8 @@ mod tests {
 
         // Create a valid KEL for response
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder.incept().await.unwrap();
-        let public_key = icp.public_key.clone().unwrap();
-        let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
-        let kel = Kel::from_events(vec![signed], true).unwrap();
+        let icp = builder.incept().await.unwrap();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
 
         Mock::given(method("GET"))
             .and(path("/api/registry-kel"))
@@ -1091,11 +1088,9 @@ mod tests {
 
         // Create a valid KEL for response
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder.incept().await.unwrap();
-        let public_key = icp.public_key.clone().unwrap();
-        let prefix = icp.prefix.clone();
-        let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
-        let kel = Kel::from_events(vec![signed], true).unwrap();
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
 
         Mock::given(method("GET"))
             .and(path("/api/registry-kel"))
@@ -1115,10 +1110,8 @@ mod tests {
 
         // Create a valid KEL for response
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = builder.incept().await.unwrap();
-        let public_key = icp.public_key.clone().unwrap();
-        let signed = SignedKeyEvent::new(icp, public_key, icp_sig.qb64());
-        let kel = Kel::from_events(vec![signed], true).unwrap();
+        let icp = builder.incept().await.unwrap();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
 
         Mock::given(method("GET"))
             .and(path("/api/registry-kel"))
