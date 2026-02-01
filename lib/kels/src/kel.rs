@@ -2920,10 +2920,12 @@ mod tests {
             SignedKeyEvent::new(fake_ixn, cnt_key, fake_sig.qb64()),
         ]);
 
-        assert!(matches!(
-            result,
-            Err(KelsError::InvalidKel(ref msg)) if msg.contains("Cannot append events after contest")
-        ) || matches!(result, Err(KelsError::ContestedKel(_))));
+        assert!(
+            matches!(
+                result,
+                Err(KelsError::InvalidKel(ref msg)) if msg.contains("Cannot append events after contest")
+            ) || matches!(result, Err(KelsError::ContestedKel(_)))
+        );
     }
 
     // ==================== Overlap Path Tests ====================

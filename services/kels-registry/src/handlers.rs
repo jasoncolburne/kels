@@ -371,3 +371,233 @@ pub async fn get_registry_kel(
 
     Ok(Json(kel))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== ApiError Tests ====================
+
+    #[test]
+    fn test_api_error_not_found() {
+        let err = ApiError::not_found("test item");
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.1.error, "test item");
+    }
+
+    #[test]
+    fn test_api_error_bad_request() {
+        let err = ApiError::bad_request("invalid input");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.error, "invalid input");
+    }
+
+    #[test]
+    fn test_api_error_unauthorized() {
+        let err = ApiError::unauthorized("access denied");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.1.error, "access denied");
+    }
+
+    #[test]
+    fn test_api_error_forbidden() {
+        let err = ApiError::forbidden("not allowed");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.error, "not allowed");
+    }
+
+    #[test]
+    fn test_api_error_internal_error() {
+        let err = ApiError::internal_error("server crash");
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.1.error, "server crash");
+    }
+
+    // ==================== ApiError From<SignatureError> Tests ====================
+
+    #[test]
+    fn test_api_error_from_signature_peer_id_mismatch() {
+        let sig_err = SignatureError::PeerIdMismatch {
+            expected: "expected".to_string(),
+            actual: "actual".to_string(),
+        };
+        let api_err: ApiError = sig_err.into();
+        assert_eq!(api_err.0, StatusCode::UNAUTHORIZED);
+        assert!(api_err.1.error.contains("Invalid signature"));
+    }
+
+    #[test]
+    fn test_api_error_from_signature_verification_failed() {
+        let sig_err = SignatureError::VerificationFailed;
+        let api_err: ApiError = sig_err.into();
+        assert_eq!(api_err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(api_err.1.error, "Signature verification failed");
+    }
+
+    #[test]
+    fn test_api_error_from_signature_invalid_public_key() {
+        let sig_err = SignatureError::InvalidPublicKey("bad key".to_string());
+        let api_err: ApiError = sig_err.into();
+        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
+        assert!(api_err.1.error.contains("Invalid request"));
+    }
+
+    #[test]
+    fn test_api_error_from_signature_invalid_signature() {
+        let sig_err = SignatureError::InvalidSignature("bad sig".to_string());
+        let api_err: ApiError = sig_err.into();
+        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
+        assert!(api_err.1.error.contains("Invalid request"));
+    }
+
+    #[test]
+    fn test_api_error_from_signature_invalid_peer_id() {
+        let sig_err = SignatureError::InvalidPeerId("bad id".to_string());
+        let api_err: ApiError = sig_err.into();
+        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
+        assert!(api_err.1.error.contains("Invalid request"));
+    }
+
+    // ==================== ApiError From<StoreError> Tests ====================
+
+    #[test]
+    fn test_api_error_from_store_not_found() {
+        let store_err = StoreError::NotFound("node-123".to_string());
+        let api_err: ApiError = store_err.into();
+        assert_eq!(api_err.0, StatusCode::NOT_FOUND);
+        assert!(api_err.1.error.contains("Node not found: node-123"));
+    }
+
+    #[test]
+    fn test_api_error_from_store_redis() {
+        let redis_err = redis::RedisError::from((redis::ErrorKind::IoError, "connection failed"));
+        let store_err = StoreError::Redis(redis_err);
+        let api_err: ApiError = store_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(api_err.1.error.contains("Storage error"));
+    }
+
+    #[test]
+    fn test_api_error_from_store_serialization() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let store_err = StoreError::Serialization(json_err);
+        let api_err: ApiError = store_err.into();
+        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(api_err.1.error.contains("Serialization error"));
+    }
+
+    // ==================== PaginationQuery Tests ====================
+
+    #[test]
+    fn test_pagination_query_effective_limit_none() {
+        let query = PaginationQuery {
+            cursor: None,
+            limit: None,
+        };
+        assert_eq!(query.effective_limit(), DEFAULT_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_pagination_query_effective_limit_under_max() {
+        let query = PaginationQuery {
+            cursor: None,
+            limit: Some(50),
+        };
+        assert_eq!(query.effective_limit(), 50);
+    }
+
+    #[test]
+    fn test_pagination_query_effective_limit_at_max() {
+        let query = PaginationQuery {
+            cursor: None,
+            limit: Some(MAX_PAGE_SIZE),
+        };
+        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_pagination_query_effective_limit_over_max() {
+        let query = PaginationQuery {
+            cursor: None,
+            limit: Some(MAX_PAGE_SIZE + 500),
+        };
+        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_pagination_query_effective_limit_zero() {
+        let query = PaginationQuery {
+            cursor: None,
+            limit: Some(0),
+        };
+        assert_eq!(query.effective_limit(), 0);
+    }
+
+    // ==================== BootstrapQuery Tests ====================
+
+    #[test]
+    fn test_bootstrap_query_effective_limit_none() {
+        let query = BootstrapQuery {
+            exclude: None,
+            cursor: None,
+            limit: None,
+        };
+        assert_eq!(query.effective_limit(), DEFAULT_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_bootstrap_query_effective_limit_under_max() {
+        let query = BootstrapQuery {
+            exclude: Some("node-1".to_string()),
+            cursor: None,
+            limit: Some(25),
+        };
+        assert_eq!(query.effective_limit(), 25);
+    }
+
+    #[test]
+    fn test_bootstrap_query_effective_limit_over_max() {
+        let query = BootstrapQuery {
+            exclude: None,
+            cursor: Some("cursor".to_string()),
+            limit: Some(2000),
+        };
+        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
+    }
+
+    // ==================== ErrorResponse Tests ====================
+
+    #[test]
+    fn test_error_response_serialization() {
+        let response = ErrorResponse {
+            error: "test error".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("test error"));
+    }
+
+    // ==================== NodesResponse Tests ====================
+
+    #[test]
+    fn test_nodes_response_serialization() {
+        let response = NodesResponse {
+            nodes: vec![],
+            next_cursor: Some("next".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("nodes"));
+        assert!(json.contains("next_cursor"));
+        assert!(json.contains("next"));
+    }
+
+    #[test]
+    fn test_nodes_response_without_cursor() {
+        let response = NodesResponse {
+            nodes: vec![],
+            next_cursor: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("nodes"));
+        assert!(json.contains("null"));
+    }
+}

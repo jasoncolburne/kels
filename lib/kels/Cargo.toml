@@ -73,6 +73,7 @@ web-sys = { version = "0.3", features = ["console"], optional = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+wiremock = "0.6"
 
 # macOS/iOS Secure Enclave support (optional, for HardwareKeyProvider)
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
