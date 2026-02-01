@@ -139,7 +139,7 @@ impl Kel {
         })
     }
 
-    pub fn get_kel_saids_from_tail(&self, tail_said: &str) -> HashSet<String> {
+    pub fn get_event_saids_from_tail(&self, tail_said: &str) -> HashSet<String> {
         let mut saids = HashSet::new();
         let mut current_said = Some(tail_said.to_string());
         while let Some(said) = current_said {
@@ -170,23 +170,23 @@ impl Kel {
         self.sort();
     }
 
-    pub fn remove_adversary_events(
+    pub fn filter_events_by_said(
         &mut self,
-        owner_saids: &HashSet<String>,
+        keep: &HashSet<String>,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let owner_events = self
+        let events_to_keep = self
             .iter()
-            .filter(|e| owner_saids.contains(&e.event.said))
+            .filter(|e| keep.contains(&e.event.said))
             .cloned()
             .collect();
-        let adversary_events = self
+        let events_to_remove = self
             .iter()
-            .filter(|e| !owner_saids.contains(&e.event.said))
+            .filter(|e| !keep.contains(&e.event.said))
             .cloned()
             .collect();
-        self.0 = owner_events;
+        self.0 = events_to_keep;
         self.sort();
-        Ok(adversary_events)
+        Ok(events_to_remove)
     }
 
     pub fn truncate(&mut self, len: usize) {
@@ -259,8 +259,8 @@ impl Kel {
                         ));
                     };
 
-                    let owner_kel_saids = self.get_kel_saids_from_tail(owner_tail_said);
-                    let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
+                    let owner_kel_saids = self.get_event_saids_from_tail(owner_tail_said);
+                    let adversary_events = self.filter_events_by_said(&owner_kel_saids)?;
 
                     self.extend(events.iter().cloned());
                     self.verify()?;
@@ -386,8 +386,8 @@ impl Kel {
                             "Divergence detected but no new divergent events".to_string(),
                         ));
                     };
-                    let owner_saids = self.get_kel_saids_from_tail(&new_tail_said);
-                    let removed_events = self.remove_adversary_events(&owner_saids)?;
+                    let owner_saids = self.get_event_saids_from_tail(&new_tail_said);
+                    let removed_events = self.filter_events_by_said(&owner_saids)?;
                     (
                         removed_events,
                         divergent_new_events,
@@ -1521,7 +1521,7 @@ mod tests {
 
         // Get owner SAIDs starting from owner's ixn (tail)
         // Should only include owner's chain, not adversary's event
-        let owner_saids = kel.get_kel_saids_from_tail(&owner_ixn.event.said);
+        let owner_saids = kel.get_event_saids_from_tail(&owner_ixn.event.said);
         assert_eq!(owner_saids.len(), 2);
         assert!(owner_saids.contains(&icp.event.said));
         assert!(owner_saids.contains(&owner_ixn.event.said));
@@ -1529,7 +1529,7 @@ mod tests {
 
         // Get adversary SAIDs starting from adversary's ixn
         // Should only include adversary's chain
-        let adversary_saids = kel.get_kel_saids_from_tail(&adversary_ixn.event.said);
+        let adversary_saids = kel.get_event_saids_from_tail(&adversary_ixn.event.said);
         assert_eq!(adversary_saids.len(), 2);
         assert!(adversary_saids.contains(&icp.event.said));
         assert!(adversary_saids.contains(&adversary_ixn.event.said));
@@ -1733,7 +1733,7 @@ mod tests {
         owner_saids.insert(icp.event.said.clone());
         owner_saids.insert(ixn1.event.said.clone());
 
-        let removed = kel.remove_adversary_events(&owner_saids).unwrap();
+        let removed = kel.filter_events_by_said(&owner_saids).unwrap();
 
         // Should have removed adversary event
         assert_eq!(removed.len(), 1);
