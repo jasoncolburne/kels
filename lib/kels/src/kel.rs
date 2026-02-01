@@ -282,6 +282,13 @@ impl Kel {
         // Track old events that get removed (for archiving) and the merge result
         let (old_events_removed, new_events_added, result) = if first_previous == last_said {
             // Normal append - no overlap, no divergence
+            // Contest requires divergence - cannot append normally
+            if first.event.is_contest() {
+                return Err(KelsError::InvalidKel(
+                    "Contest requires divergence".to_string(),
+                ));
+            }
+
             // Decommission blocks normal appends (but not divergence detection)
             if self.is_decommissioned() {
                 return Err(KelsError::KelDecommissioned);
@@ -2711,6 +2718,37 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result, Err(KelsError::Frozen)));
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_on_clean_kel_fails() {
+        // Contest on a clean (non-divergent) KEL should fail.
+        // Contest requires divergence to be valid.
+
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, icp_sig) = builder.incept().await.unwrap();
+        let icp_key = icp.public_key.clone().unwrap();
+
+        // Create a clean KEL with just inception
+        let mut kel = Kel::from_events(
+            vec![SignedKeyEvent::new(icp, icp_key.clone(), icp_sig.qb64())],
+            false,
+        )
+        .unwrap();
+
+        // Verify KEL is not divergent
+        assert!(kel.find_divergence().is_none());
+
+        // Try to contest - should fail because no divergence
+        let (_, _) = builder.contest().await.unwrap();
+        let cnt_event = builder.events().last().unwrap().clone();
+
+        let result = kel.merge(vec![cnt_event]);
+
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(KelsError::InvalidKel(ref msg)) if msg.contains("Contest requires divergence"))
+        );
     }
 
     #[tokio::test]
