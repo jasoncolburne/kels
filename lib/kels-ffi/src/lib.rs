@@ -1827,6 +1827,7 @@ pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
