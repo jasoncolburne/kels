@@ -3,8 +3,8 @@
 use crate::error::KelsError;
 use crate::kel::Kel;
 use crate::types::{
-    BatchKelsRequest, BatchSubmitResponse, ErrorResponse, KelMergeResult, KelResponse, NodeInfo,
-    NodeStatus, NodesResponse, SignedKeyEvent,
+    BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, KelMergeResult, KelResponse,
+    NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -372,10 +372,10 @@ impl KelsClient {
         if resp.status().is_success() {
             Ok("OK".to_string())
         } else {
-            Err(KelsError::ServerError(format!(
-                "Health check failed: {}",
-                resp.status()
-            )))
+            Err(KelsError::ServerError(
+                format!("Health check failed: {}", resp.status()),
+                ErrorCode::InternalError,
+            ))
         }
     }
 
@@ -391,8 +391,7 @@ impl KelsClient {
     pub async fn discover_nodes(registry_url: &str) -> Result<Vec<NodeInfo>, KelsError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| KelsError::ServerError(format!("Failed to create HTTP client: {}", e)))?;
+            .build()?;
 
         // Paginate through all nodes
         let base_url = registry_url.trim_end_matches('/');
@@ -408,10 +407,8 @@ impl KelsClient {
             let resp = client.get(&url).send().await?;
 
             if !resp.status().is_success() {
-                return Err(KelsError::ServerError(format!(
-                    "Failed to fetch nodes from registry: {}",
-                    resp.status()
-                )));
+                let err: ErrorResponse = resp.json().await?;
+                return Err(KelsError::ServerError(err.error, err.code));
             }
 
             let page: NodesResponse = resp.json().await?;
@@ -477,9 +474,7 @@ impl KelsClient {
         let best_node = nodes
             .into_iter()
             .find(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
-            .ok_or_else(|| {
-                KelsError::ServerError("No ready nodes available in registry".to_string())
-            })?;
+            .ok_or(KelsError::NoReadyNodes)?;
 
         Ok(Self::new(&best_node.kels_url))
     }
@@ -502,10 +497,10 @@ impl KelsClient {
             Err(KelsError::ContestedKel(err.error))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            if err.code == Some(crate::types::ErrorCode::RecoveryProtected) {
+            if err.code == ErrorCode::RecoveryProtected {
                 Err(KelsError::RecoveryProtected)
             } else {
-                Err(KelsError::ServerError(err.error))
+                Err(KelsError::ServerError(err.error, err.code))
             }
         }
     }
@@ -537,7 +532,7 @@ impl KelsClient {
             Err(KelsError::KeyNotFound(prefix.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -557,7 +552,7 @@ impl KelsClient {
             Err(KelsError::KeyNotFound(prefix.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error))
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -630,7 +625,7 @@ impl KelsClient {
 
         if !resp.status().is_success() {
             let err: ErrorResponse = resp.json().await?;
-            return Err(KelsError::ServerError(err.error));
+            return Err(KelsError::ServerError(err.error, err.code));
         }
 
         let new_events: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
@@ -734,7 +729,7 @@ impl KelsClient {
 
         if !resp.status().is_success() {
             let err: ErrorResponse = resp.json().await?;
-            return Err(KelsError::ServerError(err.error));
+            return Err(KelsError::ServerError(err.error, err.code));
         }
 
         let events_map: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
@@ -1057,7 +1052,7 @@ mod tests {
             let result = client.health().await;
 
             assert!(result.is_err());
-            assert!(matches!(result, Err(KelsError::ServerError(_))));
+            assert!(matches!(result, Err(KelsError::ServerError(..))));
         }
 
         #[tokio::test]
@@ -1143,7 +1138,7 @@ mod tests {
 
             let error = ErrorResponse {
                 error: "KEL is contested".to_string(),
-                code: None,
+                code: ErrorCode::Contested,
             };
 
             Mock::given(method("POST"))
@@ -1169,7 +1164,7 @@ mod tests {
 
             let error = ErrorResponse {
                 error: "Recovery protected".to_string(),
-                code: Some(ErrorCode::RecoveryProtected),
+                code: ErrorCode::RecoveryProtected,
             };
 
             Mock::given(method("POST"))
@@ -1195,7 +1190,7 @@ mod tests {
 
             let error = ErrorResponse {
                 error: "Internal error".to_string(),
-                code: None,
+                code: ErrorCode::InternalError,
             };
 
             Mock::given(method("POST"))
@@ -1212,7 +1207,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
 
-            assert!(matches!(result, Err(KelsError::ServerError(_))));
+            assert!(matches!(result, Err(KelsError::ServerError(..))));
         }
 
         #[tokio::test]
@@ -1262,7 +1257,7 @@ mod tests {
 
             let error = ErrorResponse {
                 error: "Database error".to_string(),
-                code: None,
+                code: ErrorCode::InternalError,
             };
 
             Mock::given(method("GET"))
@@ -1274,7 +1269,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.fetch_full_kel("prefix", true).await;
 
-            assert!(matches!(result, Err(KelsError::ServerError(_))));
+            assert!(matches!(result, Err(KelsError::ServerError(..))));
         }
 
         #[tokio::test]
@@ -1422,7 +1417,7 @@ mod tests {
 
             let error = ErrorResponse {
                 error: "Server error".to_string(),
-                code: None,
+                code: ErrorCode::InternalError,
             };
 
             Mock::given(method("POST"))
@@ -1434,7 +1429,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.get_kels(&["prefix"], &HashMap::new()).await;
 
-            assert!(matches!(result, Err(KelsError::ServerError(_))));
+            assert!(matches!(result, Err(KelsError::ServerError(..))));
         }
     }
 }

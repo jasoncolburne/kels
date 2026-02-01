@@ -280,7 +280,7 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
         KelsError::DivergenceDetected { .. } => KelsStatus::DivergenceDetected,
         KelsError::RecoveryProtected => KelsStatus::RecoveryProtected,
-        KelsError::HttpError(_) | KelsError::ServerError(_) => KelsStatus::NetworkError,
+        KelsError::HttpError(_) | KelsError::ServerError(..) => KelsStatus::NetworkError,
         _ => KelsStatus::Error,
     }
 }
@@ -2033,7 +2033,8 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_server_error() {
-        let err = KelsError::ServerError("server failed".to_string());
+        let err =
+            KelsError::ServerError("server failed".to_string(), kels::ErrorCode::InternalError);
         assert_eq!(map_error_to_status(&err), KelsStatus::NetworkError);
     }
 

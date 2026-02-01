@@ -73,8 +73,11 @@ pub enum KelsError {
     #[error("Key generation failed: {0}")]
     KeyGenerationFailed(String),
 
-    #[error("Server error: {0}")]
-    ServerError(String),
+    #[error("Server error ({1:?}): {0}")]
+    ServerError(String, crate::types::ErrorCode),
+
+    #[error("Missing keys for provider")]
+    MissingKeys,
 
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
@@ -123,6 +126,9 @@ pub enum KelsError {
 
     #[error("Hardware error: {0}")]
     HardwareError(String),
+
+    #[error("No ready nodes available in registry")]
+    NoReadyNodes,
 }
 
 impl From<cesr::CesrError> for KelsError {

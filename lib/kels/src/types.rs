@@ -105,6 +105,8 @@ pub enum ErrorCode {
     BadRequest,
     NotFound,
     Conflict,
+    Contested,
+    Frozen,
     Unauthorized,
     Gone,
     RecoveryProtected,
@@ -115,8 +117,7 @@ pub enum ErrorCode {
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
-    #[serde(default)]
-    pub code: Option<ErrorCode>,
+    pub code: ErrorCode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]

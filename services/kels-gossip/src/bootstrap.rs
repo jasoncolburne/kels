@@ -617,7 +617,10 @@ mod tests {
 
     #[test]
     fn test_bootstrap_error_display() {
-        let kels_error = BootstrapError::Kels(KelsError::ServerError("test".to_string()));
+        let kels_error = BootstrapError::Kels(KelsError::ServerError(
+            "test".to_string(),
+            kels::ErrorCode::InternalError,
+        ));
         assert!(kels_error.to_string().contains("KELS/Registry error"));
 
         let failed_error = BootstrapError::Failed("bootstrap failed".to_string());
@@ -629,7 +632,8 @@ mod tests {
 
     #[test]
     fn test_bootstrap_error_from_kels_error() {
-        let kels_error = KelsError::ServerError("server error".to_string());
+        let kels_error =
+            KelsError::ServerError("server error".to_string(), kels::ErrorCode::InternalError);
         let bootstrap_error: BootstrapError = kels_error.into();
         assert!(matches!(bootstrap_error, BootstrapError::Kels(_)));
     }

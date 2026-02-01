@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use kels::{Kel, Peer, PeerHistory, PeersResponse, SignedRequest};
+use kels::{ErrorCode, ErrorResponse, Kel, Peer, PeerHistory, PeersResponse, SignedRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
@@ -24,46 +24,56 @@ pub struct AppState {
     pub repo: Arc<RegistryRepository>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
 impl ApiError {
     pub fn not_found(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::NotFound,
+            }),
         )
     }
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::BadRequest,
+            }),
         )
     }
 
     pub fn unauthorized(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::Unauthorized,
+            }),
         )
     }
 
     pub fn forbidden(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::Unauthorized,
+            }),
         )
     }
 
     pub fn internal_error(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: msg.into() }),
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::InternalError,
+            }),
         )
     }
 }
@@ -571,9 +581,11 @@ mod tests {
     fn test_error_response_serialization() {
         let response = ErrorResponse {
             error: "test error".to_string(),
+            code: ErrorCode::BadRequest,
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test error"));
+        assert!(json.contains("bad_request"));
     }
 
     // ==================== NodesResponse Tests ====================

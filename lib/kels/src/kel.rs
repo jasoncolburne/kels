@@ -900,11 +900,7 @@ mod tests {
             icp_sig.qb64(),
         ));
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             kel.clone(),
@@ -936,11 +932,7 @@ mod tests {
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder);
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             kel.clone(),
@@ -1059,11 +1051,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1114,9 +1102,9 @@ mod tests {
         // Create second divergent event
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -1127,11 +1115,7 @@ mod tests {
 
         // Create third divergent event
         let mut builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             kel_for_builder2.clone(),
@@ -1185,9 +1169,9 @@ mod tests {
 
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -1212,11 +1196,7 @@ mod tests {
 
         // Load with with_kel
         let builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1253,9 +1233,9 @@ mod tests {
 
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -1266,9 +1246,9 @@ mod tests {
 
         let mut builder3 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -1295,11 +1275,7 @@ mod tests {
 
         // Load with with_kel
         let loaded_builder = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1334,9 +1310,9 @@ mod tests {
 
         let mut adversary = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -1417,11 +1393,7 @@ mod tests {
         ));
 
         let mut adversary = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_rot_current),
-                Some(pre_rot_next),
-                Some(pre_rot_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_rot_current, pre_rot_next, pre_rot_recovery),
             None,
             None,
             adversary_kel.clone(),
@@ -1563,11 +1535,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             kel_for_builder2,
@@ -2020,11 +1988,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2122,11 +2086,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2183,9 +2143,9 @@ mod tests {
 
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
@@ -2266,11 +2226,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2360,11 +2316,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2421,11 +2373,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_ror_current),
-                Some(pre_ror_next),
-                Some(pre_ror_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
             adversary_kel,
@@ -2482,11 +2430,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_ror_current),
-                Some(pre_ror_next),
-                Some(pre_ror_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
             adversary_kel,
@@ -2551,11 +2495,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2612,11 +2552,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_ror_current),
-                Some(pre_ror_next),
-                Some(pre_ror_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
             adversary_kel,
@@ -2680,11 +2616,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2776,11 +2708,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,
@@ -2848,11 +2776,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_ror_current),
-                Some(pre_ror_next),
-                Some(pre_ror_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
             adversary_kel,
@@ -2912,11 +2836,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_ror_current),
-                Some(pre_ror_next),
-                Some(pre_ror_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
             adversary_kel,
@@ -3006,11 +2926,7 @@ mod tests {
         ));
 
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             adversary_kel,

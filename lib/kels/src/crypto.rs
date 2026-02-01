@@ -205,22 +205,11 @@ impl SoftwareKeyProvider {
         }
     }
 
-    pub fn with_all_keys(
-        current: Option<PrivateKey>,
-        next: Option<PrivateKey>,
-        recovery: Option<PrivateKey>,
-    ) -> Self {
-        if let Some(c) = current
-            && let Some(n) = next
-            && let Some(r) = recovery
-        {
-            return Self {
-                keys: vec![c, n],
-                recovery_keys: vec![r],
-            };
+    pub fn with_all_keys(current: PrivateKey, next: PrivateKey, recovery: PrivateKey) -> Self {
+        Self {
+            keys: vec![current, next],
+            recovery_keys: vec![recovery],
         }
-
-        Self::new()
     }
 
     // ==================== Persistence ====================
@@ -231,31 +220,27 @@ impl SoftwareKeyProvider {
         let next_path = dir.join("next.key");
         let recovery_path = dir.join("recovery.key");
 
-        let current = if current_path.exists() {
-            let qb64 = std::fs::read_to_string(&current_path).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to read current key: {}", e))
-            })?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        if !current_path.exists() {
+            return Err(KelsError::NoCurrentKey);
+        }
+        if !next_path.exists() {
+            return Err(KelsError::NoNextKey);
+        }
+        if !recovery_path.exists() {
+            return Err(KelsError::NoRecoveryKey);
+        }
 
-        let next = if next_path.exists() {
-            let qb64 = std::fs::read_to_string(&next_path)
-                .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        let current_qb64 = std::fs::read_to_string(&current_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read current key: {}", e)))?;
+        let current = PrivateKey::from_qb64(current_qb64.trim())?;
 
-        let recovery = if recovery_path.exists() {
-            let qb64 = std::fs::read_to_string(&recovery_path).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to read recovery key: {}", e))
-            })?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        let next_qb64 = std::fs::read_to_string(&next_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
+        let next = PrivateKey::from_qb64(next_qb64.trim())?;
+
+        let recovery_qb64 = std::fs::read_to_string(&recovery_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read recovery key: {}", e)))?;
+        let recovery = PrivateKey::from_qb64(recovery_qb64.trim())?;
 
         Ok(Self::with_all_keys(current, next, recovery))
     }
@@ -563,7 +548,7 @@ mod tests {
         let (_pub2, priv2) = generate_secp256r1().unwrap();
         let (_pub3, priv3) = generate_secp256r1().unwrap();
 
-        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), Some(priv3));
+        let provider = SoftwareKeyProvider::with_all_keys(priv1, priv2, priv3);
 
         assert_eq!(
             provider.current_public_key().await.unwrap().qb64(),
@@ -704,8 +689,8 @@ mod tests {
     #[test]
     fn test_load_from_nonexistent_dir() {
         let result = SoftwareKeyProvider::load_from_dir(Path::new("/nonexistent/path/12345"));
-        // Should succeed with empty provider if files don't exist
-        assert!(result.is_ok());
+        // Should fail with NoCurrentKey if directory doesn't exist
+        assert!(matches!(result, Err(KelsError::NoCurrentKey)));
     }
 
     #[test]
@@ -747,15 +732,5 @@ mod tests {
             loaded.current_public_key().await.unwrap().qb64(),
             original_pub.qb64()
         );
-    }
-
-    #[test]
-    fn test_with_all_keys_missing_one() {
-        let (_, priv1) = generate_secp256r1().unwrap();
-        let (_, priv2) = generate_secp256r1().unwrap();
-
-        // Missing recovery - should return empty provider
-        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), None);
-        assert!(provider.keys.is_empty());
     }
 }

@@ -1,6 +1,6 @@
 //! Client for the identity service
 
-use kels::{Kel, KelsError};
+use kels::{ErrorResponse, Kel, KelsError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -22,12 +22,6 @@ struct AnchorResponse {
     event_said: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorResponse {
-    error: String,
-}
-
 pub struct IdentityClient {
     client: Client,
     base_url: String,
@@ -43,7 +37,7 @@ impl IdentityClient {
 
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
         match response.json::<ErrorResponse>().await {
-            Ok(e) => KelsError::ServerError(e.error),
+            Ok(e) => KelsError::ServerError(e.error, e.code),
             Err(e) => e.into(),
         }
     }

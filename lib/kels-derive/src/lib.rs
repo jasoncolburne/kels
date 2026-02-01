@@ -222,7 +222,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             async fn get_kel(&self, prefix: &str) -> Result<kels::Kel, kels::KelsError> {
                 #repo_name::get_kel(self, prefix)
                     .await
-                    .map_err(|e| kels::KelsError::ServerError(e.to_string()))
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
 
             async fn get_signature_by_said(
@@ -231,7 +231,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<Option<kels::EventSignature>, kels::KelsError> {
                 #repo_name::get_signature_by_said(self, said)
                     .await
-                    .map_err(|e| kels::KelsError::ServerError(e.to_string()))
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
 
             async fn create_with_signatures(
@@ -241,7 +241,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<kels::KeyEvent, kels::KelsError> {
                 #repo_name::create_with_signatures(self, event, signatures)
                     .await
-                    .map_err(|e| kels::KelsError::ServerError(e.to_string()))
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
 
             async fn create_batch_with_signatures(
@@ -250,7 +250,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<(), kels::KelsError> {
                 #repo_name::create_batch_with_signatures(self, events)
                     .await
-                    .map_err(|e| kels::KelsError::ServerError(e.to_string()))
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
         }
     };

@@ -44,7 +44,7 @@ impl ApiError {
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: msg.into(),
-                code: Some(ErrorCode::NotFound),
+                code: ErrorCode::NotFound,
             }),
         )
     }
@@ -54,7 +54,7 @@ impl ApiError {
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: msg.into(),
-                code: Some(ErrorCode::BadRequest),
+                code: ErrorCode::BadRequest,
             }),
         )
     }
@@ -64,7 +64,7 @@ impl ApiError {
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
                 error: msg.into(),
-                code: Some(ErrorCode::Unauthorized),
+                code: ErrorCode::Unauthorized,
             }),
         )
     }
@@ -74,7 +74,7 @@ impl ApiError {
             StatusCode::CONFLICT,
             Json(ErrorResponse {
                 error: msg.into(),
-                code: Some(ErrorCode::RecoveryProtected),
+                code: ErrorCode::RecoveryProtected,
             }),
         )
     }
@@ -82,11 +82,24 @@ impl ApiError {
 
 impl From<KelsError> for ApiError {
     fn from(e: KelsError) -> Self {
+        let (status, code) = match &e {
+            KelsError::KelDecommissioned | KelsError::Frozen => {
+                (StatusCode::FORBIDDEN, ErrorCode::Frozen)
+            }
+            KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
+            KelsError::RecoveryProtected => (StatusCode::FORBIDDEN, ErrorCode::RecoveryProtected),
+            KelsError::KeyNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
+            KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
+            KelsError::InvalidKeyEvent(_)
+            | KelsError::InvalidKel(_)
+            | KelsError::InvalidSaid(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::InternalError),
+        };
         ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
+            status,
             Json(ErrorResponse {
                 error: e.to_string(),
-                code: Some(ErrorCode::InternalError),
+                code,
             }),
         )
     }
@@ -98,7 +111,7 @@ impl From<verifiable_storage::StorageError> for ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: e.to_string(),
-                code: Some(ErrorCode::InternalError),
+                code: ErrorCode::InternalError,
             }),
         )
     }
@@ -510,7 +523,7 @@ mod tests {
     fn test_api_error_not_found() {
         let err = ApiError::not_found("KEL not found");
         assert_eq!(err.0, StatusCode::NOT_FOUND);
-        assert_eq!(err.1.code, Some(ErrorCode::NotFound));
+        assert_eq!(err.1.code, ErrorCode::NotFound);
         assert_eq!(err.1.error, "KEL not found");
     }
 
@@ -518,7 +531,7 @@ mod tests {
     fn test_api_error_bad_request() {
         let err = ApiError::bad_request("Invalid signature");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
-        assert_eq!(err.1.code, Some(ErrorCode::BadRequest));
+        assert_eq!(err.1.code, ErrorCode::BadRequest);
         assert_eq!(err.1.error, "Invalid signature");
     }
 
@@ -526,14 +539,14 @@ mod tests {
     fn test_api_error_unauthorized() {
         let err = ApiError::unauthorized("Merge failed");
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.1.code, Some(ErrorCode::Unauthorized));
+        assert_eq!(err.1.code, ErrorCode::Unauthorized);
     }
 
     #[test]
     fn test_api_error_recovery_protected() {
         let err = ApiError::recovery_protected("Cannot submit");
         assert_eq!(err.0, StatusCode::CONFLICT);
-        assert_eq!(err.1.code, Some(ErrorCode::RecoveryProtected));
+        assert_eq!(err.1.code, ErrorCode::RecoveryProtected);
     }
 
     #[test]
@@ -541,7 +554,7 @@ mod tests {
         let kels_err = KelsError::SigningFailed("test".to_string());
         let api_err: ApiError = kels_err.into();
         assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(api_err.1.code, Some(ErrorCode::InternalError));
+        assert_eq!(api_err.1.code, ErrorCode::InternalError);
     }
 
     #[test]
@@ -549,7 +562,7 @@ mod tests {
         let storage_err = verifiable_storage::StorageError::NotFound("key_events:abc".to_string());
         let api_err: ApiError = storage_err.into();
         assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(api_err.1.code, Some(ErrorCode::InternalError));
+        assert_eq!(api_err.1.code, ErrorCode::InternalError);
     }
 
     // ==================== MAX_BATCH_PREFIXES Tests ====================

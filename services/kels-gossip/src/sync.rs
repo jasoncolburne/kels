@@ -344,7 +344,10 @@ mod tests {
         )));
         assert!(redis_error.to_string().contains("Redis error"));
 
-        let kels_error = SyncError::Kels(KelsError::ServerError("test".to_string()));
+        let kels_error = SyncError::Kels(KelsError::ServerError(
+            "test".to_string(),
+            kels::ErrorCode::InternalError,
+        ));
         assert!(kels_error.to_string().contains("KELS client error"));
 
         let channel_error = SyncError::ChannelClosed;
@@ -361,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_sync_error_from_kels_error() {
-        let kels_error = KelsError::ServerError("test".to_string());
+        let kels_error = KelsError::ServerError("test".to_string(), kels::ErrorCode::InternalError);
         let sync_error: SyncError = kels_error.into();
         assert!(matches!(sync_error, SyncError::Kels(_)));
     }

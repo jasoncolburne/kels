@@ -5,8 +5,8 @@
 
 use crate::error::KelsError;
 use crate::types::{
-    DeregisterRequest, NodeInfo, NodeRegistration, NodeStatus, NodesResponse, PeersResponse,
-    RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, NodesResponse,
+    PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,12 +143,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -173,12 +169,8 @@ impl KelsRegistryClient {
         if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -206,12 +198,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -263,12 +251,8 @@ impl KelsRegistryClient {
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(node_id.to_string()))
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -300,12 +284,8 @@ impl KelsRegistryClient {
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(node_id.to_string()))
         } else {
-            let status_code = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status_code, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -335,12 +315,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -387,12 +363,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -586,7 +558,10 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/nodes/register"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Internal error",
+                "code": "internal_error"
+            })))
             .mount(&mock_server)
             .await;
 
@@ -602,7 +577,7 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(KelsError::ServerError(_))));
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     // ==================== Deregistration Tests ====================
@@ -744,14 +719,17 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Error"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
             .mount(&mock_server)
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
         let result = client.list_nodes(None).await;
 
-        assert!(matches!(result, Err(KelsError::ServerError(_))));
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     // ==================== Heartbeat Tests ====================
@@ -805,14 +783,17 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Error"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
             .mount(&mock_server)
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
         let result = client.heartbeat("node-1").await;
 
-        assert!(matches!(result, Err(KelsError::ServerError(_))));
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     // ==================== Update Status Tests ====================
@@ -908,14 +889,17 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Error"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
             .mount(&mock_server)
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
         let result = client.fetch_peers().await;
 
-        assert!(matches!(result, Err(KelsError::ServerError(_))));
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     #[tokio::test]
@@ -1088,14 +1072,17 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Error"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
             .mount(&mock_server)
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
         let result = client.fetch_registry_kel().await;
 
-        assert!(matches!(result, Err(KelsError::ServerError(_))));
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     #[tokio::test]
