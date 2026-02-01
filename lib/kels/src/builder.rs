@@ -949,4 +949,115 @@ mod tests {
         // No prefix yet, reload should succeed (no-op)
         builder.reload().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_builder_with_dependencies_no_store() {
+        let builder = KeyEventBuilder::with_dependencies(
+            SoftwareKeyProvider::new(),
+            None, // no client
+            None, // no store
+            None, // no prefix
+        )
+        .await
+        .unwrap();
+
+        assert!(builder.prefix().is_none());
+        assert_eq!(builder.confirmed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_builder_double_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        // Second decommission should fail
+        let result = builder.decommission().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_contest_after_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        // Contest after decommission should fail
+        let result = builder.contest().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_recover_after_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        // Recover after decommission should fail
+        let result = builder.recover(false).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_rotate_recovery_after_decommission_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.decommission().await.unwrap();
+
+        // Rotate recovery after decommission should fail
+        let result = builder.rotate_recovery().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_builder_multiple_rotations() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let pub1 = builder.current_public_key().await.unwrap();
+        builder.rotate().await.unwrap();
+        let pub2 = builder.current_public_key().await.unwrap();
+        builder.rotate().await.unwrap();
+        let pub3 = builder.current_public_key().await.unwrap();
+
+        // All public keys should be different
+        assert_ne!(pub1.qb64(), pub2.qb64());
+        assert_ne!(pub2.qb64(), pub3.qb64());
+        assert_ne!(pub1.qb64(), pub3.qb64());
+        assert_eq!(builder.events().len(), 3); // icp + 2 rotations
+    }
+
+    #[tokio::test]
+    async fn test_builder_last_establishment_after_interactions() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let (icp, _) = builder.incept().await.unwrap();
+        builder.interact(&make_anchor()).await.unwrap();
+        builder.interact(&make_anchor()).await.unwrap();
+
+        // Last establishment should still be icp
+        assert_eq!(builder.last_establishment_event().unwrap().said, icp.said);
+    }
+
+    #[tokio::test]
+    async fn test_builder_last_establishment_after_rotation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&make_anchor()).await.unwrap();
+        let (rot, _) = builder.rotate().await.unwrap();
+
+        // Last establishment should now be rot
+        assert_eq!(builder.last_establishment_event().unwrap().said, rot.said);
+    }
+
+    #[tokio::test]
+    async fn test_builder_incept_delegated_has_prefix() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
+
+        // Can incept as delegated
+        let (event, _) = builder.incept_delegated(&delegating_prefix).await.unwrap();
+        assert!(event.is_delegated_inception());
+        assert_eq!(event.delegating_prefix, Some(delegating_prefix));
+        assert!(builder.prefix().is_some());
+    }
 }
