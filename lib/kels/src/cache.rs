@@ -232,4 +232,48 @@ mod tests {
         assert!(cache.get("k2").is_none());
         assert!(cache.get("k3").is_some());
     }
+
+    #[test]
+    fn test_local_cache_clear() {
+        let mut cache = LocalCache::new(10);
+        cache.set("k1".to_string(), b"data1".to_vec());
+        cache.set("k2".to_string(), b"data2".to_vec());
+
+        cache.clear("k1");
+
+        assert!(cache.get("k1").is_none());
+        assert!(cache.get("k2").is_some());
+    }
+
+    #[test]
+    fn test_local_cache_get_nonexistent() {
+        let mut cache = LocalCache::new(10);
+        assert!(cache.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_local_cache_update_existing() {
+        let mut cache = LocalCache::new(2);
+        cache.set("k1".to_string(), b"data1".to_vec());
+        cache.set("k2".to_string(), b"data2".to_vec());
+
+        // Update k1 - should not evict k2
+        cache.set("k1".to_string(), b"updated".to_vec());
+
+        assert!(cache.get("k1").is_some());
+        assert!(cache.get("k2").is_some());
+        assert_eq!(&*cache.get("k1").unwrap(), b"updated");
+    }
+
+    #[test]
+    fn test_pubsub_channel() {
+        assert_eq!(pubsub_channel(), "kel_updates");
+    }
+
+    #[test]
+    fn test_parse_pubsub_empty_said() {
+        // When message is just prefix without colon
+        let result = parse_pubsub_message("prefixonly");
+        assert_eq!(result, Some(("prefixonly", "")));
+    }
 }

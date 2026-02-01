@@ -2,6 +2,9 @@
 //!
 //! These tests spin up real Postgres and Redis containers, start the server,
 //! and hit it via HTTP to test the full request/response flow.
+//!
+//! Each test gets its own containers and server instance for isolation.
+//! Containers are cleaned up when the test completes.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -11,25 +14,17 @@ use kels::{
 };
 use reqwest::Client;
 use std::net::TcpListener;
-use std::sync::Arc;
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
-use tokio::sync::OnceCell;
 
 /// Test harness that manages containers and server lifecycle.
+/// Container is cleaned up when harness is dropped.
 struct TestHarness {
     base_url: String,
-    // Keep containers alive for the duration of tests
+    client: Client,
+    // Keep containers alive for the duration of the test
     _postgres: ContainerAsync<Postgres>,
     _redis: ContainerAsync<Redis>,
-}
-
-impl TestHarness {
-    /// Create a new HTTP client for this test.
-    /// Each test must create its own client since they run in separate tokio runtimes.
-    fn client(&self) -> Client {
-        Client::new()
-    }
 }
 
 impl TestHarness {
@@ -75,21 +70,18 @@ impl TestHarness {
 
         let base_url = format!("http://127.0.0.1:{}", port);
 
-        // Set environment variables for the server
-        // SAFETY: We're in a test environment and the harness is initialized once via OnceCell,
-        // so there's no concurrent access to environment variables during setup.
-        unsafe {
-            std::env::set_var("DATABASE_URL", &database_url);
-            std::env::set_var("REDIS_URL", &redis_url);
-        }
-
         // Start the server in a dedicated thread with its own runtime.
-        // This ensures the server survives across test boundaries since each
-        // #[tokio::test] creates its own runtime that shuts down after the test.
         let server_port = port;
+        let db_url = database_url.clone();
+        let rd_url = redis_url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create server runtime");
             rt.block_on(async move {
+                // Set environment variables in the server's runtime context
+                unsafe {
+                    std::env::set_var("DATABASE_URL", &db_url);
+                    std::env::set_var("REDIS_URL", &rd_url);
+                }
                 if let Err(e) = kels_service::run(server_port).await {
                     eprintln!("Server error: {}", e);
                 }
@@ -98,10 +90,9 @@ impl TestHarness {
 
         // Wait for server to be ready
         let health_url = format!("{}/health", base_url);
+        let client = Client::new();
 
         for _ in 0..50 {
-            // Create a temporary client just for health checks during setup
-            let client = Client::new();
             if let Ok(resp) = client.get(&health_url).send().await
                 && resp.status().is_success()
             {
@@ -112,6 +103,7 @@ impl TestHarness {
 
         Self {
             base_url,
+            client,
             _postgres: postgres,
             _redis: redis,
         }
@@ -120,26 +112,17 @@ impl TestHarness {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
-}
 
-/// Global test harness - initialized once and reused across tests.
-/// This avoids spinning up containers for each test.
-static HARNESS: OnceCell<Arc<TestHarness>> = OnceCell::const_new();
-
-async fn get_harness() -> Arc<TestHarness> {
-    HARNESS
-        .get_or_init(|| async { Arc::new(TestHarness::new().await) })
-        .await
-        .clone()
+    fn client(&self) -> &Client {
+        &self.client
+    }
 }
 
 /// Helper to create a signed inception event.
 async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvider>) {
     let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-    let (event, signature) = builder.incept().await.unwrap();
-    let public_key = event.public_key.clone().unwrap();
-    let signed = SignedKeyEvent::new(event, public_key, signature.qb64());
-    (signed, builder)
+    let icp = builder.incept().await.unwrap();
+    (icp, builder)
 }
 
 /// Generate a valid CESR Blake3 digest to use as an anchor.
@@ -152,16 +135,14 @@ async fn create_interaction(
     builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
     anchor: &str,
 ) -> SignedKeyEvent {
-    let (event, signature) = builder.interact(anchor).await.unwrap();
-    let public_key = builder.current_public_key().await.unwrap();
-    SignedKeyEvent::new(event, public_key.qb64(), signature.qb64())
+    builder.interact(anchor).await.unwrap()
 }
 
 // ==================== Tests ====================
 
 #[tokio::test]
 async fn test_health_check() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     let response = harness
         .client()
@@ -175,7 +156,7 @@ async fn test_health_check() {
 
 #[tokio::test]
 async fn test_submit_and_get_kel() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     // Create an inception event
     let (inception, _builder) = create_inception().await;
@@ -211,7 +192,7 @@ async fn test_submit_and_get_kel() {
 
 #[tokio::test]
 async fn test_submit_multiple_events() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     // Create inception + interactions
     let (inception, mut builder) = create_inception().await;
@@ -247,7 +228,7 @@ async fn test_submit_multiple_events() {
 
 #[tokio::test]
 async fn test_get_nonexistent_kel() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     let response = harness
         .client()
@@ -261,7 +242,7 @@ async fn test_get_nonexistent_kel() {
 
 #[tokio::test]
 async fn test_batch_get_kels() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     // Create two separate KELs
     let (inception1, _) = create_inception().await;
@@ -310,7 +291,7 @@ async fn test_batch_get_kels() {
 
 #[tokio::test]
 async fn test_list_prefixes() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     // Create a KEL so there's at least one prefix
     let (inception, _) = create_inception().await;
@@ -338,7 +319,7 @@ async fn test_list_prefixes() {
 
 #[tokio::test]
 async fn test_idempotent_submit() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     let (inception, _) = create_inception().await;
     let prefix = inception.event.prefix.clone();
@@ -372,7 +353,7 @@ async fn test_idempotent_submit() {
 
 #[tokio::test]
 async fn test_submit_empty_events() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     let response = harness
         .client()
@@ -389,7 +370,7 @@ async fn test_submit_empty_events() {
 
 #[tokio::test]
 async fn test_get_kel_with_audit() {
-    let harness = get_harness().await;
+    let harness = TestHarness::new().await;
 
     let (inception, _) = create_inception().await;
     let prefix = inception.event.prefix.clone();
@@ -417,4 +398,329 @@ async fn test_get_kel_with_audit() {
     assert_eq!(result.events.len(), 1);
     // No audit records for a simple KEL
     assert!(result.audit_records.is_none());
+}
+
+#[tokio::test]
+async fn test_list_prefixes_with_limit() {
+    let harness = TestHarness::new().await;
+
+    // Create a few KELs
+    for _ in 0..3 {
+        let (inception, _) = create_inception().await;
+        harness
+            .client()
+            .post(harness.url("/api/kels/events"))
+            .json(&vec![inception])
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // List with limit=2
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/prefixes?limit=2"))
+        .send()
+        .await
+        .expect("Failed to list prefixes");
+
+    assert_eq!(response.status(), 200);
+    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    assert!(result.prefixes.len() <= 2);
+}
+
+#[tokio::test]
+async fn test_batch_kels_exceeds_max_prefixes() {
+    let harness = TestHarness::new().await;
+
+    // Create request with 51 prefixes (max is 50)
+    let prefixes: Vec<String> = (0..51).map(|i| format!("prefix_{}", i)).collect();
+    let request = BatchKelsRequest { prefixes };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to send batch request");
+
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_submit_event_missing_signature() {
+    let harness = TestHarness::new().await;
+
+    // Create inception but clear signatures
+    let (mut inception, _) = create_inception().await;
+    inception.signatures.clear();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .expect("Failed to submit events");
+
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_batch_get_kels_with_missing_prefixes() {
+    let harness = TestHarness::new().await;
+
+    // Create one KEL
+    let (inception, _) = create_inception().await;
+    let existing_prefix = inception.event.prefix.clone();
+
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Request with both existing and non-existing prefixes
+    let request = BatchKelsRequest {
+        prefixes: vec![existing_prefix.clone(), "nonexistent_prefix".to_string()],
+    };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to batch fetch");
+
+    assert_eq!(response.status(), 200);
+
+    let result: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
+        response.json().await.unwrap();
+
+    // Both prefixes should be in result, but nonexistent will have empty array
+    assert!(result.contains_key(&existing_prefix));
+    assert!(result.contains_key("nonexistent_prefix"));
+    assert!(!result.get(&existing_prefix).unwrap().is_empty());
+    assert!(result.get("nonexistent_prefix").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_submit_event_invalid_signature_format() {
+    let harness = TestHarness::new().await;
+
+    // Create inception and corrupt signature format
+    let (mut inception, _) = create_inception().await;
+    inception.signatures[0].signature = "invalid_not_cesr_signature".to_string();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .expect("Failed to submit events");
+
+    assert_eq!(response.status(), 400);
+    let error: kels::ErrorResponse = response.json().await.unwrap();
+    assert!(error.error.contains("Invalid signature format"));
+}
+
+#[tokio::test]
+async fn test_submit_rotation_event() {
+    let harness = TestHarness::new().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create rotation event
+    let rot = builder.rotate().await.unwrap();
+
+    // Submit rotation
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![rot])
+        .send()
+        .await
+        .expect("Failed to submit rotation");
+
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.accepted);
+
+    // Verify KEL now has 2 events
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+
+    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn test_list_prefixes_pagination_with_cursor() {
+    let harness = TestHarness::new().await;
+
+    // Create several KELs
+    let mut prefixes = Vec::new();
+    for _ in 0..3 {
+        let (inception, _) = create_inception().await;
+        prefixes.push(inception.event.prefix.clone());
+        harness
+            .client()
+            .post(harness.url("/api/kels/events"))
+            .json(&vec![inception])
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Get first page with limit=1
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/prefixes?limit=1"))
+        .send()
+        .await
+        .expect("Failed to list prefixes");
+
+    assert_eq!(response.status(), 200);
+    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    assert_eq!(result.prefixes.len(), 1);
+
+    // Use cursor to get next page if available
+    if let Some(cursor) = &result.next_cursor {
+        let response = harness
+            .client()
+            .get(harness.url(&format!("/api/kels/prefixes?since={}&limit=1", cursor)))
+            .send()
+            .await
+            .expect("Failed to list prefixes with cursor");
+
+        assert_eq!(response.status(), 200);
+        let next_result: kels::PrefixListResponse = response.json().await.unwrap();
+        // Second page should have different prefix(es) than first page
+        if !next_result.prefixes.is_empty() {
+            assert_ne!(result.prefixes[0].prefix, next_result.prefixes[0].prefix);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_submit_decommission_event() {
+    let harness = TestHarness::new().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create decommission event - decommission() adds the dual-signed event to internal KEL
+    let _ = builder.decommission().await.unwrap();
+
+    // Get the properly signed decommission event from builder's KEL
+    let events = builder.events();
+    let signed_dec = events.last().unwrap().clone();
+
+    // Submit decommission
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![signed_dec])
+        .send()
+        .await
+        .expect("Failed to submit decommission");
+
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.accepted);
+
+    // Verify KEL now has 2 events (icp + dec)
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+
+    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn test_get_kel_not_found_with_audit() {
+    let harness = TestHarness::new().await;
+
+    let response = harness
+        .client()
+        .get(harness.url("/api/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn test_submit_recovery_event_requires_dual_signature() {
+    let harness = TestHarness::new().await;
+
+    // Create inception
+    let (inception, mut builder) = create_inception().await;
+
+    // Submit inception
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception])
+        .send()
+        .await
+        .unwrap();
+
+    // Create recovery event (with rotation) - this creates dual-signed event internally
+    let _ = builder.recover(true).await.unwrap();
+
+    // Get the properly signed recovery event and strip one signature for testing
+    let events = builder.events();
+    // Recovery creates a rec event first, then a rot event
+    let rec_event = events.iter().find(|e| e.event.is_recover()).unwrap();
+    let mut signed_rec = rec_event.clone();
+    // Remove one signature to trigger dual signature validation error
+    signed_rec.signatures.truncate(1);
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![signed_rec])
+        .send()
+        .await
+        .expect("Failed to submit recovery");
+
+    assert_eq!(response.status(), 400);
+    let error: kels::ErrorResponse = response.json().await.unwrap();
+    assert!(error.error.contains("Dual signatures required"));
 }

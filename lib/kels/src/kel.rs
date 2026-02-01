@@ -139,7 +139,7 @@ impl Kel {
         })
     }
 
-    pub fn get_owner_kel_saids_from_tail(&self, tail_said: &str) -> HashSet<String> {
+    pub fn get_event_saids_from_tail(&self, tail_said: &str) -> HashSet<String> {
         let mut saids = HashSet::new();
         let mut current_said = Some(tail_said.to_string());
         while let Some(said) = current_said {
@@ -170,23 +170,23 @@ impl Kel {
         self.sort();
     }
 
-    pub fn remove_adversary_events(
+    pub fn filter_events_by_said(
         &mut self,
-        owner_saids: &HashSet<String>,
+        keep: &HashSet<String>,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let owner_events = self
+        let events_to_keep = self
             .iter()
-            .filter(|e| owner_saids.contains(&e.event.said))
+            .filter(|e| keep.contains(&e.event.said))
             .cloned()
             .collect();
-        let adversary_events = self
+        let events_to_remove = self
             .iter()
-            .filter(|e| !owner_saids.contains(&e.event.said))
+            .filter(|e| !keep.contains(&e.event.said))
             .cloned()
             .collect();
-        self.0 = owner_events;
+        self.0 = events_to_keep;
         self.sort();
-        Ok(adversary_events)
+        Ok(events_to_remove)
     }
 
     pub fn truncate(&mut self, len: usize) {
@@ -259,8 +259,8 @@ impl Kel {
                         ));
                     };
 
-                    let owner_kel_saids = self.get_owner_kel_saids_from_tail(owner_tail_said);
-                    let adversary_events = self.remove_adversary_events(&owner_kel_saids)?;
+                    let owner_kel_saids = self.get_event_saids_from_tail(owner_tail_said);
+                    let adversary_events = self.filter_events_by_said(&owner_kel_saids)?;
 
                     self.extend(events.iter().cloned());
                     self.verify()?;
@@ -282,6 +282,13 @@ impl Kel {
         // Track old events that get removed (for archiving) and the merge result
         let (old_events_removed, new_events_added, result) = if first_previous == last_said {
             // Normal append - no overlap, no divergence
+            // Contest requires divergence - cannot append normally
+            if first.event.is_contest() {
+                return Err(KelsError::InvalidKel(
+                    "Contest requires divergence".to_string(),
+                ));
+            }
+
             // Decommission blocks normal appends (but not divergence detection)
             if self.is_decommissioned() {
                 return Err(KelsError::KelDecommissioned);
@@ -379,8 +386,8 @@ impl Kel {
                             "Divergence detected but no new divergent events".to_string(),
                         ));
                     };
-                    let owner_saids = self.get_owner_kel_saids_from_tail(&new_tail_said);
-                    let removed_events = self.remove_adversary_events(&owner_saids)?;
+                    let owner_saids = self.get_event_saids_from_tail(&new_tail_said);
+                    let removed_events = self.filter_events_by_said(&owner_saids)?;
                     (
                         removed_events,
                         divergent_new_events,
@@ -762,7 +769,7 @@ impl IntoIterator for Kel {
 mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
-    use crate::crypto::SoftwareKeyProvider;
+    use crate::crypto::{KeyProvider, SoftwareKeyProvider};
     use cesr::PrivateKey;
     use verifiable_storage::SelfAddressed;
 
@@ -782,73 +789,65 @@ mod tests {
     async fn test_incept() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
-        let (event, signature) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
 
-        assert!(event.is_inception());
-        assert!(!event.said.is_empty());
-        assert!(event.previous.is_none());
-        assert!(event.public_key.is_some());
-        assert!(event.rotation_hash.is_some());
+        assert!(icp.event.is_inception());
+        assert!(!icp.event.said.is_empty());
+        assert!(icp.event.previous.is_none());
+        assert!(icp.event.public_key.is_some());
+        assert!(icp.event.rotation_hash.is_some());
 
         let public_key = builder.current_public_key().await.unwrap();
-        assert!(public_key.verify(event.said.as_bytes(), &signature).is_ok());
+        let signature = cesr::Signature::from_qb64(&icp.signatures[0].signature).unwrap();
+        assert!(
+            public_key
+                .verify(icp.event.said.as_bytes(), &signature)
+                .is_ok()
+        );
 
-        assert_eq!(builder.prefix(), Some(event.prefix.as_str()));
+        assert_eq!(builder.prefix(), Some(icp.event.prefix.as_str()));
     }
 
     #[tokio::test]
     async fn test_interact() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
-        let (icp_event, _) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
 
         let anchor = "ESAID_of_some_credential";
-        let (ixn_event, signature) = builder.interact(anchor).await.unwrap();
+        let ixn = builder.interact(anchor).await.unwrap();
 
-        assert!(ixn_event.is_interaction());
-        assert_ne!(ixn_event.said, icp_event.said);
-        assert_eq!(ixn_event.prefix, icp_event.prefix);
-        assert_eq!(ixn_event.previous, Some(icp_event.said));
-        assert_eq!(ixn_event.anchor, Some(anchor.to_string()));
-        assert!(ixn_event.public_key.is_none());
-        assert!(ixn_event.rotation_hash.is_none());
-
-        let public_key = builder.current_public_key().await.unwrap();
-        assert!(
-            public_key
-                .verify(ixn_event.said.as_bytes(), &signature)
-                .is_ok()
-        );
+        assert!(ixn.event.is_interaction());
+        assert_ne!(ixn.event.said, icp.event.said);
+        assert_eq!(ixn.event.prefix, icp.event.prefix);
+        assert_eq!(ixn.event.previous, Some(icp.event.said.clone()));
+        assert_eq!(ixn.event.anchor, Some(anchor.to_string()));
+        assert!(ixn.event.public_key.is_none());
+        assert!(ixn.event.rotation_hash.is_none());
     }
 
     #[tokio::test]
     async fn test_rotate() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
-        let (icp_event, _) = builder.incept().await.unwrap();
+        let icp = builder.incept().await.unwrap();
         let original_public_key = builder.current_public_key().await.unwrap();
 
-        let (rot_event, signature) = builder.rotate().await.unwrap();
+        let rot = builder.rotate().await.unwrap();
 
-        assert!(rot_event.is_rotation());
-        assert_ne!(rot_event.said, icp_event.said);
-        assert_eq!(rot_event.prefix, icp_event.prefix);
-        assert_eq!(rot_event.previous, Some(icp_event.said));
-        assert!(rot_event.public_key.is_some());
-        assert!(rot_event.rotation_hash.is_some());
+        assert!(rot.event.is_rotation());
+        assert_ne!(rot.event.said, icp.event.said);
+        assert_eq!(rot.event.prefix, icp.event.prefix);
+        assert_eq!(rot.event.previous, Some(icp.event.said.clone()));
+        assert!(rot.event.public_key.is_some());
+        assert!(rot.event.rotation_hash.is_some());
 
         let new_public_key = builder.current_public_key().await.unwrap();
         assert_ne!(original_public_key.qb64(), new_public_key.qb64());
 
-        let rotation_hash = icp_event.rotation_hash.unwrap();
+        let rotation_hash = icp.event.rotation_hash.unwrap();
         let expected_hash = compute_rotation_hash(&new_public_key.qb64());
         assert_eq!(rotation_hash, expected_hash);
-
-        assert!(
-            new_public_key
-                .verify(rot_event.said.as_bytes(), &signature)
-                .is_ok()
-        );
     }
 
     #[tokio::test]
@@ -871,115 +870,82 @@ mod tests {
     async fn test_said_verification() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
-        let (event, _) = builder.incept().await.unwrap();
-        assert!(event.verify_prefix().is_ok());
+        let icp = builder.incept().await.unwrap();
+        assert!(icp.event.verify_prefix().is_ok());
 
-        let (ixn_event, _) = builder.interact("anchor").await.unwrap();
-        assert!(ixn_event.verify_said().is_ok());
+        let ixn = builder.interact("anchor").await.unwrap();
+        assert!(ixn.event.verify_said().is_ok());
     }
 
     #[tokio::test]
     async fn test_with_kel() {
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder1.incept().await.unwrap();
-        let public_key = icp_event.public_key.clone().unwrap();
+        let icp = builder1.incept().await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
-        let mut kel = Kel::new();
-        kel.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            public_key,
-            icp_sig.qb64(),
-        ));
+        let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            kel.clone(),
+            kel,
         )
         .unwrap();
 
-        let (ixn_event, _) = builder2.interact("anchor").await.unwrap();
-        assert_eq!(ixn_event.prefix, icp_event.prefix);
-        assert_eq!(ixn_event.previous, Some(icp_event.said));
+        let ixn = builder2.interact("anchor").await.unwrap();
+        assert_eq!(ixn.event.prefix, icp.event.prefix);
+        assert_eq!(ixn.event.previous, Some(icp.event.said.clone()));
     }
 
     #[tokio::test]
     async fn test_rotation_after_interactions() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder.incept().await.unwrap();
-        let (ixn1, ixn1_sig) = builder.interact("anchor1").await.unwrap();
-        let (ixn2, ixn2_sig) = builder.interact("anchor2").await.unwrap();
-        let public_key = icp_event.public_key.clone().unwrap();
-
-        let kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn1.clone(), public_key.clone(), ixn1_sig.qb64()),
-                SignedKeyEvent::new(ixn2.clone(), public_key.clone(), ixn2_sig.qb64()),
-            ],
-            false,
-        )
-        .unwrap();
+        let icp = builder.incept().await.unwrap();
+        builder.interact("anchor1").await.unwrap();
+        let ixn2 = builder.interact("anchor2").await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder);
+        let kel = Kel::from_events(builder.events().to_vec(), false).unwrap();
         let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            kel.clone(),
+            kel,
         )
         .unwrap();
 
-        assert_eq!(builder2.last_event().unwrap().said, ixn2.said);
+        assert_eq!(builder2.last_event().unwrap().said, ixn2.event.said);
         assert_eq!(
             builder2.last_establishment_event().unwrap().said,
-            icp_event.said
+            icp.event.said
         );
 
-        let (rot_event, _) = builder2.rotate().await.unwrap();
-        assert_eq!(rot_event.previous, Some(ixn2.said));
+        let rot = builder2.rotate().await.unwrap();
+        assert_eq!(rot.event.previous, Some(ixn2.event.said.clone()));
     }
 
     #[tokio::test]
     async fn test_kel_struct() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
 
-        let (icp_event, icp_sig) = builder.incept().await.unwrap();
-        let (ixn_event, ixn_sig) = builder.interact("test_anchor").await.unwrap();
+        let icp = builder.incept().await.unwrap();
+        let ixn = builder.interact("test_anchor").await.unwrap();
 
         let mut kel = Kel::new();
         assert!(kel.is_empty());
         assert!(kel.prefix().is_none());
 
-        let icp_public_key = icp_event.public_key.clone().unwrap();
-        kel.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        kel.push(icp.clone());
 
         assert_eq!(kel.len(), 1);
-        assert_eq!(kel.prefix(), Some(icp_event.prefix.as_str()));
-        assert_eq!(kel.last_said(), Some(icp_event.said.as_str()));
+        assert_eq!(kel.prefix(), Some(icp.event.prefix.as_str()));
+        assert_eq!(kel.last_said(), Some(icp.event.said.as_str()));
 
-        kel.push(SignedKeyEvent::new(
-            ixn_event.clone(),
-            icp_public_key, // ixn signed with same key as icp
-            ixn_sig.qb64(),
-        ));
+        kel.push(ixn.clone());
 
         assert_eq!(kel.len(), 2);
-        assert_eq!(kel.last_said(), Some(ixn_event.said.as_str()));
+        assert_eq!(kel.last_said(), Some(ixn.event.said.as_str()));
         assert!(kel.contains_anchor("test_anchor"));
         assert!(!kel.contains_anchor("other_anchor"));
 
@@ -989,23 +955,17 @@ mod tests {
     #[tokio::test]
     async fn test_json_roundtrip() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (event, signature) = builder.incept().await.unwrap();
-
-        let public_key = event.public_key.clone().unwrap();
-        let signed = SignedKeyEvent::new(event.clone(), public_key.clone(), signature.qb64());
+        let icp = builder.incept().await.unwrap();
 
         // Serialize to JSON
-        let json = serde_json::to_string(&signed).unwrap();
+        let json = serde_json::to_string(&icp).unwrap();
 
         // Deserialize from JSON
         let deserialized: SignedKeyEvent = serde_json::from_str(&json).unwrap();
 
         // Verify the roundtrip worked
-        assert_eq!(deserialized.event.said, event.said);
-        assert_eq!(deserialized.event.prefix, event.prefix);
-
-        let sig = deserialized.signature(&public_key).unwrap();
-        assert_eq!(sig.signature, signature.qb64());
+        assert_eq!(deserialized.event.said, icp.event.said);
+        assert_eq!(deserialized.event.prefix, icp.event.prefix);
 
         // Verify the KEL works with deserialized event
         let mut kel = Kel::new();
@@ -1017,18 +977,10 @@ mod tests {
     async fn test_find_divergence_none() {
         // Normal KEL with no divergence
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder.incept().await.unwrap();
-        let (ixn_event, ixn_sig) = builder.interact("anchor").await.unwrap();
+        builder.incept().await.unwrap();
+        builder.interact("anchor").await.unwrap();
 
-        let public_key = icp_event.public_key.clone().unwrap();
-        let kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn_event.clone(), public_key.clone(), ixn_sig.qb64()),
-            ],
-            true, // skip verify for test
-        )
-        .unwrap();
+        let kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
 
         assert!(kel.find_divergence().is_none());
     }
@@ -1037,179 +989,95 @@ mod tests {
     async fn test_find_divergence_two_way() {
         // KEL with 2 events at same version (2-way divergence)
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder1.incept().await.unwrap();
-        let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
+        let icp = builder1.incept().await.unwrap();
 
-        // Create a second builder from the same icp to make a divergent event
-        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+        // Clone builder after inception to create adversary with same state
+        let mut builder2 = builder1.clone();
 
-        let icp_public_key = icp_event.public_key.clone().unwrap();
-        let mut kel_for_builder2 = Kel::new();
-        kel_for_builder2.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
-            None,
-            None,
-            kel_for_builder2.clone(),
-        )
-        .unwrap();
-        let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
-
-        // Both ixn1 and ixn2 are at version 1, chaining from icp
-        assert_ne!(ixn1.said, ixn2.said);
+        // Both ixn1 and ixn2 chain from icp
+        assert_ne!(ixn1.event.said, ixn2.event.said);
 
         // Create KEL with both divergent events
-        let kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn1.clone(), icp_public_key.clone(), ixn1_sig.qb64()),
-                SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
-            ],
-            true, // skip verify - divergent KEL won't pass normal verification
-        )
-        .unwrap();
+        let kel = Kel::from_events(vec![icp, ixn1.clone(), ixn2.clone()], true).unwrap();
 
         let divergence = kel.find_divergence();
         assert!(divergence.is_some());
         let info = divergence.unwrap();
         assert_eq!(info.diverged_at_generation, 1);
         assert_eq!(info.divergent_saids.len(), 2);
-        assert!(info.divergent_saids.contains(&ixn1.said));
-        assert!(info.divergent_saids.contains(&ixn2.said));
+        assert!(info.divergent_saids.contains(&ixn1.event.said));
+        assert!(info.divergent_saids.contains(&ixn2.event.said));
     }
 
     #[tokio::test]
     async fn test_find_divergence_three_way() {
         // KEL with 3 events at same version (3-way divergence from race condition)
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder1.incept().await.unwrap();
-        let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
+        let icp = builder1.incept().await.unwrap();
 
-        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+        // Clone builder after inception to create two adversaries
+        let mut builder2 = builder1.clone();
+        let mut builder3 = builder1.clone();
 
-        let icp_public_key = icp_event.public_key.clone().unwrap();
-        let mut kel_for_builder2 = Kel::new();
-        kel_for_builder2.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
+        let ixn3 = builder3.interact("anchor3").await.unwrap();
 
-        // Create second divergent event
-        let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
-            ),
-            None,
-            None,
-            kel_for_builder2.clone(),
-        )
-        .unwrap();
-        let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
-
-        // Create third divergent event
-        let mut builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
-            None,
-            None,
-            kel_for_builder2.clone(),
-        )
-        .unwrap();
-        let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
-
-        // All three ixn events are at version 1
-        assert_ne!(ixn1.said, ixn2.said);
-        assert_ne!(ixn2.said, ixn3.said);
-        assert_ne!(ixn1.said, ixn3.said);
+        // All three ixn events chain from icp
+        assert_ne!(ixn1.event.said, ixn2.event.said);
+        assert_ne!(ixn2.event.said, ixn3.event.said);
+        assert_ne!(ixn1.event.said, ixn3.event.said);
 
         // Create KEL with all three divergent events
-        let kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn1.clone(), icp_public_key.clone(), ixn1_sig.qb64()),
-                SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
-                SignedKeyEvent::new(ixn3.clone(), icp_public_key.clone(), ixn3_sig.qb64()),
-            ],
-            true, // skip verify
-        )
-        .unwrap();
+        let kel =
+            Kel::from_events(vec![icp, ixn1.clone(), ixn2.clone(), ixn3.clone()], true).unwrap();
 
         let divergence = kel.find_divergence();
         assert!(divergence.is_some());
         let info = divergence.unwrap();
         assert_eq!(info.diverged_at_generation, 1);
         assert_eq!(info.divergent_saids.len(), 3);
-        assert!(info.divergent_saids.contains(&ixn1.said));
-        assert!(info.divergent_saids.contains(&ixn2.said));
-        assert!(info.divergent_saids.contains(&ixn3.said));
+        assert!(info.divergent_saids.contains(&ixn1.event.said));
+        assert!(info.divergent_saids.contains(&ixn2.event.said));
+        assert!(info.divergent_saids.contains(&ixn3.event.said));
     }
 
     #[tokio::test]
     async fn test_with_kel_divergent_sets_correct_state() {
         // When loading a divergent KEL, with_kel should set state to last non-divergent event
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder1.incept().await.unwrap();
-        let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
+        let icp = builder1.incept().await.unwrap();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
-        let icp_public_key = icp_event.public_key.clone().unwrap();
-        let mut kel_for_builder2 = Kel::new();
-        kel_for_builder2.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let kel_for_builder2 = Kel::from_events(vec![icp.clone()], true).unwrap();
 
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
-            kel_for_builder2.clone(),
+            kel_for_builder2,
         )
         .unwrap();
-        let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
 
         // Create divergent KEL with events at v0 (icp) and two at v1
-        let divergent_kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn1.clone(), icp_public_key.clone(), ixn1_sig.qb64()),
-                SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
-            ],
-            true, // skip verify
-        )
-        .unwrap();
+        let divergent_kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
 
         // Verify it's divergent
         assert!(divergent_kel.find_divergence().is_some());
 
         // Load with with_kel
         let builder3 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1231,56 +1099,41 @@ mod tests {
     async fn test_with_kel_three_way_divergent() {
         // Test that 3-way divergence is handled correctly by with_kel
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp_event, icp_sig) = builder1.incept().await.unwrap();
-        let (ixn1, ixn1_sig) = builder1.interact("anchor1").await.unwrap();
+        let icp = builder1.incept().await.unwrap();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
-        let icp_public_key = icp_event.public_key.clone().unwrap();
-        let mut kel_for_others = Kel::new();
-        kel_for_others.push(SignedKeyEvent::new(
-            icp_event.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let kel_for_others = Kel::from_events(vec![icp.clone()], true).unwrap();
 
         let mut builder2 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
             kel_for_others.clone(),
         )
         .unwrap();
-        let (ixn2, ixn2_sig) = builder2.interact("anchor2").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
 
         let mut builder3 = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
-            kel_for_others.clone(),
+            kel_for_others,
         )
         .unwrap();
-        let (ixn3, ixn3_sig) = builder3.interact("anchor3").await.unwrap();
+        let ixn3 = builder3.interact("anchor3").await.unwrap();
 
         // Create 3-way divergent KEL
-        let divergent_kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp_event.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(ixn1.clone(), icp_public_key.clone(), ixn1_sig.qb64()),
-                SignedKeyEvent::new(ixn2.clone(), icp_public_key.clone(), ixn2_sig.qb64()),
-                SignedKeyEvent::new(ixn3.clone(), icp_public_key.clone(), ixn3_sig.qb64()),
-            ],
-            true, // skip verify
-        )
-        .unwrap();
+        let divergent_kel = Kel::from_events(vec![icp, ixn1, ixn2, ixn3], true).unwrap();
 
         // Verify 3-way divergence
         let info = divergent_kel.find_divergence().unwrap();
@@ -1288,11 +1141,7 @@ mod tests {
 
         // Load with with_kel
         let loaded_builder = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(current_key),
-                Some(next_key),
-                Some(recovery_key),
-            ),
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
             divergent_kel.clone(),
@@ -1310,56 +1159,34 @@ mod tests {
         // This is critical for knowing when to submit [rec, rot] vs just [rec]
 
         let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = owner.incept().await.unwrap();
-        let (owner_ixn, owner_ixn_sig) = owner.interact("owner-anchor").await.unwrap();
+        let icp = owner.incept().await.unwrap();
+        let owner_ixn = owner.interact("owner-anchor").await.unwrap();
 
         // Save owner's keys for adversary simulation
         let (current_key, next_key, recovery_key) = clone_keys(&owner);
-        let icp_public_key = icp.public_key.clone().unwrap();
 
         // Adversary creates a rotation at v1 (same version as owner's ixn)
-        let mut adversary_kel = Kel::new();
-        adversary_kel.push(SignedKeyEvent::new(
-            icp.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
         let mut adversary = KeyEventBuilder::with_kel(
             SoftwareKeyProvider::with_all_keys(
-                Some(current_key.clone()),
-                Some(next_key.clone()),
-                Some(recovery_key.clone()),
+                current_key.clone(),
+                next_key.clone(),
+                recovery_key.clone(),
             ),
             None,
             None,
-            adversary_kel.clone(),
+            adversary_kel,
         )
         .unwrap();
-        let (adversary_rot, adversary_rot_sig) = adversary.rotate().await.unwrap();
+        let adversary_rot = adversary.rotate().await.unwrap();
 
         // Both events are at version 1
-        assert!(adversary_rot.is_rotation());
+        assert!(adversary_rot.event.is_rotation());
 
         // Create the server KEL with both divergent events
-        let rot_public_key = adversary_rot.public_key.clone().unwrap();
-        let server_kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(
-                    owner_ixn.clone(),
-                    icp_public_key.clone(),
-                    owner_ixn_sig.qb64(),
-                ),
-                SignedKeyEvent::new(
-                    adversary_rot.clone(),
-                    rot_public_key.clone(),
-                    adversary_rot_sig.qb64(),
-                ),
-            ],
-            true, // skip verify - divergent
-        )
-        .unwrap();
+        let server_kel =
+            Kel::from_events(vec![icp, owner_ixn.clone(), adversary_rot.clone()], true).unwrap();
 
         // Verify divergence exists
         let divergence = server_kel.find_divergence().unwrap();
@@ -1370,10 +1197,10 @@ mod tests {
         let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Check: adversary_rot should NOT be in owner's SAIDs (it's adversary's event)
-        assert!(!owner_saids.contains(&adversary_rot.said));
+        assert!(!owner_saids.contains(&adversary_rot.event.said));
 
         // Check: owner_ixn SHOULD be in owner's SAIDs
-        assert!(owner_saids.contains(&owner_ixn.said));
+        assert!(owner_saids.contains(&owner_ixn.event.said));
 
         // Simulate the adversary rotation detection logic from recover_from_divergence
         let adversary_rotated = server_kel.events().iter().any(|e| {
@@ -1391,60 +1218,32 @@ mod tests {
         // Test that owner's own rotation is NOT detected as adversary rotation
 
         let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let (icp, icp_sig) = owner.incept().await.unwrap();
+        let icp = owner.incept().await.unwrap();
 
         // Save keys for adversary BEFORE rotation (adversary has inception-era keys)
         let (pre_rot_current, pre_rot_next, pre_rot_recovery) = clone_keys(&owner);
 
-        let (owner_rot, owner_rot_sig) = owner.rotate().await.unwrap();
-
-        let icp_public_key = icp.public_key.clone().unwrap();
-        let rot_public_key = owner_rot.public_key.clone().unwrap();
+        let owner_rot = owner.rotate().await.unwrap();
 
         // Adversary injects ixn at v1 (same version as owner's rot) using inception key
-        let mut adversary_kel = Kel::new();
-        adversary_kel.push(SignedKeyEvent::new(
-            icp.clone(),
-            icp_public_key.clone(),
-            icp_sig.qb64(),
-        ));
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
         let mut adversary = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(
-                Some(pre_rot_current),
-                Some(pre_rot_next),
-                Some(pre_rot_recovery),
-            ),
+            SoftwareKeyProvider::with_all_keys(pre_rot_current, pre_rot_next, pre_rot_recovery),
             None,
             None,
-            adversary_kel.clone(),
+            adversary_kel,
         )
         .unwrap();
-        let (adversary_ixn, adversary_ixn_sig) =
-            adversary.interact("adversary-anchor").await.unwrap();
+        let adversary_ixn = adversary.interact("adversary-anchor").await.unwrap();
 
         // Both events at version 1
-        assert!(owner_rot.is_rotation());
-        assert!(!adversary_ixn.is_rotation());
+        assert!(owner_rot.event.is_rotation());
+        assert!(!adversary_ixn.event.is_rotation());
 
         // Create server KEL with divergence
-        let server_kel = Kel::from_events(
-            vec![
-                SignedKeyEvent::new(icp.clone(), icp_public_key.clone(), icp_sig.qb64()),
-                SignedKeyEvent::new(
-                    owner_rot.clone(),
-                    rot_public_key.clone(),
-                    owner_rot_sig.qb64(),
-                ),
-                SignedKeyEvent::new(
-                    adversary_ixn.clone(),
-                    icp_public_key.clone(),
-                    adversary_ixn_sig.qb64(),
-                ),
-            ],
-            true, // skip verify
-        )
-        .unwrap();
+        let server_kel =
+            Kel::from_events(vec![icp, owner_rot.clone(), adversary_ixn], true).unwrap();
 
         let divergence = server_kel.find_divergence().unwrap();
         assert_eq!(divergence.diverged_at_generation, 1);
@@ -1454,7 +1253,7 @@ mod tests {
         let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Owner's rot IS in owner's SAIDs
-        assert!(owner_saids.contains(&owner_rot.said));
+        assert!(owner_saids.contains(&owner_rot.event.said));
 
         // Simulate adversary rotation detection
         let adversary_rotated = server_kel.events().iter().any(|e| {
@@ -1468,5 +1267,1129 @@ mod tests {
             !adversary_rotated,
             "Should NOT detect owner rotation as adversary rotation"
         );
+    }
+
+    // ==================== Basic Kel tests ====================
+
+    #[test]
+    fn test_compute_rotation_hash() {
+        let public_key = "1AAACk1SoB-PO_xcbaR6LgKHVgojABYjAhd4kEk7-qeS";
+        let hash = compute_rotation_hash(public_key);
+        // Should produce a Blake3-256 digest (starts with 'E')
+        assert!(hash.starts_with('E'));
+        assert_eq!(hash.len(), 44);
+
+        // Same input should produce same output
+        let hash2 = compute_rotation_hash(public_key);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_kel_new_is_empty() {
+        let kel = Kel::new();
+        assert!(kel.is_empty());
+        assert_eq!(kel.len(), 0);
+        assert!(kel.prefix().is_none());
+        assert!(kel.last_said().is_none());
+        assert!(kel.last_event().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kel_truncate() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        let ixn1 = builder.interact("anchor1").await.unwrap();
+        builder.interact("anchor2").await.unwrap();
+
+        let mut kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        assert_eq!(kel.len(), 3);
+        kel.truncate(2);
+        assert_eq!(kel.len(), 2);
+        assert_eq!(kel.last_said(), Some(ixn1.event.said.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_kel_confirmed_length_no_divergence() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact("anchor").await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        // No divergence, so confirmed length equals total length
+        assert_eq!(kel.confirmed_length(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_kel_confirmed_length_with_divergence() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        let kel_for_builder2 = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            kel_for_builder2,
+        )
+        .unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
+
+        // Divergent KEL at generation 1
+        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
+
+        // Divergence at generation 1, so confirmed length is 1 (just inception)
+        assert_eq!(kel.confirmed_length(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_kel_last_establishment_event() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact("anchor").await.unwrap();
+        let rot = builder.rotate().await.unwrap();
+        let ixn2 = builder.interact("anchor2").await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), false).unwrap();
+
+        // Last event is ixn2, but last establishment is rot
+        assert_eq!(kel.last_event().unwrap().event.said, ixn2.event.said);
+        assert_eq!(
+            kel.last_establishment_event().unwrap().event.said,
+            rot.event.said
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kel_from_events_empty_with_verify_succeeds() {
+        // Empty events with skip_verify=false should succeed (no verification needed)
+        let kel = Kel::from_events(vec![], false).unwrap();
+        assert!(kel.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_kel_verify_empty_fails() {
+        let kel = Kel::new();
+        let result = kel.verify();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_extend() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let ixn1 = builder.interact("anchor1").await.unwrap();
+        let ixn2 = builder.interact("anchor2").await.unwrap();
+
+        let mut kel = Kel::new();
+        kel.push(icp);
+        assert_eq!(kel.len(), 1);
+
+        // Extend with multiple events
+        kel.extend(vec![ixn1, ixn2]);
+        assert_eq!(kel.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_kel_into_iterator() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let ixn = builder.interact("anchor").await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        let events: Vec<_> = kel.into_iter().collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event.said, icp.event.said);
+        assert_eq!(events[1].event.said, ixn.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_deref() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        // Test Deref - can use Vec methods
+        assert_eq!(kel.first().unwrap().event.said, icp.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_empty_events_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        let result = kel.merge(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_gap_in_chain_fails() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        builder.interact("anchor1").await.unwrap();
+        let ixn2 = builder.interact("anchor2").await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Try to add ixn2 directly (skipping ixn1) - should fail due to gap
+        let result = kel.merge(vec![ixn2]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kel_map_saids_by_event_generation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let ixn = builder.interact("anchor").await.unwrap();
+        let rot = builder.rotate().await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), false).unwrap();
+
+        let saids = kel.map_saids_by_event_generation();
+        assert_eq!(saids.len(), 3);
+        assert!(saids.get(&0).unwrap().contains(&icp.event.said));
+        assert!(saids.get(&1).unwrap().contains(&ixn.event.said));
+        assert!(saids.get(&2).unwrap().contains(&rot.event.said));
+    }
+
+    #[tokio::test]
+    async fn test_kel_map_saids_by_event_generation_with_divergence() {
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone builder for adversary before divergence
+        let mut adversary = owner.clone();
+
+        let anchor1 = "EOwnerAnchor________________________________";
+        let owner_ixn = owner.interact(anchor1).await.unwrap();
+
+        let anchor2 = "EAdversaryAnchor____________________________";
+        let adversary_ixn = adversary.interact(anchor2).await.unwrap();
+
+        // Create divergent KEL
+        let kel =
+            Kel::from_events(vec![icp, owner_ixn.clone(), adversary_ixn.clone()], true).unwrap();
+
+        // Verify divergence exists
+        assert!(kel.find_divergence().is_some());
+
+        let saids = kel.map_saids_by_event_generation();
+
+        // Generation 0 has icp, generation 1 has both divergent ixns
+        assert_eq!(saids.len(), 2);
+        assert_eq!(saids.get(&0).unwrap().len(), 1);
+
+        // Generation 1 should have both divergent events
+        assert_eq!(saids.get(&1).unwrap().len(), 2);
+        assert!(saids.get(&1).unwrap().contains(&owner_ixn.event.said));
+        assert!(saids.get(&1).unwrap().contains(&adversary_ixn.event.said));
+    }
+
+    #[tokio::test]
+    async fn test_kel_get_kel_saids_from_tail() {
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone builder state after inception for adversary
+        let mut adversary = owner.clone();
+
+        let owner_ixn = owner.interact("owner-anchor").await.unwrap();
+        let adversary_ixn = adversary.interact("adversary-anchor").await.unwrap();
+
+        // Both ixn events are at the same generation (both point to icp) but have different SAIDs
+        assert_eq!(owner_ixn.event.previous, adversary_ixn.event.previous);
+        assert_ne!(owner_ixn.event.said, adversary_ixn.event.said);
+
+        // Create divergent KEL with both owner and adversary events
+        let kel = Kel::from_events(
+            vec![icp.clone(), owner_ixn.clone(), adversary_ixn.clone()],
+            true,
+        )
+        .unwrap();
+
+        // Verify KEL is divergent
+        assert!(kel.find_divergence().is_some());
+
+        // Get owner SAIDs starting from owner's ixn (tail)
+        // Should only include owner's chain, not adversary's event
+        let owner_saids = kel.get_event_saids_from_tail(&owner_ixn.event.said);
+        assert_eq!(owner_saids.len(), 2);
+        assert!(owner_saids.contains(&icp.event.said));
+        assert!(owner_saids.contains(&owner_ixn.event.said));
+        assert!(!owner_saids.contains(&adversary_ixn.event.said));
+
+        // Get adversary SAIDs starting from adversary's ixn
+        // Should only include adversary's chain
+        let adversary_saids = kel.get_event_saids_from_tail(&adversary_ixn.event.said);
+        assert_eq!(adversary_saids.len(), 2);
+        assert!(adversary_saids.contains(&icp.event.said));
+        assert!(adversary_saids.contains(&adversary_ixn.event.said));
+        assert!(!adversary_saids.contains(&owner_ixn.event.said));
+    }
+
+    #[tokio::test]
+    async fn test_kel_sort_orders_by_generation() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let ixn = builder.interact("anchor").await.unwrap();
+
+        // Create KEL with events in wrong order
+        let mut kel = Kel(vec![ixn.clone(), icp.clone()]);
+
+        // Sort should reorder them
+        kel.sort();
+        assert_eq!(kel.0[0].event.said, icp.event.said);
+        assert_eq!(kel.0[1].event.said, ixn.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_normal_append() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        // Use a valid Blake3 anchor (computed from test data)
+        let anchor = Digest::blake3_256(b"test_anchor").qb64();
+        let ixn = builder.interact(&anchor).await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Normal append
+        let result = kel.merge(vec![ixn]);
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert!(archived.is_empty());
+        assert_eq!(added.len(), 1);
+        assert_eq!(merge_result, KelMergeResult::Verified);
+        assert_eq!(kel.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_kel_is_decommissioned() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Not decommissioned initially
+        assert!(!kel.is_decommissioned());
+
+        // Create decommission event
+        let _ = builder.decommission().await.unwrap();
+        let dec_event = builder.events().last().unwrap().clone();
+
+        kel.push(dec_event);
+
+        // Now decommissioned
+        assert!(kel.is_decommissioned());
+    }
+
+    #[tokio::test]
+    async fn test_kel_is_contested() {
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone for adversary
+        let mut adversary = owner.clone();
+
+        // Adversary does ror (reveals recovery key)
+        let ror = adversary.rotate_recovery().await.unwrap();
+
+        // Owner contests
+        let cnt = owner.contest().await.unwrap();
+
+        // KEL without contest is not contested
+        let kel_no_contest = Kel::from_events(vec![icp.clone(), ror.clone()], true).unwrap();
+        assert!(!kel_no_contest.is_contested());
+
+        // KEL with contest is contested
+        let kel_contested = Kel::from_events(vec![icp, ror, cnt], true).unwrap();
+        assert!(kel_contested.is_contested());
+    }
+
+    #[tokio::test]
+    async fn test_kel_delegating_prefix_none() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Non-delegated KEL has no delegating prefix
+        assert!(kel.delegating_prefix().is_none());
+        assert!(!kel.is_delegated());
+    }
+
+    #[tokio::test]
+    async fn test_kel_empty_delegating_prefix() {
+        let kel = Kel::new();
+        assert!(kel.delegating_prefix().is_none());
+        assert!(!kel.is_delegated());
+    }
+
+    #[tokio::test]
+    async fn test_kel_find_divergence_empty() {
+        let kel = Kel::new();
+        assert!(kel.find_divergence().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kel_reveals_recovery_after_divergence() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        // No recovery revealed with empty divergent set
+        let empty_set: HashSet<String> = HashSet::new();
+        assert!(!kel.reveals_recovery_after_divergence(&empty_set));
+
+        // No recovery revealed even with icp in set (icp doesn't reveal recovery)
+        let mut with_icp: HashSet<String> = HashSet::new();
+        with_icp.insert(icp.event.said.clone());
+        assert!(!kel.reveals_recovery_after_divergence(&with_icp));
+    }
+
+    #[tokio::test]
+    async fn test_kel_merge_duplicate_events() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let _ = builder.incept().await.unwrap();
+        let anchor = Digest::blake3_256(b"test").qb64();
+        let ixn = builder.interact(&anchor).await.unwrap();
+
+        let mut kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        // Try to merge the same event again (overlap, all SAIDs present)
+        let result = kel.merge(vec![ixn]);
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert!(archived.is_empty());
+        assert!(added.is_empty()); // No new events added
+        assert_eq!(merge_result, KelMergeResult::Verified);
+    }
+
+    #[tokio::test]
+    async fn test_kel_deref_mut() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Test DerefMut - can use Vec mutable methods
+        assert_eq!(kel.len(), 1);
+        kel.clear(); // Using Vec::clear via DerefMut
+        assert!(kel.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_kel_contains_anchor_no_interactions() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // KEL with only inception has no anchors
+        assert!(!kel.contains_anchor("any_anchor"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_adversary_events() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let ixn1 = builder1
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Create adversary ixn
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let ixn2 = builder2
+            .interact("EAdversaryAnchor____________________________")
+            .await
+            .unwrap();
+
+        // Create divergent KEL
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ixn1.clone(), ixn2.clone()], true).unwrap();
+
+        // Owner SAIDs (icp and ixn1)
+        let mut owner_saids = HashSet::new();
+        owner_saids.insert(icp.event.said.clone());
+        owner_saids.insert(ixn1.event.said.clone());
+
+        let removed = kel.filter_events_by_said(&owner_saids).unwrap();
+
+        // Should have removed adversary event
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].event.said, ixn2.event.said);
+
+        // KEL should now only have owner events
+        assert_eq!(kel.len(), 2);
+    }
+
+    // ==================== Complex Merge/Divergence Tests ====================
+
+    #[tokio::test]
+    async fn test_merge_on_contested_kel_fails() {
+        // When a KEL is already contested, merge should fail with ContestedKel error
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        // Create a contest event
+        let cnt = builder.contest().await.unwrap();
+        let cnt_key = cnt.event.public_key.clone().unwrap();
+
+        let mut kel = Kel::from_events(vec![icp.clone(), cnt.clone()], true).unwrap();
+
+        assert!(kel.is_contested());
+
+        // Try to merge new events - should fail
+        // Create a fresh builder to make an ixn (since contested builder won't allow interact)
+        let mut builder2 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder2.incept().await.unwrap();
+        let anchor = Digest::blake3_256(b"test").qb64();
+        let ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Manually fix the ixn to chain from cnt
+        let mut fake_ixn = ixn.event.clone();
+        fake_ixn.previous = Some(cnt.event.said.clone());
+        fake_ixn.prefix = icp.event.prefix.clone();
+
+        let result = kel.merge(vec![SignedKeyEvent::new(
+            fake_ixn,
+            cnt_key,
+            ixn.signatures[0].signature.clone(),
+        )]);
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::ContestedKel(_))));
+    }
+
+    #[tokio::test]
+    async fn test_merge_non_recovery_on_frozen_kel_returns_frozen() {
+        // When KEL is divergent (frozen) and new event doesn't reveal recovery key,
+        // merge should return Frozen result
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Create adversary's divergent ixn
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let ixn2 = builder2.interact(&anchor2).await.unwrap();
+
+        // Create divergent KEL (frozen state)
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ixn1.clone(), ixn2.clone()], true).unwrap();
+
+        assert!(kel.find_divergence().is_some());
+
+        // Try to merge another ixn (non-recovery event) - should return Frozen
+        let anchor3 = Digest::blake3_256(b"anchor3").qb64();
+        let ixn3 = builder1.interact(&anchor3).await.unwrap();
+        let result = kel.merge(vec![ixn3]);
+
+        assert!(result.is_ok());
+        let (_, _, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Frozen);
+    }
+
+    #[tokio::test]
+    async fn test_merge_recovery_on_divergent_kel_succeeds() {
+        // Recovery event on divergent KEL (where recovery not yet revealed) should succeed
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone for adversary before owner's ixn
+        let mut adversary = owner.clone();
+
+        let anchor1 = "EOwnerAnchor________________________________";
+        let owner_ixn = owner.interact(anchor1).await.unwrap();
+
+        let anchor2 = "EAdversaryAnchor____________________________";
+        let adv_ixn = adversary.interact(anchor2).await.unwrap();
+
+        // Create divergent KEL with owner and adversary ixns
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), owner_ixn.clone(), adv_ixn.clone()], true).unwrap();
+
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates recovery event
+        let rec_event = owner.recover(false).await.unwrap();
+
+        // Merge recovery event
+        let result = kel.merge(vec![rec_event]);
+
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Adversary event should be archived
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].event.said, adv_ixn.event.said);
+        // Recovery event should be added
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_recover());
+    }
+
+    #[tokio::test]
+    async fn test_merge_recoverable_divergence() {
+        // When divergent events arrive but neither side has used recovery key,
+        // merge should return Recoverable
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Start with just icp in KEL
+        let mut kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        // Add owner's ixn1
+        kel.merge(vec![ixn1.clone()]).unwrap();
+
+        // Create adversary's divergent ixn at same generation
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let ixn2 = builder2.interact(&anchor2).await.unwrap();
+
+        // Merge adversary's divergent event - should detect recoverable divergence
+        let result = kel.merge(vec![ixn2]);
+
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recoverable);
+        assert!(archived.is_empty()); // Nothing archived yet
+        assert_eq!(added.len(), 1); // Divergent event was added
+    }
+
+    #[tokio::test]
+    async fn test_merge_decommissioned_kel_blocks_append() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        // Create decommission event
+        let dec_event = builder.decommission().await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp.clone(), dec_event.clone()], true).unwrap();
+
+        assert!(kel.is_decommissioned());
+
+        // Try to merge new ixn after decommission - should fail
+        // First create a new builder to make an ixn
+        let mut builder2 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder2.incept().await.unwrap();
+        let anchor = Digest::blake3_256(b"test").qb64();
+        let ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Manually create a fake ixn that chains from dec
+        let mut fake_ixn = ixn.event.clone();
+        fake_ixn.previous = Some(dec_event.event.said.clone());
+        fake_ixn.prefix = icp.event.prefix.clone();
+
+        let result = kel.merge(vec![SignedKeyEvent::new(
+            fake_ixn,
+            dec_event.event.public_key.clone().unwrap(),
+            ixn.signatures[0].signature.clone(),
+        )]);
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::KelDecommissioned)));
+    }
+
+    #[tokio::test]
+    async fn test_merge_recovery_protected_scenario() {
+        // When old (existing) events have revealed recovery key and new event is not contest,
+        // merge should return RecoveryProtected
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Owner does a recovery rotation (reveals recovery key)
+        let ror_event = builder1.rotate_recovery().await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Create adversary who starts from icp (before ror)
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let anchor = Digest::blake3_256(b"adversary").qb64();
+        let adv_ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Create KEL with owner's ror (has recovery revealed)
+        let mut kel = Kel::from_events(vec![icp.clone(), ror_event.clone()], true).unwrap();
+
+        // Merge adversary's divergent ixn (not a contest event)
+        // Since owner revealed recovery, adversary should need to contest
+        let result = kel.merge(vec![adv_ixn]);
+
+        assert!(result.is_ok());
+        let (_, _, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::RecoveryProtected);
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_on_divergent_with_recovery_revealed() {
+        // When KEL is divergent and owner's events revealed recovery, adversary's contest should succeed
+        // This tests the overlap path where old events have revealed recovery
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys before any rotation for adversary
+        let (pre_ror_current, pre_ror_next, pre_ror_recovery) = clone_keys(&builder1);
+
+        // Owner does a recovery rotation (reveals recovery key) - this rotates keys
+        let ror_event = builder1.rotate_recovery().await.unwrap();
+
+        // Create adversary with pre-rotation keys (starts from icp)
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary creates a contest event
+        let cnt_event = builder2.contest().await.unwrap();
+
+        // Create KEL with owner's ror (has recovery revealed)
+        let mut kel = Kel::from_events(vec![icp.clone(), ror_event.clone()], true).unwrap();
+
+        // Merge adversary's contest event - this creates divergence at gen 1
+        // Since owner revealed recovery (ror), contest should succeed
+        let result = kel.merge(vec![cnt_event]);
+
+        assert!(result.is_ok());
+        let (_, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Contested);
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_contest());
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_with_extra_events_fails() {
+        // Contest event should not have additional events after it
+        // Scenario: owner creates icp, adversary does ror, owner tries cnt + ixn
+
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone builder for adversary before any further events
+        let mut adversary = owner.clone();
+
+        // Adversary does recovery rotation (reveals recovery key)
+        let ror = adversary.rotate_recovery().await.unwrap();
+
+        // Server KEL has icp + adversary's ror
+        let mut kel = Kel::from_events(vec![icp.clone(), ror.clone()], true).unwrap();
+
+        // Owner creates contest event
+        let cnt = owner.contest().await.unwrap();
+        let cnt_key = cnt.event.public_key.clone().unwrap();
+
+        // Manually create an ixn that chains from cnt (builder won't allow after contest)
+        let anchor = Digest::blake3_256(b"owner_anchor").qb64();
+        let fake_ixn = KeyEvent::create_interaction(&cnt.event, anchor).unwrap();
+        let fake_ixn_sig = owner
+            .key_provider()
+            .sign(fake_ixn.said.as_bytes())
+            .await
+            .unwrap();
+
+        // Try to merge cnt + ixn together - should fail
+        let result = kel.merge(vec![
+            cnt.clone(),
+            SignedKeyEvent::new(fake_ixn.clone(), cnt_key.clone(), fake_ixn_sig.qb64()),
+        ]);
+
+        // Should fail because contest must be final (no events after it)
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::InvalidKel(_))));
+    }
+
+    #[tokio::test]
+    async fn test_verify_detects_divergence() {
+        // verify() should detect and return divergence info
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Create adversary
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let ixn2 = builder2.interact(&anchor2).await.unwrap();
+
+        // Create divergent KEL
+        let kel = Kel::from_events(vec![icp.clone(), ixn1.clone(), ixn2.clone()], true).unwrap();
+
+        // verify() should succeed but report divergence
+        let result = kel.verify();
+        assert!(result.is_ok());
+        let divergence = result.unwrap();
+        assert!(divergence.is_some());
+        let info = divergence.unwrap();
+        assert_eq!(info.diverged_at_generation, 1);
+    }
+
+    // ==================== Already-Divergent KEL Merge Tests ====================
+    // These tests cover the code paths at lines 233-274 where KEL is already divergent
+
+    #[tokio::test]
+    async fn test_merge_contest_on_already_divergent_kel_with_recovery_revealed() {
+        // KEL is already divergent, and one branch revealed recovery.
+        // Contest event should succeed via lines 236-248.
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys before recovery rotation
+        let (pre_ror_current, pre_ror_next, pre_ror_recovery) = clone_keys(&builder1);
+
+        // Owner does recovery rotation (reveals recovery key)
+        let ror_event = builder1.rotate_recovery().await.unwrap();
+
+        // Create adversary from inception state
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary does an ixn (creating divergence)
+        let anchor = Digest::blake3_256(b"adv_anchor").qb64();
+        let adv_ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Create already-divergent KEL with ror (reveals recovery) and adversary ixn
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ror_event.clone(), adv_ixn.clone()], true).unwrap();
+
+        // Verify it's divergent
+        assert!(kel.find_divergence().is_some());
+
+        // Now adversary creates contest event (after their ixn was already in KEL)
+        let cnt_event = builder2.contest().await.unwrap();
+
+        // Merge contest on already-divergent KEL where recovery is revealed
+        let result = kel.merge(vec![cnt_event]);
+
+        assert!(result.is_ok());
+        let (_, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Contested);
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_contest());
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_on_already_divergent_kel_without_recovery_revealed_fails() {
+        // KEL is already divergent, but no recovery revealed.
+        // Contest event should fail with Frozen error (line 250).
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys for adversary
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Owner does normal ixn (no recovery revealed)
+        let anchor1 = Digest::blake3_256(b"owner_anchor").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+
+        // Create adversary from inception state
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary does an ixn (creating divergence)
+        let anchor2 = Digest::blake3_256(b"adv_anchor").qb64();
+        let adv_ixn = builder2.interact(&anchor2).await.unwrap();
+
+        // Create already-divergent KEL with NO recovery revealed
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ixn1.clone(), adv_ixn.clone()], true).unwrap();
+
+        // Verify it's divergent
+        assert!(kel.find_divergence().is_some());
+
+        // Adversary creates contest event
+        let cnt_event = builder2.contest().await.unwrap();
+
+        // Merge contest should fail with Frozen (recovery not revealed)
+        let result = kel.merge(vec![cnt_event]);
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::Frozen)));
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_on_clean_kel_fails() {
+        // Contest on a clean (non-divergent) KEL should fail.
+        // Contest requires divergence to be valid.
+
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        // Create a clean KEL with just inception
+        let mut kel = Kel::from_events(vec![icp], false).unwrap();
+
+        // Verify KEL is not divergent
+        assert!(kel.find_divergence().is_none());
+
+        // Try to contest - should fail because no divergence
+        let cnt_event = builder.contest().await.unwrap();
+
+        let result = kel.merge(vec![cnt_event]);
+
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(KelsError::InvalidKel(ref msg)) if msg.contains("Contest requires divergence"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_recovery_on_already_divergent_kel_with_recovery_revealed_fails() {
+        // KEL is already divergent and recovery WAS revealed (by owner).
+        // Recovery event from adversary should fail with ContestRequired (line 269).
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys for adversary BEFORE owner rotates
+        let (pre_ror_current, pre_ror_next, pre_ror_recovery) = clone_keys(&builder1);
+
+        // Owner does recovery rotation (reveals recovery key)
+        let ror_event = builder1.rotate_recovery().await.unwrap();
+
+        // Create adversary from inception state (with pre-rotation keys)
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary does an ixn (creating divergence)
+        let anchor = Digest::blake3_256(b"adv_anchor").qb64();
+        let adv_ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Create already-divergent KEL with recovery revealed (ror)
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ror_event.clone(), adv_ixn.clone()], true).unwrap();
+
+        // Verify it's divergent
+        assert!(kel.find_divergence().is_some());
+
+        // Adversary creates recovery event
+        let rec_event = builder2.recover(false).await.unwrap();
+
+        // Merge recovery should fail with ContestRequired (owner already revealed recovery)
+        let result = kel.merge(vec![rec_event]);
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::ContestRequired)));
+    }
+
+    #[tokio::test]
+    async fn test_merge_contest_on_already_divergent_with_extra_events_fails() {
+        // Contest on already-divergent KEL with extra events should fail (line 238-241)
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys for adversary BEFORE owner rotates
+        let (pre_ror_current, pre_ror_next, pre_ror_recovery) = clone_keys(&builder1);
+
+        // Owner does recovery rotation (reveals recovery key)
+        let ror_event = builder1.rotate_recovery().await.unwrap();
+
+        // Create adversary from inception state
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary does an ixn (creating divergence)
+        let anchor = Digest::blake3_256(b"adv_anchor").qb64();
+        let adv_ixn = builder2.interact(&anchor).await.unwrap();
+
+        // Create already-divergent KEL with recovery revealed
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), ror_event.clone(), adv_ixn.clone()], true).unwrap();
+
+        // Adversary creates contest
+        let cnt = builder2.contest().await.unwrap();
+        let cnt_key = cnt.event.public_key.clone().unwrap();
+
+        // Create a fake event after contest
+        let fake_anchor = Digest::blake3_256(b"fake").qb64();
+        let fake_ixn = KeyEvent::create_interaction(&cnt.event, fake_anchor).unwrap();
+        let fake_sig = builder2
+            .key_provider()
+            .sign(fake_ixn.said.as_bytes())
+            .await
+            .unwrap();
+
+        // Merge contest + extra event should fail
+        let result = kel.merge(vec![
+            cnt.clone(),
+            SignedKeyEvent::new(fake_ixn, cnt_key, fake_sig.qb64()),
+        ]);
+
+        assert!(
+            matches!(
+                result,
+                Err(KelsError::InvalidKel(ref msg)) if msg.contains("Cannot append events after contest")
+            ) || matches!(result, Err(KelsError::ContestedKel(_)))
+        );
+    }
+
+    // ==================== Overlap Path Tests ====================
+    // These tests cover the code paths at lines 292-397 (overlap detection)
+
+    #[tokio::test]
+    async fn test_merge_overlap_recovery_succeeds() {
+        // Test the overlap recovery path (lines 373-388)
+        // The recovery event must be the first divergent event (directly after common ancestor)
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+
+        // Save keys for adversary
+        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
+
+        // Owner does an ixn at gen 1
+        let anchor1 = Digest::blake3_256(b"owner_anchor").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+
+        // Create KEL with icp + owner ixn (NOT divergent yet)
+        let mut kel = Kel::from_events(vec![icp.clone(), ixn1.clone()], true).unwrap();
+
+        assert!(kel.find_divergence().is_none());
+
+        // Create adversary from inception state
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+
+        let mut builder2 = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+
+        // Adversary creates recovery event directly from icp (at gen 1)
+        // This makes the recovery event the first divergent event
+        let rec_event = builder2.recover(false).await.unwrap();
+
+        // Merge recovery event that creates divergence at gen 1
+        // Owner has ixn1 at gen 1, adversary has rec at gen 1
+        let result = kel.merge(vec![rec_event]);
+
+        assert!(result.is_ok());
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Owner's ixn should be archived
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].event.said, ixn1.event.said);
+        // Recovery event should be added
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_recover());
+    }
+
+    #[tokio::test]
+    async fn test_merge_events_not_contiguous_fails() {
+        // Test line 400: Events not contiguous (gap in chain)
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+
+        let mut kel = Kel::from_events(vec![icp], true).unwrap();
+
+        // Create a separate builder and make events that don't chain from our KEL
+        let mut builder2 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder2.incept().await.unwrap();
+        let anchor = Digest::blake3_256(b"other").qb64();
+        let other_ixn = builder2.interact(&anchor).await.unwrap();
+
+        // This ixn chains from a different icp, so it's not contiguous
+        let result = kel.merge(vec![other_ixn]);
+
+        assert!(matches!(
+            result,
+            Err(KelsError::InvalidKel(ref msg)) if msg.contains("not contiguous")
+        ));
     }
 }

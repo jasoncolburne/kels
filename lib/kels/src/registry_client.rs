@@ -5,8 +5,8 @@
 
 use crate::error::KelsError;
 use crate::types::{
-    DeregisterRequest, NodeInfo, NodeRegistration, NodeStatus, NodesResponse, PeersResponse,
-    RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, NodesResponse,
+    PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,12 +143,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -173,12 +169,8 @@ impl KelsRegistryClient {
         if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -206,12 +198,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -263,12 +251,8 @@ impl KelsRegistryClient {
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(node_id.to_string()))
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -300,12 +284,8 @@ impl KelsRegistryClient {
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(node_id.to_string()))
         } else {
-            let status_code = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status_code, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -335,12 +315,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -387,12 +363,8 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(format!(
-                "Registry error {}: {}",
-                status, message
-            )))
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -420,5 +392,736 @@ impl KelsRegistryClient {
         }
 
         Ok(registry_kel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::KeyEventBuilder;
+    use crate::crypto::SoftwareKeyProvider;
+    use crate::kel::Kel;
+    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
+    use std::time::Duration;
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Mock signer for testing
+    struct MockSigner;
+
+    #[async_trait::async_trait]
+    impl RegistrySigner for MockSigner {
+        async fn sign(&self, _data: &[u8]) -> Result<SignResult, KelsError> {
+            Ok(SignResult {
+                signature: "0BAAAA_mock_signature".to_string(),
+                public_key: "1AAA_mock_public_key".to_string(),
+                peer_id: "12D3KooWMockPeerId".to_string(),
+            })
+        }
+    }
+
+    // ==================== Constructor Tests ====================
+
+    #[test]
+    fn test_new_client() {
+        let client = KelsRegistryClient::new("http://registry:8080");
+        assert!(client.signer.is_none());
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let client =
+            KelsRegistryClient::with_timeout("http://registry:8080", Duration::from_secs(5));
+        assert!(client.signer.is_none());
+    }
+
+    #[test]
+    fn test_with_signer() {
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer("http://registry:8080", signer);
+        assert!(client.signer.is_some());
+    }
+
+    #[test]
+    fn test_with_signer_and_timeout() {
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer_and_timeout(
+            "http://registry:8080",
+            signer,
+            Duration::from_secs(30),
+        );
+        assert!(client.signer.is_some());
+    }
+
+    #[test]
+    fn test_url_trailing_slash_stripped() {
+        let client = KelsRegistryClient::new("http://registry:8080/");
+        assert_eq!(client.base_url, "http://registry:8080");
+    }
+
+    // ==================== Health Check Tests ====================
+
+    #[tokio::test]
+    async fn test_health_check_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    // ==================== Registration Tests ====================
+
+    #[tokio::test]
+    async fn test_register_success() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodeRegistration {
+            node_id: "node-1".to_string(),
+            node_type: NodeType::Kels,
+            kels_url: "http://node-1:8091".to_string(),
+            kels_url_internal: None,
+            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Bootstrapping,
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/register"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client
+            .register(
+                "node-1",
+                "http://node-1:8091",
+                None,
+                "/ip4/10.0.0.1/tcp/9000",
+                NodeStatus::Bootstrapping,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let reg = result.unwrap();
+        assert_eq!(reg.node_id, "node-1");
+    }
+
+    #[tokio::test]
+    async fn test_register_without_signer_fails() {
+        let client = KelsRegistryClient::new("http://registry:8080");
+        let result = client
+            .register(
+                "node-1",
+                "http://node-1:8091",
+                None,
+                "/ip4/10.0.0.1/tcp/9000",
+                NodeStatus::Bootstrapping,
+            )
+            .await;
+
+        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn test_register_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/register"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Internal error",
+                "code": "internal_error"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client
+            .register(
+                "node-1",
+                "http://node-1:8091",
+                None,
+                "/ip4/10.0.0.1/tcp/9000",
+                NodeStatus::Bootstrapping,
+            )
+            .await;
+
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
+    }
+
+    // ==================== Deregistration Tests ====================
+
+    #[tokio::test]
+    async fn test_deregister_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/deregister"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client.deregister("node-1").await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_deregister_not_found_ok() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/deregister"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client.deregister("node-1").await;
+
+        // 404 is OK for deregister (already deregistered)
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_deregister_without_signer_fails() {
+        let client = KelsRegistryClient::new("http://registry:8080");
+        let result = client.deregister("node-1").await;
+
+        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
+    }
+
+    // ==================== List Nodes Tests ====================
+
+    #[tokio::test]
+    async fn test_list_nodes_success() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodesResponse {
+            nodes: vec![NodeRegistration {
+                node_id: "node-1".to_string(),
+                node_type: NodeType::Kels,
+                kels_url: "http://node-1:8091".to_string(),
+                kels_url_internal: None,
+                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+                registered_at: chrono::Utc::now(),
+                last_heartbeat: chrono::Utc::now(),
+                status: NodeStatus::Ready,
+            }],
+            next_cursor: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.list_nodes(None).await;
+
+        assert!(result.is_ok());
+        let nodes = result.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_id, "node-1");
+    }
+
+    #[tokio::test]
+    async fn test_list_all_nodes() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodesResponse {
+            nodes: vec![],
+            next_cursor: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.list_all_nodes().await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_nodes_info() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodesResponse {
+            nodes: vec![NodeRegistration {
+                node_id: "node-1".to_string(),
+                node_type: NodeType::Kels,
+                kels_url: "http://node-1:8091".to_string(),
+                kels_url_internal: None,
+                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+                registered_at: chrono::Utc::now(),
+                last_heartbeat: chrono::Utc::now(),
+                status: NodeStatus::Ready,
+            }],
+            next_cursor: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.list_nodes_info().await;
+
+        assert!(result.is_ok());
+        let nodes = result.unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_nodes_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.list_nodes(None).await;
+
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
+    }
+
+    // ==================== Heartbeat Tests ====================
+
+    #[tokio::test]
+    async fn test_heartbeat_success() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodeRegistration {
+            node_id: "node-1".to_string(),
+            node_type: NodeType::Kels,
+            kels_url: "http://node-1:8091".to_string(),
+            kels_url_internal: None,
+            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Ready,
+        };
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/api/nodes/.*/heartbeat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.heartbeat("node-1").await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/api/nodes/.*/heartbeat"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.heartbeat("unknown-node").await;
+
+        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/api/nodes/.*/heartbeat"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.heartbeat("node-1").await;
+
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
+    }
+
+    // ==================== Update Status Tests ====================
+
+    #[tokio::test]
+    async fn test_update_status_success() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodeRegistration {
+            node_id: "node-1".to_string(),
+            node_type: NodeType::Kels,
+            kels_url: "http://node-1:8091".to_string(),
+            kels_url_internal: None,
+            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: NodeStatus::Ready,
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client.update_status("node-1", NodeStatus::Ready).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_status_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/nodes/status"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let signer = Arc::new(MockSigner);
+        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
+        let result = client.update_status("unknown", NodeStatus::Ready).await;
+
+        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_update_status_without_signer_fails() {
+        let client = KelsRegistryClient::new("http://registry:8080");
+        let result = client.update_status("node-1", NodeStatus::Ready).await;
+
+        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
+    }
+
+    // ==================== Peers Tests ====================
+
+    fn make_test_peer(peer_id: &str, node_id: &str, active: bool) -> Peer {
+        Peer::create(peer_id.to_string(), node_id.to_string(), active).expect("create peer")
+    }
+
+    #[tokio::test]
+    async fn test_fetch_peers_success() {
+        let mock_server = MockServer::start().await;
+
+        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
+            }],
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/peers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.fetch_peers().await;
+
+        assert!(result.is_ok());
+        let peers = result.unwrap();
+        assert_eq!(peers.peers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_peers_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/peers"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.fetch_peers().await;
+
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_true() {
+        let mock_server = MockServer::start().await;
+
+        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
+            }],
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/peers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.is_peer_authorized("12D3KooWPeer1").await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_false_not_found() {
+        let mock_server = MockServer::start().await;
+
+        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
+            }],
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/peers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.is_peer_authorized("12D3KooWDifferent").await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_false_inactive() {
+        let mock_server = MockServer::start().await;
+
+        let peer = make_test_peer("12D3KooWPeer1", "node-1", false);
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
+            }],
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/peers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.is_peer_authorized("12D3KooWPeer1").await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    // ==================== Has Ready Peers Tests ====================
+
+    #[tokio::test]
+    async fn test_has_ready_peers_true() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodesResponse {
+            nodes: vec![NodeRegistration {
+                node_id: "node-1".to_string(),
+                node_type: NodeType::Kels,
+                kels_url: "http://node-1:8091".to_string(),
+                kels_url_internal: None,
+                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+                registered_at: chrono::Utc::now(),
+                last_heartbeat: chrono::Utc::now(),
+                status: NodeStatus::Ready,
+            }],
+            next_cursor: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.has_ready_peers(None).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_has_ready_peers_false() {
+        let mock_server = MockServer::start().await;
+
+        let response = NodesResponse {
+            nodes: vec![NodeRegistration {
+                node_id: "node-1".to_string(),
+                node_type: NodeType::Kels,
+                kels_url: "http://node-1:8091".to_string(),
+                kels_url_internal: None,
+                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+                registered_at: chrono::Utc::now(),
+                last_heartbeat: chrono::Utc::now(),
+                status: NodeStatus::Bootstrapping, // Not Ready
+            }],
+            next_cursor: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/nodes/bootstrap"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.has_ready_peers(None).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    // ==================== Registry KEL Tests ====================
+
+    #[tokio::test]
+    async fn test_fetch_registry_kel_success() {
+        let mock_server = MockServer::start().await;
+
+        // Create a valid KEL for response
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/api/registry-kel"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.fetch_registry_kel().await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_registry_kel_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/registry-kel"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "Error",
+                "code": "internal_error"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.fetch_registry_kel().await;
+
+        assert!(matches!(result, Err(KelsError::ServerError(..))));
+    }
+
+    #[tokio::test]
+    async fn test_verify_registry_success() {
+        let mock_server = MockServer::start().await;
+
+        // Create a valid KEL for response
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/api/registry-kel"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.verify_registry(&prefix).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_registry_prefix_mismatch() {
+        let mock_server = MockServer::start().await;
+
+        // Create a valid KEL for response
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/api/registry-kel"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsRegistryClient::new(&mock_server.uri());
+        let result = client.verify_registry("Ewrong_prefix").await;
+
+        assert!(matches!(result, Err(KelsError::VerificationFailed(_))));
     }
 }

@@ -197,3 +197,34 @@ impl HsmContext {
         Ok(labels)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== HsmError Display Tests ====================
+
+    #[test]
+    fn test_hsm_error_no_slot_display() {
+        let err = HsmError::NoSlotAvailable;
+        assert_eq!(err.to_string(), "No slot available");
+    }
+
+    #[test]
+    fn test_hsm_error_key_not_found_display() {
+        let err = HsmError::KeyNotFound("mykey".to_string());
+        assert_eq!(err.to_string(), "Key not found: mykey");
+    }
+
+    #[test]
+    fn test_hsm_error_signing_failed_display() {
+        let err = HsmError::SigningFailed("operation failed".to_string());
+        assert_eq!(err.to_string(), "Signing failed: operation failed");
+    }
+
+    #[test]
+    fn test_hsm_error_internal_error_display() {
+        let err = HsmError::InternalError("lock poisoned".to_string());
+        assert_eq!(err.to_string(), "Internal error: lock poisoned");
+    }
+}

@@ -73,8 +73,11 @@ pub enum KelsError {
     #[error("Key generation failed: {0}")]
     KeyGenerationFailed(String),
 
-    #[error("Server error: {0}")]
-    ServerError(String),
+    #[error("Server error ({1:?}): {0}")]
+    ServerError(String, crate::types::ErrorCode),
+
+    #[error("Missing keys for provider")]
+    MissingKeys,
 
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
@@ -123,6 +126,9 @@ pub enum KelsError {
 
     #[error("Hardware error: {0}")]
     HardwareError(String),
+
+    #[error("No ready nodes available in registry")]
+    NoReadyNodes,
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -134,5 +140,34 @@ impl From<cesr::CesrError> for KelsError {
 impl From<verifiable_storage::StorageError> for KelsError {
     fn from(e: verifiable_storage::StorageError) -> Self {
         KelsError::StorageError(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cesr::Matter;
+
+    #[test]
+    fn test_error_display() {
+        let err = KelsError::KeyNotFound("test_key".to_string());
+        assert!(err.to_string().contains("test_key"));
+
+        let err = KelsError::NoCurrentKey;
+        assert!(err.to_string().contains("current key"));
+
+        let err = KelsError::DivergenceDetected {
+            diverged_at: 5,
+            submission_accepted: true,
+        };
+        assert!(err.to_string().contains("5"));
+    }
+
+    #[test]
+    fn test_from_cesr_error() {
+        // Create a CESR error by parsing invalid data
+        let cesr_err = cesr::Signature::from_qb64("invalid").unwrap_err();
+        let kels_err: KelsError = cesr_err.into();
+        assert!(matches!(kels_err, KelsError::CryptoError(_)));
     }
 }

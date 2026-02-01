@@ -326,3 +326,113 @@ pub async fn run_sync_handler(
     warn!("Event receiver closed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pubsub_channel_constant() {
+        assert_eq!(PUBSUB_CHANNEL, "kel_updates");
+    }
+
+    #[test]
+    fn test_sync_error_display() {
+        let redis_error = SyncError::Redis(redis::RedisError::from((
+            redis::ErrorKind::IoError,
+            "connection refused",
+        )));
+        assert!(redis_error.to_string().contains("Redis error"));
+
+        let kels_error = SyncError::Kels(KelsError::ServerError(
+            "test".to_string(),
+            kels::ErrorCode::InternalError,
+        ));
+        assert!(kels_error.to_string().contains("KELS client error"));
+
+        let channel_error = SyncError::ChannelClosed;
+        assert_eq!(channel_error.to_string(), "Channel closed");
+    }
+
+    #[test]
+    fn test_sync_error_from_redis_error() {
+        let redis_error =
+            redis::RedisError::from((redis::ErrorKind::IoError, "connection refused"));
+        let sync_error: SyncError = redis_error.into();
+        assert!(matches!(sync_error, SyncError::Redis(_)));
+    }
+
+    #[test]
+    fn test_sync_error_from_kels_error() {
+        let kels_error = KelsError::ServerError("test".to_string(), kels::ErrorCode::InternalError);
+        let sync_error: SyncError = kels_error.into();
+        assert!(matches!(sync_error, SyncError::Kels(_)));
+    }
+
+    #[test]
+    fn test_sync_handler_new() {
+        let handler = SyncHandler::new("http://localhost:8080");
+        assert!(handler.local_saids.is_empty());
+        assert!(handler.pending_fetches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_handler_peer_disconnected_clears_pending_fetches() {
+        let mut handler = SyncHandler::new("http://localhost:8080");
+        let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        // Add a pending fetch for a peer
+        let peer_id = PeerId::random();
+        handler
+            .pending_fetches
+            .insert("prefix1".to_string(), peer_id);
+        handler
+            .pending_fetches
+            .insert("prefix2".to_string(), peer_id);
+
+        // Add a pending fetch for a different peer
+        let other_peer_id = PeerId::random();
+        handler
+            .pending_fetches
+            .insert("prefix3".to_string(), other_peer_id);
+
+        assert_eq!(handler.pending_fetches.len(), 3);
+
+        // Handle peer disconnected event
+        let event = GossipEvent::PeerDisconnected(peer_id);
+        handler.handle_event(event, &command_tx).await.unwrap();
+
+        // Only the disconnected peer's pending fetches should be removed
+        assert_eq!(handler.pending_fetches.len(), 1);
+        assert!(handler.pending_fetches.contains_key("prefix3"));
+        assert!(!handler.pending_fetches.contains_key("prefix1"));
+        assert!(!handler.pending_fetches.contains_key("prefix2"));
+    }
+
+    #[tokio::test]
+    async fn test_sync_handler_peer_connected_event() {
+        let mut handler = SyncHandler::new("http://localhost:8080");
+        let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let peer_id = PeerId::random();
+        let event = GossipEvent::PeerConnected(peer_id);
+
+        // Should not error
+        let result = handler.handle_event(event, &command_tx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_sync_handler_closes_on_receiver_close() {
+        let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
+        let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(10);
+
+        // Drop the sender to close the channel
+        drop(event_tx);
+
+        // run_sync_handler should complete when receiver closes
+        let result =
+            run_sync_handler("http://localhost:8080".to_string(), event_rx, command_tx).await;
+        assert!(result.is_ok());
+    }
+}

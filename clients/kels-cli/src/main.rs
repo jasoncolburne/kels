@@ -358,17 +358,17 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder.incept().await.context("Inception failed")?;
+    let icp = builder.incept().await.context("Inception failed")?;
 
     // Save to the correct prefix directory
-    let config = provider_config(cli, &event.prefix)?;
+    let config = provider_config(cli, &icp.event.prefix)?;
     config.save_provider(builder.key_provider()).await?;
-    let kel_store = create_kel_store(cli, Some(&event.prefix))?;
+    let kel_store = create_kel_store(cli, Some(&icp.event.prefix))?;
     kel_store.save(builder.kel()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
-    println!("  Prefix: {}", event.prefix.cyan());
-    println!("  SAID:   {}", event.said);
+    println!("  Prefix: {}", icp.event.prefix.cyan());
+    println!("  SAID:   {}", icp.event.said);
 
     Ok(())
 }
@@ -393,10 +393,10 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
     .await?;
 
     match builder.rotate().await {
-        Ok((event, _sig)) => {
+        Ok(rot) => {
             config.save_provider(builder.key_provider()).await?;
             println!("{}", "Rotation successful!".green().bold());
-            println!("  Event SAID: {}", event.said);
+            println!("  Event SAID: {}", rot.event.said);
             Ok(())
         }
         Err(kels::KelsError::DivergenceDetected {
@@ -433,14 +433,14 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder
+    let ror = builder
         .rotate_recovery()
         .await
         .context("Recovery rotation failed")?;
     config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery rotation successful!".green().bold());
-    println!("  Event SAID: {}", event.said);
+    println!("  Event SAID: {}", ror.event.said);
 
     Ok(())
 }
@@ -460,10 +460,10 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder.interact(said).await.context("Interaction failed")?;
+    let ixn = builder.interact(said).await.context("Interaction failed")?;
 
     println!("{}", "Anchor successful!".green().bold());
-    println!("  Event SAID: {}", event.said);
+    println!("  Event SAID: {}", ixn.event.said);
     println!("  Anchored:   {}", said);
 
     Ok(())
@@ -486,11 +486,11 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     .await?;
 
     let add_rot = builder.should_add_rot_with_recover().await?;
-    let (event, _sig) = builder.recover(add_rot).await.context("Recovery failed")?;
+    let rec = builder.recover(add_rot).await.context("Recovery failed")?;
     config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "Recovery successful!".green().bold());
-    println!("  Event SAID: {}", event.said);
+    println!("  Event SAID: {}", rec.event.said);
 
     Ok(())
 }
@@ -514,10 +514,10 @@ async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder.contest().await.context("Contest failed")?;
+    let cnt = builder.contest().await.context("Contest failed")?;
 
     println!("{}", "KEL contested and permanently frozen.".red().bold());
-    println!("  Event SAID: {}", event.said);
+    println!("  Event SAID: {}", cnt.event.said);
 
     Ok(())
 }
@@ -544,13 +544,13 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    let (event, _sig) = builder
+    let dec = builder
         .decommission()
         .await
         .context("Decommission failed")?;
 
     println!("{}", "KEL decommissioned.".green().bold());
-    println!("  Event SAID: {}", event.said);
+    println!("  Event SAID: {}", dec.event.said);
 
     Ok(())
 }
@@ -908,7 +908,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     let mut counter = 0u32;
 
     for event_type in &event_types {
-        let (event, _) = match *event_type {
+        let signed = match *event_type {
             "ixn" => {
                 // Generate a realistic 44-char SAID-like anchor
                 let anchor = format!(
@@ -933,7 +933,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
                 );
             }
         };
-        saids.push(event.said.clone());
+        saids.push(signed.event.said.clone());
     }
 
     println!(

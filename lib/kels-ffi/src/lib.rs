@@ -280,13 +280,13 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
         KelsError::DivergenceDetected { .. } => KelsStatus::DivergenceDetected,
         KelsError::RecoveryProtected => KelsStatus::RecoveryProtected,
-        KelsError::HttpError(_) | KelsError::ServerError(_) => KelsStatus::NetworkError,
+        KelsError::HttpError(_) | KelsError::ServerError(..) => KelsStatus::NetworkError,
         _ => KelsStatus::Error,
     }
 }
 
 /// Save key state from the builder's key provider
-async fn save_key_state<K: KeyProvider>(
+async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     state_dir: &Path,
     prefix: &str,
@@ -566,15 +566,15 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
     let incept_result = ctx.runtime.block_on(async { builder_guard.incept().await });
 
     match incept_result {
-        Ok((event, _sig)) => {
+        Ok(icp) => {
             // Set owner prefix after successful inception
-            ctx.store.set_owner_prefix(Some(&event.prefix));
+            ctx.store.set_owner_prefix(Some(&icp.event.prefix));
 
             // Save key state for future restarts
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &icp.event.prefix,
             ));
             if let Err(e) = save_result {
                 // Log but don't fail - the event was created successfully
@@ -582,8 +582,8 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&icp.event.prefix);
+            result.said = to_c_string(&icp.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -625,20 +625,20 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
     let rotate_result = ctx.runtime.block_on(async { builder_guard.rotate().await });
 
     match rotate_result {
-        Ok((event, _sig)) => {
+        Ok(rot) => {
             // Save key state after rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &rot.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&rot.event.prefix);
+            result.said = to_c_string(&rot.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -682,20 +682,20 @@ pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mu
         .block_on(async { builder_guard.rotate_recovery().await });
 
     match rotate_result {
-        Ok((event, _sig)) => {
+        Ok(ror) => {
             // Save key state after recovery rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &ror.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&ror.event.prefix);
+            result.said = to_c_string(&ror.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -753,10 +753,10 @@ pub unsafe extern "C" fn kels_interact(
         .block_on(async { builder_guard.interact(&anchor_str).await });
 
     match interact_result {
-        Ok((event, _sig)) => {
+        Ok(ixn) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&ixn.event.prefix);
+            result.said = to_c_string(&ixn.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -803,12 +803,12 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
     });
 
     match recover_result {
-        Ok((event, _sig)) => {
+        Ok(rec) => {
             // Save key state after recovery
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &rec.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
@@ -816,8 +816,8 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
 
             result.status = KelsStatus::Ok;
             result.outcome = KelsRecoveryOutcome::Recovered;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&rec.event.prefix);
+            result.said = to_c_string(&rec.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -865,20 +865,20 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
         .block_on(async { builder_guard.contest().await });
 
     match contest_result {
-        Ok((event, _sig)) => {
+        Ok(cnt) => {
             // Save key state after contest (keys rotated during contest)
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
                 &ctx.state_dir,
-                &event.prefix,
+                &cnt.event.prefix,
             ));
             if let Err(e) = save_result {
                 set_last_error(&format!("Warning: Failed to save key state: {}", e));
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&cnt.event.prefix);
+            result.said = to_c_string(&cnt.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -922,10 +922,10 @@ pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut K
         .block_on(async { builder_guard.decommission().await });
 
     match decommission_result {
-        Ok((event, _sig)) => {
+        Ok(dec) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&event.prefix);
-            result.said = to_c_string(&event.said);
+            result.prefix = to_c_string(&dec.event.prefix);
+            result.said = to_c_string(&dec.event.said);
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -1823,5 +1823,367 @@ pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
             drop(CString::from_raw(result.error));
         }
         result.error = std::ptr::null_mut();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    // ==================== KelsStatus Tests ====================
+
+    #[test]
+    fn test_kels_status_values() {
+        assert_eq!(KelsStatus::Ok as i32, 0);
+        assert_eq!(KelsStatus::NotInitialized as i32, 1);
+        assert_eq!(KelsStatus::DivergenceDetected as i32, 2);
+        assert_eq!(KelsStatus::KelNotFound as i32, 3);
+        assert_eq!(KelsStatus::KelFrozen as i32, 4);
+        assert_eq!(KelsStatus::NetworkError as i32, 5);
+        assert_eq!(KelsStatus::NotIncepted as i32, 6);
+        assert_eq!(KelsStatus::RecoveryProtected as i32, 7);
+        assert_eq!(KelsStatus::Error as i32, 8);
+    }
+
+    // ==================== KelsRecoveryOutcome Tests ====================
+
+    #[test]
+    fn test_kels_recovery_outcome_values() {
+        assert_eq!(KelsRecoveryOutcome::Recovered as i32, 0);
+        assert_eq!(KelsRecoveryOutcome::Contested as i32, 1);
+        assert_eq!(KelsRecoveryOutcome::Failed as i32, 2);
+    }
+
+    // ==================== KelsNodeStatus Tests ====================
+
+    #[test]
+    fn test_kels_node_status_values() {
+        assert_eq!(KelsNodeStatus::Bootstrapping as i32, 0);
+        assert_eq!(KelsNodeStatus::Ready as i32, 1);
+        assert_eq!(KelsNodeStatus::Unhealthy as i32, 2);
+    }
+
+    #[test]
+    fn test_kels_node_status_from_node_status() {
+        assert_eq!(
+            KelsNodeStatus::from(NodeStatus::Ready),
+            KelsNodeStatus::Ready
+        );
+        assert_eq!(
+            KelsNodeStatus::from(NodeStatus::Bootstrapping),
+            KelsNodeStatus::Bootstrapping
+        );
+        assert_eq!(
+            KelsNodeStatus::from(NodeStatus::Unhealthy),
+            KelsNodeStatus::Unhealthy
+        );
+    }
+
+    // ==================== Default Implementations Tests ====================
+
+    #[test]
+    fn test_kels_event_result_default() {
+        let result = KelsEventResult::default();
+        assert_eq!(result.status, KelsStatus::Error);
+        assert!(result.prefix.is_null());
+        assert!(result.said.is_null());
+        assert!(result.error.is_null());
+    }
+
+    #[test]
+    fn test_kels_status_result_default() {
+        let result = KelsStatusResult::default();
+        assert_eq!(result.status, KelsStatus::Error);
+        assert!(result.prefix.is_null());
+        assert_eq!(result.event_count, 0);
+        assert!(result.latest_said.is_null());
+        assert!(!result.is_divergent);
+        assert!(!result.is_contested);
+        assert!(!result.is_decommissioned);
+        assert!(!result.use_hardware);
+        assert!(result.error.is_null());
+    }
+
+    #[test]
+    fn test_kels_list_result_default() {
+        let result = KelsListResult::default();
+        assert_eq!(result.status, KelsStatus::Error);
+        assert!(result.prefixes_json.is_null());
+        assert_eq!(result.count, 0);
+        assert!(result.error.is_null());
+    }
+
+    #[test]
+    fn test_kels_recovery_result_default() {
+        let result = KelsRecoveryResult::default();
+        assert_eq!(result.outcome, KelsRecoveryOutcome::Failed);
+        assert_eq!(result.status, KelsStatus::Error);
+        assert!(result.prefix.is_null());
+        assert!(result.said.is_null());
+        assert_eq!(result.version, 0);
+        assert!(result.error.is_null());
+    }
+
+    #[test]
+    fn test_kels_nodes_result_default() {
+        let result = KelsNodesResult::default();
+        assert_eq!(result.status, KelsStatus::Error);
+        assert!(result.nodes_json.is_null());
+        assert_eq!(result.count, 0);
+        assert!(result.error.is_null());
+    }
+
+    // ==================== Helper Function Tests ====================
+
+    #[test]
+    fn test_to_c_string_valid() {
+        let ptr = to_c_string("hello");
+        assert!(!ptr.is_null());
+
+        // Clean up
+        unsafe {
+            drop(CString::from_raw(ptr));
+        }
+    }
+
+    #[test]
+    fn test_to_c_string_empty() {
+        let ptr = to_c_string("");
+        assert!(!ptr.is_null());
+
+        unsafe {
+            let cstr = CStr::from_ptr(ptr);
+            assert_eq!(cstr.to_str().expect("valid utf8"), "");
+            drop(CString::from_raw(ptr));
+        }
+    }
+
+    #[test]
+    fn test_from_c_string_null() {
+        let result = from_c_string(std::ptr::null());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_from_c_string_valid() {
+        let original = "test string";
+        let cstring = CString::new(original).expect("valid cstring");
+        let ptr = cstring.as_ptr();
+
+        let result = from_c_string(ptr);
+        assert!(result.is_some());
+        assert_eq!(result.expect("should have value"), original);
+    }
+
+    #[test]
+    fn test_to_from_c_string_roundtrip() {
+        let original = "roundtrip test 🎉";
+        let ptr = to_c_string(original);
+        assert!(!ptr.is_null());
+
+        let recovered = from_c_string(ptr);
+        assert_eq!(recovered, Some(original.to_string()));
+
+        unsafe {
+            drop(CString::from_raw(ptr));
+        }
+    }
+
+    // ==================== Error Mapping Tests ====================
+
+    #[test]
+    fn test_map_error_to_status_key_not_found() {
+        let err = KelsError::KeyNotFound("test".to_string());
+        assert_eq!(map_error_to_status(&err), KelsStatus::KelNotFound);
+    }
+
+    #[test]
+    fn test_map_error_to_status_not_incepted() {
+        let err = KelsError::NotIncepted;
+        assert_eq!(map_error_to_status(&err), KelsStatus::NotIncepted);
+    }
+
+    #[test]
+    fn test_map_error_to_status_decommissioned() {
+        let err = KelsError::KelDecommissioned;
+        assert_eq!(map_error_to_status(&err), KelsStatus::KelFrozen);
+    }
+
+    #[test]
+    fn test_map_error_to_status_contested() {
+        let err = KelsError::ContestedKel("test".to_string());
+        assert_eq!(map_error_to_status(&err), KelsStatus::KelFrozen);
+    }
+
+    #[test]
+    fn test_map_error_to_status_divergence() {
+        let err = KelsError::DivergenceDetected {
+            diverged_at: 5,
+            submission_accepted: false,
+        };
+        assert_eq!(map_error_to_status(&err), KelsStatus::DivergenceDetected);
+    }
+
+    #[test]
+    fn test_map_error_to_status_recovery_protected() {
+        let err = KelsError::RecoveryProtected;
+        assert_eq!(map_error_to_status(&err), KelsStatus::RecoveryProtected);
+    }
+
+    #[test]
+    fn test_map_error_to_status_server_error() {
+        let err =
+            KelsError::ServerError("server failed".to_string(), kels::ErrorCode::InternalError);
+        assert_eq!(map_error_to_status(&err), KelsStatus::NetworkError);
+    }
+
+    #[test]
+    fn test_map_error_to_status_generic() {
+        let err = KelsError::InvalidSignature("bad sig".to_string());
+        assert_eq!(map_error_to_status(&err), KelsStatus::Error);
+    }
+
+    // ==================== Thread-Local Error Tests ====================
+
+    #[test]
+    fn test_set_and_clear_last_error() {
+        clear_last_error();
+
+        // Initially no error
+        LAST_ERROR.with(|e| {
+            assert!(e.borrow().is_none());
+        });
+
+        // Set an error
+        set_last_error("test error message");
+        LAST_ERROR.with(|e| {
+            assert!(e.borrow().is_some());
+            assert_eq!(e.borrow().as_deref(), Some("test error message"));
+        });
+
+        // Clear it
+        clear_last_error();
+        LAST_ERROR.with(|e| {
+            assert!(e.borrow().is_none());
+        });
+    }
+
+    #[test]
+    fn test_set_last_error_overwrites() {
+        clear_last_error();
+
+        set_last_error("first error");
+        set_last_error("second error");
+
+        LAST_ERROR.with(|e| {
+            assert_eq!(e.borrow().as_deref(), Some("second error"));
+        });
+
+        clear_last_error();
+    }
+
+    // ==================== KeyState Tests ====================
+
+    #[test]
+    fn test_key_state_default() {
+        let state = KeyState::default();
+        assert_eq!(state.signing_generation, 0);
+        assert_eq!(state.recovery_generation, 0);
+    }
+
+    #[test]
+    fn test_key_state_serialization() {
+        let state = KeyState {
+            signing_generation: 42,
+            recovery_generation: 7,
+        };
+
+        let json = serde_json::to_string(&state).expect("serialization failed");
+        assert!(json.contains("42"));
+        assert!(json.contains("7"));
+
+        let parsed: KeyState = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(parsed.signing_generation, 42);
+        assert_eq!(parsed.recovery_generation, 7);
+    }
+
+    #[test]
+    fn test_key_state_save_and_load() {
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir().join("kels_ffi_test");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let state = KeyState {
+            signing_generation: 100,
+            recovery_generation: 50,
+        };
+
+        // Save
+        state.save(&temp_dir, "test_prefix").expect("save failed");
+
+        // Load
+        let loaded = KeyState::load(&temp_dir, "test_prefix");
+        assert!(loaded.is_some());
+        let loaded = loaded.expect("should load");
+        assert_eq!(loaded.signing_generation, 100);
+        assert_eq!(loaded.recovery_generation, 50);
+
+        // Clean up
+        KeyState::delete(&temp_dir, "test_prefix");
+        let _ = fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_key_state_load_nonexistent() {
+        let temp_dir = std::env::temp_dir().join("kels_ffi_nonexistent");
+        let loaded = KeyState::load(&temp_dir, "nonexistent_prefix");
+        assert!(loaded.is_none());
+    }
+
+    // ==================== kels_last_error Tests ====================
+
+    #[test]
+    fn test_kels_last_error_when_none() {
+        clear_last_error();
+        let ptr = kels_last_error();
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_kels_last_error_when_set() {
+        clear_last_error();
+        set_last_error("FFI error test");
+
+        let ptr = kels_last_error();
+        assert!(!ptr.is_null());
+
+        let error_str = from_c_string(ptr);
+        assert_eq!(error_str, Some("FFI error test".to_string()));
+
+        clear_last_error();
+    }
+
+    // ==================== kels_free_string Tests ====================
+
+    #[test]
+    fn test_kels_free_string_null() {
+        // Should not crash when freeing null
+        unsafe {
+            kels_free_string(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn test_kels_free_string_valid() {
+        let ptr = to_c_string("string to free");
+        assert!(!ptr.is_null());
+
+        // Free it
+        unsafe {
+            kels_free_string(ptr);
+        }
+        // Should not crash
     }
 }

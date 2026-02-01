@@ -80,6 +80,11 @@ async-trait = "0.1"
 # Random selection
 rand = "0.8"
 
+[dev-dependencies]
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }
+tokio-test = "0.4"
+
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

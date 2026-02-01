@@ -205,22 +205,11 @@ impl SoftwareKeyProvider {
         }
     }
 
-    pub fn with_all_keys(
-        current: Option<PrivateKey>,
-        next: Option<PrivateKey>,
-        recovery: Option<PrivateKey>,
-    ) -> Self {
-        if let Some(c) = current
-            && let Some(n) = next
-            && let Some(r) = recovery
-        {
-            return Self {
-                keys: vec![c, n],
-                recovery_keys: vec![r],
-            };
+    pub fn with_all_keys(current: PrivateKey, next: PrivateKey, recovery: PrivateKey) -> Self {
+        Self {
+            keys: vec![current, next],
+            recovery_keys: vec![recovery],
         }
-
-        Self::new()
     }
 
     // ==================== Persistence ====================
@@ -231,31 +220,27 @@ impl SoftwareKeyProvider {
         let next_path = dir.join("next.key");
         let recovery_path = dir.join("recovery.key");
 
-        let current = if current_path.exists() {
-            let qb64 = std::fs::read_to_string(&current_path).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to read current key: {}", e))
-            })?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        if !current_path.exists() {
+            return Err(KelsError::NoCurrentKey);
+        }
+        if !next_path.exists() {
+            return Err(KelsError::NoNextKey);
+        }
+        if !recovery_path.exists() {
+            return Err(KelsError::NoRecoveryKey);
+        }
 
-        let next = if next_path.exists() {
-            let qb64 = std::fs::read_to_string(&next_path)
-                .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        let current_qb64 = std::fs::read_to_string(&current_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read current key: {}", e)))?;
+        let current = PrivateKey::from_qb64(current_qb64.trim())?;
 
-        let recovery = if recovery_path.exists() {
-            let qb64 = std::fs::read_to_string(&recovery_path).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to read recovery key: {}", e))
-            })?;
-            Some(PrivateKey::from_qb64(qb64.trim())?)
-        } else {
-            None
-        };
+        let next_qb64 = std::fs::read_to_string(&next_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
+        let next = PrivateKey::from_qb64(next_qb64.trim())?;
+
+        let recovery_qb64 = std::fs::read_to_string(&recovery_path)
+            .map_err(|e| KelsError::HardwareError(format!("Failed to read recovery key: {}", e)))?;
+        let recovery = PrivateKey::from_qb64(recovery_qb64.trim())?;
 
         Ok(Self::with_all_keys(current, next, recovery))
     }
@@ -563,7 +548,7 @@ mod tests {
         let (_pub2, priv2) = generate_secp256r1().unwrap();
         let (_pub3, priv3) = generate_secp256r1().unwrap();
 
-        let provider = SoftwareKeyProvider::with_all_keys(Some(priv1), Some(priv2), Some(priv3));
+        let provider = SoftwareKeyProvider::with_all_keys(priv1, priv2, priv3);
 
         assert_eq!(
             provider.current_public_key().await.unwrap().qb64(),
@@ -614,5 +599,138 @@ mod tests {
         provider.rollback().await.unwrap();
         assert!(!provider.has_staged_recovery().await);
         assert!(!provider.has_staged().await);
+    }
+
+    #[test]
+    fn test_software_key_provider_default() {
+        let provider = SoftwareKeyProvider::default();
+        assert!(provider.keys.is_empty());
+        assert!(provider.recovery_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sign_with_recovery_without_key_fails() {
+        let provider = SoftwareKeyProvider::new();
+        let result = provider.sign_with_recovery(b"test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stage_recovery_rotation_without_key_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        let result = provider.stage_recovery_rotation().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_commit_without_staged_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let result = provider.commit().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_without_staged_fails() {
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let result = provider.rollback().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_current_public_key_without_next_fails() {
+        let provider = SoftwareKeyProvider::new();
+        let result = provider.current_public_key().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_roundtrip() {
+        use tempfile::TempDir;
+
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let original_pub = provider.current_public_key().await.unwrap();
+
+        let temp = TempDir::new().unwrap();
+        provider.save_to_dir(temp.path()).await.unwrap();
+
+        let loaded = SoftwareKeyProvider::load_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            loaded.current_public_key().await.unwrap().qb64(),
+            original_pub.qb64()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_without_current_fails() {
+        use tempfile::TempDir;
+
+        let provider = SoftwareKeyProvider::new();
+        let temp = TempDir::new().unwrap();
+        let result = provider.save_to_dir(temp.path()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_while_staged_fails() {
+        use tempfile::TempDir;
+
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        provider.stage_rotation().await.unwrap();
+
+        let temp = TempDir::new().unwrap();
+        let result = provider.save_to_dir(temp.path()).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_nonexistent_dir() {
+        let result = SoftwareKeyProvider::load_from_dir(Path::new("/nonexistent/path/12345"));
+        // Should fail with NoCurrentKey if directory doesn't exist
+        assert!(matches!(result, Err(KelsError::NoCurrentKey)));
+    }
+
+    #[test]
+    fn test_software_provider_config_new() {
+        let config = SoftwareProviderConfig::new(PathBuf::from("/tmp/keys"));
+        assert_eq!(config.key_dir, PathBuf::from("/tmp/keys"));
+    }
+
+    #[tokio::test]
+    async fn test_software_provider_config_load_new() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let nonexistent = temp.path().join("nonexistent");
+        let config = SoftwareProviderConfig::new(nonexistent);
+
+        let provider = config.load_provider().await.unwrap();
+        assert!(!provider.has_current().await);
+    }
+
+    #[tokio::test]
+    async fn test_software_provider_config_save_and_load() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_dir = temp.path().join("keys");
+        let config = SoftwareProviderConfig::new(key_dir.clone());
+
+        // Create and save a provider
+        let mut provider = SoftwareKeyProvider::new();
+        provider.generate_initial_keys().await.unwrap();
+        let original_pub = provider.current_public_key().await.unwrap();
+        config.save_provider(&provider).await.unwrap();
+
+        // Load it back
+        let config2 = SoftwareProviderConfig::new(key_dir);
+        let loaded = config2.load_provider().await.unwrap();
+        assert_eq!(
+            loaded.current_public_key().await.unwrap().qb64(),
+            original_pub.qb64()
+        );
     }
 }

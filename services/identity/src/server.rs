@@ -103,12 +103,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to create builder: {}", e))?;
 
-        let (event, _signature) = builder
+        let icp = builder
             .incept()
             .await
             .map_err(|e| format!("Failed to incept: {}", e))?;
 
-        tracing::info!("Generated registry prefix: {}", event.prefix);
+        tracing::info!("Generated registry prefix: {}", icp.event.prefix);
 
         let current_handle = builder
             .key_provider()
@@ -130,7 +130,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         let signing_gen = builder.key_provider().signing_generation().await;
         let recovery_gen = builder.key_provider().recovery_generation().await;
         let binding = HsmKeyBinding::new(
-            event.prefix.clone(),
+            icp.event.prefix.clone(),
             current_handle.clone(),
             next_handle.clone(),
             recovery_handle.clone(),
@@ -145,8 +145,8 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         repo.authority
             .create(AuthorityMapping::new(
                 AUTHORITY_IDENTITY_NAME.to_string(),
-                event.prefix.clone(),
-                event.said.clone(),
+                icp.event.prefix.clone(),
+                icp.event.said.clone(),
             ))
             .await
             .map_err(|e| format!("Failed to set authority prefix: {}", e))?;

@@ -189,7 +189,7 @@ async fn cmd_rotate(
     }
 
     // Rotate using the builder (handles key management, event creation, and local save)
-    let (event, _signature) = builder.rotate().await?;
+    let rot = builder.rotate().await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder
@@ -209,7 +209,7 @@ async fn cmd_rotate(
     repo.hsm_bindings.update(binding).await?;
 
     // Update authority last_said
-    authority.last_said = event.said.clone();
+    authority.last_said = rot.event.said.clone();
     repo.authority.update(authority).await?;
 
     if json {
@@ -218,7 +218,7 @@ async fn cmd_rotate(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "said": event.said,
+                "said": rot.event.said,
                 "current_key_handle": new_current_handle,
                 "next_key_handle": new_next_handle,
             })
@@ -227,7 +227,7 @@ async fn cmd_rotate(
         println!("{}", "Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New SAID".cyan(), rot.event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
     }
@@ -289,7 +289,7 @@ async fn cmd_rotate_recovery(
     }
 
     // Rotate recovery key using the builder
-    let (event, _signature) = builder.rotate_recovery().await?;
+    let ror = builder.rotate_recovery().await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder
@@ -315,7 +315,7 @@ async fn cmd_rotate_recovery(
     repo.hsm_bindings.update(binding).await?;
 
     // Update authority last_said
-    authority.last_said = event.said.clone();
+    authority.last_said = ror.event.said.clone();
     repo.authority.update(authority).await?;
 
     if json {
@@ -324,7 +324,7 @@ async fn cmd_rotate_recovery(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "said": event.said,
+                "said": ror.event.said,
                 "current_key_handle": new_current_handle,
                 "next_key_handle": new_next_handle,
                 "recovery_key_handle": new_recovery_handle,
@@ -334,7 +334,7 @@ async fn cmd_rotate_recovery(
         println!("{}", "Recovery Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New SAID".cyan(), ror.event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
         println!("  {}: {}", "New Recovery Key".cyan(), new_recovery_handle);
@@ -399,7 +399,7 @@ async fn cmd_recover(
 
     // Recover using the builder (authoritative mode)
     let add_rot = builder.should_add_rot_with_recover().await?;
-    let (event, _signature) = builder.recover(add_rot).await?;
+    let rec = builder.recover(add_rot).await?;
 
     // Get updated handles from key provider
     let new_current_handle = builder
@@ -425,7 +425,7 @@ async fn cmd_recover(
     repo.hsm_bindings.update(binding).await?;
 
     // Update authority last_said
-    authority.last_said = event.said.clone();
+    authority.last_said = rec.event.said.clone();
     repo.authority.update(authority).await?;
 
     if json {
@@ -434,7 +434,7 @@ async fn cmd_recover(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "said": event.said,
+                "said": rec.event.said,
                 "event_kind": "REC",
                 "current_key_handle": new_current_handle,
                 "next_key_handle": new_next_handle,
@@ -446,7 +446,7 @@ async fn cmd_recover(
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
         println!("  {}: REC (Recovery)", "Event Kind".cyan());
-        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New SAID".cyan(), rec.event.said);
         println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
         println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
         println!("  {}: {}", "New Recovery Key".cyan(), new_recovery_handle);
@@ -516,10 +516,10 @@ async fn cmd_contest(
     }
 
     // Contest using the builder (authoritative mode)
-    let (event, _signature) = builder.contest().await?;
+    let cnt = builder.contest().await?;
 
     // Update authority last_said
-    authority.last_said = event.said.clone();
+    authority.last_said = cnt.event.said.clone();
     repo.authority.update(authority).await?;
 
     if json {
@@ -528,7 +528,7 @@ async fn cmd_contest(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "said": event.said,
+                "said": cnt.event.said,
                 "event_kind": "CNT",
                 "contested_at_version": at_version,
             })
@@ -538,7 +538,7 @@ async fn cmd_contest(
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
         println!("  {}: CNT (Contest)", "Event Kind".cyan());
-        println!("  {}: {}", "New SAID".cyan(), event.said);
+        println!("  {}: {}", "New SAID".cyan(), cnt.event.said);
         println!("  {}: {}", "Contested at Version".cyan(), at_version);
         println!();
         println!(
@@ -607,10 +607,10 @@ async fn cmd_decommission(
     }
 
     // Decommission using the builder
-    let (event, _signature) = builder.decommission().await?;
+    let dec = builder.decommission().await?;
 
     // Update authority last_said
-    authority.last_said = event.said.clone();
+    authority.last_said = dec.event.said.clone();
     repo.authority.update(authority).await?;
 
     if json {
@@ -619,7 +619,7 @@ async fn cmd_decommission(
             serde_json::json!({
                 "success": true,
                 "prefix": prefix,
-                "said": event.said,
+                "said": dec.event.said,
                 "decommissioned": true,
             })
         );
@@ -627,7 +627,7 @@ async fn cmd_decommission(
         println!("{}", "Identity Decommissioned!".red().bold());
         println!("{}", "=".repeat(60));
         println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "Final SAID".cyan(), event.said);
+        println!("  {}: {}", "Final SAID".cyan(), dec.event.said);
         println!();
         println!("{}", "This identity can no longer be used.".red());
     }
