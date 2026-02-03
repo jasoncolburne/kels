@@ -2,7 +2,7 @@ kind: Build
 name: kels-registry
 type: container
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -22,17 +22,21 @@ kind: Deploy
 name: kels-registry
 type: kubernetes
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - build.kels-registry
   - deploy.redis
   - deploy.postgres
   - deploy.identity
+  - run.read-federation-self-prefix
+  - run.read-federation-members
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
   identityUrl: ${var.identity.url}
+  federationSelfPrefix: ${actions.run.read-federation-self-prefix.outputs.log}
+  federationMembers: ${actions.run.read-federation-members.outputs.log}
 
 spec:
   manifestTemplates:
@@ -44,7 +48,7 @@ kind: Run
 name: fetch-registry-prefix
 type: exec
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.identity
@@ -52,19 +56,10 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      mkdir -p ../../.kels
-      RESPONSE=$(kubectl exec -n ${environment.namespace} deploy/identity -c identity -- \
-        /app/identity-admin -j status 2>/dev/null)
-      PREFIX=$(echo "$RESPONSE" | jq -r '.prefix // empty')
-      if [ -z "$PREFIX" ]; then
-        echo "Error: Could not fetch registry prefix. Is identity service initialized?"
-        echo "Response: $RESPONSE"
-        exit 1
-      fi
-      echo -n "$PREFIX" > "../../.kels/registry_prefix"
-      echo "Registry prefix saved: $PREFIX"
+    - ../../scripts/fetch-registry-prefix.sh
+    - ${environment.name}
+    - ${environment.namespace}
+    - ../..
 
 ---
 
@@ -72,7 +67,7 @@ kind: Run
 name: add-node-a
 type: exec
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -80,15 +75,10 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-a"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-a
+    - ../../scripts/add-node.sh
+    - node-a
+    - ${environment.namespace}
+    - core
 
 ---
 
@@ -96,7 +86,7 @@ kind: Run
 name: add-node-b
 type: exec
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -104,15 +94,10 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-b 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-b"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-b
+    - ../../scripts/add-node.sh
+    - node-b
+    - ${environment.namespace}
+    - core
 
 ---
 
@@ -120,7 +105,7 @@ kind: Run
 name: add-node-c
 type: exec
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -128,13 +113,26 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-c 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-c"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-c
+    - ../../scripts/add-node.sh
+    - node-c
+    - ${environment.namespace}
+    - core
 
+---
+
+kind: Run
+name: add-node-d
+type: exec
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - ../../scripts/add-node.sh
+    - node-d
+    - ${environment.namespace}
+    - regional

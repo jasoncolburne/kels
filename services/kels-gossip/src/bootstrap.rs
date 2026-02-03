@@ -25,7 +25,7 @@
 
 use crate::peer_store::PeerRepository;
 use kels::{
-    BatchKelsRequest, KelsClient, KelsError, KelsRegistryClient, NodeRegistration, NodeStatus,
+    BatchKelsRequest, KelsClient, KelsError, MultiRegistryClient, NodeRegistration, NodeStatus,
     PrefixListResponse, PrefixState, SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
@@ -87,7 +87,7 @@ pub struct DiscoveryResult {
 /// Handles bootstrap synchronization from existing peers.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    registry: KelsRegistryClient,
+    registry: MultiRegistryClient,
     peer_repo: Arc<PeerRepository>,
     http_client: reqwest::Client,
 }
@@ -97,7 +97,7 @@ impl BootstrapSync {
     pub fn new(
         config: BootstrapConfig,
         peer_repo: Arc<PeerRepository>,
-        registry: KelsRegistryClient,
+        registry: MultiRegistryClient,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -534,7 +534,7 @@ impl BootstrapSync {
 /// Run heartbeat loop in the background.
 /// This keeps the node registered as healthy in the registry.
 /// If the node is not found, it will re-register with the provided config.
-pub async fn run_heartbeat_loop(config: BootstrapConfig, client: KelsRegistryClient) {
+pub async fn run_heartbeat_loop(config: BootstrapConfig, client: MultiRegistryClient) {
     let mut ticker = interval(Duration::from_secs(config.heartbeat_interval_secs));
 
     info!(

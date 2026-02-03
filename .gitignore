@@ -22,7 +22,7 @@ Cargo.lock
 Thumbs.db
 
 # Registry prefix (environment-specific)
-.kels/registry_prefix
+.kels/federated-registries.json
 
 # Swift/iOS
 clients/kels-client/.build/

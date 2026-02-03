@@ -5,7 +5,7 @@
 use crate::allowlist::{AllowlistBehaviour, SharedAllowlist};
 use crate::protocol::{KelAnnouncement, KelRequest, KelResponse, PROTOCOL_NAME};
 use futures::prelude::*;
-use kels::KelsRegistryClient;
+use kels::MultiRegistryClient;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, noise,
@@ -190,7 +190,7 @@ pub async fn run_swarm(
     peer_addrs: Vec<Multiaddr>,
     topic_name: &str,
     allowlist: SharedAllowlist,
-    registry_client: KelsRegistryClient,
+    registry_client: MultiRegistryClient,
     registry_prefix: String,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,

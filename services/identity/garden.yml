@@ -3,7 +3,7 @@ name: identity
 type: container
 
 # Identity service is only needed in the registry environment
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -24,7 +24,7 @@ name: identity
 type: kubernetes
 
 # Identity service is only needed in the registry environment
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - build.identity

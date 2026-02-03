@@ -8,17 +8,18 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, NodeStatus, ProviderConfig,
-    SoftwareProviderConfig,
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
+    ProviderConfig, SoftwareProviderConfig,
 };
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
-const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry.local";
+const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.local";
 
-/// Registry KEL prefix - trust anchor for verifying registry identity.
-/// Must be set at compile time via REGISTRY_PREFIX environment variable.
-const REGISTRY_PREFIX: &str = env!("REGISTRY_PREFIX");
+/// Trusted registries - prefix=url pairs for verifying registry identity.
+/// MUST be set at compile time via TRUSTED_REGISTRIES environment variable.
+/// Format: "prefix1=url1,prefix2=url2,..."
+const TRUSTED_REGISTRIES: &str = env!("TRUSTED_REGISTRIES");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,8 +28,8 @@ struct Cli {
     #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
     url: String,
 
-    /// Registry URL for node discovery
-    #[arg(long, env = "KELS_REGISTRY_URL", default_value = DEFAULT_REGISTRY_URL)]
+    /// Registry URLs for node discovery (comma-separated for failover)
+    #[arg(long, env = "KELS_REGISTRY_URLS", default_value = DEFAULT_REGISTRY_URL)]
     registry: String,
 
     /// Auto-select the fastest available node from registry (requires --registry)
@@ -203,13 +204,64 @@ fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     Ok(SoftwareProviderConfig::new(key_dir))
 }
 
-/// Verify the registry's KEL matches the expected prefix (trust anchor).
-async fn verify_registry(registry_url: &str) -> Result<()> {
-    use kels::KelsRegistryClient;
+/// Parse comma-separated registry URLs into a Vec.
+fn parse_registry_urls(registry: &str) -> Vec<String> {
+    registry
+        .split(',')
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect()
+}
 
-    let registry_client = KelsRegistryClient::new(registry_url);
+/// Parse trusted registries string into a HashMap of prefix -> url.
+fn parse_trusted_registries() -> std::collections::HashMap<String, String> {
+    TRUSTED_REGISTRIES
+        .split(',')
+        .filter_map(|pair| {
+            let mut parts = pair.trim().splitn(2, '=');
+            match (parts.next(), parts.next()) {
+                (Some(prefix), Some(url)) => {
+                    Some((prefix.trim().to_string(), url.trim().to_string()))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Get expected prefix for a registry URL by matching against trusted registries.
+fn get_expected_prefix(registry_url: &str) -> Option<String> {
+    let trusted = parse_trusted_registries();
+    // Match the URL against trusted registry URLs and return the prefix
+    for (prefix, url) in trusted {
+        // Check if the registry URL contains the trusted URL's host
+        // e.g., "http://kels-registry.kels-registry-a.local" contains "kels-registry-a"
+        if registry_url.contains(&url) || url.contains(registry_url) {
+            return Some(prefix);
+        }
+        // Also check for partial hostname matches (e.g., registry-a in the URL)
+        if let Some(host) = url.split("//").nth(1).and_then(|s| s.split('/').next()) {
+            // Extract the environment part (e.g., "kels-registry-a" from host)
+            if registry_url.contains(host) {
+                return Some(prefix);
+            }
+        }
+    }
+    None
+}
+
+/// Verify the registry's KEL matches the expected prefix (trust anchor).
+async fn verify_registry(registry_urls: &[String]) -> Result<()> {
+    let registry_client = MultiRegistryClient::new(registry_urls.to_vec());
+
+    // Get expected prefix for the first registry URL
+    let expected_prefix = registry_urls
+        .first()
+        .and_then(|url| get_expected_prefix(url))
+        .ok_or_else(|| anyhow::anyhow!("No trusted registry prefix found for provided URLs"))?;
+
     registry_client
-        .verify_registry(REGISTRY_PREFIX)
+        .verify_registry(&expected_prefix)
         .await
         .context("Registry verification failed")?;
 
@@ -218,10 +270,16 @@ async fn verify_registry(registry_url: &str) -> Result<()> {
 
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
-        // Verify registry identity before trusting node list
-        verify_registry(&cli.registry).await?;
+        let registry_urls = parse_registry_urls(&cli.registry);
+        if registry_urls.is_empty() {
+            return Err(anyhow::anyhow!("No registry URLs provided"));
+        }
 
-        let nodes = KelsClient::discover_nodes(&cli.registry)
+        // Verify registry identity before trusting node list
+        verify_registry(&registry_urls).await?;
+
+        let registry_client = MultiRegistryClient::new(registry_urls);
+        let nodes = KelsClient::discover_nodes_with_registry(&registry_client)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -302,15 +360,21 @@ fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
 // ==================== Command Handlers ====================
 
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
+    let registry_urls = parse_registry_urls(&cli.registry);
+    if registry_urls.is_empty() {
+        return Err(anyhow::anyhow!("No registry URLs provided"));
+    }
+
     // Verify registry identity before trusting node list
-    verify_registry(&cli.registry).await?;
+    verify_registry(&registry_urls).await?;
 
     println!(
         "{}",
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let nodes = KelsClient::discover_nodes(&cli.registry).await?;
+    let registry_client = MultiRegistryClient::new(registry_urls);
+    let nodes = KelsClient::discover_nodes_with_registry(&registry_client).await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());

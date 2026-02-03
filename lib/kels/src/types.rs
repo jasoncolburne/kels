@@ -829,6 +829,50 @@ pub struct SignedRequest<T> {
 
 // ==================== Peer Allowlist Types ====================
 
+/// Scope of a peer in the registry federation.
+///
+/// - `Core`: Replicated to all registries via Raft consensus
+/// - `Regional`: Local to this registry only, not shared across federation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerScope {
+    /// Core peers are replicated across all registries in the federation via Raft consensus.
+    /// Changes to core peers require consensus from the federation leader.
+    Core,
+    /// Regional peers are local to this registry only.
+    /// They are not shared across the federation and can be managed independently.
+    #[default]
+    Regional,
+}
+
+impl PeerScope {
+    /// Returns the string representation of the scope.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PeerScope::Core => "core",
+            PeerScope::Regional => "regional",
+        }
+    }
+}
+
+impl std::str::FromStr for PeerScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "core" => Ok(PeerScope::Core),
+            "regional" => Ok(PeerScope::Regional),
+            _ => Err(format!("Unknown peer scope: {}", s)),
+        }
+    }
+}
+
+impl std::fmt::Display for PeerScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "peer")]
 #[serde(rename_all = "camelCase")]
@@ -847,6 +891,9 @@ pub struct Peer {
     pub peer_id: String,
     pub node_id: String,
     pub active: bool,
+    /// Scope of this peer: core (replicated) or regional (local-only)
+    #[serde(default)]
+    pub scope: PeerScope,
 }
 
 impl Peer {
@@ -869,6 +916,156 @@ pub struct PeerHistory {
 #[serde(rename_all = "camelCase")]
 pub struct PeersResponse {
     pub peers: Vec<PeerHistory>,
+}
+
+// ==================== Raft Consensus State Types ====================
+
+/// Raft vote state - tracks which node this node voted for in each term.
+/// Chained for full audit trail of vote history.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "raft_vote")]
+#[serde(rename_all = "camelCase")]
+pub struct RaftVote {
+    #[said]
+    pub said: String,
+    #[prefix]
+    pub prefix: String,
+    #[previous]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    /// Raft node ID (unique constraint with version)
+    pub node_id: u64,
+    /// The Raft term number
+    pub term: u64,
+    /// Node ID that was voted for (None if no vote cast)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voted_for: Option<u64>,
+    /// Whether this vote has been committed
+    pub committed: bool,
+}
+
+/// Raft log entry - individual entries in the Raft log.
+/// Chained for full audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "raft_log")]
+#[serde(rename_all = "camelCase")]
+pub struct RaftLogEntry {
+    #[said]
+    pub said: String,
+    #[prefix]
+    pub prefix: String,
+    #[previous]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    /// Raft node ID for this storage instance
+    pub node_id: u64,
+    /// Log index
+    pub log_index: u64,
+    /// Term when entry was received by leader
+    pub term: u64,
+    /// Node ID of the leader that proposed this entry
+    pub leader_node_id: u64,
+    /// Entry payload type: "blank", "normal", or "membership"
+    pub payload_type: String,
+    /// Serialized payload data (JSON)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_data: Option<String>,
+}
+
+/// Audit record for Raft log operations (truncate/purge).
+/// Preserves full history of removed log entries.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "raft_log_audit")]
+#[serde(rename_all = "camelCase")]
+pub struct RaftLogAuditRecord {
+    #[said]
+    pub said: String,
+    /// Node ID that performed the operation
+    pub node_id: u64,
+    /// Operation type: "truncate" or "purge"
+    pub operation: String,
+    /// JSON-serialized log entries that were removed
+    pub entries_json: String,
+    #[created_at]
+    pub recorded_at: StorageDatetime,
+}
+
+impl RaftLogAuditRecord {
+    /// Create an audit record for a truncate operation.
+    pub fn for_truncate(
+        node_id: u64,
+        entries: &[RaftLogEntry],
+    ) -> Result<Self, verifiable_storage::StorageError> {
+        Self::create(
+            node_id,
+            "truncate".to_string(),
+            serde_json::to_string(entries)?,
+        )
+    }
+
+    /// Create an audit record for a purge operation.
+    pub fn for_purge(
+        node_id: u64,
+        entries: &[RaftLogEntry],
+    ) -> Result<Self, verifiable_storage::StorageError> {
+        Self::create(
+            node_id,
+            "purge".to_string(),
+            serde_json::to_string(entries)?,
+        )
+    }
+
+    /// Deserialize the archived entries.
+    pub fn entries(&self) -> Result<Vec<RaftLogEntry>, serde_json::Error> {
+        serde_json::from_str(&self.entries_json)
+    }
+}
+
+/// Raft state metadata - tracks purged and committed log positions.
+/// Chained for full audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "raft_state")]
+#[serde(rename_all = "camelCase")]
+pub struct RaftState {
+    #[said]
+    pub said: String,
+    #[prefix]
+    pub prefix: String,
+    #[previous]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    /// Raft node ID (unique constraint with version)
+    pub node_id: u64,
+    /// Last purged log index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_purged_index: Option<u64>,
+    /// Term of last purged entry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_purged_term: Option<u64>,
+    /// Node ID of leader for last purged entry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_purged_node_id: Option<u64>,
+    /// Committed log index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed_index: Option<u64>,
+    /// Term of committed entry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed_term: Option<u64>,
+    /// Node ID of leader for committed entry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed_node_id: Option<u64>,
 }
 
 #[cfg(test)]
@@ -922,7 +1119,13 @@ mod tests {
 
     #[test]
     fn test_peer_creation() {
-        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+        let peer = Peer::create(
+            "12D3KooWExample".to_string(),
+            "node-a".to_string(),
+            true,
+            PeerScope::Regional,
+        )
+        .unwrap();
 
         assert!(peer.active);
         assert_eq!(peer.version, 0);
@@ -930,11 +1133,31 @@ mod tests {
         assert!(!peer.said.is_empty());
         // Prefix is derived from content hash, not manually set
         assert!(!peer.prefix.is_empty());
+        assert_eq!(peer.scope, PeerScope::Regional);
+    }
+
+    #[test]
+    fn test_peer_creation_with_core_scope() {
+        let peer = Peer::create(
+            "12D3KooWExample".to_string(),
+            "node-b".to_string(),
+            true,
+            PeerScope::Core,
+        )
+        .unwrap();
+
+        assert_eq!(peer.scope, PeerScope::Core);
     }
 
     #[test]
     fn test_peer_deactivation() {
-        let peer = Peer::create("12D3KooWExample".to_string(), "node-a".to_string(), true).unwrap();
+        let peer = Peer::create(
+            "12D3KooWExample".to_string(),
+            "node-a".to_string(),
+            true,
+            PeerScope::Regional,
+        )
+        .unwrap();
 
         let deactivated = peer.deactivate().unwrap();
 
@@ -1810,5 +2033,346 @@ mod tests {
         };
         assert!(!response.accepted);
         assert_eq!(response.diverged_at, Some(5));
+    }
+
+    // ==================== Raft types tests ====================
+
+    #[test]
+    fn test_raft_vote_create() {
+        let vote = RaftVote::create(1, 5, Some(2), false).unwrap();
+        assert!(!vote.said.is_empty());
+        assert!(!vote.prefix.is_empty());
+        assert!(vote.previous.is_none());
+        assert_eq!(vote.version, 0);
+        assert_eq!(vote.node_id, 1);
+        assert_eq!(vote.term, 5);
+        assert_eq!(vote.voted_for, Some(2));
+        assert!(!vote.committed);
+    }
+
+    #[test]
+    fn test_raft_vote_create_no_vote() {
+        let vote = RaftVote::create(1, 3, None, true).unwrap();
+        assert_eq!(vote.voted_for, None);
+        assert!(vote.committed);
+    }
+
+    #[test]
+    fn test_raft_vote_increment() {
+        let mut vote = RaftVote::create(1, 5, Some(2), false).unwrap();
+        let original_said = vote.said.clone();
+        let original_prefix = vote.prefix.clone();
+        let original_version = vote.version;
+
+        vote.term = 6;
+        vote.voted_for = Some(3);
+        vote.increment().unwrap();
+
+        assert_ne!(vote.said, original_said);
+        assert_eq!(vote.prefix, original_prefix);
+        assert_eq!(vote.previous, Some(original_said));
+        assert_eq!(vote.version, original_version + 1);
+    }
+
+    #[test]
+    fn test_raft_vote_json_roundtrip() {
+        let vote = RaftVote::create(42, 100, Some(5), true).unwrap();
+        let json = serde_json::to_string(&vote).unwrap();
+        let parsed: RaftVote = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.said, vote.said);
+        assert_eq!(parsed.prefix, vote.prefix);
+        assert_eq!(parsed.node_id, vote.node_id);
+        assert_eq!(parsed.term, vote.term);
+        assert_eq!(parsed.voted_for, vote.voted_for);
+        assert_eq!(parsed.committed, vote.committed);
+    }
+
+    #[test]
+    fn test_raft_log_entry_create() {
+        let entry = RaftLogEntry::create(
+            1,
+            10,
+            5,
+            2,
+            "normal".to_string(),
+            Some("payload".to_string()),
+        )
+        .unwrap();
+
+        assert!(!entry.said.is_empty());
+        assert!(!entry.prefix.is_empty());
+        assert!(entry.previous.is_none());
+        assert_eq!(entry.version, 0);
+        assert_eq!(entry.node_id, 1);
+        assert_eq!(entry.log_index, 10);
+        assert_eq!(entry.term, 5);
+        assert_eq!(entry.leader_node_id, 2);
+        assert_eq!(entry.payload_type, "normal");
+        assert_eq!(entry.payload_data, Some("payload".to_string()));
+    }
+
+    #[test]
+    fn test_raft_log_entry_create_blank() {
+        let entry = RaftLogEntry::create(1, 0, 1, 0, "blank".to_string(), None).unwrap();
+
+        assert_eq!(entry.payload_type, "blank");
+        assert_eq!(entry.payload_data, None);
+    }
+
+    #[test]
+    fn test_raft_log_entry_increment() {
+        let mut entry =
+            RaftLogEntry::create(1, 10, 5, 2, "normal".to_string(), Some("data".to_string()))
+                .unwrap();
+        let original_said = entry.said.clone();
+
+        entry.log_index = 11;
+        entry.term = 6;
+        entry.increment().unwrap();
+
+        assert_ne!(entry.said, original_said);
+        assert_eq!(entry.previous, Some(original_said));
+        assert_eq!(entry.version, 1);
+    }
+
+    #[test]
+    fn test_raft_log_entry_json_roundtrip() {
+        let entry =
+            RaftLogEntry::create(2, 5, 3, 1, "membership".to_string(), Some("{}".to_string()))
+                .unwrap();
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: RaftLogEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.said, entry.said);
+        assert_eq!(parsed.node_id, entry.node_id);
+        assert_eq!(parsed.log_index, entry.log_index);
+        assert_eq!(parsed.term, entry.term);
+        assert_eq!(parsed.leader_node_id, entry.leader_node_id);
+        assert_eq!(parsed.payload_type, entry.payload_type);
+        assert_eq!(parsed.payload_data, entry.payload_data);
+    }
+
+    #[test]
+    fn test_raft_state_create() {
+        let state =
+            RaftState::create(1, Some(5), Some(3), Some(2), Some(10), Some(4), Some(1)).unwrap();
+
+        assert!(!state.said.is_empty());
+        assert!(!state.prefix.is_empty());
+        assert_eq!(state.node_id, 1);
+        assert_eq!(state.last_purged_index, Some(5));
+        assert_eq!(state.last_purged_term, Some(3));
+        assert_eq!(state.last_purged_node_id, Some(2));
+        assert_eq!(state.committed_index, Some(10));
+        assert_eq!(state.committed_term, Some(4));
+        assert_eq!(state.committed_node_id, Some(1));
+    }
+
+    #[test]
+    fn test_raft_state_create_empty() {
+        let state = RaftState::create(1, None, None, None, None, None, None).unwrap();
+
+        assert_eq!(state.last_purged_index, None);
+        assert_eq!(state.last_purged_term, None);
+        assert_eq!(state.last_purged_node_id, None);
+        assert_eq!(state.committed_index, None);
+        assert_eq!(state.committed_term, None);
+        assert_eq!(state.committed_node_id, None);
+    }
+
+    #[test]
+    fn test_raft_state_increment() {
+        let mut state = RaftState::create(1, None, None, None, None, None, None).unwrap();
+        let original_said = state.said.clone();
+
+        state.last_purged_index = Some(3);
+        state.last_purged_term = Some(2);
+        state.increment().unwrap();
+
+        assert_ne!(state.said, original_said);
+        assert_eq!(state.previous, Some(original_said));
+        assert_eq!(state.version, 1);
+    }
+
+    #[test]
+    fn test_raft_state_json_roundtrip() {
+        let state = RaftState::create(
+            5,
+            Some(100),
+            Some(50),
+            Some(3),
+            Some(150),
+            Some(55),
+            Some(4),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: RaftState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.said, state.said);
+        assert_eq!(parsed.node_id, state.node_id);
+        assert_eq!(parsed.last_purged_index, state.last_purged_index);
+        assert_eq!(parsed.last_purged_term, state.last_purged_term);
+        assert_eq!(parsed.last_purged_node_id, state.last_purged_node_id);
+        assert_eq!(parsed.committed_index, state.committed_index);
+        assert_eq!(parsed.committed_term, state.committed_term);
+        assert_eq!(parsed.committed_node_id, state.committed_node_id);
+    }
+
+    #[test]
+    fn test_raft_log_audit_record_for_truncate() {
+        let entry1 =
+            RaftLogEntry::create(1, 10, 5, 2, "normal".to_string(), Some("a".to_string())).unwrap();
+        let entry2 =
+            RaftLogEntry::create(1, 11, 5, 2, "normal".to_string(), Some("b".to_string())).unwrap();
+        let entries = vec![entry1.clone(), entry2.clone()];
+
+        let audit = RaftLogAuditRecord::for_truncate(1, &entries).unwrap();
+
+        assert!(!audit.said.is_empty());
+        assert_eq!(audit.node_id, 1);
+        assert_eq!(audit.operation, "truncate");
+
+        // Verify entries can be deserialized
+        let recovered = audit.entries().unwrap();
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].said, entry1.said);
+        assert_eq!(recovered[1].said, entry2.said);
+    }
+
+    #[test]
+    fn test_raft_log_audit_record_for_purge() {
+        let entry = RaftLogEntry::create(1, 5, 3, 2, "blank".to_string(), None).unwrap();
+        let entries = vec![entry.clone()];
+
+        let audit = RaftLogAuditRecord::for_purge(1, &entries).unwrap();
+
+        assert_eq!(audit.operation, "purge");
+        let recovered = audit.entries().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].said, entry.said);
+    }
+
+    #[test]
+    fn test_raft_log_audit_record_empty_entries() {
+        let entries: Vec<RaftLogEntry> = vec![];
+        let audit = RaftLogAuditRecord::for_truncate(1, &entries).unwrap();
+
+        let recovered = audit.entries().unwrap();
+        assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn test_raft_log_audit_record_json_roundtrip() {
+        let entry =
+            RaftLogEntry::create(1, 10, 5, 2, "normal".to_string(), Some("data".to_string()))
+                .unwrap();
+        let audit = RaftLogAuditRecord::for_truncate(2, &[entry]).unwrap();
+
+        let json = serde_json::to_string(&audit).unwrap();
+        let parsed: RaftLogAuditRecord = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.said, audit.said);
+        assert_eq!(parsed.node_id, audit.node_id);
+        assert_eq!(parsed.operation, audit.operation);
+        assert_eq!(parsed.entries_json, audit.entries_json);
+    }
+
+    // ==================== PeerScope Tests ====================
+
+    #[test]
+    fn test_peer_scope_as_str() {
+        assert_eq!(PeerScope::Core.as_str(), "core");
+        assert_eq!(PeerScope::Regional.as_str(), "regional");
+    }
+
+    #[test]
+    fn test_peer_scope_display() {
+        assert_eq!(format!("{}", PeerScope::Core), "core");
+        assert_eq!(format!("{}", PeerScope::Regional), "regional");
+    }
+
+    #[test]
+    fn test_peer_scope_from_str() {
+        use std::str::FromStr;
+
+        assert_eq!(PeerScope::from_str("core").unwrap(), PeerScope::Core);
+        assert_eq!(
+            PeerScope::from_str("regional").unwrap(),
+            PeerScope::Regional
+        );
+        assert_eq!(PeerScope::from_str("CORE").unwrap(), PeerScope::Core);
+        assert_eq!(
+            PeerScope::from_str("Regional").unwrap(),
+            PeerScope::Regional
+        );
+        assert_eq!(
+            PeerScope::from_str("REGIONAL").unwrap(),
+            PeerScope::Regional
+        );
+    }
+
+    #[test]
+    fn test_peer_scope_from_str_invalid() {
+        use std::str::FromStr;
+
+        let result = PeerScope::from_str("invalid");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unknown peer scope"));
+    }
+
+    #[test]
+    fn test_peer_scope_default() {
+        let scope = PeerScope::default();
+        assert_eq!(scope, PeerScope::Regional);
+    }
+
+    #[test]
+    fn test_peer_scope_serialization() {
+        let core_json = serde_json::to_string(&PeerScope::Core).unwrap();
+        assert_eq!(core_json, "\"core\"");
+
+        let regional_json = serde_json::to_string(&PeerScope::Regional).unwrap();
+        assert_eq!(regional_json, "\"regional\"");
+    }
+
+    #[test]
+    fn test_peer_scope_deserialization() {
+        let core: PeerScope = serde_json::from_str("\"core\"").unwrap();
+        assert_eq!(core, PeerScope::Core);
+
+        let regional: PeerScope = serde_json::from_str("\"regional\"").unwrap();
+        assert_eq!(regional, PeerScope::Regional);
+    }
+
+    #[test]
+    fn test_peer_scope_equality() {
+        assert_eq!(PeerScope::Core, PeerScope::Core);
+        assert_eq!(PeerScope::Regional, PeerScope::Regional);
+        assert_ne!(PeerScope::Core, PeerScope::Regional);
+    }
+
+    #[test]
+    fn test_peer_scope_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(PeerScope::Core);
+        set.insert(PeerScope::Regional);
+        set.insert(PeerScope::Core); // Duplicate
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&PeerScope::Core));
+        assert!(set.contains(&PeerScope::Regional));
+    }
+
+    #[test]
+    fn test_peer_scope_copy() {
+        let scope = PeerScope::Core;
+        let copied = scope; // Copy, not move
+        assert_eq!(scope, copied);
+        assert_eq!(scope, PeerScope::Core); // Original still usable
     }
 }

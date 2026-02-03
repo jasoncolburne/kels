@@ -37,8 +37,63 @@ class KelsViewModel: ObservableObject {
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
     private let nodeUrlKey = "com.kels.nodeUrl"
+    private let selectedRegistryKey = "com.kels.selectedRegistry"
     private let keyNamespace = "com.kels.kelsclient"
-    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
+
+    // Available registries with their URLs
+    static let registryUrls = [
+        ("registry-a", "http://kels-registry.kels-registry-a.local"),
+        ("registry-b", "http://kels-registry.kels-registry-b.local"),
+        ("registry-c", "http://kels-registry.kels-registry-c.local")
+    ]
+
+    // Parse TRUSTED_REGISTRIES from Generated.swift into a dictionary of prefix -> url
+    static let trustedRegistries: [(prefix: String, url: String)] = {
+        var registries: [(prefix: String, url: String)] = []
+        for pair in TRUSTED_REGISTRIES.split(separator: ",") {
+            let parts = pair.split(separator: "=", maxSplits: 1)
+            if parts.count == 2 {
+                let prefix = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let url = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                registries.append((prefix: prefix, url: url))
+            }
+        }
+        return registries
+    }()
+
+    // Get the expected prefix for the selected registry by matching URL
+    func getExpectedPrefix() -> String? {
+        // Get the URL for the selected registry
+        guard let registryUrlForSelected = Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 else {
+            return nil
+        }
+
+        // Find the trusted registry entry that matches this URL
+        // Match by looking for the registry name in the URL (e.g., "registry-a" in the URL)
+        for (prefix, url) in Self.trustedRegistries {
+            // Check if the URL contains the registry name
+            if url.contains(selectedRegistry) || registryUrlForSelected.contains(selectedRegistry) {
+                // Both URLs reference the same registry
+                if url.contains(selectedRegistry) {
+                    return prefix
+                }
+            }
+        }
+        return nil
+    }
+    @Published var selectedRegistry: String = "registry-a" {
+        didSet {
+            UserDefaults.standard.set(selectedRegistry, forKey: selectedRegistryKey)
+            // Update registry URL when selection changes
+            if let url = Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 {
+                registryUrl = url
+            }
+        }
+    }
+
+    private var defaultRegistryUrl: String {
+        Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 ?? Self.registryUrls[0].1
+    }
     private let defaultNodeUrl = "http://kels.kels-node-a.local"
 
     // Developer tools logging
@@ -60,6 +115,12 @@ class KelsViewModel: ObservableObject {
     // MARK: - Persistence
 
     private func loadSavedSettings() {
+        // Load selected registry first
+        if let savedRegistry = UserDefaults.standard.string(forKey: selectedRegistryKey),
+           Self.registryUrls.contains(where: { $0.0 == savedRegistry }) {
+            selectedRegistry = savedRegistry
+        }
+
         if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey), !savedRegistryUrl.isEmpty {
             registryUrl = savedRegistryUrl
         } else {
@@ -132,8 +193,11 @@ class KelsViewModel: ObservableObject {
         log("Discovering nodes from \(registryUrl)...")
 
         do {
-            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
-            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
+            // Use trusted prefix for cryptographic verification
+            guard let expectedPrefix = getExpectedPrefix() else {
+                throw NSError(domain: "KelsClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "No trusted prefix found for \(selectedRegistry)"])
+            }
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: expectedPrefix)
             log("Found \(discoveredNodes.count) nodes")
 
             // Cache nodes for fallback
@@ -189,9 +253,12 @@ class KelsViewModel: ObservableObject {
         log("Auto-selecting fastest node...")
 
         do {
-            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
+            // Use trusted prefix for cryptographic verification
+            guard let expectedPrefix = getExpectedPrefix() else {
+                throw NSError(domain: "KelsClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "No trusted prefix found for \(selectedRegistry)"])
+            }
             // Discover nodes (this will also cache them)
-            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
+            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: expectedPrefix)
             discoveredNodes = nodes
             saveCachedNodes(nodes)
 

@@ -466,6 +466,57 @@ impl KelsClient {
         Ok(nodes)
     }
 
+    /// Discover nodes from a MultiRegistryClient and test latency to each.
+    /// Returns nodes sorted by latency (fastest first), with Ready nodes prioritized.
+    pub async fn discover_nodes_with_registry(
+        registry: &crate::MultiRegistryClient,
+    ) -> Result<Vec<NodeInfo>, KelsError> {
+        let mut nodes = registry.list_nodes_info().await?;
+
+        // Test latency to each Ready node concurrently (with short timeout)
+        let latency_futures: Vec<_> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == NodeStatus::Ready)
+            .map(|(i, n)| {
+                let url = n.kels_url.clone();
+                let node_id = n.node_id.clone();
+                async move {
+                    let client = KelsClient::with_timeout(&url, Duration::from_millis(500));
+                    let latency = client.test_latency().await.ok();
+                    if let Some(ref lat) = latency {
+                        tracing::info!("Node {} latency: {}ms", node_id, lat.as_millis());
+                    } else {
+                        tracing::warn!("Node {} latency test failed/timed out", node_id);
+                    }
+                    (i, latency)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(latency_futures).await;
+        for (i, latency) in results {
+            if let Some(lat) = latency {
+                nodes[i].latency_ms = Some(lat.as_millis() as u64);
+            }
+        }
+
+        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
+        nodes.sort_by(|a, b| match (&a.status, &b.status) {
+            (NodeStatus::Ready, NodeStatus::Ready) => match (&a.latency_ms, &b.latency_ms) {
+                (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+            (NodeStatus::Ready, _) => std::cmp::Ordering::Less,
+            (_, NodeStatus::Ready) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        Ok(nodes)
+    }
+
     /// Create a client connected to the fastest available node from the registry.
     /// Only considers Ready nodes. Returns error if no Ready nodes are available.
     pub async fn with_discovery(registry_url: &str) -> Result<Self, KelsError> {

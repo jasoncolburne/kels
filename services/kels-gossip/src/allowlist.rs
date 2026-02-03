@@ -199,7 +199,7 @@ pub enum AllowlistRefreshError {
 }
 
 // Use types from kels library
-use kels::KelsRegistryClient;
+use kels::MultiRegistryClient;
 use verifiable_storage::Chained;
 
 /// Shared allowlist type
@@ -214,7 +214,7 @@ pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_client: &KelsRegistryClient,
+    registry_client: &MultiRegistryClient,
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
 ) -> Result<usize, AllowlistRefreshError> {
@@ -292,7 +292,7 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_client: KelsRegistryClient,
+    registry_client: MultiRegistryClient,
     registry_prefix: String,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,

@@ -3,7 +3,7 @@ name: kels
 type: container
 
 # KELS service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -24,7 +24,7 @@ name: kels
 type: kubernetes
 
 # KELS service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 dependencies:
   - build.kels

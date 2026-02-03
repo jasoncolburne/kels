@@ -40,7 +40,7 @@ pub use file_store::FileKelStore;
 pub use hardware::HardwareKeyProvider;
 pub use kel::Kel;
 pub use kel::compute_rotation_hash;
-pub use registry_client::{KelsRegistryClient, RegistrySigner, SignResult};
+pub use registry_client::{KelsRegistryClient, MultiRegistryClient, RegistrySigner, SignResult};
 pub use repository::SignedEventRepository;
 pub use repository_store::RepositoryKelStore;
 #[cfg(feature = "server")]
@@ -50,6 +50,7 @@ pub use types::{
     BatchKelsRequest, BatchSubmitResponse, CachedKel, ContestedPrefix, DeregisterRequest,
     ErrorCode, ErrorResponse, EventKind, EventSignature, HeartbeatRequest, KelMergeResult,
     KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration,
-    NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeersResponse, PrefixListResponse,
-    PrefixState, RegisterNodeRequest, SignedKeyEvent, SignedRequest, StatusUpdateRequest,
+    NodeStatus, NodeType, NodesResponse, Peer, PeerHistory, PeerScope, PeersResponse,
+    PrefixListResponse, PrefixState, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
+    RegisterNodeRequest, SignedKeyEvent, SignedRequest, StatusUpdateRequest,
 };

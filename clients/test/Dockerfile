@@ -21,12 +21,12 @@ RUN --mount=type=cache,id=kels-bench-registry,target=/usr/local/cargo/registry \
     cp /app/target/release/kels-bench /app/kels-bench
 
 # Build kels-cli with dev-tools for adversarial testing
-# REGISTRY_PREFIX is required at compile time for trust anchor verification
-ARG REGISTRY_PREFIX
+# TRUSTED_REGISTRIES contains name=prefix pairs for trust anchor verification
+ARG TRUSTED_REGISTRIES
 WORKDIR /app/clients/kels-cli
 RUN --mount=type=cache,id=kels-cli-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-cli-target,target=/app/target \
-    REGISTRY_PREFIX="${REGISTRY_PREFIX}" cargo build --release --features dev-tools && \
+    TRUSTED_REGISTRIES="${TRUSTED_REGISTRIES}" cargo build --release --features dev-tools && \
     cp /app/target/release/kels-cli /app/kels-cli
 
 # Stage 2: Final test client image

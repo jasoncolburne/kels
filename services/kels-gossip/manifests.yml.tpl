@@ -82,10 +82,12 @@ spec:
               value: "${var.kelsGossipDatabaseUrl}"
             - name: HSM_URL
               value: "${var.hsm.url}"
-            - name: REGISTRY_URL
-              value: "${var.registryUrl}"
+            - name: TRUSTED_REGISTRIES
+              value: "${var.trustedRegistries}"
             - name: REGISTRY_PREFIX
               value: "${var.registryPrefix}"
+            - name: ALLOW_BOOTSTRAP_MODE
+              value: "${var.allowBootstrapMode}"
             - name: GOSSIP_LISTEN_ADDR
               value: "${var.gossip.listenAddress}"
             - name: GOSSIP_ADVERTISE_ADDR

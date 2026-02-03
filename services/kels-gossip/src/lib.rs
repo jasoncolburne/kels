@@ -83,8 +83,8 @@ pub struct Config {
     pub database_url: String,
     /// HSM service URL for identity keys
     pub hsm_url: String,
-    /// Registry service URL (optional - if not set, bootstrap sync is skipped)
-    pub registry_url: Option<String>,
+    /// Registry service URLs (comma-separated, with automatic failover)
+    pub registry_urls: Vec<String>,
     /// Registry KEL prefix (trust anchor for verifying peer allowlist)
     pub registry_prefix: String,
     /// libp2p listen address (e.g., /ip4/0.0.0.0/tcp/4001)
@@ -123,7 +123,37 @@ impl Config {
 
         let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm".to_string());
 
-        let registry_url = std::env::var("REGISTRY_URL").ok();
+        // Parse TRUSTED_REGISTRIES (format: prefix1=url1,prefix2=url2) to extract URLs
+        let allow_bootstrap_mode = std::env::var("ALLOW_BOOTSTRAP_MODE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
+        let registry_urls: Vec<String> = match std::env::var("TRUSTED_REGISTRIES") {
+            Ok(s) if !s.is_empty() => s
+                .split(',')
+                .filter_map(|pair| {
+                    let parts: Vec<&str> = pair.trim().splitn(2, '=').collect();
+                    if parts.len() == 2 {
+                        Some(parts[1].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ if allow_bootstrap_mode => {
+                tracing::warn!(
+                    "TRUSTED_REGISTRIES not set - running in bootstrap mode (first node)"
+                );
+                vec![]
+            }
+            _ => {
+                return Err(ServiceError::Config(
+                    "TRUSTED_REGISTRIES is required (set ALLOW_BOOTSTRAP_MODE=true for first node)"
+                        .to_string(),
+                ));
+            }
+        };
+
         let registry_prefix = std::env::var("REGISTRY_PREFIX")
             .map_err(|_| ServiceError::Config("REGISTRY_PREFIX is required".to_string()))?;
 
@@ -163,7 +193,7 @@ impl Config {
             redis_url,
             database_url,
             hsm_url,
-            registry_url,
+            registry_urls,
             registry_prefix,
             listen_addr,
             advertise_addr,
@@ -194,7 +224,7 @@ impl Config {
 /// 7. **If no Ready peers**: Skip resync (we're the first/only node)
 /// 8. **Mark Ready**: Update status, start heartbeat and allowlist refresh loops
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use kels::KelsRegistryClient;
+    use kels::MultiRegistryClient;
     use tokio::time::Duration;
     use tracing::warn;
 
@@ -204,7 +234,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("KELS URL (advertised): {}", config.kels_advertise_url);
     info!("Redis URL: {}", config.redis_url);
     info!("HSM URL: {}", config.hsm_url);
-    info!("Registry URL: {:?}", config.registry_url);
+    info!("Registry URLs: {:?}", config.registry_urls);
     info!("Listen address: {}", config.listen_addr);
     info!("Advertise address: {}", config.advertise_addr);
     info!("Topic: {}", config.topic);
@@ -227,10 +257,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let peer_repo = Arc::new(gossip_repo.peers);
     info!("Peer cache database ready");
 
-    // Registry is required - without it we have no way to discover peers
-    let registry_url = config.registry_url.as_ref().ok_or_else(|| {
-        ServiceError::Config("REGISTRY_URL is required - kels-gossip cannot operate without a registry for peer discovery".to_string())
-    })?;
+    // Note: empty registry_urls is allowed in bootstrap mode (validated in Config::from_env)
 
     // Create registry signer for authenticated requests
     info!("Creating HSM registry signer...");
@@ -238,8 +265,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_signer: Arc<dyn kels::RegistrySigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
-    // Single registry client with signer (unauthenticated APIs don't use the signer)
-    let registry_client = KelsRegistryClient::with_signer(registry_url, registry_signer.clone());
+    // Multi-registry client with signer and automatic failover
+    let registry_client =
+        MultiRegistryClient::with_signer(config.registry_urls.clone(), registry_signer.clone());
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
@@ -336,8 +364,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_allowlist = allowlist.clone();
 
     // Initial allowlist refresh before starting gossip (so we accept authorized peers)
-    let client = KelsRegistryClient::new(registry_url);
-    match allowlist::refresh_allowlist(&client, &config.registry_prefix, &allowlist).await {
+    // Use a separate client without signing for unauthenticated peer list fetching
+    let allowlist_client = MultiRegistryClient::new(config.registry_urls.clone());
+    match allowlist::refresh_allowlist(&allowlist_client, &config.registry_prefix, &allowlist).await
+    {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
@@ -348,7 +378,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Start gossip swarm in background
     let listen_addr = config.listen_addr.clone();
     let topic = config.topic.clone();
-    let registry_client = client.clone();
+    let gossip_registry_client = allowlist_client.clone();
     let registry_prefix = config.registry_prefix.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
@@ -357,7 +387,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             peer_multiaddrs,
             &topic,
             registry_allowlist,
-            registry_client,
+            gossip_registry_client,
             registry_prefix,
             command_rx,
             event_tx,
@@ -425,10 +455,16 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let registry_prefix = config.registry_prefix.clone();
+    let refresh_registry_prefix = config.registry_prefix.clone();
+    let refresh_client = MultiRegistryClient::new(config.registry_urls.clone());
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(client, registry_prefix, allowlist, refresh_interval)
-            .await;
+        allowlist::run_allowlist_refresh_loop(
+            refresh_client,
+            refresh_registry_prefix,
+            allowlist,
+            refresh_interval,
+        )
+        .await;
     });
 
     // Wait for gossip swarm to complete (blocking)

@@ -248,7 +248,7 @@ For VSCode with rust-analyzer, copy the example settings to enable proper lintin
 cp -r .vscode.example .vscode
 ```
 
-This provides rust-analyzer with required environment variables (like `REGISTRY_PREFIX`) for analysis without affecting actual builds.
+This provides rust-analyzer with required environment variables (like `TRUSTED_REGISTRIES`) for analysis without affecting actual builds.
 
 ### Testing
 

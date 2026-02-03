@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
+use crate::federation::{
+    FederationNode, FederationRpc, FederationRpcResponse, FederationStatus, SignedFederationRpc,
+};
 use crate::identity_client::IdentityClient;
 use crate::repository::RegistryRepository;
 use crate::signature::{self, SignatureError};
@@ -367,6 +370,194 @@ pub async fn list_peers(
 pub struct RegistryKelState {
     pub identity_client: Arc<IdentityClient>,
     pub prefix: String,
+}
+
+// ==================== Federation Handlers ====================
+
+/// State for federation endpoints.
+pub struct FederationState {
+    pub node: Arc<FederationNode>,
+    pub repo: Arc<RegistryRepository>,
+}
+
+/// Handle incoming Raft RPC from federation members.
+///
+/// Verifies the sender is a known federation member and validates
+/// the signature against their KEL before processing.
+pub async fn federation_rpc(
+    State(state): State<Arc<FederationState>>,
+    Json(signed_rpc): Json<SignedFederationRpc>,
+) -> Result<Json<FederationRpcResponse>, ApiError> {
+    use cesr::{Matter, PublicKey, Signature};
+
+    // Verify sender is a federation member
+    if !state.node.config().is_member(&signed_rpc.sender_prefix) {
+        return Err(ApiError::forbidden(format!(
+            "Unknown federation member: {}",
+            signed_rpc.sender_prefix
+        )));
+    }
+
+    // Get sender's KEL (try cache first, refresh on verification failure)
+    let verify_with_kel = |kel: &kels::Kel| -> Result<(), ApiError> {
+        let current_key = kel
+            .last_establishment_event()
+            .and_then(|e| e.event.public_key.clone())
+            .ok_or_else(|| {
+                ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
+            })?;
+
+        let public_key = PublicKey::from_qb64(&current_key)
+            .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
+
+        let signature = Signature::from_qb64(&signed_rpc.signature)
+            .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;
+
+        public_key
+            .verify(signed_rpc.payload.as_bytes(), &signature)
+            .map_err(|_| ApiError::unauthorized("Signature verification failed"))
+    };
+
+    // Try with cached KEL first
+    let verified = if let Some(kel) = state.node.get_member_kel(&signed_rpc.sender_prefix).await {
+        verify_with_kel(&kel).is_ok()
+    } else {
+        false
+    };
+
+    // If not verified, refresh KEL and try again
+    if !verified {
+        let kel = state
+            .node
+            .refresh_member_kel(&signed_rpc.sender_prefix)
+            .await
+            .map_err(|e| ApiError::unauthorized(format!("Failed to fetch sender KEL: {}", e)))?;
+
+        verify_with_kel(&kel)?;
+    }
+
+    // Parse the verified payload
+    let rpc: FederationRpc = serde_json::from_str(&signed_rpc.payload)
+        .map_err(|e| ApiError::bad_request(format!("Invalid RPC payload: {}", e)))?;
+
+    let response = match rpc {
+        FederationRpc::AppendEntries(req) => match state.node.raft().append_entries(req).await {
+            Ok(resp) => FederationRpcResponse::AppendEntries(resp),
+            Err(e) => FederationRpcResponse::Error {
+                message: e.to_string(),
+            },
+        },
+        FederationRpc::Vote(req) => match state.node.raft().vote(req).await {
+            Ok(resp) => FederationRpcResponse::Vote(resp),
+            Err(e) => FederationRpcResponse::Error {
+                message: e.to_string(),
+            },
+        },
+        FederationRpc::Snapshot(transfer) => {
+            // Reconstruct the Snapshot from the transfer data
+            use openraft::Snapshot;
+            use std::io::Cursor;
+
+            let snapshot = Snapshot {
+                meta: transfer.meta,
+                snapshot: Cursor::new(transfer.data),
+            };
+
+            match state
+                .node
+                .raft()
+                .install_full_snapshot(transfer.vote, snapshot)
+                .await
+            {
+                Ok(resp) => FederationRpcResponse::Snapshot(resp),
+                Err(e) => FederationRpcResponse::Error {
+                    message: e.to_string(),
+                },
+            }
+        }
+    };
+
+    Ok(Json(response))
+}
+
+/// Get federation status.
+pub async fn federation_status(
+    State(state): State<Arc<FederationState>>,
+) -> Result<Json<FederationStatus>, ApiError> {
+    let status = state.node.status().await;
+    Ok(Json(status))
+}
+
+/// List all peers (core from federation + regional from local database).
+///
+/// When federation is enabled, core peers come from the Raft state machine
+/// and regional peers come from the local PostgreSQL database.
+pub async fn list_peers_federated(
+    State(state): State<Arc<FederationState>>,
+) -> Result<Json<PeersResponse>, ApiError> {
+    // Get core peers from federation state machine
+    let core_peers = state.node.core_peers().await;
+
+    // Get regional peers from local database
+    let query = StorageQuery::<Peer>::new()
+        .eq("scope", "regional")
+        .order_by("prefix", Order::Asc)
+        .order_by("version", Order::Asc);
+
+    let regional_peers: Vec<Peer> = state
+        .repo
+        .peers
+        .pool
+        .fetch(query)
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Storage error: {}", e)))?;
+
+    // Build histories for core peers (each has just a single record)
+    let mut histories: Vec<PeerHistory> = core_peers
+        .into_iter()
+        .filter(|p| p.active)
+        .map(|peer| PeerHistory {
+            prefix: peer.prefix.clone(),
+            records: vec![peer],
+        })
+        .collect();
+
+    // Group regional peers into histories by prefix
+    let mut current_prefix: Option<String> = None;
+    let mut current_records: Vec<Peer> = Vec::new();
+
+    for peer in regional_peers {
+        if current_prefix.as_ref() != Some(&peer.prefix) {
+            if let Some(prefix) = current_prefix.take()
+                && !current_records.is_empty()
+            {
+                // Only include if latest record is active
+                if current_records.last().is_some_and(|r| r.active) {
+                    histories.push(PeerHistory {
+                        prefix,
+                        records: std::mem::take(&mut current_records),
+                    });
+                } else {
+                    current_records.clear();
+                }
+            }
+            current_prefix = Some(peer.prefix.clone());
+        }
+        current_records.push(peer);
+    }
+
+    // Don't forget the last regional history
+    if let Some(prefix) = current_prefix
+        && !current_records.is_empty()
+        && current_records.last().is_some_and(|r| r.active)
+    {
+        histories.push(PeerHistory {
+            prefix,
+            records: current_records,
+        });
+    }
+
+    Ok(Json(PeersResponse { peers: histories }))
 }
 
 /// Public endpoint for clients to verify peer records are anchored in the registry's KEL.

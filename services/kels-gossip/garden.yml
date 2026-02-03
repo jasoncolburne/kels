@@ -3,7 +3,7 @@ name: kels-gossip
 type: container
 
 # Gossip service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -24,10 +24,11 @@ name: kels-gossip
 type: kubernetes
 
 # Gossip service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.read-registry-prefix
+  - run.read-federation-self-prefix
+  - run.read-federation-members
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
@@ -38,7 +39,9 @@ variables:
   kelsAdvertiseUrlInternal: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
   kelsGossipDatabaseUrl: ${var.postgres.url}/kels_gossip
   gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.svc.cluster.local/tcp/${var.gossip.port}"
-  registryPrefix: ${actions.run.read-registry-prefix.outputs.log}
+  registryPrefix: ${actions.run.read-federation-self-prefix.outputs.log}
+  trustedRegistries: ${actions.run.read-federation-members.outputs.log}
+  allowBootstrapMode: ${var.gossip.allowBootstrapMode}
 
 spec:
   manifestTemplates:
@@ -50,7 +53,7 @@ kind: Run
 name: fetch-gossip-identity
 type: exec
 
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 dependencies:
   - deploy.kels-gossip
@@ -58,11 +61,5 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(kubectl logs -n ${environment.namespace} deploy/kels-gossip -c kels-gossip 2>/dev/null | rg "Local PeerId: " | jq -r '.fields.message // empty' | cut -f 3 -d ' ')
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from kels-gossip logs" >&2
-        exit 1
-      fi
-      echo -n "$PEER_ID"
+    - ../../scripts/fetch-gossip-identity.sh
+    - ${environment.namespace}

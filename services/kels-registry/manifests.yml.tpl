@@ -65,6 +65,10 @@ spec:
               value: "${var.identityUrl}"
             - name: HEARTBEAT_TIMEOUT_SECS
               value: "${var.registry.heartbeatTimeoutSecs}"
+            - name: FEDERATION_SELF_PREFIX
+              value: "${var.federationSelfPrefix}"
+            - name: FEDERATION_MEMBERS
+              value: "${var.federationMembers}"
           livenessProbe:
             httpGet:
               path: /health

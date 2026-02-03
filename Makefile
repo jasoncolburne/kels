@@ -10,10 +10,10 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
-# Read registry prefix from file (required for CLI builds)
-REGISTRY_PREFIX_FILE := .kels/registry_prefix
-REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
-export REGISTRY_PREFIX
+# Read federated registries (prefix=url pairs for all registries)
+# Format: prefix1=http://kels-registry.kels-registry-a.svc.cluster.local,prefix2=http://...
+TRUSTED_REGISTRIES := $(shell jq -r 'to_entries | map("\(.value)=http://kels-registry.kels-\(.key).svc.cluster.local") | join(",")' .kels/federated-registries.json 2>/dev/null || echo "")
+export TRUSTED_REGISTRIES
 
 .PHONY: all build clean clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
@@ -59,6 +59,13 @@ install-deny:
 test:
 	cargo test --workspace
 
+# Files excluded from coverage (can't be meaningfully unit tested):
+# - Binary mains (main.rs, admin.rs) - entry points only
+# - FFI code (kels-ffi) - C bindings
+# - Server setup (server.rs in services) - integration code
+# - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
+COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs)'
+
 coverage:
 	@if ! command -v cargo-llvm-cov &> /dev/null; then \
 		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
@@ -66,7 +73,7 @@ coverage:
 	fi
 	@printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
 	@echo ""
-	@cargo llvm-cov --workspace 2>&1 | awk '\
+	@cargo llvm-cov --workspace $(COV_EXCLUDES) 2>&1 | awk '\
 		NR == 1 { next } \
 		/^-+$$/ { next } \
 		/^TOTAL/ { print $$10 > "/tmp/cov_total"; next } \
@@ -74,7 +81,7 @@ coverage:
 		| sort -k3 -rn
 	@echo ""
 	@echo "TOTAL: $$(cat /tmp/cov_total)"
-	@cargo llvm-cov --workspace --html --no-run >/dev/null 2>&1
+	@cargo llvm-cov --workspace $(COV_EXCLUDES) --html --no-run >/dev/null 2>&1
 	@echo ""
 	@echo "Full report: target/llvm-cov/html/index.html"
 
@@ -82,31 +89,43 @@ kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
 
 test-comprehensive:
-	touch .kels/registry_prefix
+	echo '{}' > .kels/federated-registries.json
 
-	garden cleanup deploy && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=registry
-	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry
+	# Cleanup all environments
+	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
+	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d
 
-	garden deploy --env node-a && garden run add-node-a --env registry
+	# Deploy registries and fetch prefixes
+	garden deploy --env=registry-a --var gossip.allowBootstrapMode=true && garden run fetch-registry-prefix --env=registry-a
+	garden deploy --env=registry-b && garden run fetch-registry-prefix --env=registry-b
+	garden deploy --env=registry-c && garden run fetch-registry-prefix --env=registry-c
+
+	# Redeploy registries with federation config (now that all prefixes are known)
+	garden deploy --env=registry-a
+	garden deploy --env=registry-b
+	garden deploy --env=registry-c
+
+	# Wait for federation leader election (probably already happened)
+	sleep 3
+
+	# Deploy nodes and add as core peers to leader - federation replicates to other registries
+	garden deploy --env=node-a && garden run add-node-a
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	garden deploy --env=node-c && garden run add-node-c --env registry
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-
-	garden deploy --env=node-b && garden run add-node-b --env registry
+	garden deploy --env=node-b && garden run add-node-b
 	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	kubectl exec -it test-client -- ./test-gossip.sh
-	kubectl exec -it test-client -- ./test-bootstrap.sh
+	garden deploy --env=node-c && garden run add-node-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-d as regional to registry-a only (not replicated via federation)
+	garden deploy --env=node-d && garden run add-node-d
+	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
+
+	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
+	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
