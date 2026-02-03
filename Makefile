@@ -15,7 +15,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRIES := $(shell jq -r 'to_entries | map("\(.value)=http://kels-registry.kels-\(.key).svc.cluster.local") | join(",")' .kels/federated-registries.json 2>/dev/null || echo "")
 export TRUSTED_REGISTRIES
 
-.PHONY: all build clean clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clean-docker clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
 
@@ -26,6 +26,11 @@ clean:
 	@echo "Cleaning workspace..."
 	cargo clean
 	find . -type d -name "target" -exec rm -rf {} +
+	make -C clients/kels-client clean
+
+clean-docker:
+	@echo "Cleaning docker caches..."
+	docker system prune -af --volumes && docker builder prune -af
 
 clippy:
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
