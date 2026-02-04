@@ -116,7 +116,6 @@ impl KelsRegistryClient {
         &self,
         node_id: &str,
         kels_url: &str,
-        kels_url_internal: Option<&str>,
         gossip_multiaddr: &str,
         status: NodeStatus,
     ) -> Result<NodeRegistration, KelsError> {
@@ -124,7 +123,6 @@ impl KelsRegistryClient {
             node_id: node_id.to_string(),
             node_type: crate::NodeType::Kels,
             kels_url: kels_url.to_string(),
-            kels_url_internal: kels_url_internal.map(|s| s.to_string()),
             gossip_multiaddr: gossip_multiaddr.to_string(),
             status,
         };
@@ -233,10 +231,29 @@ impl KelsRegistryClient {
         self.list_nodes(None).await
     }
 
-    /// List all registered nodes as NodeInfo (for client discovery with latency testing).
+    /// List all active peers as NodeInfo (for client discovery with latency testing).
     pub async fn list_nodes_info(&self) -> Result<Vec<NodeInfo>, KelsError> {
-        let nodes = self.list_all_nodes().await?;
-        Ok(nodes.into_iter().map(NodeInfo::from).collect())
+        let peers_response = self.fetch_peers().await?;
+        let nodes: Vec<NodeInfo> = peers_response
+            .peers
+            .into_iter()
+            .filter_map(|history| {
+                history.records.into_iter().last().and_then(|peer| {
+                    if peer.active {
+                        Some(NodeInfo {
+                            node_id: peer.node_id,
+                            kels_url: peer.kels_url,
+                            gossip_multiaddr: peer.gossip_multiaddr,
+                            status: NodeStatus::Bootstrapping, // Will be updated by discover_nodes_with_registry
+                            latency_ms: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        Ok(nodes)
     }
 
     /// Send heartbeat for a node.
@@ -510,7 +527,6 @@ impl MultiRegistryClient {
         &self,
         node_id: &str,
         kels_url: &str,
-        kels_url_internal: Option<&str>,
         gossip_multiaddr: &str,
         status: NodeStatus,
     ) -> Result<NodeRegistration, KelsError> {
@@ -519,13 +535,7 @@ impl MultiRegistryClient {
         for (idx, url) in self.get_ordered_urls() {
             let client = self.create_client(url);
             match client
-                .register(
-                    node_id,
-                    kels_url,
-                    kels_url_internal,
-                    gossip_multiaddr,
-                    status,
-                )
+                .register(node_id, kels_url, gossip_multiaddr, status)
                 .await
             {
                 Ok(result) => {
@@ -969,7 +979,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -988,7 +997,6 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                None,
                 "/ip4/10.0.0.1/tcp/9000",
                 NodeStatus::Bootstrapping,
             )
@@ -1006,7 +1014,6 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                None,
                 "/ip4/10.0.0.1/tcp/9000",
                 NodeStatus::Bootstrapping,
             )
@@ -1034,7 +1041,6 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                None,
                 "/ip4/10.0.0.1/tcp/9000",
                 NodeStatus::Bootstrapping,
             )
@@ -1099,7 +1105,6 @@ mod tests {
                 node_id: "node-1".to_string(),
                 node_type: NodeType::Kels,
                 kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
                 gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
                 registered_at: chrono::Utc::now(),
                 last_heartbeat: chrono::Utc::now(),
@@ -1148,22 +1153,29 @@ mod tests {
     async fn test_list_nodes_info() {
         let mock_server = MockServer::start().await;
 
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Ready,
+        let peer = Peer {
+            said: "ETestPeerSaid_______________________________".to_string(),
+            prefix: "ETestPeerPrefix_____________________________".to_string(),
+            previous: None,
+            version: 1,
+            created_at: chrono::Utc::now().into(),
+            peer_id: "12D3KooWPeer1".to_string(),
+            node_id: "node-1".to_string(),
+            active: true,
+            scope: crate::types::PeerScope::Core,
+            kels_url: "http://node-1:8091".to_string(),
+            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+        };
+
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
             }],
-            next_cursor: None,
         };
 
         Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
+            .and(path("/api/peers"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&mock_server)
             .await;
@@ -1174,6 +1186,8 @@ mod tests {
         assert!(result.is_ok());
         let nodes = result.unwrap();
         assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_id, "node-1");
+        assert_eq!(nodes[0].kels_url, "http://node-1:8091");
     }
 
     #[tokio::test]
@@ -1205,7 +1219,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -1269,7 +1282,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -1322,6 +1334,8 @@ mod tests {
             node_id.to_string(),
             active,
             crate::types::PeerScope::Regional,
+            format!("http://{}:8080", node_id),
+            format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
         )
         .expect("create peer")
     }
@@ -1457,7 +1471,6 @@ mod tests {
                 node_id: "node-1".to_string(),
                 node_type: NodeType::Kels,
                 kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
                 gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
                 registered_at: chrono::Utc::now(),
                 last_heartbeat: chrono::Utc::now(),
@@ -1488,7 +1501,6 @@ mod tests {
                 node_id: "node-1".to_string(),
                 node_type: NodeType::Kels,
                 kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
                 gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
                 registered_at: chrono::Utc::now(),
                 last_heartbeat: chrono::Utc::now(),
@@ -1786,7 +1798,6 @@ mod tests {
                 node_id: "node-1".to_string(),
                 node_type: NodeType::Kels,
                 kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
                 gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
                 registered_at: chrono::Utc::now(),
                 last_heartbeat: chrono::Utc::now(),
@@ -1852,7 +1863,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -1872,7 +1882,6 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                None,
                 "/ip4/10.0.0.1/tcp/9000",
                 NodeStatus::Bootstrapping,
             )
@@ -1928,7 +1937,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -1964,7 +1972,6 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -2081,7 +2088,7 @@ mod tests {
     async fn test_multi_client_list_nodes_info_with_failover() {
         let bad_server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
+            .and(path("/api/peers"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error",
                 "code": "internal_error"
@@ -2090,21 +2097,29 @@ mod tests {
             .await;
 
         let good_server = MockServer::start().await;
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                kels_url_internal: None,
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Ready,
-            }],
-            next_cursor: None,
+        let peer = Peer {
+            said: "ETestPeerSaid_______________________________".to_string(),
+            prefix: "ETestPeerPrefix_____________________________".to_string(),
+            previous: None,
+            version: 1,
+            created_at: chrono::Utc::now().into(),
+            peer_id: "12D3KooWPeer1".to_string(),
+            node_id: "node-1".to_string(),
+            active: true,
+            scope: crate::types::PeerScope::Core,
+            kels_url: "http://node-1:8091".to_string(),
+            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
         };
+
+        let response = PeersResponse {
+            peers: vec![PeerHistory {
+                prefix: peer.prefix.clone(),
+                records: vec![peer],
+            }],
+        };
+
         Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
+            .and(path("/api/peers"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&good_server)
             .await;
@@ -2126,7 +2141,6 @@ mod tests {
                     node_id: "node-1".to_string(),
                     node_type: NodeType::Kels,
                     kels_url: "http://node-1:8091".to_string(),
-                    kels_url_internal: None,
                     gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
                     registered_at: chrono::Utc::now(),
                     last_heartbeat: chrono::Utc::now(),
@@ -2136,7 +2150,6 @@ mod tests {
                     node_id: "node-2".to_string(),
                     node_type: NodeType::Kels,
                     kels_url: "http://node-2:8091".to_string(),
-                    kels_url_internal: None,
                     gossip_multiaddr: "/ip4/10.0.0.2/tcp/9000".to_string(),
                     registered_at: chrono::Utc::now(),
                     last_heartbeat: chrono::Utc::now(),

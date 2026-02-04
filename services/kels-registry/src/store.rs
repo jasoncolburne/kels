@@ -61,7 +61,6 @@ impl RegistryStore {
             node_id: request.node_id.clone(),
             node_type: request.node_type,
             kels_url: request.kels_url,
-            kels_url_internal: request.kels_url_internal,
             gossip_multiaddr: request.gossip_multiaddr,
             registered_at: now,
             last_heartbeat: now,
@@ -388,14 +387,13 @@ mod tests {
         let request = RegisterNodeRequest {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
-            kels_url: "http://kels.local".to_string(),
-            kels_url_internal: Some("http://kels-internal.local".to_string()),
+            kels_url: "http://kels.kels".to_string(),
             gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
             status: NodeStatus::Bootstrapping,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("node-1"));
-        assert!(json.contains("http://kels.local"));
+        assert!(json.contains("http://kels.kels"));
     }
 
     #[test]
@@ -435,7 +433,6 @@ mod tests {
             node_id: "test-node".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://localhost:8080".to_string(),
-            kels_url_internal: None,
             gossip_multiaddr: "/ip4/0.0.0.0/tcp/4001".to_string(),
             registered_at: now,
             last_heartbeat: now,

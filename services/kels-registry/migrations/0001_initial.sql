@@ -11,7 +11,11 @@ CREATE TABLE IF NOT EXISTS peer (
     node_id TEXT NOT NULL,
     active BOOLEAN NOT NULL,
     -- Peer scope: 'core' (replicated across federation) or 'regional' (local only)
-    scope VARCHAR(16) NOT NULL DEFAULT 'regional'
+    scope VARCHAR(16) NOT NULL,
+    -- HTTP URL for the KELS service
+    kels_url TEXT NOT NULL,
+    -- libp2p multiaddr for gossip connections
+    gossip_multiaddr TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_peer_prefix ON peer(prefix);

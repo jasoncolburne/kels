@@ -1,0 +1,15 @@
+kind: Run
+name: coredns-config
+type: exec
+description: Configure CoreDNS to resolve .kels domains inside the cluster
+
+source:
+  path: ../..
+
+include:
+  - scripts/configure-coredns.sh
+
+spec:
+  command:
+    - bash
+    - scripts/configure-coredns.sh

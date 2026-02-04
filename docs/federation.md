@@ -72,27 +72,44 @@ The Raft state machine maintains:
 
 ## Configuration
 
-### Registry Environment Variables
+All services use **compile-time trusted prefixes** for zero-trust security. The prefixes must be baked into binaries at build time - they cannot be changed at runtime.
 
+### Registry Configuration
+
+**Compile-time (via Dockerfile build args):**
 ```bash
-# Identity (this registry's own prefix)
-REGISTRY_PREFIX=ERegistryAcme_______________________________
+# Trusted registry prefixes for federation - MUST be set at compile time
+TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
+```
 
-# Federation membership
+**Runtime (container environment):**
+```bash
+# This registry's identity (must be in TRUSTED_REGISTRY_PREFIXES)
 FEDERATION_SELF_PREFIX=ERegistryAcme_______________________________
-FEDERATION_MEMBERS=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
+
+# URLs for reaching federation members (prefix=url pairs)
 FEDERATION_URLS=ERegistryAcme...=https://registry.acme.com,ERegistryBeta...=https://registry.beta.io,ERegistryGamma...=https://registry.gamma.net
 ```
 
-### Gossip Node Environment Variables
+Registries verify incoming federation messages by:
+1. Checking sender prefix is in compiled-in `TRUSTED_REGISTRY_PREFIXES`
+2. Verifying message signature against sender's KEL
 
+### Gossip Node Configuration
+
+**Compile-time (via Dockerfile build args):**
 ```bash
-# Multiple registry URLs for failover (comma-separated)
-REGISTRY_URLS=https://registry.acme.com,https://registry.beta.io,https://registry.gamma.net
-
-# Trust anchor - the registry this node is associated with
-REGISTRY_PREFIX=ERegistryAcme_______________________________
+# Trusted registry prefixes - MUST be set at compile time
+TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
 ```
+
+**Runtime (container environment):**
+```bash
+# Registry URL to connect to
+REGISTRY_URL=https://registry.acme.com
+```
+
+The gossip service discovers the registry's prefix by fetching its KEL at startup and verifies it against the compiled-in trusted prefixes.
 
 ## Administration
 
@@ -135,12 +152,19 @@ kels-registry-admin peer add --peer-id Qm... --node-id node-1 --scope core
 
 ### Adding Regional Peers
 
-Regional peers can be added on any registry:
+Regional peers can be added on any registry, but require at least one active core peer to exist first:
 
 ```bash
-# On any registry
+# On any registry (requires at least one core peer to exist)
 kels-registry-admin peer add --peer-id Qm... --node-id node-regional --scope regional
+
+# If no core peers exist, you'll see:
+# Error: Cannot add regional peer - no active core peers exist.
+# Regional nodes need core nodes to connect to the gossip swarm.
+# Add at least one core peer first with: peer add --scope core ...
 ```
+
+**Why this restriction?** Regional nodes need core nodes to bootstrap their gossip connections. Without any core peers, the gossip swarm would be disjoint - regional nodes could not discover or connect to each other.
 
 ## Security Considerations
 

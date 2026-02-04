@@ -1,8 +1,9 @@
-//! Background sync tasks for replicating core peers between local DB and Raft.
+//! Background sync task for replicating core peers from local DB to Raft.
 //!
-//! Two-way sync:
-//! 1. Leader: local DB -> Raft (so admin CLI can write to DB and changes replicate)
-//! 2. All nodes: Raft state machine -> local DB (so verify_and_authorize works)
+//! This runs on the leader only, allowing admin CLI to write to DB
+//! and have changes replicate via Raft consensus.
+//!
+//! Note: Raft->DB sync happens immediately in the state machine apply() method.
 
 use super::FederationNode;
 use crate::repository::RegistryRepository;
@@ -12,20 +13,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
-use verifiable_storage::{ChainedRepository, Order, Query, QueryExecutor, SelfAddressed};
+use verifiable_storage::{Order, Query, QueryExecutor};
 
-/// Run the core peer sync loop.
+/// Run the DB->Raft sync loop for the leader.
 ///
-/// This task runs on all federation members:
-/// - Leader: syncs peers from local DB to Raft
-/// - All nodes: syncs peers from Raft state machine to local DB
-pub async fn run_core_peer_sync_loop(
+/// This allows admin CLI to write peers to local DB, which then
+/// get replicated to Raft consensus. Only runs on the leader.
+pub async fn run_leader_db_sync_loop(
     node: Arc<FederationNode>,
     repo: Arc<RegistryRepository>,
     sync_interval: Duration,
 ) {
     info!(
-        "Starting core peer sync loop (interval: {:?})",
+        "Starting leader DB->Raft sync loop (interval: {:?})",
         sync_interval
     );
 
@@ -33,12 +33,6 @@ pub async fn run_core_peer_sync_loop(
 
     loop {
         ticker.tick().await;
-
-        // All nodes sync from Raft state machine to local DB
-        // This ensures verify_and_authorize can find peers on followers
-        if let Err(e) = sync_from_raft_to_db(&node, &repo).await {
-            error!("Raft->DB sync failed: {}", e);
-        }
 
         // Only the leader syncs peers to Raft
         if !node.is_leader().await {
@@ -50,69 +44,6 @@ pub async fn run_core_peer_sync_loop(
             error!("DB->Raft sync failed: {}", e);
         }
     }
-}
-
-/// Sync core peers from Raft state machine to local DB.
-///
-/// This ensures that verify_and_authorize can find replicated peers
-/// in the local PostgreSQL database.
-async fn sync_from_raft_to_db(
-    node: &FederationNode,
-    repo: &RegistryRepository,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Get core peers from Raft state machine
-    let raft_peers = node.core_peers().await;
-
-    if raft_peers.is_empty() {
-        return Ok(());
-    }
-
-    // Get existing core peers from local DB (latest version of each)
-    let query = Query::<Peer>::new()
-        .eq("scope", "core")
-        .order_by("peer_id", Order::Asc)
-        .order_by("version", Order::Desc);
-
-    let db_peers: Vec<Peer> = repo.peers.pool.fetch(query).await?;
-
-    // Deduplicate to get only the latest version of each peer_id
-    let mut seen_peer_ids = HashSet::new();
-    let db_peer_map: HashSet<String> = db_peers
-        .into_iter()
-        .filter(|p| seen_peer_ids.insert(p.peer_id.clone()))
-        .map(|p| p.peer_id)
-        .collect();
-
-    // Find peers in Raft but not in local DB
-    let mut synced = 0;
-    for raft_peer in raft_peers {
-        if !db_peer_map.contains(&raft_peer.peer_id) {
-            // Create a new peer record for local DB
-            let mut new_peer = Peer::create(
-                raft_peer.peer_id.clone(),
-                raft_peer.node_id.clone(),
-                raft_peer.active,
-                PeerScope::Core,
-            )?;
-
-            // Derive SAID for the new record
-            new_peer.derive_said()?;
-
-            info!(
-                "Syncing core peer from Raft to local DB: {} (node: {})",
-                new_peer.peer_id, new_peer.node_id
-            );
-
-            repo.peers.insert(new_peer).await?;
-            synced += 1;
-        }
-    }
-
-    if synced > 0 {
-        info!("Synced {} core peers from Raft to local DB", synced);
-    }
-
-    Ok(())
 }
 
 /// Sync core peers from local DB to Raft state machine.

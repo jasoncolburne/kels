@@ -1,21 +1,19 @@
 //! libp2p networking layer for KELS gossip.
 //!
-//! Sets up gossipsub for announcements and request-response for KEL fetching.
+//! Sets up gossipsub for KEL update announcements.
 
 use crate::allowlist::{AllowlistBehaviour, SharedAllowlist};
-use crate::protocol::{KelAnnouncement, KelRequest, KelResponse, PROTOCOL_NAME};
+use crate::protocol::KelAnnouncement;
 use futures::prelude::*;
 use kels::MultiRegistryClient;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, noise,
-    request_response::{self, Codec, ProtocolSupport, ResponseChannel},
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -32,8 +30,6 @@ pub enum GossipError {
     Gossipsub(String),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
     #[error("Channel closed")]
     ChannelClosed,
 }
@@ -42,21 +38,7 @@ pub enum GossipError {
 #[derive(Debug)]
 pub enum GossipEvent {
     /// Received an announcement from a peer
-    AnnouncementReceived {
-        peer_id: PeerId,
-        announcement: KelAnnouncement,
-    },
-    /// Received a KEL request from a peer
-    KelRequestReceived {
-        peer_id: PeerId,
-        channel: ResponseChannel<KelResponse>,
-        request: KelRequest,
-    },
-    /// Received a KEL response from a peer
-    KelResponseReceived {
-        peer_id: PeerId,
-        response: KelResponse,
-    },
+    AnnouncementReceived { announcement: KelAnnouncement },
     /// New peer connected
     PeerConnected(PeerId),
     /// Peer disconnected
@@ -68,116 +50,12 @@ pub enum GossipEvent {
 pub enum GossipCommand {
     /// Broadcast an announcement to the network
     Announce(KelAnnouncement),
-    /// Request a KEL from a specific peer
-    RequestKel { peer_id: PeerId, prefix: String },
-    /// Respond to a KEL request
-    RespondKel {
-        channel: ResponseChannel<KelResponse>,
-        response: KelResponse,
-    },
-}
-
-/// JSON codec for request-response protocol
-#[derive(Debug, Clone, Default)]
-pub struct JsonCodec;
-
-impl Codec for JsonCodec {
-    type Protocol = &'static str;
-    type Request = KelRequest;
-    type Response = KelResponse;
-
-    fn read_request<'life0, 'life1, 'life2, 'async_trait, T>(
-        &'life0 mut self,
-        _: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = io::Result<Self::Request>> + Send + 'async_trait>,
-    >
-    where
-        T: AsyncRead + Unpin + Send + 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await?;
-            serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        })
-    }
-
-    fn read_response<'life0, 'life1, 'life2, 'async_trait, T>(
-        &'life0 mut self,
-        _: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = io::Result<Self::Response>> + Send + 'async_trait>,
-    >
-    where
-        T: AsyncRead + Unpin + Send + 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await?;
-            serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        })
-    }
-
-    fn write_request<'life0, 'life1, 'life2, 'async_trait, T>(
-        &'life0 mut self,
-        _: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-        req: Self::Request,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + 'async_trait>>
-    where
-        T: AsyncWrite + Unpin + Send + 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let bytes = serde_json::to_vec(&req)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            io.write_all(&bytes).await?;
-            io.close().await?;
-            Ok(())
-        })
-    }
-
-    fn write_response<'life0, 'life1, 'life2, 'async_trait, T>(
-        &'life0 mut self,
-        _: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-        res: Self::Response,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + 'async_trait>>
-    where
-        T: AsyncWrite + Unpin + Send + 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let bytes = serde_json::to_vec(&res)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            io.write_all(&bytes).await?;
-            io.close().await?;
-            Ok(())
-        })
-    }
 }
 
 /// Combined network behaviour
 #[derive(NetworkBehaviour)]
 pub struct KelsBehaviour {
     gossipsub: gossipsub::Behaviour,
-    request_response: request_response::Behaviour<JsonCodec>,
     identify: identify::Behaviour,
     allowlist: AllowlistBehaviour,
 }
@@ -286,11 +164,6 @@ fn build_swarm(
             )
             .map_err(|e| GossipError::Gossipsub(e.to_string()))?;
 
-            let request_response = request_response::Behaviour::new(
-                [(PROTOCOL_NAME, ProtocolSupport::Full)],
-                request_response::Config::default(),
-            );
-
             let identify = identify::Behaviour::new(identify::Config::new(
                 "/kels-gossip/1.0.0".to_string(),
                 key.public(),
@@ -298,7 +171,6 @@ fn build_swarm(
 
             Ok(KelsBehaviour {
                 gossipsub,
-                request_response,
                 identify,
                 allowlist: allowlist_behaviour,
             })
@@ -334,25 +206,6 @@ fn handle_command(
                 debug!("Published announcement for prefix: {}", announcement.prefix);
             }
         }
-        GossipCommand::RequestKel { peer_id, prefix } => {
-            let request = KelRequest {
-                prefix: prefix.clone(),
-            };
-            swarm
-                .behaviour_mut()
-                .request_response
-                .send_request(&peer_id, request);
-            debug!("Sent KEL request to {} for prefix: {}", peer_id, prefix);
-        }
-        GossipCommand::RespondKel { channel, response } => {
-            if let Err(e) = swarm
-                .behaviour_mut()
-                .request_response
-                .send_response(channel, response)
-            {
-                warn!("Failed to send KEL response: {:?}", e);
-            }
-        }
     }
     Ok(())
 }
@@ -369,59 +222,17 @@ async fn handle_swarm_event(
             ..
         })) => match serde_json::from_slice::<KelAnnouncement>(&message.data) {
             Ok(announcement) => {
-                // Use message.source (original publisher) not propagation_source (forwarder)
-                // This ensures we fetch the KEL from the peer that actually has it
-                let source_peer = message.source.unwrap_or(propagation_source);
                 debug!(
-                    "Received announcement from {} (via {}): prefix={}, said={}",
-                    source_peer, propagation_source, announcement.prefix, announcement.said
+                    "Received announcement via {}: prefix={}, said={}, sender={}",
+                    propagation_source, announcement.prefix, announcement.said, announcement.sender
                 );
                 event_tx
-                    .send(GossipEvent::AnnouncementReceived {
-                        peer_id: source_peer,
-                        announcement,
-                    })
+                    .send(GossipEvent::AnnouncementReceived { announcement })
                     .await
                     .map_err(|_| GossipError::ChannelClosed)?;
             }
             Err(e) => {
                 warn!("Failed to parse announcement: {}", e);
-            }
-        },
-
-        SwarmEvent::Behaviour(KelsBehaviourEvent::RequestResponse(
-            request_response::Event::Message { peer, message },
-        )) => match message {
-            request_response::Message::Request {
-                channel, request, ..
-            } => {
-                debug!(
-                    "Received KEL request from {}: prefix={}",
-                    peer, request.prefix
-                );
-                event_tx
-                    .send(GossipEvent::KelRequestReceived {
-                        peer_id: peer,
-                        channel,
-                        request,
-                    })
-                    .await
-                    .map_err(|_| GossipError::ChannelClosed)?;
-            }
-            request_response::Message::Response { response, .. } => {
-                debug!(
-                    "Received KEL response from {}: prefix={}, events={}",
-                    peer,
-                    response.prefix,
-                    response.events.len()
-                );
-                event_tx
-                    .send(GossipEvent::KelResponseReceived {
-                        peer_id: peer,
-                        response,
-                    })
-                    .await
-                    .map_err(|_| GossipError::ChannelClosed)?;
             }
         },
 
@@ -477,9 +288,6 @@ mod tests {
 
         let channel_err = GossipError::ChannelClosed;
         assert_eq!(channel_err.to_string(), "Channel closed");
-
-        let io_err = GossipError::Io(io::Error::new(io::ErrorKind::NotFound, "file not found"));
-        assert!(io_err.to_string().contains("IO error"));
     }
 
     #[test]
@@ -488,52 +296,5 @@ mod tests {
         let json_err = json_result.expect_err("Expected JSON parse error");
         let gossip_err: GossipError = json_err.into();
         assert!(matches!(gossip_err, GossipError::Serialization(_)));
-    }
-
-    #[test]
-    fn test_gossip_error_from_io_error() {
-        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
-        let gossip_err: GossipError = io_err.into();
-        assert!(matches!(gossip_err, GossipError::Io(_)));
-    }
-
-    #[test]
-    fn test_kel_request_serialization() {
-        let request = KelRequest {
-            prefix: "test_prefix_123".to_string(),
-        };
-
-        let bytes = serde_json::to_vec(&request).unwrap();
-        let parsed: KelRequest = serde_json::from_slice(&bytes).unwrap();
-
-        assert_eq!(parsed.prefix, "test_prefix_123");
-    }
-
-    #[test]
-    fn test_kel_response_serialization() {
-        let response = KelResponse {
-            prefix: "resp_prefix_456".to_string(),
-            events: vec![],
-        };
-
-        let bytes = serde_json::to_vec(&response).unwrap();
-        let parsed: KelResponse = serde_json::from_slice(&bytes).unwrap();
-
-        assert_eq!(parsed.prefix, "resp_prefix_456");
-        assert!(parsed.events.is_empty());
-    }
-
-    #[test]
-    fn test_kel_request_invalid_json() {
-        let invalid_bytes = b"not valid json";
-        let result: Result<KelRequest, _> = serde_json::from_slice(invalid_bytes);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_kel_response_invalid_json() {
-        let invalid_bytes = b"not valid json";
-        let result: Result<KelResponse, _> = serde_json::from_slice(invalid_bytes);
-        assert!(result.is_err());
     }
 }

@@ -3,6 +3,11 @@
 use super::types::{FederationError, FederationNodeId};
 use serde::{Deserialize, Serialize};
 
+/// Trusted registry prefixes - MUST be set at compile time.
+/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
+/// Used for both federation membership and registry verification.
+const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
+
 /// A federation member (registry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationMember {
@@ -31,34 +36,61 @@ impl FederationConfig {
         }
     }
 
-    /// Load federation configuration from environment variables.
+    /// Load federation configuration from environment and compile-time constants.
     ///
-    /// Environment variables:
+    /// Compile-time (security - who to trust):
+    /// - `TRUSTED_FEDERATION_PREFIXES`: Comma-separated list of trusted registry prefixes
+    ///
+    /// Runtime (operational - connectivity):
     /// - `FEDERATION_SELF_PREFIX`: This registry's prefix
-    /// - `FEDERATION_MEMBERS`: Comma-separated list of "prefix=url" pairs
+    /// - `FEDERATION_URLS`: Comma-separated list of "prefix=url" pairs
     pub fn from_env() -> Result<Option<Self>, FederationError> {
+        // Parse compile-time trusted prefixes
+        let trusted_prefixes: Vec<String> = TRUSTED_REGISTRY_PREFIXES
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        // If no trusted prefixes compiled in, federation is not configured
+        if trusted_prefixes.is_empty() {
+            return Ok(None);
+        }
+
         let self_prefix = match std::env::var("FEDERATION_SELF_PREFIX") {
             Ok(p) if !p.is_empty() => p,
             _ => return Ok(None), // Federation not configured
         };
 
-        let members_str = match std::env::var("FEDERATION_MEMBERS") {
+        // Verify self_prefix is in the compiled-in trusted set
+        if !trusted_prefixes.contains(&self_prefix) {
+            return Err(FederationError::ConfigError(format!(
+                "FEDERATION_SELF_PREFIX '{}' not in compiled TRUSTED_FEDERATION_PREFIXES",
+                self_prefix
+            )));
+        }
+
+        // Parse runtime URLs
+        let urls_str = match std::env::var("FEDERATION_URLS") {
             Ok(s) if !s.is_empty() => s,
             _ => return Ok(None), // Federation not configured
         };
 
-        let members = parse_members(&members_str)?;
+        let url_map = parse_urls(&urls_str)?;
 
-        if members.is_empty() {
-            return Ok(None); // Federation not configured
-        }
-
-        // Verify self_prefix is in members
-        if !members.iter().any(|m| m.prefix == self_prefix) {
-            return Err(FederationError::ConfigError(format!(
-                "FEDERATION_SELF_PREFIX '{}' not found in FEDERATION_MEMBERS",
-                self_prefix
-            )));
+        // Build members list from trusted prefixes + runtime URLs
+        let mut members = Vec::new();
+        for prefix in &trusted_prefixes {
+            let url = url_map.get(prefix).ok_or_else(|| {
+                FederationError::ConfigError(format!(
+                    "No URL provided for trusted prefix '{}' in FEDERATION_URLS",
+                    prefix
+                ))
+            })?;
+            members.push(FederationMember {
+                prefix: prefix.clone(),
+                url: url.clone(),
+            });
         }
 
         Ok(Some(Self::new(self_prefix, members)))
@@ -94,12 +126,14 @@ impl FederationConfig {
     }
 }
 
-/// Parse members from environment variable format.
+/// Parse URLs from environment variable format.
 /// Format: "prefix1=url1,prefix2=url2,..."
-fn parse_members(members_str: &str) -> Result<Vec<FederationMember>, FederationError> {
-    let mut members = Vec::new();
+fn parse_urls(
+    urls_str: &str,
+) -> Result<std::collections::HashMap<String, String>, FederationError> {
+    let mut urls = std::collections::HashMap::new();
 
-    for part in members_str.split(',') {
+    for part in urls_str.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -107,18 +141,15 @@ fn parse_members(members_str: &str) -> Result<Vec<FederationMember>, FederationE
 
         let (prefix, url) = part.split_once('=').ok_or_else(|| {
             FederationError::ConfigError(format!(
-                "Invalid member format '{}'. Expected 'prefix=url'",
+                "Invalid URL format '{}'. Expected 'prefix=url'",
                 part
             ))
         })?;
 
-        members.push(FederationMember {
-            prefix: prefix.trim().to_string(),
-            url: url.trim().to_string(),
-        });
+        urls.insert(prefix.trim().to_string(), url.trim().to_string());
     }
 
-    Ok(members)
+    Ok(urls)
 }
 
 #[cfg(test)]
@@ -126,33 +157,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_members() {
-        let members =
-            parse_members("ERegistryA=https://a.example.com,ERegistryB=https://b.example.com")
+    fn test_parse_urls() {
+        let urls = parse_urls("ERegistryA=https://a.example.com,ERegistryB=https://b.example.com")
+            .unwrap();
+
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls.get("ERegistryA").unwrap(), "https://a.example.com");
+        assert_eq!(urls.get("ERegistryB").unwrap(), "https://b.example.com");
+    }
+
+    #[test]
+    fn test_parse_urls_with_spaces() {
+        let urls =
+            parse_urls(" ERegistryA = https://a.example.com , ERegistryB = https://b.example.com ")
                 .unwrap();
 
-        assert_eq!(members.len(), 2);
-        assert_eq!(members[0].prefix, "ERegistryA");
-        assert_eq!(members[0].url, "https://a.example.com");
-        assert_eq!(members[1].prefix, "ERegistryB");
-        assert_eq!(members[1].url, "https://b.example.com");
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains_key("ERegistryA"));
+        assert!(urls.contains_key("ERegistryB"));
     }
 
     #[test]
-    fn test_parse_members_with_spaces() {
-        let members = parse_members(
-            " ERegistryA = https://a.example.com , ERegistryB = https://b.example.com ",
-        )
-        .unwrap();
-
-        assert_eq!(members.len(), 2);
-        assert_eq!(members[0].prefix, "ERegistryA");
-        assert_eq!(members[1].prefix, "ERegistryB");
-    }
-
-    #[test]
-    fn test_parse_members_invalid_format() {
-        let result = parse_members("invalid_member_without_equals");
+    fn test_parse_urls_invalid_format() {
+        let result = parse_urls("invalid_url_without_equals");
         assert!(result.is_err());
     }
 
@@ -214,15 +241,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_members_empty_string() {
-        let members = parse_members("").unwrap();
-        assert!(members.is_empty());
+    fn test_parse_urls_empty_string() {
+        let urls = parse_urls("").unwrap();
+        assert!(urls.is_empty());
     }
 
     #[test]
-    fn test_parse_members_whitespace_only() {
-        let members = parse_members("   ,  , ").unwrap();
-        assert!(members.is_empty());
+    fn test_parse_urls_whitespace_only() {
+        let urls = parse_urls("   ,  , ").unwrap();
+        assert!(urls.is_empty());
     }
 
     #[test]
@@ -286,11 +313,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_members_single_member() {
-        let members = parse_members("ERegistryA=https://a.example.com").unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].prefix, "ERegistryA");
-        assert_eq!(members[0].url, "https://a.example.com");
+    fn test_parse_urls_single_url() {
+        let urls = parse_urls("ERegistryA=https://a.example.com").unwrap();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls.get("ERegistryA").unwrap(), "https://a.example.com");
     }
 
     #[test]

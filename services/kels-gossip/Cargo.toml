@@ -44,9 +44,8 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 # KELS library for types
 libkels = { path = "../../lib/kels" }
 
-# Verifiable storage for peer cache
+# Verifiable storage for Chained trait
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
-verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 # Redis for pub/sub
 redis = { version = "0.27", features = ["tokio-comp"] }
@@ -68,6 +67,9 @@ futures = "0.3"
 # HTTP client for KELS API
 reqwest = { version = "0.12", features = ["json"] }
 
+# HTTP server for ready endpoint
+axum = "0.7"
+
 # Error handling
 thiserror = "1"
 
@@ -81,9 +83,11 @@ async-trait = "0.1"
 rand = "0.8"
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 testcontainers = "0.26"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
 tokio-test = "0.4"
+serial_test = "3"
 
 [lints.clippy]
 unwrap_used = "deny"

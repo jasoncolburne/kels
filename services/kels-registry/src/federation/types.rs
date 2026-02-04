@@ -115,6 +115,8 @@ mod tests {
             "node-test".to_string(),
             true,
             PeerScope::Core,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
 
@@ -150,6 +152,8 @@ mod tests {
             "node-test".to_string(),
             true,
             PeerScope::Core,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
 
@@ -223,6 +227,8 @@ mod tests {
             "node-1".to_string(),
             true,
             PeerScope::Core,
+            "http://node-1:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
 
@@ -264,6 +270,8 @@ mod tests {
             "node-1".to_string(),
             true,
             PeerScope::Core,
+            "http://node-1:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let snapshot = CorePeerSnapshot {

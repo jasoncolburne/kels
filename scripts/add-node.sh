@@ -11,6 +11,10 @@ if [ -z "$NODE_NAME" ] || [ -z "$ENV_NAMESPACE" ]; then
     exit 1
 fi
 
+# Construct URLs for the node
+KELS_URL="http://kels.kels-${NODE_NAME}.kels:80"
+GOSSIP_MULTIADDR="/dns4/kels-gossip.kels-${NODE_NAME}.kels/tcp/4001"
+
 # Get the garden binary path
 GARDEN_BIN="${GARDEN_BIN:-garden}"
 
@@ -30,7 +34,7 @@ if [ "$SCOPE" = "core" ]; then
 
     # Try each registry to find the leader
     for ns in kels-registry-a kels-registry-b kels-registry-c; do
-        LEADER_INFO=$(curl -s "http://kels-registry.${ns}.local/api/federation/status" 2>/dev/null || echo "{}")
+        LEADER_INFO=$(curl -s "http://kels-registry.${ns}.kels/api/federation/status" 2>/dev/null || echo "{}")
         IS_LEADER=$(echo "$LEADER_INFO" | jq -r '.isLeader // false')
 
         if [ "$IS_LEADER" = "true" ]; then
@@ -42,7 +46,7 @@ if [ "$SCOPE" = "core" ]; then
 
     if [ "$TARGET_NAMESPACE" = "$ENV_NAMESPACE" ]; then
         # Check if we actually found a leader or just fell back
-        LEADER_CHECK=$(curl -s "http://kels-registry.${TARGET_NAMESPACE}.local/api/federation/status" 2>/dev/null || echo "{}")
+        LEADER_CHECK=$(curl -s "http://kels-registry.${TARGET_NAMESPACE}.kels/api/federation/status" 2>/dev/null || echo "{}")
         IS_LEADER=$(echo "$LEADER_CHECK" | jq -r '.isLeader // false')
         if [ "$IS_LEADER" != "true" ]; then
             echo "Warning: Could not find federation leader, using $ENV_NAMESPACE"
@@ -52,6 +56,11 @@ fi
 
 # Add the peer to the registry
 kubectl exec -n "$TARGET_NAMESPACE" deploy/kels-registry -c kels-registry -- \
-    /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id "$NODE_NAME" --scope "$SCOPE"
+    /app/kels-registry-admin peer add \
+    --peer-id "$PEER_ID" \
+    --node-id "$NODE_NAME" \
+    --scope "$SCOPE" \
+    --kels-url "$KELS_URL" \
+    --gossip-multiaddr "$GOSSIP_MULTIADDR"
 
 echo "Node $NODE_NAME added to $TARGET_NAMESPACE with peer ID: $PEER_ID (scope: $SCOPE)"

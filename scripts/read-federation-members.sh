@@ -22,7 +22,7 @@ esac
 
 if [ "$MODE" = "members" ]; then
     # Output all prefixes as federation members: prefix1=url1,prefix2=url2,...
-    jq -r 'to_entries | map("\(.value)=http://kels-registry.kels-\(.key).svc.cluster.local") | join(",")' "$REGISTRIES_FILE"
+    jq -r 'to_entries | map("\(.value)=http://kels-registry.kels-\(.key).kels") | join(",")' "$REGISTRIES_FILE"
 else
     # Output single prefix for this environment
     jq -r --arg env "$REGISTRY_ENV" '.[$env] // empty' "$REGISTRIES_FILE"

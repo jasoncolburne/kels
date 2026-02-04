@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["native"]
-native = ["tokio/full", "cesr/native", "reqwest/rustls-tls"]
+native = ["tokio/full", "cesr/native", "reqwest/native-tls"]
 wasm = ["cesr/wasm", "wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
 secure-enclave = ["security-framework", "security-framework-sys", "core-foundation", "core-foundation-sys"]
 redis = ["dep:redis"]

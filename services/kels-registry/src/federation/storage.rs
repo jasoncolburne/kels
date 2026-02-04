@@ -834,6 +834,8 @@ mod tests {
             "node-test".to_string(),
             true,
             PeerScope::Core,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let request = FederationRequest::AddPeer(peer);
@@ -870,6 +872,8 @@ mod tests {
             "node-test".to_string(),
             true,
             PeerScope::Core,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let request = FederationRequest::AddPeer(peer);
@@ -917,6 +921,8 @@ mod tests {
             "node-test".to_string(),
             true,
             PeerScope::Core,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let request = FederationRequest::AddPeer(peer);
@@ -969,6 +975,8 @@ mod tests {
             "node-roundtrip".to_string(),
             true,
             PeerScope::Regional,
+            "http://node-roundtrip:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let request = FederationRequest::RemovePeer(peer.peer_id.clone());

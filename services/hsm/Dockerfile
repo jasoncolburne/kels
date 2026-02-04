@@ -33,6 +33,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y \
     ca-certificates \
+    libssl3 \
     libstdc++6 \
     softhsm2 \
     && rm -rf /var/lib/apt/lists/*

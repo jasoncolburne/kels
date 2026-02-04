@@ -5,6 +5,9 @@ type: container
 # Gossip service is not needed in the registry environment
 disabled: ${var.envType == "registry"}
 
+dependencies:
+  - run.read-federation-prefixes
+
 source:
   path: ../..  # Set build context to repository root
 
@@ -13,9 +16,13 @@ include:
   - lib/kels-derive/**/*
   - services/kels-gossip/**/*
   - project.garden.yml
+  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/kels-gossip/Dockerfile
+  buildArgs:
+    # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.read-federation-prefixes.outputs.log}
 
 ---
 
@@ -27,21 +34,16 @@ type: kubernetes
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.read-federation-self-prefix
-  - run.read-federation-members
+  - run.read-registry-url
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
   - deploy.hsm
 
 variables:
-  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.local"
-  kelsAdvertiseUrlInternal: "http://kels.kels-${environment.name}.svc.cluster.local:${var.kels.port}"
-  kelsGossipDatabaseUrl: ${var.postgres.url}/kels_gossip
-  gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.svc.cluster.local/tcp/${var.gossip.port}"
-  registryPrefix: ${actions.run.read-federation-self-prefix.outputs.log}
-  trustedRegistries: ${actions.run.read-federation-members.outputs.log}
-  allowBootstrapMode: ${var.gossip.allowBootstrapMode}
+  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
+  gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.kels/tcp/${var.gossip.port}"
+  registryUrl: ${actions.run.read-registry-url.outputs.log}
 
 spec:
   manifestTemplates:

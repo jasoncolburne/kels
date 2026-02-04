@@ -10,10 +10,9 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
-# Read federated registries (prefix=url pairs for all registries)
-# Format: prefix1=http://kels-registry.kels-registry-a.svc.cluster.local,prefix2=http://...
-TRUSTED_REGISTRIES := $(shell jq -r 'to_entries | map("\(.value)=http://kels-registry.kels-\(.key).svc.cluster.local") | join(",")' .kels/federated-registries.json 2>/dev/null || echo "")
-export TRUSTED_REGISTRIES
+# Read federated registries - just the prefixes (for compile-time trust anchor)
+TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+export TRUSTED_REGISTRY_PREFIXES
 
 .PHONY: all build clean clean-docker clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
@@ -98,10 +97,10 @@ test-comprehensive:
 
 	# Cleanup all environments
 	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
-	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d
+	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e
 
 	# Deploy registries and fetch prefixes
-	garden deploy --env=registry-a --var gossip.allowBootstrapMode=true && garden run fetch-registry-prefix --env=registry-a
+	garden deploy --env=registry-a && garden run fetch-registry-prefix --env=registry-a
 	garden deploy --env=registry-b && garden run fetch-registry-prefix --env=registry-b
 	garden deploy --env=registry-c && garden run fetch-registry-prefix --env=registry-c
 
@@ -110,7 +109,7 @@ test-comprehensive:
 	garden deploy --env=registry-b
 	garden deploy --env=registry-c
 
-	# Wait for federation leader election (probably already happened)
+	# Wait for federation leader election
 	sleep 3
 
 	# Deploy nodes and add as core peers to leader - federation replicates to other registries
@@ -127,8 +126,14 @@ test-comprehensive:
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	# Deploy node-d as regional to registry-a only (not replicated via federation)
-	garden deploy --env=node-d && garden run add-node-d
+	garden deploy --env=node-d && garden run add-node-d --env=registry-a
 	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-d as regional to registry-a only (not replicated via federation)
+	garden deploy --env=node-e && garden run add-node-e --env=registry-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-e && kubectl rollout status deployment/kels-gossip -n kels-node-e
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh

@@ -17,7 +17,7 @@ use kels::HardwareKeyProvider;
 use kels::SoftwareKeyProvider;
 use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, PeersResponse,
+    KeyProvider, MultiRegistryClient, NodeStatus, PeersResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -1684,16 +1684,17 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let discover_result = runtime.block_on(async {
-        let client = KelsRegistryClient::new(&url);
+        let registry_client = KelsRegistryClient::new(&url);
+        let registry = MultiRegistryClient::new(vec![url.clone()]);
 
         // Build set of verified node_ids from peer records
         let verified_node_ids: std::collections::HashSet<String> =
             if let Some(ref expected) = expected_prefix {
                 // Verify registry and get the KEL for peer anchoring checks
-                let registry_kel = client.verify_registry(expected).await?;
+                let registry_kel = registry_client.verify_registry(expected).await?;
 
                 // Fetch and verify peers, collecting verified node_ids
-                let peers_response: PeersResponse = client.fetch_peers().await?;
+                let peers_response: PeersResponse = registry_client.fetch_peers().await?;
 
                 let mut verified = std::collections::HashSet::new();
                 for history in &peers_response.peers {
@@ -1720,31 +1721,16 @@ pub unsafe extern "C" fn kels_discover_nodes(
                 std::collections::HashSet::new()
             };
 
-        // Fetch all nodes (paginated)
-        let nodes = client.list_all_nodes().await?;
+        // Discover nodes with proper status checking and latency testing
+        let nodes = KelsClient::discover_nodes_with_registry(&registry).await?;
 
-        // Test latency to each Ready node, filtering to verified nodes if verification was performed
-        let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());
-
-        for node in nodes {
-            // If we have verified node_ids, only include nodes that passed verification
-            if !verified_node_ids.is_empty() && !verified_node_ids.contains(&node.node_id) {
-                continue;
-            }
-            let latency_ms = if node.status == NodeStatus::Ready {
-                // Test latency with short timeout
-                let kels_client =
-                    KelsClient::with_timeout(&node.kels_url, std::time::Duration::from_millis(500));
-                kels_client
-                    .test_latency()
-                    .await
-                    .ok()
-                    .map(|d| d.as_millis() as u64)
-            } else {
-                None
-            };
-
-            node_infos.push(NodeInfoJson {
+        // Filter to verified nodes and convert to JSON format
+        let mut node_infos: Vec<NodeInfoJson> = nodes
+            .into_iter()
+            .filter(|node| {
+                verified_node_ids.is_empty() || verified_node_ids.contains(&node.node_id)
+            })
+            .map(|node| NodeInfoJson {
                 node_id: node.node_id,
                 kels_url: node.kels_url,
                 status: match node.status {
@@ -1752,9 +1738,9 @@ pub unsafe extern "C" fn kels_discover_nodes(
                     NodeStatus::Ready => "ready".to_string(),
                     NodeStatus::Unhealthy => "unhealthy".to_string(),
                 },
-                latency_ms,
-            });
-        }
+                latency_ms: node.latency_ms,
+            })
+            .collect();
 
         // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
         node_infos.sort_by(|a, b| {
@@ -1816,6 +1802,124 @@ pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
             drop(CString::from_raw(result.nodes_json));
         }
         result.nodes_json = std::ptr::null_mut();
+    }
+
+    if !result.error.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.error));
+        }
+        result.error = std::ptr::null_mut();
+    }
+}
+
+/// Result of fetching registry prefix
+#[repr(C)]
+pub struct KelsPrefixResult {
+    pub status: KelsStatus,
+    pub prefix: *mut c_char,
+    pub error: *mut c_char,
+}
+
+impl Default for KelsPrefixResult {
+    fn default() -> Self {
+        Self {
+            status: KelsStatus::Error,
+            prefix: std::ptr::null_mut(),
+            error: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Fetch and verify the registry's KEL, returning its prefix.
+///
+/// This function:
+/// 1. Fetches the registry's KEL from the given URL
+/// 2. Verifies the KEL's cryptographic integrity
+/// 3. Returns the registry's prefix
+///
+/// The caller should verify the returned prefix is in their trusted set.
+///
+/// # Arguments
+/// * `registry_url` - URL of the kels-registry service
+///
+/// # Safety
+/// - `registry_url` must be a valid C string
+/// - `result` must be a valid pointer to a KelsPrefixResult
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_fetch_registry_prefix(
+    registry_url: *const c_char,
+    result: *mut KelsPrefixResult,
+) {
+    clear_last_error();
+
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+    *result = KelsPrefixResult::default();
+
+    let Some(url) = from_c_string(registry_url) else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Invalid registry URL");
+        return;
+    };
+
+    // Create runtime for async operations
+    let Ok(runtime) = Runtime::new() else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to create async runtime");
+        return;
+    };
+
+    let fetch_result = runtime.block_on(async {
+        let client = KelsRegistryClient::new(&url);
+        let registry_kel = client.fetch_registry_kel().await?;
+
+        // Verify the KEL's cryptographic integrity
+        registry_kel.verify().map_err(|e| {
+            KelsError::VerificationFailed(format!("Registry KEL verification failed: {}", e))
+        })?;
+
+        // Extract the prefix
+        let prefix = registry_kel
+            .prefix()
+            .ok_or_else(|| KelsError::VerificationFailed("Registry KEL has no prefix".to_string()))?
+            .to_string();
+
+        Ok::<String, KelsError>(prefix)
+    });
+
+    match fetch_result {
+        Ok(prefix) => {
+            result.status = KelsStatus::Ok;
+            result.prefix = to_c_string(&prefix);
+        }
+        Err(e) => {
+            result.status = map_error_to_status(&e);
+            result.error = to_c_string(&e.to_string());
+            set_last_error(&e.to_string());
+        }
+    }
+}
+
+/// Free a KelsPrefixResult's allocated strings
+///
+/// # Safety
+/// The result must have been populated by kels_fetch_registry_prefix.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_prefix_result_free(result: *mut KelsPrefixResult) {
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+
+    if !result.prefix.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.prefix));
+        }
+        result.prefix = std::ptr::null_mut();
     }
 
     if !result.error.is_null() {

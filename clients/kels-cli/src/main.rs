@@ -13,13 +13,13 @@ use kels::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
-const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.local";
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
+const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
 
-/// Trusted registries - prefix=url pairs for verifying registry identity.
-/// MUST be set at compile time via TRUSTED_REGISTRIES environment variable.
-/// Format: "prefix1=url1,prefix2=url2,..."
-const TRUSTED_REGISTRIES: &str = env!("TRUSTED_REGISTRIES");
+/// Trusted registry prefixes for verifying registry identity.
+/// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
+/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
+const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -213,59 +213,48 @@ fn parse_registry_urls(registry: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse trusted registries string into a HashMap of prefix -> url.
-fn parse_trusted_registries() -> std::collections::HashMap<String, String> {
-    TRUSTED_REGISTRIES
+/// Parse trusted registry prefixes from compile-time constant.
+fn parse_trusted_prefixes() -> Vec<String> {
+    TRUSTED_REGISTRY_PREFIXES
         .split(',')
-        .filter_map(|pair| {
-            let mut parts = pair.trim().splitn(2, '=');
-            match (parts.next(), parts.next()) {
-                (Some(prefix), Some(url)) => {
-                    Some((prefix.trim().to_string(), url.trim().to_string()))
-                }
-                _ => None,
-            }
-        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .collect()
 }
 
-/// Get expected prefix for a registry URL by matching against trusted registries.
-fn get_expected_prefix(registry_url: &str) -> Option<String> {
-    let trusted = parse_trusted_registries();
-    // Match the URL against trusted registry URLs and return the prefix
-    for (prefix, url) in trusted {
-        // Check if the registry URL contains the trusted URL's host
-        // e.g., "http://kels-registry.kels-registry-a.local" contains "kels-registry-a"
-        if registry_url.contains(&url) || url.contains(registry_url) {
-            return Some(prefix);
-        }
-        // Also check for partial hostname matches (e.g., registry-a in the URL)
-        if let Some(host) = url.split("//").nth(1).and_then(|s| s.split('/').next()) {
-            // Extract the environment part (e.g., "kels-registry-a" from host)
-            if registry_url.contains(host) {
-                return Some(prefix);
-            }
-        }
-    }
-    None
-}
-
-/// Verify the registry's KEL matches the expected prefix (trust anchor).
-async fn verify_registry(registry_urls: &[String]) -> Result<()> {
+/// Verify the registry's KEL and check its prefix is in our trusted list.
+/// Returns the verified prefix on success.
+async fn verify_registry(registry_urls: &[String]) -> Result<String> {
     let registry_client = MultiRegistryClient::new(registry_urls.to_vec());
 
-    // Get expected prefix for the first registry URL
-    let expected_prefix = registry_urls
-        .first()
-        .and_then(|url| get_expected_prefix(url))
-        .ok_or_else(|| anyhow::anyhow!("No trusted registry prefix found for provided URLs"))?;
-
-    registry_client
-        .verify_registry(&expected_prefix)
+    // Fetch the registry's KEL to discover its prefix
+    let registry_kel = registry_client
+        .fetch_registry_kel()
         .await
-        .context("Registry verification failed")?;
+        .context("Failed to fetch registry KEL")?;
 
-    Ok(())
+    // Verify the KEL is valid
+    registry_kel
+        .verify()
+        .context("Registry KEL verification failed")?;
+
+    // Get the prefix from the KEL
+    let prefix = registry_kel
+        .prefix()
+        .ok_or_else(|| anyhow::anyhow!("Registry KEL has no prefix"))?
+        .to_string();
+
+    // Verify the prefix is in our compiled-in trusted set
+    let trusted_prefixes = parse_trusted_prefixes();
+    if !trusted_prefixes.contains(&prefix) {
+        return Err(anyhow::anyhow!(
+            "Registry prefix '{}' is not trusted. Valid prefixes: {:?}",
+            prefix,
+            trusted_prefixes
+        ));
+    }
+
+    Ok(prefix)
 }
 
 async fn create_client(cli: &Cli) -> Result<KelsClient> {

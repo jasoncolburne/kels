@@ -67,8 +67,8 @@ spec:
               value: "${var.registry.heartbeatTimeoutSecs}"
             - name: FEDERATION_SELF_PREFIX
               value: "${var.federationSelfPrefix}"
-            - name: FEDERATION_MEMBERS
-              value: "${var.federationMembers}"
+            - name: FEDERATION_URLS
+              value: "${var.federationUrls}"
           livenessProbe:
             httpGet:
               path: /health
@@ -118,7 +118,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: kels-registry.${environment.namespace}.local
+    - host: kels-registry.${environment.namespace}.kels
       http:
         paths:
           - path: /

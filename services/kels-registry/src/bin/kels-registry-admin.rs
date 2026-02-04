@@ -75,6 +75,12 @@ enum PeerAction {
         /// Peer scope: core (replicated across federation) or regional (local only)
         #[arg(long, value_enum, default_value = "regional")]
         scope: CliPeerScope,
+        /// HTTP URL for the KELS service
+        #[arg(long)]
+        kels_url: String,
+        /// libp2p multiaddr for gossip connections
+        #[arg(long)]
+        gossip_multiaddr: String,
     },
     /// Remove a peer from the allowlist
     Remove {
@@ -206,6 +212,8 @@ async fn add_peer(
     peer_id: &str,
     node_id: &str,
     scope: PeerScope,
+    kels_url: &str,
+    gossip_multiaddr: &str,
 ) -> anyhow::Result<()> {
     use verifiable_storage::Chained;
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
@@ -265,7 +273,13 @@ async fn add_peer(
     let existing: Vec<Peer> = ctx.peer_repo.pool.fetch(query).await?;
 
     let peer = match existing.first() {
-        Some(latest) if latest.active && latest.peer_id == peer_id && latest.scope == scope => {
+        Some(latest)
+            if latest.active
+                && latest.peer_id == peer_id
+                && latest.scope == scope
+                && latest.kels_url == kels_url
+                && latest.gossip_multiaddr == gossip_multiaddr =>
+        {
             println!(
                 "Peer {} already authorized (node: {}, scope: {})",
                 peer_id, node_id, scope
@@ -278,12 +292,21 @@ async fn add_peer(
             peer.peer_id = peer_id.to_string();
             peer.active = true;
             peer.scope = scope;
+            peer.kels_url = kels_url.to_string();
+            peer.gossip_multiaddr = gossip_multiaddr.to_string();
             peer.increment()?;
             peer
         }
         None => {
             // New peer - create version 0
-            Peer::create(peer_id.to_string(), node_id.to_string(), true, scope)?
+            Peer::create(
+                peer_id.to_string(),
+                node_id.to_string(),
+                true,
+                scope,
+                kels_url.to_string(),
+                gossip_multiaddr.to_string(),
+            )?
         }
     };
 
@@ -575,8 +598,18 @@ async fn main() -> anyhow::Result<()> {
                 peer_id,
                 node_id,
                 scope,
+                kels_url,
+                gossip_multiaddr,
             } => {
-                add_peer(&ctx, &peer_id, &node_id, scope.into()).await?;
+                add_peer(
+                    &ctx,
+                    &peer_id,
+                    &node_id,
+                    scope.into(),
+                    &kels_url,
+                    &gossip_multiaddr,
+                )
+                .await?;
             }
             PeerAction::Remove { peer_id } => {
                 remove_peer(&ctx, &peer_id).await?;

@@ -718,8 +718,6 @@ pub struct NodeRegistration {
     #[serde(default)]
     pub node_type: NodeType,
     pub kels_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub last_heartbeat: chrono::DateTime<chrono::Utc>,
@@ -733,8 +731,6 @@ pub struct RegisterNodeRequest {
     #[serde(default)]
     pub node_type: NodeType,
     pub kels_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub status: NodeStatus,
 }
@@ -763,11 +759,7 @@ pub struct DeregisterRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
     pub node_id: String,
-    /// External KELS URL for clients outside the cluster
     pub kels_url: String,
-    /// Internal KELS URL for node-to-node sync (defaults to kels_url if not set)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kels_url_internal: Option<String>,
     pub gossip_multiaddr: String,
     pub status: NodeStatus,
     /// Measured latency in milliseconds (populated by discovery)
@@ -780,7 +772,6 @@ impl From<NodeRegistration> for NodeInfo {
         Self {
             node_id: reg.node_id,
             kels_url: reg.kels_url,
-            kels_url_internal: reg.kels_url_internal,
             gossip_multiaddr: reg.gossip_multiaddr,
             status: reg.status,
             latency_ms: None,
@@ -892,11 +883,31 @@ pub struct Peer {
     pub node_id: String,
     pub active: bool,
     /// Scope of this peer: core (replicated) or regional (local-only)
-    #[serde(default)]
     pub scope: PeerScope,
+    /// HTTP URL for the KELS service
+    pub kels_url: String,
+    /// libp2p multiaddr for gossip connections
+    pub gossip_multiaddr: String,
 }
 
 impl Peer {
+    /// Derive the HTTP URL for the gossip service from the multiaddr.
+    /// Assumes HTTP is on port 80 on the same host as the gossip service.
+    /// e.g., `/dns4/kels-gossip.ns.kels/tcp/4001` -> `http://kels-gossip.ns.kels:80`
+    pub fn gossip_http_url(&self) -> Option<String> {
+        // Parse multiaddr to extract host
+        // Format: /dns4/<host>/tcp/<port> or /ip4/<ip>/tcp/<port>
+        let parts: Vec<&str> = self.gossip_multiaddr.split('/').collect();
+        if parts.len() >= 4 {
+            let addr_type = parts[1];
+            let host = parts[2];
+            if addr_type == "dns4" || addr_type == "ip4" {
+                return Some(format!("http://{}:80", host));
+            }
+        }
+        None
+    }
+
     pub fn deactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
         let mut peer = self.clone();
         peer.active = false;
@@ -1124,6 +1135,8 @@ mod tests {
             "node-a".to_string(),
             true,
             PeerScope::Regional,
+            "http://node-a:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
 
@@ -1134,6 +1147,8 @@ mod tests {
         // Prefix is derived from content hash, not manually set
         assert!(!peer.prefix.is_empty());
         assert_eq!(peer.scope, PeerScope::Regional);
+        assert_eq!(peer.kels_url, "http://node-a:8080");
+        assert_eq!(peer.gossip_multiaddr, "/ip4/127.0.0.1/tcp/4001");
     }
 
     #[test]
@@ -1143,6 +1158,8 @@ mod tests {
             "node-b".to_string(),
             true,
             PeerScope::Core,
+            "http://node-b:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4002".to_string(),
         )
         .unwrap();
 
@@ -1156,6 +1173,8 @@ mod tests {
             "node-a".to_string(),
             true,
             PeerScope::Regional,
+            "http://node-a:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
 
@@ -1995,7 +2014,6 @@ mod tests {
             node_id: "node1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://localhost:8080".to_string(),
-            kels_url_internal: Some("http://internal:8080".to_string()),
             gossip_multiaddr: "/ip4/127.0.0.1/tcp/9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
@@ -2005,10 +2023,6 @@ mod tests {
         let info: NodeInfo = reg.into();
         assert_eq!(info.node_id, "node1");
         assert_eq!(info.kels_url, "http://localhost:8080");
-        assert_eq!(
-            info.kels_url_internal,
-            Some("http://internal:8080".to_string())
-        );
         assert_eq!(info.status, NodeStatus::Ready);
         assert!(info.latency_ms.is_none());
     }

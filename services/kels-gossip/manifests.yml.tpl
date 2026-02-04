@@ -15,17 +15,6 @@ spec:
         app: kels-gossip
     spec:
       initContainers:
-        - name: wait-for-postgres
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z postgres 5432; do
-                echo "Waiting for postgres...";
-                sleep 2;
-              done;
-              echo "Postgres is ready!";
         - name: wait-for-kels
           image: busybox:1.36
           command:
@@ -65,7 +54,11 @@ spec:
           ports:
             - containerPort: 4001
               name: libp2p
+            - containerPort: ${var.gossip.httpPort}
+              name: http
           env:
+            - name: HTTP_PORT
+              value: "${var.gossip.httpPort}"
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
             - name: NODE_ID
@@ -74,20 +67,12 @@ spec:
               value: "${var.kels.url}"
             - name: KELS_ADVERTISE_URL
               value: "${var.kelsAdvertiseUrl}"
-            - name: KELS_ADVERTISE_URL_INTERNAL
-              value: "${var.kelsAdvertiseUrlInternal}"
             - name: REDIS_URL
               value: "${var.redis.url}"
-            - name: DATABASE_URL
-              value: "${var.kelsGossipDatabaseUrl}"
             - name: HSM_URL
               value: "${var.hsm.url}"
-            - name: TRUSTED_REGISTRIES
-              value: "${var.trustedRegistries}"
-            - name: REGISTRY_PREFIX
-              value: "${var.registryPrefix}"
-            - name: ALLOW_BOOTSTRAP_MODE
-              value: "${var.allowBootstrapMode}"
+            - name: REGISTRY_URL
+              value: "${var.registryUrl}"
             - name: GOSSIP_LISTEN_ADDR
               value: "${var.gossip.listenAddress}"
             - name: GOSSIP_ADVERTISE_ADDR
@@ -119,6 +104,10 @@ spec:
       targetPort: 4001
       protocol: TCP
       name: libp2p
+    - port: ${var.gossip.httpPort}
+      targetPort: ${var.gossip.httpPort}
+      protocol: TCP
+      name: http
   selector:
     app: kels-gossip
 
@@ -138,5 +127,9 @@ spec:
       targetPort: 4001
       protocol: TCP
       name: libp2p
+    - port: ${var.gossip.httpPort}
+      targetPort: ${var.gossip.httpPort}
+      protocol: TCP
+      name: http
   selector:
     app: kels-gossip

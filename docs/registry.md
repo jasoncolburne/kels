@@ -4,7 +4,11 @@
 
 The `kels-registry` service provides node registration and discovery for KELS gossip deployments. When new nodes come online, they query the registry to find peers, bootstrap sync missing KELs, then register as ready for queries. Clients discover nodes via the registry and test latency to select optimal nodes.
 
+For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](./federation.md) for details.
+
 ## Architecture
+
+### Single Registry
 
 ```
                     ┌─────────────────────┐
@@ -25,6 +29,23 @@ The `kels-registry` service provides node registration and discovery for KELS go
     │    kels     │     │    kels     │     │    kels     │
     └─────────────┘     └─────────────┘     └─────────────┘
 ```
+
+### Federated Registries
+
+For high availability and multi-party operation, multiple registries can form a federation:
+
+```
+        REGISTRY FEDERATION (Raft Consensus)
+    ┌─────────────────────────────────────────┐
+    │  Registry A ◄──► Registry B ◄──► Registry C  │
+    │  (Leader)       (Follower)      (Follower)   │
+    └─────────────────────────────────────────┘
+         │                │                │
+         ▼                ▼                ▼
+    [nodes a,d]      [node b]         [node c]
+```
+
+See [Multi-Registry Federation](./federation.md) for detailed documentation.
 
 ## Data Flow
 
@@ -47,10 +68,12 @@ The `kels-registry` service provides node registration and discovery for KELS go
 
 ### Client Node Discovery
 
-1. Client queries registry: `GET /api/nodes`
-2. Client tests latency to each Ready node via `/health` endpoint
-3. Client selects node with lowest latency
-4. Client caches node list with short TTL for retry resilience
+1. Client queries registry for peers: `GET /api/peers`
+2. Client extracts active peers with their `kels_url` endpoints
+3. Client tests readiness of each node via `/ready` endpoint
+4. Client tests latency to each Ready node via `/health` endpoint
+5. Client selects node with lowest latency
+6. Client caches node list with short TTL for retry resilience
 
 ## Components
 
@@ -66,12 +89,19 @@ services/kels-registry/
     ├── main.rs           # Entry point, tracing setup
     ├── lib.rs            # Module definitions
     ├── server.rs         # HTTP router and startup
-    ├── handlers.rs       # All handlers (nodes, peers, registry KEL)
+    ├── handlers.rs       # All handlers (nodes, peers, registry KEL, federation)
     ├── store.rs          # Redis-backed node storage
     ├── signature.rs      # Signature verification
     ├── identity_client.rs # Client for identity service
     ├── peer_store.rs     # PostgreSQL peer repository
     ├── repository.rs     # Combined repository
+    ├── federation/       # Multi-registry federation (Raft consensus)
+    │   ├── mod.rs        # FederationNode entry point
+    │   ├── config.rs     # Federation configuration
+    │   ├── network.rs    # HTTP transport for Raft RPCs
+    │   ├── state_machine.rs # Raft state machine (core peer set)
+    │   ├── storage.rs    # Raft log/vote storage (PostgreSQL)
+    │   └── types.rs      # Federation message types
     └── bin/
         └── kels-registry-admin.rs # Admin CLI for peer management
 ```
@@ -87,11 +117,13 @@ services/kels-registry/
 | `GET` | `/api/nodes/bootstrap` | Get bootstrap peers (excludes caller via `?exclude=node_id`) |
 | `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
 | `POST` | `/api/nodes/status` | Update node status (requires signed request) |
-| `GET` | `/api/peers` | Get peer allowlist |
+| `GET` | `/api/peers` | Get peer allowlist (core + regional peers) |
 | `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
+| `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
+| `POST` | `/api/federation/rpc` | Internal Raft RPC (federation mode only) |
 | `GET` | `/health` | Health check |
 
-> **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
+> **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details. Federation endpoints are only available when federation is configured.
 
 ### Data Model
 
@@ -161,8 +193,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `NODE_ID` | Unique node identifier | (required) |
 | `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
-| `KELS_ADVERTISE_URL` | Advertised KELS URL for external clients | (required) |
-| `KELS_ADVERTISE_URL_INTERNAL` | Advertised KELS URL for node-to-node sync | (optional, defaults to external) |
+| `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
 | `GOSSIP_ADVERTISE_ADDR` | libp2p advertised address | (required) |
 
@@ -333,17 +364,17 @@ garden deploy --env=registry
 garden deploy --env=node-a
 
 # Create KELs on node-a
-kels-cli -u http://kels.kels-node-a.local incept
-kels-cli -u http://kels.kels-node-a.local incept
+kels-cli -u http://kels.kels-node-a.kels incept
+kels-cli -u http://kels.kels-node-a.kels incept
 
 # Deploy second node (bootstrap syncs from node-a)
 garden deploy --env=node-b
 
 # Verify node-b has the KELs
-kels-cli -u http://kels.kels-node-b.local list
+kels-cli -u http://kels.kels-node-b.kels list
 
 # Test client discovery
-kels-cli --registry http://kels-registry.kels-registry.local list-nodes
+kels-cli --registry http://kels-registry.kels-registry.kels list-nodes
 ```
 
 ### Integration tests

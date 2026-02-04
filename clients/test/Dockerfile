@@ -21,12 +21,12 @@ RUN --mount=type=cache,id=kels-bench-registry,target=/usr/local/cargo/registry \
     cp /app/target/release/kels-bench /app/kels-bench
 
 # Build kels-cli with dev-tools for adversarial testing
-# TRUSTED_REGISTRIES contains name=prefix pairs for trust anchor verification
-ARG TRUSTED_REGISTRIES
+# TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries
+ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/clients/kels-cli
 RUN --mount=type=cache,id=kels-cli-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-cli-target,target=/app/target \
-    TRUSTED_REGISTRIES="${TRUSTED_REGISTRIES}" cargo build --release --features dev-tools && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --features dev-tools && \
     cp /app/target/release/kels-cli /app/kels-cli
 
 # Stage 2: Final test client image
@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
     jq \
     ca-certificates \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tests

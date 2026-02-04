@@ -99,7 +99,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: kels.${environment.namespace}.local
+    - host: kels.${environment.namespace}.kels
       http:
         paths:
           - path: /

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use verifiable_storage::RepositoryConnection;
 
-use crate::federation::{FederationConfig, FederationNode, sync::run_core_peer_sync_loop};
+use crate::federation::{FederationConfig, FederationNode, sync::run_leader_db_sync_loop};
 use crate::handlers::{self, AppState, FederationState, RegistryKelState};
 use crate::identity_client::IdentityClient;
 use crate::repository::RegistryRepository;
@@ -148,14 +148,14 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
 
-                    // Start the core peer sync loop
+                    // Start the DB->Raft sync loop (leader only)
                     let sync_node = node.clone();
                     let sync_repo = repo.clone();
                     tokio::spawn(async move {
-                        run_core_peer_sync_loop(
+                        run_leader_db_sync_loop(
                             sync_node,
                             sync_repo,
-                            std::time::Duration::from_secs(5),
+                            std::time::Duration::from_secs(1),
                         )
                         .await;
                     });

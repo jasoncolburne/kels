@@ -32,6 +32,7 @@ impl IntoResponse for PreSerializedJson {
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
+    pub(crate) redis_conn: redis::aio::ConnectionManager,
 }
 
 // ==================== Error Handling ====================
@@ -127,6 +128,58 @@ impl IntoResponse for ApiError {
 
 pub(crate) async fn health() -> StatusCode {
     StatusCode::OK
+}
+
+/// Ready response
+#[derive(serde::Serialize)]
+pub(crate) struct ReadyResponse {
+    ready: bool,
+    status: String,
+}
+
+/// Check if the node is ready by reading gossip service state from Redis.
+pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ReadyResponse>) {
+    use redis::AsyncCommands;
+
+    let mut conn = state.redis_conn.clone();
+
+    match conn.get::<_, Option<String>>("kels:gossip:ready").await {
+        Ok(Some(status)) if status == "true" => (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                ready: true,
+                status: "ready".to_string(),
+            }),
+        ),
+        Ok(Some(status)) if status == "bootstrapping" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "bootstrapping".to_string(),
+            }),
+        ),
+        Ok(Some(status)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status,
+            }),
+        ),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "unknown".to_string(),
+            }),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ReadyResponse {
+                ready: false,
+                status: "error".to_string(),
+            }),
+        ),
+    }
 }
 
 // ==================== Event Handlers ====================

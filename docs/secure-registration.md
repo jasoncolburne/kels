@@ -93,18 +93,27 @@ Authorized peers are stored in PostgreSQL using verifiable-storage patterns:
 
 ```rust
 struct Peer {
-    said: String,           // Content hash (CESR Blake3)
-    prefix: String,         // Stable lineage ID (peer-{peer_id})
+    said: String,             // Content hash (CESR Blake3)
+    prefix: String,           // Stable lineage ID (peer-{peer_id})
     previous: Option<String>, // SAID of previous version
-    version: u64,           // Version number
+    version: u64,             // Version number
     created_at: DateTime,
-    peer_id: String,        // libp2p PeerId (Base58)
-    node_id: String,        // Human-readable name (e.g., "node-a")
-    active: bool,           // Current authorization status
+    peer_id: String,          // libp2p PeerId (Base58)
+    node_id: String,          // Human-readable name (e.g., "node-a")
+    active: bool,             // Current authorization status
+    scope: PeerScope,         // Core (federated) or Regional (local-only)
+    kels_url: String,         // HTTP URL for KELS service
+    gossip_multiaddr: String, // libp2p multiaddr for gossip connections
 }
 ```
 
 Each peer is a versioned entity - deactivation creates a new version with `active: false` rather than deleting the record.
+
+**Peer Scopes:**
+- `Core`: Replicated across all registries in a federation via Raft consensus
+- `Regional`: Local to this registry only, not shared across federation
+
+For more details on peer scopes and federation, see [Multi-Registry Federation](./federation.md).
 
 ## Signed Request Format
 
@@ -222,8 +231,16 @@ The HSM sign endpoint returns both signature and public key in a single call, av
 The `kels-registry-admin` CLI manages the peer allowlist:
 
 ```bash
-# Add a peer to allowlist
-kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a
+# Add a peer to allowlist (regional scope by default)
+kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
+  --kels-url http://kels.kels-node-a.kels \
+  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
+
+# Add a core peer (in federated mode, must run on leader registry)
+kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
+  --scope core \
+  --kels-url http://kels.kels-node-a.kels \
+  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
 
 # Remove a peer (creates deactivated version)
 kels-registry-admin peer remove --peer-id 12D3KooWAbc...
@@ -231,6 +248,8 @@ kels-registry-admin peer remove --peer-id 12D3KooWAbc...
 # List all authorized peers
 kels-registry-admin peer list
 ```
+
+See [Multi-Registry Federation](./federation.md) for details on core vs regional peer scopes.
 
 ### Getting a Node's PeerId
 

@@ -4,6 +4,9 @@ type: container
 
 disabled: ${var.envType != "registry"}
 
+dependencies:
+  - run.read-federation-prefixes
+
 source:
   path: ../..  # Set build context to repository root
 
@@ -12,9 +15,12 @@ include:
   - lib/kels-derive/**/*
   - services/kels-registry/**/*
   - project.garden.yml
+  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/kels-registry/Dockerfile
+  buildArgs:
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.read-federation-prefixes.outputs.log}
 
 ---
 
@@ -36,7 +42,7 @@ variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
   identityUrl: ${var.identity.url}
   federationSelfPrefix: ${actions.run.read-federation-self-prefix.outputs.log}
-  federationMembers: ${actions.run.read-federation-members.outputs.log}
+  federationUrls: ${actions.run.read-federation-members.outputs.log}
 
 spec:
   manifestTemplates:
@@ -134,5 +140,23 @@ spec:
     - bash
     - ../../scripts/add-node.sh
     - node-d
+    - ${environment.namespace}
+    - regional
+---
+
+kind: Run
+name: add-node-e
+type: exec
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - ../../scripts/add-node.sh
+    - node-e
     - ${environment.namespace}
     - regional

@@ -3,8 +3,9 @@
 use super::config::FederationConfig;
 use super::types::{CorePeerSnapshot, FederationRequest, FederationResponse, TypeConfig};
 use crate::identity_client::IdentityClient;
+use crate::peer_store::PeerRepository;
 use futures::stream::StreamExt;
-use kels::{Kel, Peer};
+use kels::{Kel, Peer, PeerScope};
 use openraft::storage::EntryResponder;
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
@@ -15,6 +16,8 @@ use std::io::{self, Cursor};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
+use verifiable_storage::{Chained, ChainedRepository};
+use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
 /// State machine that manages the core peer set.
 ///
@@ -88,7 +91,7 @@ impl StateMachineData {
 }
 
 /// Thread-safe state machine store.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
     identity_client: Arc<IdentityClient>,
@@ -96,6 +99,8 @@ pub struct StateMachineStore {
     member_kels: Arc<RwLock<HashMap<String, Kel>>>,
     /// Federation config (for refreshing member KELs)
     config: FederationConfig,
+    /// Peer repository for direct DB writes
+    peer_repo: Arc<PeerRepository>,
 }
 
 impl StateMachineStore {
@@ -104,12 +109,14 @@ impl StateMachineStore {
         identity_client: Arc<IdentityClient>,
         member_kels: Arc<RwLock<HashMap<String, Kel>>>,
         config: FederationConfig,
+        peer_repo: Arc<PeerRepository>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
             identity_client,
             member_kels,
             config,
+            peer_repo,
         }
     }
 
@@ -178,6 +185,66 @@ impl StateMachineStore {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Upsert a peer to the local DB using the same pattern as admin CLI.
+    async fn upsert_peer_to_db(&self, peer: &Peer) -> Result<(), String> {
+        // Query for existing peer by node_id
+        let query = Query::<Peer>::new()
+            .eq("node_id", &peer.node_id)
+            .order_by("version", Order::Desc)
+            .limit(1);
+        let existing: Vec<Peer> = self
+            .peer_repo
+            .pool
+            .fetch(query)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let db_peer = match existing.first() {
+            Some(latest)
+                if latest.active
+                    && latest.peer_id == peer.peer_id
+                    && latest.scope == PeerScope::Core
+                    && latest.kels_url == peer.kels_url
+                    && latest.gossip_multiaddr == peer.gossip_multiaddr =>
+            {
+                // Already exists with same data, skip
+                debug!(peer_id = %peer.peer_id, "Peer already exists in local DB");
+                return Ok(());
+            }
+            Some(latest) => {
+                // Existing node - clone, update fields, increment version
+                let mut updated = latest.clone();
+                updated.peer_id = peer.peer_id.clone();
+                updated.active = peer.active;
+                updated.scope = PeerScope::Core;
+                updated.kels_url = peer.kels_url.clone();
+                updated.gossip_multiaddr = peer.gossip_multiaddr.clone();
+                updated.increment().map_err(|e| e.to_string())?;
+                updated
+            }
+            None => {
+                // New peer - create version 0
+                Peer::create(
+                    peer.peer_id.clone(),
+                    peer.node_id.clone(),
+                    peer.active,
+                    PeerScope::Core,
+                    peer.kels_url.clone(),
+                    peer.gossip_multiaddr.clone(),
+                )
+                .map_err(|e| e.to_string())?
+            }
+        };
+
+        self.peer_repo
+            .insert(db_peer)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        info!(peer_id = %peer.peer_id, "Wrote core peer to local DB");
         Ok(())
     }
 }
@@ -272,6 +339,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             said = %peer.said,
                             "Verified and anchored peer SAID in our KEL"
                         );
+
+                        // Write directly to local DB using upsert pattern
+                        if let Err(e) = self.upsert_peer_to_db(peer).await {
+                            warn!(
+                                peer_id = %peer.peer_id,
+                                error = %e,
+                                "Failed to write peer to local DB"
+                            );
+                        }
                     }
                     sm.apply(request)
                 }
@@ -353,6 +429,8 @@ mod tests {
             node_id.to_string(),
             true,
             PeerScope::Core,
+            format!("http://{}:8080", node_id),
+            format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
         )
         .unwrap()
     }
@@ -363,6 +441,8 @@ mod tests {
             node_id.to_string(),
             false,
             PeerScope::Core,
+            format!("http://{}:8080", node_id),
+            format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
         )
         .unwrap()
     }

@@ -17,7 +17,7 @@ fn test_said(name: &str) -> String {
     compute_said(&name.to_string()).expect("valid said computation")
 }
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

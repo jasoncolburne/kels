@@ -18,6 +18,7 @@ use crate::repository::KelsRepository;
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/ready", get(handlers::ready))
         .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
         .route("/api/kels/kels", post(handlers::get_kels_batch))
@@ -48,10 +49,11 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
     tracing::info!("Connected to Redis");
 
-    let kel_cache = ServerKelCache::new(redis_conn, "kels:kel");
+    let kel_cache = ServerKelCache::new(redis_conn.clone(), "kels:kel");
     let state = Arc::new(AppState {
         repo: Arc::new(repo),
         kel_cache,
+        redis_conn,
     });
 
     let local_cache = state.kel_cache.local_cache();
