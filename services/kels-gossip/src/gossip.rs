@@ -221,7 +221,7 @@ async fn handle_swarm_event(
             message,
             ..
         })) => match serde_json::from_slice::<KelAnnouncement>(&message.data) {
-            Ok(announcement) => {
+            Ok(announcement) if announcement.sender != swarm.local_peer_id().to_base58() => {
                 debug!(
                     "Received announcement via {}: prefix={}, said={}, sender={}",
                     propagation_source, announcement.prefix, announcement.said, announcement.sender
@@ -230,6 +230,9 @@ async fn handle_swarm_event(
                     .send(GossipEvent::AnnouncementReceived { announcement })
                     .await
                     .map_err(|_| GossipError::ChannelClosed)?;
+            }
+            Ok(_) => {
+                debug!("Received announcement from self");
             }
             Err(e) => {
                 warn!("Failed to parse announcement: {}", e);

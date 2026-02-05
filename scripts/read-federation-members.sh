@@ -15,8 +15,8 @@ MODE="${2:-prefix}"  # "prefix" (default) or "members"
 # Map node environments to their registry
 case "$ENV_NAME" in
     node-a|node-d) REGISTRY_ENV="registry-a" ;;
-    node-b) REGISTRY_ENV="registry-b" ;;
-    node-c) REGISTRY_ENV="registry-c" ;;
+    node-b|node-e) REGISTRY_ENV="registry-b" ;;
+    node-c|node-f) REGISTRY_ENV="registry-c" ;;
     *) REGISTRY_ENV="$ENV_NAME" ;;
 esac
 

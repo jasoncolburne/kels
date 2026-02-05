@@ -235,6 +235,10 @@ pub async fn refresh_allowlist(
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
+    let original_peers = allowlist.read().await;
+    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
+    drop(original_peers);
+
     // Fetch peers
     debug!("Fetching peers");
     let response = registry_client
@@ -287,13 +291,20 @@ pub async fn refresh_allowlist(
 
     let count = authorized_peers.len();
 
-    // Update the shared allowlist
-    *allowlist.write().await = authorized_peers;
+    if original_saids.len() != count
+        || authorized_peers
+            .iter()
+            .any(|(_, p)| !original_saids.contains(&p.said))
+    {
+        // Update the shared allowlist
+        *allowlist.write().await = authorized_peers;
 
-    info!(
-        "Allowlist refreshed with {} verified authorized peers",
-        count
-    );
+        info!(
+            "Allowlist refreshed with {} verified authorized peers",
+            count
+        );
+    }
+
     Ok(count)
 }
 

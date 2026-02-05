@@ -500,16 +500,24 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await;
     });
 
-    // Wait for gossip swarm to complete (blocking)
-    let gossip_result = gossip_handle.await;
+    // Wait for gossip swarm to complete OR shutdown signal
+    tokio::select! {
+        gossip_result = gossip_handle => {
+            redis_handle.abort();
+            sync_handle.abort();
 
-    redis_handle.abort();
-    sync_handle.abort();
-
-    match gossip_result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(ServiceError::Gossip(e)),
-        Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
+            match gossip_result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(ServiceError::Gossip(e)),
+                Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
+            }
+        }
+        _ = kels::shutdown_signal() => {
+            info!("Shutdown signal received, cleaning up...");
+            redis_handle.abort();
+            sync_handle.abort();
+            Ok(())
+        }
     }
 }
 

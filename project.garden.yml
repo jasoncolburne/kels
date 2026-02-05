@@ -36,10 +36,14 @@ environments:
     defaultNamespace: kels-node-e
     variables:
       envType: node
+  - name: node-f
+    defaultNamespace: kels-node-f
+    variables:
+      envType: node
 
 providers:
   - name: local-kubernetes
-    environments: [registry-a, registry-b, registry-c, node-a, node-b, node-c, node-d, node-e]
+    environments: [registry-a, registry-b, registry-c, node-a, node-b, node-c, node-d, node-e, node-f]
     namespace:
       name: ${environment.namespace}
     setupIngressController: nginx

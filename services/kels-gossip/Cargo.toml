@@ -41,8 +41,8 @@ base64 = "0.22"
 # p256 for key decompression and signature encoding
 p256 = { version = "0.13", features = ["ecdsa"] }
 
-# KELS library for types
-libkels = { path = "../../lib/kels" }
+# KELS library for types and server utilities (shutdown_signal)
+libkels = { path = "../../lib/kels", features = ["server"] }
 
 # Verifiable storage for Chained trait
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }

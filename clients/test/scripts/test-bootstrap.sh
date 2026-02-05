@@ -34,12 +34,14 @@ NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
 NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.kels-node-c.kels}"
 NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
 NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
+NODE_F_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-f.kels}"
 REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry-a.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 NODE_C_URL="http://${NODE_C_KELS_HOST}"
 NODE_D_URL="http://${NODE_D_KELS_HOST}"
 NODE_E_URL="http://${NODE_E_KELS_HOST}"
+NODE_F_URL="http://${NODE_F_KELS_HOST}"
 REGISTRY_URL="http://${REGISTRY_HOST}"
 
 # Test state
@@ -101,6 +103,7 @@ echo "Node-B URL:    $NODE_B_URL"
 echo "Node-C URL:    $NODE_C_URL"
 echo "Node-D URL:    $NODE_D_URL"
 echo "Node-E URL:    $NODE_E_URL"
+echo "Node-F URL:    $NODE_F_URL"
 echo "Registry URL:  $REGISTRY_URL"
 echo "Config:        $KELS_CLI_HOME"
 echo "========================================="
@@ -124,7 +127,7 @@ for i in {1..30}; do
 done
 
 # Wait for KELS servers
-for url in "$NODE_A_URL" "$NODE_B_URL" "$NODE_C_URL" "$NODE_D_URL" "$NODE_E_URL"; do
+for url in "$NODE_A_URL" "$NODE_B_URL" "$NODE_C_URL" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"; do
     for i in {1..30}; do
         if curl -s "$url/health" > /dev/null 2>&1; then
             echo "  $url is ready"
@@ -307,6 +310,7 @@ NEW_LENGTH_B=$(get_kel_length "$NODE_B_URL" "$PREFIX1")
 NEW_LENGTH_C=$(get_kel_length "$NODE_C_URL" "$PREFIX1")
 NEW_LENGTH_D=$(get_kel_length "$NODE_D_URL" "$PREFIX1")
 NEW_LENGTH_E=$(get_kel_length "$NODE_E_URL" "$PREFIX1")
+NEW_LENGTH_F=$(get_kel_length "$NODE_F_URL" "$PREFIX1")
 
 echo "KEL lengths after anchor:"
 echo "  Node-A: $NEW_LENGTH_A"
@@ -314,6 +318,7 @@ echo "  Node-B: $NEW_LENGTH_B"
 echo "  Node-C: $NEW_LENGTH_C"
 echo "  Node-D: $NEW_LENGTH_D"
 echo "  Node-E: $NEW_LENGTH_E"
+echo "  Node-F: $NEW_LENGTH_F"
 
 # All nodes should have the same KEL length, greater than initial
 run_test "KEL grew after anchor on node-a" [ "$NEW_LENGTH_A" -gt "$INITIAL_LENGTH_A" ]
@@ -321,6 +326,7 @@ run_test "Anchor propagated to node-b" [ "$NEW_LENGTH_B" = "$NEW_LENGTH_A" ]
 run_test "Anchor propagated to node-c" [ "$NEW_LENGTH_C" = "$NEW_LENGTH_A" ]
 run_test "Anchor propagated to node-d" [ "$NEW_LENGTH_D" = "$NEW_LENGTH_A" ]
 run_test "Anchor propagated to node-e" [ "$NEW_LENGTH_E" = "$NEW_LENGTH_A" ]
+run_test "Anchor propagated to node-f" [ "$NEW_LENGTH_F" = "$NEW_LENGTH_A" ]
 
 echo ""
 

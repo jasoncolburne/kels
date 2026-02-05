@@ -160,3 +160,21 @@ spec:
     - node-e
     - ${environment.namespace}
     - regional
+---
+
+kind: Run
+name: add-node-f
+type: exec
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - ../../scripts/add-node.sh
+    - node-f
+    - ${environment.namespace}
+    - regional

@@ -97,7 +97,7 @@ test-comprehensive:
 
 	# Cleanup all environments
 	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
-	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e
+	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
 
 	# Deploy registries and fetch prefixes
 	garden deploy --env=registry-a && garden run fetch-registry-prefix --env=registry-a
@@ -130,9 +130,14 @@ test-comprehensive:
 	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	# Deploy node-d as regional to registry-a only (not replicated via federation)
-	garden deploy --env=node-e && garden run add-node-e --env=registry-c
+	# Deploy node-e as regional to registry-b only (not replicated via federation)
+	garden deploy --env=node-e && garden run add-node-e --env=registry-b
 	kubectl rollout restart deployment/kels-gossip -n kels-node-e && kubectl rollout status deployment/kels-gossip -n kels-node-e
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-f as regional to registry-c only (not replicated via federation)
+	garden deploy --env=node-f && garden run add-node-f --env=registry-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-f && kubectl rollout status deployment/kels-gossip -n kels-node-f
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3

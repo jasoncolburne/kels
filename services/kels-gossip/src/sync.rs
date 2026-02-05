@@ -266,7 +266,7 @@ impl SyncHandler {
         let kels_url = match self.get_peer_kels_url(&announcement.sender).await {
             Some(url) => url,
             None => {
-                warn!(
+                debug!(
                     "Sender {} not in allowlist, cannot fetch KEL for {}",
                     announcement.sender, prefix
                 );
@@ -300,21 +300,24 @@ impl SyncHandler {
             kels_url
         );
 
+        // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
+        // KELS publishes to Redis immediately when storing, so we must mark first.
+        let said = events.last().map(|e| e.event.said.clone());
+        if let Some(ref said) = said {
+            let key = format!("{}:{}", prefix, said);
+            self.recently_stored
+                .write()
+                .await
+                .insert(key, Instant::now());
+        }
+
         // Submit the events to local KELS and check if they were accepted
         let accepted = self.submit_events_to_kels(&events).await?;
 
         // Update our local SAID cache and re-broadcast only if we stored new events
         if accepted {
-            if let Some(last_event) = events.last() {
-                let said = last_event.event.said.clone();
-                self.local_saids.insert(prefix.clone(), said.clone());
-
-                // Mark as recently stored to prevent Redis feedback loop
-                let key = format!("{}:{}", prefix, said);
-                self.recently_stored
-                    .write()
-                    .await
-                    .insert(key, Instant::now());
+            if let Some(said) = said {
+                self.local_saids.insert(prefix.clone(), said);
 
                 // Determine rebroadcast based on original announcement's routing
                 let sender = self.local_peer_id.to_string();
