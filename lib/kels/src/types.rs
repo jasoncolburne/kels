@@ -881,6 +881,7 @@ pub struct Peer {
     pub created_at: StorageDatetime,
     pub peer_id: String,
     pub node_id: String,
+    pub authorizing_kel: String,
     pub active: bool,
     /// Scope of this peer: core (replicated) or regional (local-only)
     pub scope: PeerScope,
@@ -1133,6 +1134,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-a".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Regional,
             "http://node-a:8080".to_string(),
@@ -1156,6 +1158,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-b".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-b:8080".to_string(),
@@ -1171,6 +1174,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-a".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Regional,
             "http://node-a:8080".to_string(),

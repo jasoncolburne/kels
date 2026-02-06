@@ -832,6 +832,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWTest".to_string(),
             "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-test:8080".to_string(),
@@ -870,6 +871,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWTest".to_string(),
             "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-test:8080".to_string(),
@@ -919,6 +921,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWTest".to_string(),
             "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-test:8080".to_string(),
@@ -973,6 +976,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWRoundtrip".to_string(),
             "node-roundtrip".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Regional,
             "http://node-roundtrip:8080".to_string(),

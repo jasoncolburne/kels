@@ -174,6 +174,7 @@ struct ProposalResponse {
 struct AdminContext {
     peer_repo: Arc<PeerRepository>,
     identity_client: IdentityClient,
+    self_prefix: String,
     registry_url: String,
     http_client: reqwest::Client,
 }
@@ -193,6 +194,7 @@ impl AdminContext {
             .context("Failed to connect to PostgreSQL")?;
 
         let identity_client = IdentityClient::new(&identity_url);
+        let self_prefix = identity_client.get_prefix().await?;
 
         let peer_repo = Arc::new(PeerRepository::new(pg_pool));
 
@@ -204,6 +206,7 @@ impl AdminContext {
         Ok(Self {
             peer_repo,
             identity_client,
+            self_prefix,
             registry_url,
             http_client,
         })
@@ -350,6 +353,7 @@ async fn add_peer(
             Peer::create(
                 peer_id.to_string(),
                 node_id.to_string(),
+                ctx.self_prefix.clone(),
                 true,
                 scope,
                 kels_url.to_string(),

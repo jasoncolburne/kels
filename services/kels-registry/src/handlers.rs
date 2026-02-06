@@ -772,6 +772,7 @@ pub async fn admin_add_regional_peer(
     let peer = Peer::create(
         req.peer_id.clone(),
         req.node_id.clone(),
+        "EAuthorizingKel_____________________________".to_string(),
         true,
         PeerScope::Regional,
         req.kels_url,

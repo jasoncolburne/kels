@@ -212,6 +212,7 @@ impl StateMachineData {
                     let peer = match Peer::create(
                         peer_id.clone(),
                         approved.node_id.clone(),
+                        leader_prefix.to_string(),
                         true,
                         PeerScope::Core,
                         approved.kels_url.clone(),
@@ -235,7 +236,7 @@ impl StateMachineData {
                         current_votes,
                         votes_needed: threshold,
                         status: ProposalStatus::Approved,
-                        peer: Some(peer.clone()),
+                        peer: Some(Box::new(peer.clone())),
                     };
                 }
 
@@ -368,35 +369,6 @@ impl StateMachineStore {
         &self.inner
     }
 
-    /// Check if a SAID is anchored in any member's KEL, refreshing if needed.
-    async fn verify_said_in_member_kel(&self, said: &str) -> bool {
-        // First check with cached KELs
-        {
-            let kels = self.member_kels.read().await;
-            for kel in kels.values() {
-                if kel.contains_anchor(said) {
-                    return true;
-                }
-            }
-        }
-
-        // Not found - refresh all member KELs and try again
-        debug!(said = %said, "SAID not in cached KELs, refreshing member KELs");
-        if let Err(e) = self.refresh_all_member_kels().await {
-            warn!(error = %e, "Failed to refresh member KELs");
-            return false;
-        }
-
-        // Check again with fresh KELs
-        let kels = self.member_kels.read().await;
-        for kel in kels.values() {
-            if kel.contains_anchor(said) {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Refresh all member KELs from their registries.
     async fn refresh_all_member_kels(&self) -> Result<(), String> {
         let client = reqwest::Client::builder()
@@ -525,6 +497,7 @@ impl StateMachineStore {
                 Peer::create(
                     peer.peer_id.clone(),
                     peer.node_id.clone(),
+                    self.config.self_prefix.clone(),
                     peer.active,
                     PeerScope::Core,
                     peer.kels_url.clone(),
@@ -602,7 +575,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     // For AddPeer, verify SAID is in a member's KEL, then anchor in ours
                     if let FederationRequest::AddPeer(ref peer) = request {
                         // Verify SAID is anchored in some member's KEL (refreshes if needed)
-                        if !self.verify_said_in_member_kel(&peer.said).await {
+                        if self
+                            .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
+                            .await
+                            .is_err()
+                        {
                             warn!(
                                 peer_id = %peer.peer_id,
                                 said = %peer.said,
@@ -705,10 +682,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     }
 
                     // Verify proposal request is anchored in proposer's KEL
-                    if let FederationRequest::ProposeCorePeer(ref req) = request
-                        && let Err(e) = self.verify_member_anchoring(&req.said, &req.proposer).await
+                    if let FederationRequest::ProposeCorePeer(ref prop) = request
+                        && let Err(e) = self
+                            .verify_member_anchoring(&prop.said, &prop.authorizing_kel)
+                            .await
                     {
-                        warn!(proposer = %req.proposer, error = %e, "Proposal request not anchored - rejecting");
+                        warn!(proposer = %prop.proposer, error = %e, "Proposal request not anchored - rejecting");
                         if let Some(r) = responder {
                             r.send(FederationResponse::NotAuthorized(e));
                         }
@@ -880,6 +859,7 @@ mod tests {
         Peer::create(
             peer_id.to_string(),
             node_id.to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             format!("http://{}:8080", node_id),
@@ -892,6 +872,7 @@ mod tests {
         Peer::create(
             peer_id.to_string(),
             node_id.to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             false,
             PeerScope::Core,
             format!("http://{}:8080", node_id),

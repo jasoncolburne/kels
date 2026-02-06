@@ -334,7 +334,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Initial allowlist refresh - must happen before discover_peers
     // Use a separate client without signing for unauthenticated peer list fetching
     let allowlist_client = MultiRegistryClient::new(registry_urls.clone());
-    match allowlist::refresh_allowlist(&allowlist_client, &registry_prefix, &allowlist).await {
+    match allowlist::refresh_allowlist(&allowlist_client, &allowlist).await {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
@@ -396,7 +396,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let listen_addr = config.listen_addr.clone();
     let topic = config.topic.clone();
     let gossip_registry_client = allowlist_client.clone();
-    let gossip_registry_prefix = registry_prefix.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
             keypair,
@@ -405,7 +404,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             &topic,
             registry_allowlist,
             gossip_registry_client,
-            gossip_registry_prefix,
             command_rx,
             event_tx,
         )
@@ -488,16 +486,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let refresh_registry_prefix = registry_prefix.clone();
     let refresh_client = MultiRegistryClient::new(registry_urls.clone());
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(
-            refresh_client,
-            refresh_registry_prefix,
-            allowlist,
-            refresh_interval,
-        )
-        .await;
+        allowlist::run_allowlist_refresh_loop(refresh_client, allowlist, refresh_interval).await;
     });
 
     // Wait for gossip swarm to complete OR shutdown signal

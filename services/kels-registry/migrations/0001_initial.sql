@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS peer (
     created_at TIMESTAMPTZ NOT NULL,
     peer_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    authorizing_kel CHAR(44) NOT NULL,
     active BOOLEAN NOT NULL,
     -- Peer scope: 'core' (replicated across federation) or 'regional' (local only)
     scope VARCHAR(16) NOT NULL,

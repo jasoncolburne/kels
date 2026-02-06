@@ -225,16 +225,8 @@ pub async fn get_local_scope(peer_id: &PeerId, allowlist: &SharedAllowlist) -> k
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
     registry_client: &MultiRegistryClient,
-    registry_prefix: &str,
     allowlist: &SharedAllowlist,
 ) -> Result<usize, AllowlistRefreshError> {
-    // Fetch and verify the registry's KEL
-    debug!("Verifying registry KEL");
-    let registry_kel = registry_client
-        .verify_registry(registry_prefix)
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
-
     let original_peers = allowlist.read().await;
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
     drop(original_peers);
@@ -261,6 +253,13 @@ pub async fn refresh_allowlist(
                 );
                 continue;
             }
+
+            // Fetch and verify the registry's KEL
+            debug!("Verifying registry KEL");
+            let registry_kel = registry_client
+                .verify_registry(&latest.authorizing_kel)
+                .await
+                .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
             // Verify the peer's SAID is anchored in the registry's KEL
             if !registry_kel.contains_anchor(&latest.said) {
@@ -314,7 +313,6 @@ pub async fn refresh_allowlist(
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
     registry_client: MultiRegistryClient,
-    registry_prefix: String,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
 ) {
@@ -324,7 +322,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(&registry_client, &registry_prefix, &allowlist).await {
+        match refresh_allowlist(&registry_client, &allowlist).await {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }
@@ -350,6 +348,7 @@ mod tests {
             created_at: verifiable_storage::StorageDatetime::now(),
             peer_id: peer_id.to_string(),
             node_id: "test-node".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
             scope: kels::PeerScope::Core,
             kels_url: "http://test:8080".to_string(),

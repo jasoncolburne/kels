@@ -1161,6 +1161,7 @@ mod tests {
             created_at: chrono::Utc::now().into(),
             peer_id: "12D3KooWPeer1".to_string(),
             node_id: "node-1".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
             scope: crate::types::PeerScope::Core,
             kels_url: "http://node-1:8091".to_string(),
@@ -1332,6 +1333,7 @@ mod tests {
         Peer::create(
             peer_id.to_string(),
             node_id.to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             active,
             crate::types::PeerScope::Regional,
             format!("http://{}:8080", node_id),
@@ -2105,6 +2107,7 @@ mod tests {
             created_at: chrono::Utc::now().into(),
             peer_id: "12D3KooWPeer1".to_string(),
             node_id: "node-1".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
             scope: crate::types::PeerScope::Core,
             kels_url: "http://node-1:8091".to_string(),

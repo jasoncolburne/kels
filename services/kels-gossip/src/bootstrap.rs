@@ -505,6 +505,7 @@ mod tests {
             created_at: verifiable_storage::StorageDatetime::now(),
             peer_id: "test-peer".to_string(),
             node_id: "node-1".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
             scope: kels::PeerScope::Core,
             kels_url: "http://kels:8080".to_string(),

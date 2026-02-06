@@ -216,9 +216,9 @@ impl PeerProposal {
 /// Request types for federation state machine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FederationRequest {
-    /// Add a peer to the core peer set (used for regional peers or internal).
+    /// Add a peer (used for regional peers or internal).
     AddPeer(Peer),
-    /// Remove a peer from the core peer set (by peer_id).
+    /// Remove a peer (by peer_id).
     RemovePeer(String),
 
     /// Propose a new core peer (requires multi-party approval).
@@ -301,7 +301,7 @@ pub enum FederationResponse {
         current_votes: usize,
         votes_needed: usize,
         status: ProposalStatus,
-        peer: Option<Peer>,
+        peer: Option<Box<Peer>>,
     },
     /// Proposal not found.
     ProposalNotFound(String),
@@ -406,6 +406,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-test:8080".to_string(),
@@ -443,6 +444,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-test:8080".to_string(),
@@ -518,6 +520,7 @@ mod tests {
         let peer = Peer::create(
             "peer-1".to_string(),
             "node-1".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-1:8080".to_string(),
@@ -561,6 +564,7 @@ mod tests {
         let peer = Peer::create(
             "peer-1".to_string(),
             "node-1".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
             true,
             PeerScope::Core,
             "http://node-1:8080".to_string(),
