@@ -77,12 +77,7 @@ impl TestHarness {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create server runtime");
             rt.block_on(async move {
-                // Set environment variables in the server's runtime context
-                unsafe {
-                    std::env::set_var("DATABASE_URL", &db_url);
-                    std::env::set_var("REDIS_URL", &rd_url);
-                }
-                if let Err(e) = kels_service::run(server_port).await {
+                if let Err(e) = kels_service::run(server_port, &db_url, &rd_url).await {
                     eprintln!("Server error: {}", e);
                 }
             });

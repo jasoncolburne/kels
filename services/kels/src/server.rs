@@ -26,12 +26,13 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
-
+pub async fn run(
+    port: u16,
+    database_url: &str,
+    redis_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to database");
-    let repo = KelsRepository::connect(&database_url)
+    let repo = KelsRepository::connect(database_url)
         .await
         .map_err(|e| format!("Failed to connect to database: {}", e))?;
     tracing::info!("Running migrations");
@@ -40,9 +41,8 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     tracing::info!("Database connected");
 
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
     tracing::info!("Connecting to Redis at {}", redis_url);
-    let redis_client = RedisClient::open(redis_url.as_str())
+    let redis_client = RedisClient::open(redis_url)
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)
         .await
@@ -57,7 +57,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let local_cache = state.kel_cache.local_cache();
-    tokio::spawn(cache_sync_subscriber(redis_url.clone(), local_cache));
+    tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
 
     let app = create_router(state);
 

@@ -5,7 +5,7 @@
 //! verified against the sender's KEL by the receiver.
 
 use super::config::FederationConfig;
-use super::types::{FederationError, TypeConfig};
+use super::types::{FederationError, FederationNodeId, TypeConfig};
 use crate::identity_client::IdentityClient;
 use openraft::error::{RPCError, Unreachable};
 use openraft::network::v2::RaftNetworkV2;
@@ -17,9 +17,6 @@ use openraft::{BasicNode, SnapshotMeta, Vote};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-
-/// Node ID type (same as in types.rs).
-pub type FederationNodeId = u64;
 
 /// Snapshot transfer data for federation RPC.
 ///
