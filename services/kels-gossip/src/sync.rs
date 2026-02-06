@@ -266,6 +266,8 @@ impl SyncHandler {
         let kels_url = match self.get_peer_kels_url(&announcement.sender).await {
             Some(url) => url,
             None => {
+                // this is expected for regional peer messages that are seen by core peers not
+                // associated with their registry
                 debug!(
                     "Sender {} not in allowlist, cannot fetch KEL for {}",
                     announcement.sender, prefix

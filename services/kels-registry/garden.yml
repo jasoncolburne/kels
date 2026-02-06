@@ -69,9 +69,14 @@ spec:
 
 ---
 
+# Propose core peer actions (creates proposal, outputs proposal ID)
+
 kind: Run
-name: add-node-a
+name: propose-node-a
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -81,16 +86,17 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/propose-peer.sh
     - node-a
-    - ${environment.namespace}
-    - core
 
 ---
 
 kind: Run
-name: add-node-b
+name: propose-node-b
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -100,16 +106,17 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/propose-peer.sh
     - node-b
-    - ${environment.namespace}
-    - core
 
 ---
 
 kind: Run
-name: add-node-c
+name: propose-node-c
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -119,16 +126,19 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/propose-peer.sh
     - node-c
-    - ${environment.namespace}
-    - core
 
 ---
 
+# Vote on a peer proposal (pass proposal ID via --var proposal=<id>)
+
 kind: Run
-name: add-node-d
+name: vote-peer
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -138,15 +148,40 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+
+---
+
+# Regional peer actions (direct add, no proposal needed)
+
+kind: Run
+name: add-regional-node-d
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/add-regional-node.sh
     - node-d
     - ${environment.namespace}
-    - regional
 ---
 
 kind: Run
-name: add-node-e
+name: add-regional-node-e
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -156,15 +191,17 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/add-regional-node.sh
     - node-e
     - ${environment.namespace}
-    - regional
 ---
 
 kind: Run
-name: add-node-f
+name: add-regional-node-f
 type: exec
+
+source:
+  path: ../..
 
 disabled: ${var.envType != "registry"}
 
@@ -174,7 +211,6 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/add-node.sh
+    - scripts/add-regional-node.sh
     - node-f
     - ${environment.namespace}
-    - regional

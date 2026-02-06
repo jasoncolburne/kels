@@ -82,6 +82,9 @@ openraft = { git = "https://github.com/datafuselabs/openraft", tag = "v0.10.0-al
 # Byte order for node IDs
 byteorder = "1"
 
+# UUID generation for proposal IDs
+uuid = { version = "1", features = ["v4"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 

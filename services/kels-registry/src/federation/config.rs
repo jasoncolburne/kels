@@ -124,6 +124,34 @@ impl FederationConfig {
     pub fn is_member(&self, prefix: &str) -> bool {
         self.members.iter().any(|m| m.prefix == prefix)
     }
+
+    /// Calculate approval threshold for core peer proposals.
+    ///
+    /// Formula: max(ceil(n/3), 2) where n is the number of federation members.
+    ///
+    /// This ensures:
+    /// - At least 2 approvals are always required (prevents single-party control)
+    /// - ~1/3 of members must approve for larger federations
+    ///
+    /// Examples:
+    /// - n=3: ceil(3/3)=1, max(1, 2) = 2 (need 2 of 3)
+    /// - n=4: ceil(4/3)=2, max(2, 2) = 2 (need 2 of 4)
+    /// - n=5: ceil(5/3)=2, max(2, 2) = 2 (need 2 of 5)
+    /// - n=6: ceil(6/3)=2, max(2, 2) = 2 (need 2 of 6)
+    /// - n=7: ceil(7/3)=3, max(3, 2) = 3 (need 3 of 7)
+    /// - n=9: ceil(9/3)=3, max(3, 2) = 3 (need 3 of 9)
+    pub fn approval_threshold(&self) -> usize {
+        let n = self.members.len();
+        if n == 0 {
+            return 0;
+        }
+        std::cmp::max(n.div_ceil(3), 2)
+    }
+
+    /// Get all member prefixes.
+    pub fn member_prefixes(&self) -> Vec<String> {
+        self.members.iter().map(|m| m.prefix.clone()).collect()
+    }
 }
 
 /// Parse URLs from environment variable format.
@@ -342,5 +370,79 @@ mod tests {
         let cloned = config.clone();
         assert_eq!(cloned.self_prefix, config.self_prefix);
         assert_eq!(cloned.members.len(), config.members.len());
+    }
+
+    fn make_members(count: usize) -> Vec<FederationMember> {
+        (0..count)
+            .map(|i| FederationMember {
+                prefix: format!("ERegistry{}", i),
+                url: format!("https://registry{}.example.com", i),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_approval_threshold_empty() {
+        let config = FederationConfig::new("ERegistry0".to_string(), vec![]);
+        assert_eq!(config.approval_threshold(), 0);
+    }
+
+    #[test]
+    fn test_approval_threshold_3_members() {
+        // n=3: ceil(3/3)=1, max(1, 2) = 2
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(3));
+        assert_eq!(config.approval_threshold(), 2);
+    }
+
+    #[test]
+    fn test_approval_threshold_4_members() {
+        // n=4: ceil(4/3)=2, max(2, 2) = 2
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(4));
+        assert_eq!(config.approval_threshold(), 2);
+    }
+
+    #[test]
+    fn test_approval_threshold_5_members() {
+        // n=5: ceil(5/3)=2, max(2, 2) = 2
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(5));
+        assert_eq!(config.approval_threshold(), 2);
+    }
+
+    #[test]
+    fn test_approval_threshold_6_members() {
+        // n=6: ceil(6/3)=2, max(2, 2) = 2
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(6));
+        assert_eq!(config.approval_threshold(), 2);
+    }
+
+    #[test]
+    fn test_approval_threshold_7_members() {
+        // n=7: ceil(7/3)=3, max(3, 2) = 3
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(7));
+        assert_eq!(config.approval_threshold(), 3);
+    }
+
+    #[test]
+    fn test_approval_threshold_9_members() {
+        // n=9: ceil(9/3)=3, max(3, 2) = 3
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(9));
+        assert_eq!(config.approval_threshold(), 3);
+    }
+
+    #[test]
+    fn test_approval_threshold_10_members() {
+        // n=10: ceil(10/3)=4, max(4, 2) = 4
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(10));
+        assert_eq!(config.approval_threshold(), 4);
+    }
+
+    #[test]
+    fn test_member_prefixes() {
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(3));
+        let prefixes = config.member_prefixes();
+        assert_eq!(prefixes.len(), 3);
+        assert!(prefixes.contains(&"ERegistry0".to_string()));
+        assert!(prefixes.contains(&"ERegistry1".to_string()));
+        assert!(prefixes.contains(&"ERegistry2".to_string()));
     }
 }

@@ -2,7 +2,7 @@
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use kels::shutdown_signal;
 use redis::Client as RedisClient;
@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use verifiable_storage::RepositoryConnection;
 
-use crate::federation::{FederationConfig, FederationNode, sync::run_leader_db_sync_loop};
+use crate::federation::{FederationConfig, FederationNode};
 use crate::handlers::{self, AppState, FederationState, RegistryKelState};
 use crate::identity_client::IdentityClient;
 use crate::repository::RegistryRepository;
@@ -48,6 +48,27 @@ pub fn create_router(
             .route("/api/peers", get(handlers::list_peers_federated))
             .route("/api/federation/rpc", post(handlers::federation_rpc))
             .route("/api/federation/status", get(handlers::federation_status))
+            // Admin API (localhost only) for proposal management
+            .route("/api/admin/proposals", get(handlers::admin_list_proposals))
+            .route("/api/admin/proposals", post(handlers::admin_propose_peer))
+            .route(
+                "/api/admin/proposals/:proposal_id",
+                get(handlers::admin_get_proposal),
+            )
+            .route(
+                "/api/admin/proposals/:proposal_id/vote",
+                post(handlers::admin_vote_proposal),
+            )
+            .route(
+                "/api/admin/proposals/:proposal_id",
+                delete(handlers::admin_withdraw_proposal),
+            )
+            // Admin API for regional peer management (core peers must use proposals)
+            .route("/api/admin/peers", post(handlers::admin_add_regional_peer))
+            .route(
+                "/api/admin/peers/:peer_id",
+                delete(handlers::admin_remove_core_peer),
+            )
             .with_state(fed_state)
     } else {
         // Standalone mode: peers come from local database only
@@ -148,18 +169,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
 
-                    // Start the DB->Raft sync loop (leader only)
-                    let sync_node = node.clone();
-                    let sync_repo = repo.clone();
-                    tokio::spawn(async move {
-                        run_leader_db_sync_loop(
-                            sync_node,
-                            sync_repo,
-                            std::time::Duration::from_secs(1),
-                        )
-                        .await;
-                    });
-
                     Some(Arc::new(FederationState {
                         node,
                         repo: repo.clone(),
@@ -181,7 +190,8 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = create_router(state, repo, registry_kel_state, federation_state);
+    let app = create_router(state, repo, registry_kel_state, federation_state)
+        .into_make_service_with_connect_info::<SocketAddr>();
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("KELS Registry service listening on {}", addr);

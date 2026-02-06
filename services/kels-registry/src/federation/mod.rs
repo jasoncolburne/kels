@@ -29,7 +29,8 @@ pub use network::{
 pub use state_machine::{StateMachineData, StateMachineStore};
 pub use storage::LogStore;
 pub use types::{
-    FederationError, FederationNodeId, FederationRequest, FederationResponse, TypeConfig,
+    FederationError, FederationNodeId, FederationRequest, FederationResponse, PeerProposal,
+    ProposalStatus, TypeConfig, Vote,
 };
 
 use crate::repository::RegistryRepository;
@@ -221,6 +222,119 @@ impl FederationNode {
         Ok(())
     }
 
+    /// Propose adding a core peer with multi-party approval (leader only).
+    ///
+    /// Creates an empty proposal (v0) that requires approval from multiple federation
+    /// members before the peer is added to the core set. The proposer must then
+    /// submit their vote separately via vote_core_peer(). The proposal ID (prefix) is
+    /// derived from content and returned in the response.
+    pub async fn propose_core_peer(
+        &self,
+        proposal: PeerProposal,
+    ) -> Result<FederationResponse, FederationError> {
+        if !self.is_leader().await {
+            return Err(FederationError::NotLeader {
+                leader_prefix: self.leader_prefix().await,
+                leader_url: self.leader_url().await,
+            });
+        }
+
+        let request = FederationRequest::ProposeCorePeer(proposal);
+
+        let result = self
+            .raft
+            .client_write(request)
+            .await
+            .map_err(|e| FederationError::RaftError(e.to_string()))?;
+
+        Ok(result.response().clone())
+    }
+
+    /// Vote on a core peer proposal (leader only).
+    ///
+    /// # Arguments
+    /// * `proposal_id` - The proposal to vote on
+    /// * `vote` - The signed vote
+    pub async fn vote_core_peer(
+        &self,
+        proposal_id: String,
+        vote: Vote,
+    ) -> Result<FederationResponse, FederationError> {
+        if !self.is_leader().await {
+            return Err(FederationError::NotLeader {
+                leader_prefix: self.leader_prefix().await,
+                leader_url: self.leader_url().await,
+            });
+        }
+
+        let request = FederationRequest::VoteCorePeer { proposal_id, vote };
+
+        let result = self
+            .raft
+            .client_write(request)
+            .await
+            .map_err(|e| FederationError::RaftError(e.to_string()))?;
+
+        Ok(result.response().clone())
+    }
+
+    /// Withdraw a pending proposal (leader only).
+    ///
+    /// Only the original proposer can withdraw their proposal.
+    pub async fn withdraw_proposal(
+        &self,
+        proposal_id: String,
+        withdrawer: String,
+    ) -> Result<FederationResponse, FederationError> {
+        if !self.is_leader().await {
+            return Err(FederationError::NotLeader {
+                leader_prefix: self.leader_prefix().await,
+                leader_url: self.leader_url().await,
+            });
+        }
+
+        let request = FederationRequest::WithdrawProposal {
+            proposal_id,
+            withdrawer,
+        };
+
+        let result = self
+            .raft
+            .client_write(request)
+            .await
+            .map_err(|e| FederationError::RaftError(e.to_string()))?;
+
+        Ok(result.response().clone())
+    }
+
+    /// Get all pending proposals from the state machine.
+    pub async fn pending_proposals(&self) -> Vec<PeerProposal> {
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .pending_proposals
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Get a specific proposal by ID.
+    pub async fn get_proposal(&self, proposal_id: &str) -> Option<PeerProposal> {
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .pending_proposals
+            .get(proposal_id)
+            .cloned()
+    }
+
+    /// Get the approval threshold for proposals.
+    pub fn approval_threshold(&self) -> usize {
+        self.config.approval_threshold()
+    }
+
     /// Get the current core peer set from the state machine.
     pub async fn core_peers(&self) -> Vec<Peer> {
         self.state_machine.inner().lock().await.peers()
@@ -241,6 +355,7 @@ impl FederationNode {
             is_leader: self.is_leader().await,
             leader_id: self.leader().await,
             leader_prefix: self.leader_prefix().await,
+            leader_url: self.leader_url().await,
             term: 0,           // TODO: Get from metrics when API is understood
             last_log_index: 0, // TODO: Get from metrics when API is understood
             last_applied: 0,   // TODO: Get from metrics when API is understood
@@ -348,6 +463,7 @@ pub struct FederationStatus {
     pub is_leader: bool,
     pub leader_id: Option<FederationNodeId>,
     pub leader_prefix: Option<String>,
+    pub leader_url: Option<String>,
     pub term: u64,
     pub last_log_index: u64,
     pub last_applied: u64,

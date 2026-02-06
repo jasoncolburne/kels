@@ -1,16 +1,18 @@
 //! kels-registry-admin CLI - Peer allowlist management
 //!
 //! This CLI manages the peer allowlist in the kels-registry.
-//! It connects to PostgreSQL for peer data and the identity service for KEL operations.
+//! For core peers in federation mode, it connects via localhost HTTP to the registry.
+//! For regional peers, it writes directly to PostgreSQL.
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use kels::{Peer, PeerScope};
+use serde::Deserialize;
 use std::sync::Arc;
-use verifiable_storage::ChainedRepository;
+use verifiable_storage::{ChainedRepository, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels_registry::federation::FederationStatus;
+use kels_registry::federation::{FederationStatus, PeerProposal, Vote};
 use kels_registry::identity_client::IdentityClient;
 use kels_registry::peer_store::PeerRepository;
 
@@ -64,7 +66,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PeerAction {
-    /// Add a peer to the allowlist
+    /// Add a peer to the allowlist (use 'propose' for multi-party approval of core peers)
     Add {
         /// libp2p PeerId (Base58 encoded)
         #[arg(long)]
@@ -90,6 +92,44 @@ enum PeerAction {
     },
     /// List all peers in the allowlist
     List,
+    /// Propose a new core peer (requires multi-party approval)
+    Propose {
+        /// libp2p PeerId (Base58 encoded)
+        #[arg(long)]
+        peer_id: String,
+        /// Human-readable node name
+        #[arg(long)]
+        node_id: String,
+        /// HTTP URL for the KELS service
+        #[arg(long)]
+        kels_url: String,
+        /// libp2p multiaddr for gossip connections
+        #[arg(long)]
+        gossip_multiaddr: String,
+    },
+    /// Vote on a pending proposal
+    Vote {
+        /// Proposal ID
+        #[arg(long)]
+        proposal_id: String,
+        /// Vote to approve (default) or reject
+        #[arg(long, default_value = "true")]
+        approve: bool,
+    },
+    /// List pending proposals
+    Proposals,
+    /// Get status of a specific proposal
+    ProposalStatus {
+        /// Proposal ID
+        #[arg(long)]
+        proposal_id: String,
+    },
+    /// Withdraw a pending proposal (proposer only)
+    Withdraw {
+        /// Proposal ID
+        #[arg(long)]
+        proposal_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -118,6 +158,16 @@ enum FederationAction {
         #[arg(short, long)]
         json: bool,
     },
+}
+
+// Response types from admin API
+#[derive(Debug, Deserialize)]
+struct ProposalResponse {
+    proposal_id: String,
+    status: String,
+    votes_needed: usize,
+    current_votes: usize,
+    message: String,
 }
 
 /// Shared context for all commands
@@ -184,6 +234,27 @@ impl AdminContext {
             }
         }
     }
+
+    /// Get the leader URL for federation operations.
+    /// Returns the leader's URL, or falls back to local registry if not in federation.
+    async fn get_leader_url(&self) -> anyhow::Result<String> {
+        match self.get_federation_status().await? {
+            Some(status) if status.is_leader => {
+                // We are the leader, use local URL
+                Ok(self.registry_url.clone())
+            }
+            Some(status) => {
+                // Not the leader, use leader's URL
+                status
+                    .leader_url
+                    .ok_or_else(|| anyhow!("Federation has no leader (election in progress?)"))
+            }
+            None => {
+                // Not in federation mode, use local URL
+                Ok(self.registry_url.clone())
+            }
+        }
+    }
 }
 
 /// Check if there's at least one active core peer in the registry.
@@ -218,50 +289,27 @@ async fn add_peer(
     use verifiable_storage::Chained;
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
-    // For core peers, check if federation is enabled and if we're the leader
+    // Core peers must go through the proposal system for multi-party approval
     if scope == PeerScope::Core {
-        match ctx.get_federation_status().await {
-            Ok(Some(status)) => {
-                if !status.is_leader {
-                    let leader_info = match (&status.leader_id, &status.leader_prefix) {
-                        (Some(id), Some(prefix)) => {
-                            format!("Current leader: {} (ID: {})", prefix, id)
-                        }
-                        (Some(id), None) => format!("Current leader ID: {}", id),
-                        _ => "Leader is being elected".to_string(),
-                    };
-                    return Err(anyhow!(
-                        "Cannot modify core peer set - this registry is not the leader.\n{}",
-                        leader_info
-                    ));
-                }
-            }
-            Ok(None) => {
-                return Err(anyhow!(
-                    "Cannot add core peers - federation is not enabled on this registry.\n\
-                     Core peers require federation for replication. Use --scope regional instead."
-                ));
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "Cannot verify federation status (required for core peers): {}",
-                    e
-                ));
-            }
-        }
+        return Err(anyhow!(
+            "Core peers must go through the proposal system.\n\
+             Use: kels-registry-admin peer propose --peer-id {} --node-id {} --kels-url {} --gossip-multiaddr {}",
+            peer_id,
+            node_id,
+            kels_url,
+            gossip_multiaddr
+        ));
     }
 
     // For regional peers, require at least one active core peer to exist
     // (regional nodes need core nodes to connect to the gossip swarm)
-    if scope == PeerScope::Regional {
-        let has_core_peer = has_active_core_peer(ctx).await?;
-        if !has_core_peer {
-            return Err(anyhow!(
-                "Cannot add regional peer - no active core peers exist.\n\
-                 Regional nodes need core nodes to connect to the gossip swarm.\n\
-                 Add at least one core peer first with: peer add --scope core ..."
-            ));
-        }
+    let has_core_peer = has_active_core_peer(ctx).await?;
+    if !has_core_peer {
+        return Err(anyhow!(
+            "Cannot add regional peer - no active core peers exist.\n\
+             Regional nodes need core nodes to connect to the gossip swarm.\n\
+             Add at least one core peer first with: peer add --scope core ..."
+        ));
     }
 
     // Upsert pattern: load latest by node_id, if none create(), if some modify and increment()
@@ -338,7 +386,7 @@ async fn add_peer(
 async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
-    // Query by peer_id field
+    // Query by peer_id field to determine scope
     let query = Query::<Peer>::new()
         .eq("peer_id", peer_id)
         .order_by("version", Order::Desc)
@@ -353,39 +401,27 @@ async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // For core peers, check if federation is enabled and if we're the leader
+    // For core peers, use the admin API endpoint
     if existing.scope == PeerScope::Core {
-        match ctx.get_federation_status().await {
-            Ok(Some(status)) => {
-                if !status.is_leader {
-                    let leader_info = match (&status.leader_id, &status.leader_prefix) {
-                        (Some(id), Some(prefix)) => {
-                            format!("Current leader: {} (ID: {})", prefix, id)
-                        }
-                        (Some(id), None) => format!("Current leader ID: {}", id),
-                        _ => "Leader is being elected".to_string(),
-                    };
-                    return Err(anyhow!(
-                        "Cannot modify core peer set - this registry is not the leader.\n{}",
-                        leader_info
-                    ));
-                }
-            }
-            Ok(None) => {
-                return Err(anyhow!(
-                    "Cannot remove core peers - federation is not enabled on this registry."
-                ));
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "Cannot verify federation status (required for core peers): {}",
-                    e
-                ));
-            }
+        let url = format!("{}/api/admin/peers/{}", ctx.registry_url, peer_id);
+        let resp = ctx.http_client.delete(&url).send().await?;
+
+        if resp.status().is_success() {
+            println!("Removed core peer {} (node: {})", peer_id, existing.node_id);
+            return Ok(());
+        } else {
+            let error: serde_json::Value = resp.json().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to remove core peer: {}",
+                error
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown error")
+            ));
         }
     }
 
-    // Create new version with active=false
+    // For regional peers, use direct DB access
     let deactivated = existing.deactivate()?;
 
     // Anchor the peer SAID in registry's KEL via identity service
@@ -405,6 +441,256 @@ async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
         deactivated.version, deactivated.said
     );
     Ok(())
+}
+
+/// Extract leader URL from a "Not leader" error message.
+/// Expected format: "Not leader. Leader: Some(\"prefix\") at Some(\"http://...\")"
+fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
+    // Look for pattern: at Some("http://...")
+    if let Some(at_pos) = error_msg.find("at Some(\"") {
+        let start = at_pos + 9; // Length of "at Some(\""
+        if let Some(end_pos) = error_msg[start..].find("\")") {
+            return Some(error_msg[start..start + end_pos].to_string());
+        }
+    }
+    None
+}
+
+async fn propose_peer(
+    ctx: &AdminContext,
+    peer_id: &str,
+    node_id: &str,
+    kels_url: &str,
+    gossip_multiaddr: &str,
+) -> anyhow::Result<()> {
+    // Get this registry's prefix as proposer
+    let proposer = ctx
+        .identity_client
+        .get_prefix()
+        .await
+        .context("Failed to get proposer prefix")?;
+
+    // Create payload for signing
+    let peer_proposal = PeerProposal::empty(
+        peer_id,
+        node_id,
+        kels_url,
+        gossip_multiaddr,
+        &proposer,
+        &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
+    )?;
+
+    // Anchor the proposal's SAID in our KEL (this IS the signature)
+    ctx.identity_client
+        .anchor(&peer_proposal.said)
+        .await
+        .context("Failed to anchor proposal")?;
+
+    // Get leader URL from federation status
+    let mut target_url = ctx.get_leader_url().await?;
+
+    // Retry loop for leader changes
+    for attempt in 0..2 {
+        let url = format!("{}/api/admin/proposals", target_url);
+        let resp = ctx
+            .http_client
+            .post(&url)
+            .json(&peer_proposal)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let result: ProposalResponse = resp.json().await?;
+            println!("Proposal created: {}", result.proposal_id);
+            println!("{}", result.message);
+            return Ok(());
+        }
+
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        let error_msg = error
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+
+        // Check if this is a "not leader" error and extract new leader URL
+        if error_msg.contains("Not leader")
+            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
+            && attempt == 0
+        {
+            println!("Redirecting to leader at {}...", new_leader_url);
+            target_url = new_leader_url;
+            continue;
+        }
+
+        return Err(anyhow!("Failed to create proposal: {}", error_msg));
+    }
+
+    Err(anyhow!("Failed to create proposal after retries"))
+}
+
+async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> anyhow::Result<()> {
+    // Get this registry's prefix
+    let voter = ctx
+        .identity_client
+        .get_prefix()
+        .await
+        .context("Failed to get voter prefix")?;
+
+    // Create vote (SAID is auto-derived)
+    let vote = Vote::create(proposal_id.to_string(), voter, approve, None)
+        .context("Failed to create vote")?;
+
+    // Anchor the vote's SAID in our KEL (this IS the signature)
+    ctx.identity_client
+        .anchor(&vote.said)
+        .await
+        .context("Failed to anchor vote in KEL")?;
+
+    // Get leader URL from federation status
+    let mut target_url = ctx.get_leader_url().await?;
+
+    // Retry loop for leader changes
+    for attempt in 0..2 {
+        let url = format!("{}/api/admin/proposals/{}/vote", target_url, proposal_id);
+        let resp = ctx.http_client.post(&url).json(&vote).send().await?;
+
+        if resp.status().is_success() {
+            let result: ProposalResponse = resp.json().await?;
+            println!("{}", result.message);
+            println!(
+                "Progress: {}/{} approvals",
+                result.current_votes, result.votes_needed
+            );
+            if result.status == "Approved" {
+                println!("Peer has been added to the core set.");
+            }
+            return Ok(());
+        }
+
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        let error_msg = error
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+
+        // Check if this is a "not leader" error and extract new leader URL
+        if error_msg.contains("Not leader")
+            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
+            && attempt == 0
+        {
+            println!("Redirecting to leader at {}...", new_leader_url);
+            target_url = new_leader_url;
+            continue;
+        }
+
+        return Err(anyhow!("Failed to vote: {}", error_msg));
+    }
+
+    Err(anyhow!("Failed to vote after retries"))
+}
+
+async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
+    let url = format!("{}/api/admin/proposals", ctx.registry_url);
+    let resp = ctx.http_client.get(&url).send().await?;
+
+    if resp.status().is_success() {
+        let proposals: Vec<PeerProposal> = resp.json().await?;
+
+        if proposals.is_empty() {
+            println!("No pending proposals");
+            return Ok(());
+        }
+
+        for p in proposals {
+            let expires = p.expires_at.to_string();
+            let expires = expires.split('T').next().unwrap_or(&expires);
+            println!("Proposal:  {}", p.prefix);
+            println!("Peer ID:   {}", p.peer_id);
+            println!("Proposer:  {}", p.proposer);
+            println!("Approvals: {}", p.approvals.len());
+            println!("Expires:   {}", expires);
+            println!();
+        }
+    } else {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to list proposals: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    Ok(())
+}
+
+async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
+    let url = format!("{}/api/admin/proposals/{}", ctx.registry_url, proposal_id);
+    let resp = ctx.http_client.get(&url).send().await?;
+
+    if resp.status().is_success() {
+        let p: PeerProposal = resp.json().await?;
+        println!("Proposal: {}", p.prefix);
+        println!("{}", "=".repeat(50));
+        println!("SAID:       {}", p.said);
+        println!("Status:     {:?}", p.status);
+        println!("Peer ID:    {}", p.peer_id);
+        println!("Node ID:    {}", p.node_id);
+        println!("Proposer:   {}", p.proposer);
+        println!("Approvals:  {}", p.approvals.len());
+        println!("Rejections: {}", p.rejections.len());
+        println!("Created:    {}", p.created_at);
+        println!("Expires:    {}", p.expires_at);
+    } else {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to get proposal: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    Ok(())
+}
+
+async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
+    // Get leader URL from federation status
+    let mut target_url = ctx.get_leader_url().await?;
+
+    // Retry loop for leader changes
+    for attempt in 0..2 {
+        let url = format!("{}/api/admin/proposals/{}", target_url, proposal_id);
+        let resp = ctx.http_client.delete(&url).send().await?;
+
+        if resp.status().is_success() {
+            let result: ProposalResponse = resp.json().await?;
+            println!("{}", result.message);
+            return Ok(());
+        }
+
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        let error_msg = error
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+
+        // Check if this is a "not leader" error and extract new leader URL
+        if error_msg.contains("Not leader")
+            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
+            && attempt == 0
+        {
+            println!("Redirecting to leader at {}...", new_leader_url);
+            target_url = new_leader_url;
+            continue;
+        }
+
+        return Err(anyhow!("Failed to withdraw proposal: {}", error_msg));
+    }
+
+    Err(anyhow!("Failed to withdraw proposal after retries"))
 }
 
 async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
@@ -616,6 +902,29 @@ async fn main() -> anyhow::Result<()> {
             }
             PeerAction::List => {
                 list_peers(&ctx).await?;
+            }
+            PeerAction::Propose {
+                peer_id,
+                node_id,
+                kels_url,
+                gossip_multiaddr,
+            } => {
+                propose_peer(&ctx, &peer_id, &node_id, &kels_url, &gossip_multiaddr).await?;
+            }
+            PeerAction::Vote {
+                proposal_id,
+                approve,
+            } => {
+                vote_proposal(&ctx, &proposal_id, approve).await?;
+            }
+            PeerAction::Proposals => {
+                list_proposals(&ctx).await?;
+            }
+            PeerAction::ProposalStatus { proposal_id } => {
+                get_proposal_status(&ctx, &proposal_id).await?;
+            }
+            PeerAction::Withdraw { proposal_id } => {
+                withdraw_proposal(&ctx, &proposal_id).await?;
             }
         },
         Commands::Allowlist { action } => match action {
