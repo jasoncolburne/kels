@@ -137,18 +137,56 @@ Federation Members:
   ERegistryGamma...
 ```
 
-### Adding Core Peers
+### Adding Core Peers (Multi-Party Approval)
 
-Core peers must be added on the leader registry:
+Core peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers.
+
+**Approval Threshold**: `max(ceil(n/3), 2)` where n = number of federation members
+- 3 members: need 2 approvals
+- 4-6 members: need 2 approvals
+- 7-9 members: need 3 approvals
+
+**Step 1: Propose a new core peer**
+
+Any federation member can propose a new core peer:
 
 ```bash
-# On leader registry only
-kels-registry-admin peer add --peer-id Qm... --node-id node-1 --scope core
+# From any registry in the federation
+kels-registry-admin peer propose \
+  --peer-id Qm... \
+  --node-id node-1 \
+  --kels-url http://kels.node-1.example.com \
+  --gossip-multiaddr /dns4/gossip.node-1.example.com/tcp/4001
 
-# On follower registries, this will fail:
-# Error: Cannot modify core peer set - this registry is not the leader.
-# Current leader: ERegistryBeta... (ID: 2)
+# Output:
+# Proposal created: EProposal123...
+# Waiting for 2 approvals (1/2 so far - proposer auto-votes)
 ```
+
+**Step 2: Vote on the proposal**
+
+Other federation members vote to approve:
+
+```bash
+# On another registry
+kels-registry-admin peer vote --proposal-id EProposal123... --approve
+
+# Output:
+# Vote recorded. Status: 2/2 approvals - APPROVED
+# Peer added to core set.
+```
+
+**Step 3: Monitor proposals**
+
+```bash
+# List pending proposals
+kels-registry-admin peer proposals
+
+# Check specific proposal status
+kels-registry-admin peer proposal-status --proposal-id EProposal123...
+```
+
+**Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
 
 ### Adding Regional Peers
 
@@ -238,6 +276,19 @@ GET /api/peers
 
 Returns combined list of core peers (from Raft state machine) and regional peers (from local database).
 
+### Core Peer Proposals
+```
+GET /api/federation/proposals
+```
+
+Returns list of pending core peer proposals.
+
+```
+GET /api/federation/proposals/:id
+```
+
+Returns details of a specific proposal including votes and status.
+
 ### Federation RPC (Internal)
 ```
 POST /api/federation/rpc
@@ -265,19 +316,24 @@ garden run fetch-registry-prefix --env=registry-c
 # Wait for leader election
 sleep 10
 
-# Deploy nodes (each to their respective registry)
+# Deploy core nodes
 garden deploy --env=node-a
-garden run add-node-a --env=registry-a
-
 garden deploy --env=node-b
-garden run add-node-b --env=registry-b
-
 garden deploy --env=node-c
-garden run add-node-c --env=registry-c
 
-# Deploy regional node (only to registry-a)
+# Add core peers (requires multi-party approval)
+# Step 1: Propose from registry-a
+garden run propose-node-a --env=registry-a
+# Output includes proposal ID
+
+# Step 2: Vote from registry-b (use proposal ID from above)
+garden run vote-peer --env=registry-b --var proposal=EProposal...
+
+# Repeat for node-b and node-c
+
+# Deploy regional node (no approval needed, but requires core peers)
 garden deploy --env=node-d
-garden run add-node-d --env=registry-a
+garden run add-regional-node-d --env=registry-a
 
 # View federation status
 kubectl exec -n kels-registry-a deploy/kels-registry -- \

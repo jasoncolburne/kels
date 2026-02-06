@@ -100,6 +100,7 @@ struct Peer {
     created_at: DateTime,
     peer_id: String,          // libp2p PeerId (Base58)
     node_id: String,          // Human-readable name (e.g., "node-a")
+    authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
     scope: PeerScope,         // Core (federated) or Regional (local-only)
     kels_url: String,         // HTTP URL for KELS service
@@ -108,6 +109,9 @@ struct Peer {
 ```
 
 Each peer is a versioned entity - deactivation creates a new version with `active: false` rather than deleting the record.
+
+**Authorizing KEL:**
+The `authorizing_kel` field identifies which registry's KEL contains the cryptographic anchor for this peer record. When verifying a peer, the gossip node fetches the KEL for the `authorizing_kel` prefix and checks that the peer's SAID is anchored in it. This allows federated registries to authorize peers independently while maintaining cryptographic proof of authorization.
 
 **Peer Scopes:**
 - `Core`: Replicated across all registries in a federation via Raft consensus
