@@ -18,6 +18,10 @@ export TRUSTED_REGISTRY_PREFIXES
 
 all: fmt-check deny clippy test build
 
+benchmark: clean-garden
+	garden deploy test-client --env=node-a
+	kubectl exec -n kels-node-a -it test-client ./bench-kels.sh 40 5
+
 build:
 	cargo build --workspace --all-features
 
@@ -26,6 +30,11 @@ clean:
 	cargo clean
 	find . -type d -name "target" -exec rm -rf {} +
 	make -C clients/kels-client clean
+
+clean-garden:
+	# Cleanup all environments
+	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
+	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
 
 clean-docker:
 	@echo "Cleaning docker caches..."
@@ -99,10 +108,6 @@ kels-client-simulator:
 
 test-comprehensive:
 	echo '{}' > .kels/federated-registries.json
-
-	# Cleanup all environments
-	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
-	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
 
 	# Deploy registries and fetch prefixes
 	garden deploy --env=registry-a && garden run fetch-registry-prefix --env=registry-a

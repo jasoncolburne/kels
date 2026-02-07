@@ -13,3 +13,21 @@ spec:
   command:
     - bash
     - scripts/configure-coredns.sh
+
+---
+kind: Run
+name: coredns-unconfig
+type: exec
+description: Stop CoreDNS from rewriting .kels domains inside the cluster
+
+source:
+  path: ../..
+
+include:
+  - scripts/unconfigure-coredns.sh
+
+spec:
+  command:
+    - bash
+    - scripts/unconfigure-coredns.sh
+
