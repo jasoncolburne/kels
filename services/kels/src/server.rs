@@ -27,7 +27,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
 }
 
 pub async fn run(
-    port: u16,
+    listener: tokio::net::TcpListener,
     database_url: &str,
     redis_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -61,10 +61,12 @@ pub async fn run(
 
     let app = create_router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("KELS service listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        "KELS service listening on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

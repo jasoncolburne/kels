@@ -20,7 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .map_err(|e| format!("PORT must be a valid number: {}", e))?;
 
-    hsm::server::run(port).await?;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    hsm::server::run(listener).await?;
 
     Ok(())
 }

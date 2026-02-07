@@ -52,6 +52,7 @@ futures-util = "0.3"
 # Testing
 tokio-test = "0.4"
 testcontainers = "0.26"
+ctor = "0.4"
 testcontainers-modules = { version = "0.14", features = ["postgres", "redis"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

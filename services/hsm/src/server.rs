@@ -24,7 +24,7 @@ pub fn create_router(hsm: Arc<HsmContext>) -> Router {
 }
 
 /// Run the HTTP server
-pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     // Get SoftHSM2 configuration from environment
     let library_path = std::env::var("SOFTHSM2_LIBRARY")
         .unwrap_or_else(|_| "/usr/lib/softhsm/libsofthsm2.so".to_string());
@@ -45,10 +45,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // Create router
     let app = create_router(hsm);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("HSM service listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        "HSM service listening on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

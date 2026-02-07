@@ -27,7 +27,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     use crate::hsm::HsmKeyProvider;
     use kels::{KeyEventBuilder, KeyProvider};
 
@@ -163,10 +163,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = create_router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("Identity service listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        "Identity service listening on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

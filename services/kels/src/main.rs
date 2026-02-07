@@ -23,7 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
 
-    kels_service::run(port, &database_url, &redis_url).await?;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    kels_service::run(listener, &database_url, &redis_url).await?;
 
     Ok(())
 }

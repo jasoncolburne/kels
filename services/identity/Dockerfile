@@ -20,7 +20,7 @@ COPY services/identity /app/services/identity
 
 # Build with BuildKit cache mounts for cargo registry and target directory
 WORKDIR /app/services/identity
-RUN --mount=type=cache,id=identity-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=identity-target,target=/app/services/identity/target \
     cargo build --release --bin identity --bin identity-admin && \
     cp /app/services/identity/target/release/identity /app/identity && \

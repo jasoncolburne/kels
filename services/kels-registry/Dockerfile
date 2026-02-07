@@ -22,7 +22,7 @@ COPY services/kels-registry /app/services/kels-registry
 # TRUSTED_REGISTRY_PREFIXES must be provided at build time for zero-trust federation
 ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/services/kels-registry
-RUN --mount=type=cache,id=kels-registry-cargo,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-registry-target,target=/app/services/kels-registry/target \
     TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" \
     cargo build --release --bin kels-registry --bin kels-registry-admin && \

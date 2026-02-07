@@ -1,115 +1,222 @@
 //! Integration tests for the KELS service.
 //!
-//! These tests spin up real Postgres and Redis containers, start the server,
-//! and hit it via HTTP to test the full request/response flow.
-//!
-//! Each test gets its own containers and server instance for isolation.
-//! Containers are cleaned up when the test completes.
+//! These tests share a single server instance to test concurrent request handling.
+//! Each test creates unique prefixes, so they don't interfere with each other.
+//! The shared server is initialized once on first test access.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cesr::{Digest, Matter};
+use ctor::dtor;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SoftwareKeyProvider,
 };
 use reqwest::Client;
 use std::net::TcpListener;
-use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use std::sync::OnceLock;
+use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
+use tokio::sync::OnceCell;
 
-/// Test harness that manages containers and server lifecycle.
-/// Container is cleaned up when harness is dropped.
-struct TestHarness {
+const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
+
+#[dtor]
+fn cleanup_test_containers() {
+    let _ = std::process::Command::new("docker")
+        .args(["ps", "-q", "--filter", "label=kels-test=true"])
+        .output()
+        .map(|output| {
+            let ids = String::from_utf8_lossy(&output.stdout);
+            for id in ids.lines() {
+                let _ = std::process::Command::new("docker")
+                    .args(["rm", "-f", id])
+                    .output();
+            }
+        });
+}
+
+/// Retry getting container port - testcontainers has a race where port may not be mapped yet
+async fn retry_get_port<I: Image>(container: &ContainerAsync<I>, port: u16) -> Option<u16> {
+    for _ in 0..10 {
+        if let Ok(p) = container.get_host_port_ipv4(port).await {
+            return Some(p);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    None
+}
+
+/// Shared test harness - initialized once, used by all tests.
+/// Containers are labeled and cleaned up by `make clean-test-containers`.
+struct SharedHarness {
     base_url: String,
-    client: Client,
-    // Keep containers alive for the duration of the test
     _postgres: ContainerAsync<Postgres>,
     _redis: ContainerAsync<Redis>,
 }
 
-impl TestHarness {
-    async fn new() -> Self {
-        // Start Postgres container
-        let postgres = Postgres::default()
+/// Global shared harness - initialized once on first access
+static SHARED_HARNESS: OnceLock<OnceCell<Option<SharedHarness>>> = OnceLock::new();
+
+/// Get or initialize the shared test harness
+async fn get_harness() -> Option<&'static SharedHarness> {
+    let cell = SHARED_HARNESS.get_or_init(OnceCell::new);
+    let harness = cell
+        .get_or_init(|| async {
+            match SharedHarness::new().await {
+                Some(h) => Some(h),
+                None => {
+                    eprintln!("WARNING: Failed to initialize shared test harness");
+                    None
+                }
+            }
+        })
+        .await;
+    harness.as_ref()
+}
+
+impl SharedHarness {
+    async fn new() -> Option<Self> {
+        // Start Postgres container with label for cleanup
+        let postgres = match Postgres::default()
+            .with_label(TEST_CONTAINER_LABEL.0, TEST_CONTAINER_LABEL.1)
             .start()
             .await
-            .expect("Failed to start Postgres container");
+        {
+            Ok(p) => p,
+            Err(e) => {
+                panic!("ERROR: Postgres container failed to start: {}", e);
+            }
+        };
 
-        let pg_host = postgres
-            .get_host()
-            .await
-            .expect("Failed to get Postgres host");
-        let pg_port = postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get Postgres port");
+        let pg_host = match postgres.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                panic!("ERROR: failed to get Postgres host: {}", e);
+            }
+        };
+
+        let pg_port = match retry_get_port(&postgres, 5432).await {
+            Some(p) => p,
+            None => {
+                panic!("ERROR: failed to get Postgres port after retries");
+            }
+        };
 
         let database_url = format!(
             "postgres://postgres:postgres@{}:{}/postgres",
             pg_host, pg_port
         );
 
-        // Start Redis container
-        let redis = Redis::default()
+        // Start Redis container with label for cleanup
+        let redis = match Redis::default()
+            .with_label(TEST_CONTAINER_LABEL.0, TEST_CONTAINER_LABEL.1)
             .start()
             .await
-            .expect("Failed to start Redis container");
+        {
+            Ok(r) => r,
+            Err(e) => {
+                panic!("ERROR: Redis container failed to start: {}", e);
+            }
+        };
 
-        let redis_host = redis.get_host().await.expect("Failed to get Redis host");
-        let redis_port = redis
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
+        let redis_host = match redis.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                panic!("ERROR: failed to get Redis host: {}", e);
+            }
+        };
+
+        let redis_port = match retry_get_port(&redis, 6379).await {
+            Some(p) => p,
+            None => {
+                panic!("ERROR: failed to get Redis port after retries");
+            }
+        };
 
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
 
-        // Find an available port for the server
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
-        let port = listener.local_addr().unwrap().port();
-        drop(listener); // Release the port so the server can use it
+        // Bind to a random port and keep the listener to avoid race conditions
+        let std_listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(e) => {
+                panic!("ERROR: failed to bind to random port: {}", e);
+            }
+        };
+        let port = std_listener.local_addr().unwrap().port();
+        std_listener.set_nonblocking(true).unwrap();
 
         let base_url = format!("http://127.0.0.1:{}", port);
 
         // Start the server in a dedicated thread with its own runtime.
-        let server_port = port;
         let db_url = database_url.clone();
         let rd_url = redis_url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create server runtime");
             rt.block_on(async move {
-                if let Err(e) = kels_service::run(server_port, &db_url, &rd_url).await {
-                    eprintln!("Server error: {}", e);
+                let listener = tokio::net::TcpListener::from_std(std_listener)
+                    .expect("Failed to convert listener");
+                if let Err(e) = kels_service::run(listener, &db_url, &rd_url).await {
+                    panic!("Server error: {}", e);
                 }
             });
         });
 
-        // Wait for server to be ready
+        // Wait for server to be ready with timeout detection
         let health_url = format!("{}/health", base_url);
-        let client = Client::new();
+        let startup_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
 
-        for _ in 0..50 {
-            if let Ok(resp) = client.get(&health_url).send().await
-                && resp.status().is_success()
-            {
-                break;
+        let mut server_ready = false;
+        let mut consecutive_refused = 0;
+        for i in 0..50 {
+            match startup_client.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    server_ready = true;
+                    break;
+                }
+                Ok(_) => {
+                    consecutive_refused = 0;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("Connection refused") {
+                        consecutive_refused += 1;
+                        if i > 20 && consecutive_refused > 10 {
+                            break;
+                        }
+                    } else {
+                        consecutive_refused = 0;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
-        Self {
+        if !server_ready {
+            panic!("Error: server did not become ready in time");
+        }
+
+        eprintln!("Shared test server ready at {}", base_url);
+
+        Some(Self {
             base_url,
-            client,
             _postgres: postgres,
             _redis: redis,
-        }
+        })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
 
-    fn client(&self) -> &Client {
-        &self.client
+    fn client(&self) -> Client {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap()
     }
 }
 
@@ -137,7 +244,9 @@ async fn create_interaction(
 
 #[tokio::test]
 async fn test_health_check() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let response = harness
         .client()
@@ -151,7 +260,9 @@ async fn test_health_check() {
 
 #[tokio::test]
 async fn test_submit_and_get_kel() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create an inception event
     let (inception, _builder) = create_inception().await;
@@ -187,7 +298,9 @@ async fn test_submit_and_get_kel() {
 
 #[tokio::test]
 async fn test_submit_multiple_events() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception + interactions
     let (inception, mut builder) = create_inception().await;
@@ -223,7 +336,9 @@ async fn test_submit_multiple_events() {
 
 #[tokio::test]
 async fn test_get_nonexistent_kel() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let response = harness
         .client()
@@ -237,7 +352,9 @@ async fn test_get_nonexistent_kel() {
 
 #[tokio::test]
 async fn test_batch_get_kels() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create two separate KELs
     let (inception1, _) = create_inception().await;
@@ -286,7 +403,9 @@ async fn test_batch_get_kels() {
 
 #[tokio::test]
 async fn test_list_prefixes() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create a KEL so there's at least one prefix
     let (inception, _) = create_inception().await;
@@ -314,7 +433,9 @@ async fn test_list_prefixes() {
 
 #[tokio::test]
 async fn test_idempotent_submit() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let (inception, _) = create_inception().await;
     let prefix = inception.event.prefix.clone();
@@ -348,7 +469,9 @@ async fn test_idempotent_submit() {
 
 #[tokio::test]
 async fn test_submit_empty_events() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let response = harness
         .client()
@@ -365,7 +488,9 @@ async fn test_submit_empty_events() {
 
 #[tokio::test]
 async fn test_get_kel_with_audit() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let (inception, _) = create_inception().await;
     let prefix = inception.event.prefix.clone();
@@ -397,7 +522,9 @@ async fn test_get_kel_with_audit() {
 
 #[tokio::test]
 async fn test_list_prefixes_with_limit() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create a few KELs
     for _ in 0..3 {
@@ -426,7 +553,9 @@ async fn test_list_prefixes_with_limit() {
 
 #[tokio::test]
 async fn test_batch_kels_exceeds_max_prefixes() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create request with 51 prefixes (max is 50)
     let prefixes: Vec<String> = (0..51).map(|i| format!("prefix_{}", i)).collect();
@@ -445,7 +574,9 @@ async fn test_batch_kels_exceeds_max_prefixes() {
 
 #[tokio::test]
 async fn test_submit_event_missing_signature() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception but clear signatures
     let (mut inception, _) = create_inception().await;
@@ -464,7 +595,9 @@ async fn test_submit_event_missing_signature() {
 
 #[tokio::test]
 async fn test_batch_get_kels_with_missing_prefixes() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create one KEL
     let (inception, _) = create_inception().await;
@@ -505,7 +638,9 @@ async fn test_batch_get_kels_with_missing_prefixes() {
 
 #[tokio::test]
 async fn test_submit_event_invalid_signature_format() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception and corrupt signature format
     let (mut inception, _) = create_inception().await;
@@ -526,7 +661,9 @@ async fn test_submit_event_invalid_signature_format() {
 
 #[tokio::test]
 async fn test_submit_rotation_event() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
@@ -571,7 +708,9 @@ async fn test_submit_rotation_event() {
 
 #[tokio::test]
 async fn test_list_prefixes_pagination_with_cursor() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create several KELs
     let mut prefixes = Vec::new();
@@ -619,7 +758,9 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
 #[tokio::test]
 async fn test_submit_decommission_event() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
@@ -668,7 +809,9 @@ async fn test_submit_decommission_event() {
 
 #[tokio::test]
 async fn test_get_kel_not_found_with_audit() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     let response = harness
         .client()
@@ -682,7 +825,9 @@ async fn test_get_kel_not_found_with_audit() {
 
 #[tokio::test]
 async fn test_submit_recovery_event_requires_dual_signature() {
-    let harness = TestHarness::new().await;
+    let Some(harness) = get_harness().await else {
+        return;
+    };
 
     // Create inception
     let (inception, mut builder) = create_inception().await;

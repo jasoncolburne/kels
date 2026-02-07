@@ -19,7 +19,7 @@ COPY services/hsm /app/services/hsm
 
 # Build with BuildKit cache mounts for cargo registry and target directory
 WORKDIR /app/services/hsm
-RUN --mount=type=cache,id=hsm-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=hsm-target,target=/app/services/hsm/target \
     cargo build --release && \
     cp /app/services/hsm/target/release/hsm /app/hsm

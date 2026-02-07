@@ -97,23 +97,77 @@ pub struct Config {
     pub http_port: u16,
 }
 
+/// Raw environment values before validation
+#[derive(Default)]
+pub struct EnvValues {
+    pub node_id: Option<String>,
+    pub kels_url: Option<String>,
+    pub kels_advertise_url: Option<String>,
+    pub redis_url: Option<String>,
+    pub hsm_url: Option<String>,
+    pub registry_url: Option<String>,
+    pub listen_addr: Option<String>,
+    pub advertise_addr: Option<String>,
+    pub topic: Option<String>,
+    pub allowlist_refresh_interval_secs: Option<u64>,
+    pub http_port: Option<u16>,
+}
+
 impl Config {
+    /// Create config from explicit values (for testing and direct construction)
+    pub fn from_values(
+        env: EnvValues,
+        trusted_prefixes: Vec<String>,
+    ) -> Result<Self, ServiceError> {
+        if trusted_prefixes.is_empty() {
+            return Err(ServiceError::Config(
+                "trusted_prefixes must contain at least one prefix".to_string(),
+            ));
+        }
+
+        let kels_advertise_url = env
+            .kels_advertise_url
+            .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
+
+        let registry_url = env
+            .registry_url
+            .ok_or_else(|| ServiceError::Config("REGISTRY_URL is required".to_string()))?;
+
+        let listen_addr_str = env
+            .listen_addr
+            .unwrap_or_else(|| "/ip4/0.0.0.0/tcp/4001".to_string());
+        let listen_addr = Multiaddr::from_str(&listen_addr_str)
+            .map_err(|e| ServiceError::Config(format!("Invalid listen address: {}", e)))?;
+
+        let advertise_addr_str = env
+            .advertise_addr
+            .unwrap_or_else(|| listen_addr_str.clone());
+        let advertise_addr = Multiaddr::from_str(&advertise_addr_str)
+            .map_err(|e| ServiceError::Config(format!("Invalid advertise address: {}", e)))?;
+
+        Ok(Self {
+            node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
+            kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
+            kels_advertise_url,
+            redis_url: env
+                .redis_url
+                .unwrap_or_else(|| "redis://redis:6379".to_string()),
+            hsm_url: env.hsm_url.unwrap_or_else(|| "http://hsm".to_string()),
+            registry_url,
+            trusted_prefixes,
+            listen_addr,
+            advertise_addr,
+            topic: env
+                .topic
+                .unwrap_or_else(|| gossip::DEFAULT_TOPIC.to_string()),
+            allowlist_refresh_interval_secs: env.allowlist_refresh_interval_secs.unwrap_or(60),
+            http_port: env.http_port.unwrap_or(80),
+        })
+    }
+
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ServiceError> {
-        let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| "node-unknown".to_string());
-
-        let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels".to_string());
-
-        let kels_advertise_url = std::env::var("KELS_ADVERTISE_URL")
-            .map_err(|_| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
-
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
-
-        let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm".to_string());
-
         // Parse trusted registry prefixes from compile-time constant (comma-separated)
-        // These are the only registry prefixes this binary will trust
         let trusted_prefixes: Vec<String> = TRUSTED_REGISTRY_PREFIXES
             .split(',')
             .map(|s| s.trim().to_string())
@@ -127,47 +181,23 @@ impl Config {
             ));
         }
 
-        // Get registry URL from runtime environment (required)
-        let registry_url = std::env::var("REGISTRY_URL")
-            .map_err(|_| ServiceError::Config("REGISTRY_URL is required".to_string()))?;
+        let env = EnvValues {
+            node_id: std::env::var("NODE_ID").ok(),
+            kels_url: std::env::var("KELS_URL").ok(),
+            kels_advertise_url: std::env::var("KELS_ADVERTISE_URL").ok(),
+            redis_url: std::env::var("REDIS_URL").ok(),
+            hsm_url: std::env::var("HSM_URL").ok(),
+            registry_url: std::env::var("REGISTRY_URL").ok(),
+            listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
+            advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
+            topic: std::env::var("GOSSIP_TOPIC").ok(),
+            allowlist_refresh_interval_secs: std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            http_port: std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()),
+        };
 
-        let listen_addr_str = std::env::var("GOSSIP_LISTEN_ADDR")
-            .unwrap_or_else(|_| "/ip4/0.0.0.0/tcp/4001".to_string());
-        let listen_addr = Multiaddr::from_str(&listen_addr_str)
-            .map_err(|e| ServiceError::Config(format!("Invalid listen address: {}", e)))?;
-
-        let advertise_addr_str =
-            std::env::var("GOSSIP_ADVERTISE_ADDR").unwrap_or_else(|_| listen_addr_str.clone());
-        let advertise_addr = Multiaddr::from_str(&advertise_addr_str)
-            .map_err(|e| ServiceError::Config(format!("Invalid advertise address: {}", e)))?;
-
-        let topic =
-            std::env::var("GOSSIP_TOPIC").unwrap_or_else(|_| gossip::DEFAULT_TOPIC.to_string());
-
-        let allowlist_refresh_interval_secs = std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(60);
-
-        let http_port = std::env::var("HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(80);
-
-        Ok(Self {
-            node_id,
-            kels_url,
-            kels_advertise_url,
-            redis_url,
-            hsm_url,
-            registry_url,
-            trusted_prefixes,
-            listen_addr,
-            advertise_addr,
-            topic,
-            allowlist_refresh_interval_secs,
-            http_port,
-        })
+        Self::from_values(env, trusted_prefixes)
     }
 }
 
@@ -554,32 +584,42 @@ mod tests {
         assert!(matches!(service_err, ServiceError::Bootstrap(_)));
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_config_from_env_missing_required() {
-        // Clear required env vars to test error handling
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("REGISTRY_URL");
-
-        let result = Config::from_env();
-        assert!(result.is_err());
-        // Check it's a config error by converting to string
-        let err_str = result.err().expect("Expected error").to_string();
-        assert!(err_str.contains("Configuration error"));
+    fn test_trusted_prefixes() -> Vec<String> {
+        vec!["ETestPrefix123456789012345678901234567890123".to_string()]
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_config_from_env_with_required_vars() {
-        // Set required env vars
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("REGISTRY_URL", "http://registry.example.com");
+    fn test_config_missing_required() {
+        // Missing kels_advertise_url
+        let env = EnvValues {
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
+        let result = Config::from_values(env, test_trusted_prefixes());
+        assert!(result.is_err());
+        let err_str = result.err().expect("Expected error").to_string();
+        assert!(err_str.contains("KELS_ADVERTISE_URL"));
 
-        let result = Config::from_env();
-        // Clean up before asserting
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("REGISTRY_URL");
+        // Missing registry_url
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            ..Default::default()
+        };
+        let result = Config::from_values(env, test_trusted_prefixes());
+        assert!(result.is_err());
+        let err_str = result.err().expect("Expected error").to_string();
+        assert!(err_str.contains("REGISTRY_URL"));
+    }
 
+    #[test]
+    fn test_config_with_required_vars() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
+
+        let result = Config::from_values(env, test_trusted_prefixes());
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let config = result.unwrap();
         assert_eq!(config.kels_advertise_url, "http://kels.example.com");
@@ -587,28 +627,14 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_config_from_env_defaults() {
-        // Set required env vars
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("REGISTRY_URL", "http://registry.example.com");
+    fn test_config_defaults() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
 
-        // Clear optional vars to test defaults
-        std::env::remove_var("NODE_ID");
-        std::env::remove_var("KELS_URL");
-        std::env::remove_var("REDIS_URL");
-        std::env::remove_var("HSM_URL");
-        std::env::remove_var("GOSSIP_LISTEN_ADDR");
-        std::env::remove_var("GOSSIP_TOPIC");
-        std::env::remove_var("ALLOWLIST_REFRESH_INTERVAL_SECS");
-        std::env::remove_var("GOSSIP_TEST_PROPAGATION_DELAY_MS");
-        std::env::remove_var("HTTP_PORT");
-
-        let result = Config::from_env();
-        // Clean up
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("REGISTRY_URL");
-
+        let result = Config::from_values(env, test_trusted_prefixes());
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let config = result.unwrap();
 
@@ -622,19 +648,15 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_config_from_env_invalid_listen_addr() {
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("REGISTRY_URL", "http://registry.example.com");
-        std::env::set_var("GOSSIP_LISTEN_ADDR", "not-a-valid-multiaddr");
+    fn test_config_invalid_listen_addr() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            listen_addr: Some("not-a-valid-multiaddr".to_string()),
+            ..Default::default()
+        };
 
-        let result = Config::from_env();
-
-        // Clean up
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("REGISTRY_URL");
-        std::env::remove_var("GOSSIP_LISTEN_ADDR");
-
+        let result = Config::from_values(env, test_trusted_prefixes());
         assert!(result.is_err(), "Expected error but got Ok");
         let err_str = result.err().unwrap().to_string();
         assert!(

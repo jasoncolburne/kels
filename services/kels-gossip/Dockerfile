@@ -27,7 +27,7 @@ ARG TRUSTED_REGISTRY_PREFIXES
 # Build with BuildKit cache mounts for cargo registry and target directory
 # Note: workspace target is at /app/target, not /app/services/kels-gossip/target
 WORKDIR /app/services/kels-gossip
-RUN --mount=type=cache,id=kels-gossip-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-gossip-target,target=/app/target \
     TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin kels-gossip && \
     cp /app/target/release/kels-gossip /app/kels-gossip

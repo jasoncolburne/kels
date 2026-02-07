@@ -20,7 +20,7 @@ COPY services/kels /app/services/kels
 
 # Build with BuildKit cache mounts for cargo registry and target directory
 WORKDIR /app/services/kels
-RUN --mount=type=cache,id=kels-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-target,target=/app/services/kels/target \
     cargo build --release --bin kels && \
     cp /app/services/kels/target/release/kels /app/kels

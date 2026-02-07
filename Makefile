@@ -14,7 +14,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clean-docker clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
 
@@ -30,6 +30,11 @@ clean:
 clean-docker:
 	@echo "Cleaning docker caches..."
 	docker system prune -af --volumes && docker builder prune -af
+
+clean-test-containers:
+	@echo "Stopping and removing test containers..."
+	@docker ps -q --filter "label=kels-test=true" | xargs -r docker stop 2>/dev/null || true
+	@docker ps -aq --filter "label=kels-test=true" | xargs -r docker rm 2>/dev/null || true
 
 clippy:
 	cargo clippy --workspace --all-targets --all-features -- -D warnings

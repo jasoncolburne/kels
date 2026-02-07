@@ -84,7 +84,7 @@ pub fn create_router(
         .merge(peer_router)
 }
 
-pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
     let postgres_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@postgres:5432/kels".to_string());
@@ -193,10 +193,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let app = create_router(state, repo, registry_kel_state, federation_state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("KELS Registry service listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        "KELS Registry service listening on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
