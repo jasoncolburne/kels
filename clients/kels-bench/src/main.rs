@@ -333,7 +333,7 @@ async fn main() -> Result<()> {
             let kel = match client.get_kel(prefix).await {
                 Ok(k) => k,
                 Err(e) => {
-                    eprintln!("Couldn't fetch kel");
+                    eprintln!("Couldn't fetch kel: {}", e);
                     std::process::exit(1);
                 }
             };
