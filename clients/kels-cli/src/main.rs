@@ -1,6 +1,6 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, fmt::Pointer, path::PathBuf};
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
@@ -8,8 +8,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
-    ProviderConfig, SoftwareProviderConfig,
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, MultiRegistryClient, NodeStatus, ProviderConfig, SoftwareProviderConfig
 };
 use serde::{Deserialize, Serialize};
 
@@ -251,7 +250,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
 
         let url = match nodes.first() {
             Some(n) => n.kels_url.clone(),
-            None => anyhow::bail!("Failed to find kels url in fastest node"),
+            None => return Err(anyhow::anyhow!("Failed to find kels url of fastest node")),
         };
         Ok(KelsClient::new(&url))
     } else {
