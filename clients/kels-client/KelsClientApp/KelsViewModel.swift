@@ -172,6 +172,9 @@ class KelsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        // Remember current selection before refresh
+        let previousSelection = selectedDiscoveredNode
+
         log("Discovering nodes from \(registryUrl)...")
 
         do {
@@ -195,10 +198,24 @@ class KelsViewModel: ObservableObject {
                 log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
             }
 
-            // Auto-select the fastest ready node
-            if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                selectNode(fastestNode)
-                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+            // Preserve selection if the node is still visible, otherwise auto-select fastest
+            if let previous = previousSelection,
+               let stillVisible = discoveredNodes.first(where: { $0.nodeId == previous.nodeId }) {
+                // Update the selection with fresh latency data but don't switch nodes
+                selectedDiscoveredNode = stillVisible
+                log("Preserved selection: \(stillVisible.displayName)")
+            } else if previousSelection != nil {
+                // Previously selected node is no longer visible (regional node from different registry)
+                if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
+                    selectNode(fastestNode)
+                    log("Previous node no longer visible, auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+                }
+            } else {
+                // No previous selection, auto-select fastest
+                if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
+                    selectNode(fastestNode)
+                    log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+                }
             }
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")
