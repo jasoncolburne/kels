@@ -268,7 +268,7 @@ impl KelsRegistryClient {
             let peer_slice: Vec<_> = result
                 .peers
                 .iter()
-                .filter_map(|p| p.records.first())
+                .filter_map(|p| p.records.last())
                 .by_ref()
                 .collect();
             let ready_map = self.check_nodes_ready_status(&peer_slice).await?;
@@ -290,7 +290,7 @@ impl KelsRegistryClient {
 
         // Check if any peer history has a latest record with matching peer_id and active=true
         for history in peers_response.peers {
-            if let Some(latest) = history.records.first()
+            if let Some(latest) = history.records.last()
                 && latest.peer_id == peer_id
                 && latest.active
             {
@@ -308,7 +308,7 @@ impl KelsRegistryClient {
         let (nodes, ready_map) = self.fetch_peers().await?;
 
         for history in nodes.peers {
-            let last_record = history.records.first();
+            let last_record = history.records.last();
             if let Some(record) = last_record
                 && record.active
             {
@@ -531,6 +531,17 @@ impl MultiRegistryClient {
                         url
                     ))),
                 }
+            }
+        }
+    }
+
+    pub async fn kel_for_url(&self, url: &str) -> Result<crate::kel::Kel, KelsError> {
+        match self.prefix_map.iter().find(|(_, (u, _))| u == url) {
+            Some((_prefix, (_url, kel))) => Ok(kel.clone()),
+            None => {
+                let client = self.create_client(url);
+                let registry_kel = client.fetch_registry_kel().await?;
+                Ok(registry_kel)
             }
         }
     }

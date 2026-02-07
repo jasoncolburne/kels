@@ -1704,16 +1704,15 @@ pub unsafe extern "C" fn kels_discover_nodes(
     }
 
     let discover_result = runtime.block_on(async {
-        let registry_client = KelsRegistryClient::new(&url);
         let mut registry = MultiRegistryClient::new(&trusted_prefixes, vec![url.clone()]);
+
+        // Fetch and verify all registry KELs upfront
+        registry.fetch_verified_registry_kels(true).await?;
 
         // Build set of verified node_ids from peer records
         let verified_node_ids: std::collections::HashSet<String> = {
-            // Verify registry and get the KEL for peer anchoring checks
-            let registry_kel = registry_client.verify_registry(expected_prefix).await?;
-
-            // Fetch and verify peers, collecting verified node_ids
-            let (peers_response, _status_map) = registry_client.fetch_peers().await?;
+            // Fetch peers from the target registry
+            let peers_response = registry.fetch_peers(expected_prefix).await?;
 
             let mut verified = std::collections::HashSet::new();
             for history in &peers_response.peers {
@@ -1723,9 +1722,17 @@ pub unsafe extern "C" fn kels_discover_nodes(
                         continue;
                     }
 
-                    // Skip peers not anchored in registry's KEL
-                    if !registry_kel.contains_anchor(&latest.said) {
-                        continue;
+                    // Fetch the KEL that authorized this peer
+                    let authorizing_kel = registry
+                        .fetch_registry_kel(&latest.authorizing_kel, false)
+                        .await?;
+
+                    // Verify peer is anchored in its authorizing KEL
+                    if !authorizing_kel.contains_anchor(&latest.said) {
+                        return Err(KelsError::AnchorVerificationFailed(format!(
+                            "Peer {} not anchored in authorizing KEL {}",
+                            latest.peer_id, latest.authorizing_kel
+                        )));
                     }
 
                     // This peer is verified - trust its node_id
@@ -1743,9 +1750,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
         // Filter to verified nodes and convert to JSON format
         let mut node_infos: Vec<NodeInfoJson> = nodes
             .into_iter()
-            .filter(|node| {
-                verified_node_ids.is_empty() || verified_node_ids.contains(&node.node_id)
-            })
+            .filter(|node| verified_node_ids.contains(&node.node_id))
             .map(|node| NodeInfoJson {
                 node_id: node.node_id,
                 kels_url: node.kels_url,

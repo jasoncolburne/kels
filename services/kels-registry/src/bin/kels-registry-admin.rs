@@ -770,8 +770,8 @@ async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
 
     for prefix in prefixes {
         let history = ctx.peer_repo.get_history(&prefix).await?;
-        if let Some(first) = history.first() {
-            println!("\nPeer: {} ({})", first.peer_id, first.node_id);
+        if let Some(latest) = history.last() {
+            println!("\nPeer: {} ({})", latest.peer_id, latest.node_id);
             println!("{}", "-".repeat(60));
             for peer in &history {
                 let status = if peer.active { "active" } else { "inactive" };
