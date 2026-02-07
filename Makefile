@@ -19,8 +19,9 @@ export TRUSTED_REGISTRY_PREFIXES
 all: fmt-check deny clippy test build
 
 benchmark: clean-garden
+	garden run coredns-unconfig
 	garden deploy test-client --env=node-a
-	kubectl exec -n kels-node-a -it test-client ./bench-kels.sh 40 5
+	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 5
 
 build:
 	cargo build --workspace --all-features
