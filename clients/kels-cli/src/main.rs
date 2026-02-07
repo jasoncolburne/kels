@@ -28,7 +28,7 @@ struct Cli {
     #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
     url: String,
 
-    /// Registry URLs for node discovery (comma-separated for failover)
+    /// Registry URLs for node discovery (comma-separated)
     #[arg(long, env = "KELS_REGISTRY_URLS", default_value = DEFAULT_REGISTRY_URL)]
     registry: String,
 
