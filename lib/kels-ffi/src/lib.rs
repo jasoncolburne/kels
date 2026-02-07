@@ -1697,6 +1697,11 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let trusted_prefixes = parse_trusted_prefixes();
+    if trusted_prefixes.is_empty() {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to parse trusted registry prefixes");
+        return;
+    }
 
     let discover_result = runtime.block_on(async {
         let registry_client = KelsRegistryClient::new(&url);
@@ -1771,7 +1776,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
             }
         });
 
-        Ok::<Vec<NodeInfoJson>, KelsError>(node_infos)
+        Ok(node_infos)
     });
 
     match discover_result {

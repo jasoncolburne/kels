@@ -1,6 +1,6 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::{collections::HashSet, fmt::Pointer, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, MultiRegistryClient,
-    NodeStatus, ProviderConfig, SoftwareProviderConfig,
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
+    ProviderConfig, SoftwareProviderConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -229,6 +229,10 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         }
 
         let trusted_prefixes = parse_trusted_prefixes();
+        if trusted_prefixes.is_empty() {
+            return Err(anyhow::anyhow!("No trusted registry prefixes provided"));
+        }
+
         let mut registry_client = MultiRegistryClient::new(&trusted_prefixes, registry_urls);
         let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry)
             .await
@@ -277,6 +281,9 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     }
 
     let trusted_prefixes = parse_trusted_prefixes();
+    if trusted_prefixes.is_empty() {
+        return Err(anyhow::anyhow!("No trusted registry prefixes provided"));
+    }
 
     println!(
         "{}",
