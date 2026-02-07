@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, MultiRegistryClient, NodeStatus, ProviderConfig, SoftwareProviderConfig
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, MultiRegistryClient,
+    NodeStatus, ProviderConfig, SoftwareProviderConfig,
 };
 use serde::{Deserialize, Serialize};
 
