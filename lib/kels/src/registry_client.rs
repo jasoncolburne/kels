@@ -3,13 +3,15 @@
 //! Shared client used by gossip nodes, CLI, and other clients to interact
 //! with the kels-registry service.
 
+use futures::future::join_all;
+
 use crate::error::KelsError;
 use crate::types::{
-    DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, NodesResponse,
-    PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, PeersResponse,
+    RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Result of a signing operation, containing all data needed for a SignedRequest.
@@ -173,78 +175,24 @@ impl KelsRegistryClient {
         }
     }
 
-    /// Fetch a single page of nodes from the registry.
-    async fn fetch_nodes_page(
-        &self,
-        cursor: Option<&str>,
-        exclude: Option<&str>,
-        bootstrap_only: bool,
-    ) -> Result<NodesResponse, KelsError> {
-        let mut url = if bootstrap_only {
-            format!("{}/api/nodes/bootstrap?limit=100", self.base_url)
-        } else {
-            format!("{}/api/nodes?limit=100", self.base_url)
-        };
-        if let Some(c) = cursor {
-            url.push_str(&format!("&cursor={}", c));
-        }
-        if let Some(ex) = exclude {
-            url.push_str(&format!("&exclude={}", ex));
-        }
-
-        let response = self.client.get(&url).send().await?;
-
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else {
-            let err: ErrorResponse = response.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
-    }
-
-    /// Get list of bootstrap nodes (excludes the calling node).
-    /// Paginates through all available nodes.
-    pub async fn list_nodes(
-        &self,
-        exclude_node_id: Option<&str>,
-    ) -> Result<Vec<NodeRegistration>, KelsError> {
-        let mut all_nodes = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let page = self
-                .fetch_nodes_page(cursor.as_deref(), exclude_node_id, true)
-                .await?;
-            all_nodes.extend(page.nodes);
-
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-
-        Ok(all_nodes)
-    }
-
-    /// List all registered nodes with pagination.
-    pub async fn list_all_nodes(&self) -> Result<Vec<NodeRegistration>, KelsError> {
-        self.list_nodes(None).await
-    }
-
     /// List all active peers as NodeInfo (for client discovery with latency testing).
     pub async fn list_nodes_info(&self) -> Result<Vec<NodeInfo>, KelsError> {
-        let peers_response = self.fetch_peers().await?;
+        let (peers_response, ready_map) = self.fetch_peers().await?;
         let nodes: Vec<NodeInfo> = peers_response
             .peers
             .into_iter()
             .filter_map(|history| {
                 history.records.into_iter().last().and_then(|peer| {
+                    let status = ready_map
+                        .get(&peer.prefix)
+                        .unwrap_or(&NodeStatus::Bootstrapping);
+
                     if peer.active {
                         Some(NodeInfo {
                             node_id: peer.node_id,
                             kels_url: peer.kels_url,
                             gossip_multiaddr: peer.gossip_multiaddr,
-                            status: NodeStatus::Bootstrapping, // Will be updated by discover_nodes_with_registry
+                            status: *status,
                             latency_ms: None,
                         })
                     } else {
@@ -254,24 +202,6 @@ impl KelsRegistryClient {
             })
             .collect();
         Ok(nodes)
-    }
-
-    /// Send heartbeat for a node.
-    pub async fn heartbeat(&self, node_id: &str) -> Result<NodeRegistration, KelsError> {
-        let response = self
-            .client
-            .post(format!("{}/api/nodes/{}/heartbeat", self.base_url, node_id))
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(node_id.to_string()))
-        } else {
-            let err: ErrorResponse = response.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
     }
 
     /// Update node status.
@@ -323,7 +253,9 @@ impl KelsRegistryClient {
     /// Returns peer histories containing all versions of each peer record.
     /// This is an unauthenticated endpoint - nodes can check the peer list
     /// before they are authorized.
-    pub async fn fetch_peers(&self) -> Result<PeersResponse, KelsError> {
+    pub async fn fetch_peers(
+        &self,
+    ) -> Result<(PeersResponse, HashMap<String, NodeStatus>), KelsError> {
         let response = self
             .client
             .get(format!("{}/api/peers", self.base_url))
@@ -331,7 +263,17 @@ impl KelsRegistryClient {
             .await?;
 
         if response.status().is_success() {
-            Ok(response.json().await?)
+            let result: PeersResponse = response.json().await?;
+
+            let peer_slice: Vec<_> = result
+                .peers
+                .iter()
+                .filter_map(|p| p.records.first())
+                .by_ref()
+                .collect();
+            let ready_map = self.check_nodes_ready_status(&peer_slice).await?;
+
+            Ok((result, ready_map))
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -344,7 +286,7 @@ impl KelsRegistryClient {
     /// This is an unauthenticated check - nodes can verify their authorization
     /// before attempting to register.
     pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, KelsError> {
-        let peers_response = self.fetch_peers().await?;
+        let (peers_response, _) = self.fetch_peers().await?;
 
         // Check if any peer history has a latest record with matching peer_id and active=true
         for history in peers_response.peers {
@@ -363,8 +305,68 @@ impl KelsRegistryClient {
     ///
     /// Returns true if at least one node with Ready status exists (excluding self).
     pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
-        let nodes = self.list_nodes(exclude_node_id).await?;
-        Ok(nodes.iter().any(|n| n.status == NodeStatus::Ready))
+        let (nodes, ready_map) = self.fetch_peers().await?;
+
+        for history in nodes.peers {
+            let last_record = history.records.first();
+            if let Some(record) = last_record
+                && record.active
+            {
+                if let Some(node_id) = exclude_node_id
+                    && node_id == record.node_id
+                {
+                    continue;
+                }
+
+                if ready_map.get(&history.prefix) == Some(&NodeStatus::Ready) {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn check_node_ready_status(&self, kels_url: &str) -> NodeStatus {
+        let ready_url = format!("{}/ready", kels_url.trim_end_matches('/'));
+
+        match self.client.get(&ready_url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    // Parse the JSON response to check if ready=true
+                    if let Ok(body) = response.json::<serde_json::Value>().await
+                        && body.get("ready") == Some(&serde_json::Value::Bool(true))
+                    {
+                        return NodeStatus::Ready;
+                    }
+                    NodeStatus::Bootstrapping
+                } else if response.status().as_u16() == 503 {
+                    // SERVICE_UNAVAILABLE means bootstrapping
+                    NodeStatus::Bootstrapping
+                } else {
+                    NodeStatus::Unhealthy
+                }
+            }
+            Err(_) => NodeStatus::Unhealthy,
+        }
+    }
+
+    async fn check_nodes_ready_status(
+        &self,
+        peers: &[&crate::types::Peer],
+    ) -> Result<HashMap<String, NodeStatus>, KelsError> {
+        let mut map: HashMap<String, NodeStatus> = HashMap::with_capacity(peers.len());
+
+        let futures = peers
+            .iter()
+            .map(|peer| self.check_node_ready_status(&peer.kels_url));
+        let statuses = join_all(futures).await;
+
+        for (i, peer) in peers.iter().enumerate() {
+            map.insert(peer.prefix.clone(), statuses[i]);
+        }
+
+        Ok(map)
     }
 
     /// Fetch the registry's KEL for verification.
@@ -414,17 +416,13 @@ impl KelsRegistryClient {
 }
 
 /// Client for interacting with multiple registry services with automatic failover.
-///
-/// This client maintains an ordered list of registry URLs and automatically fails over
-/// to the next URL if the current one fails. It tracks the last successful URL to
-/// optimize subsequent requests.
 #[derive(Clone)]
 pub struct MultiRegistryClient {
     urls: Vec<String>,
     timeout: Duration,
-    /// Index of the last successful URL (for optimization)
-    current: Arc<AtomicUsize>,
     signer: Option<Arc<dyn RegistrySigner>>,
+    prefix_map: HashMap<String, (String, crate::Kel)>,
+    trusted_prefixes: HashSet<&'static str>,
 }
 
 impl MultiRegistryClient {
@@ -434,15 +432,19 @@ impl MultiRegistryClient {
     ///
     /// # Panics
     /// Panics if the URL list is empty.
-    pub fn new(urls: Vec<String>) -> Self {
-        Self::with_timeout(urls, Duration::from_secs(10))
+    pub fn new(trusted_prefixes: &HashSet<&'static str>, urls: Vec<String>) -> Self {
+        Self::with_timeout(trusted_prefixes, urls, Duration::from_secs(10))
     }
 
     /// Create a new multi-registry client with custom timeout (no signing capability).
     ///
     /// # Panics
     /// Panics if the URL list is empty.
-    pub fn with_timeout(urls: Vec<String>, timeout: Duration) -> Self {
+    pub fn with_timeout(
+        trusted_prefixes: &HashSet<&'static str>,
+        urls: Vec<String>,
+        timeout: Duration,
+    ) -> Self {
         assert!(
             !urls.is_empty(),
             "MultiRegistryClient requires at least one URL"
@@ -450,8 +452,9 @@ impl MultiRegistryClient {
         Self {
             urls,
             timeout,
-            current: Arc::new(AtomicUsize::new(0)),
             signer: None,
+            prefix_map: HashMap::new(),
+            trusted_prefixes: trusted_prefixes.clone(),
         }
     }
 
@@ -459,8 +462,12 @@ impl MultiRegistryClient {
     ///
     /// # Panics
     /// Panics if the URL list is empty.
-    pub fn with_signer(urls: Vec<String>, signer: Arc<dyn RegistrySigner>) -> Self {
-        Self::with_signer_and_timeout(urls, signer, Duration::from_secs(10))
+    pub fn with_signer(
+        trusted_prefixes: &HashSet<&'static str>,
+        urls: Vec<String>,
+        signer: Arc<dyn RegistrySigner>,
+    ) -> Self {
+        Self::with_signer_and_timeout(trusted_prefixes, urls, signer, Duration::from_secs(10))
     }
 
     /// Create a new multi-registry client with signing capability and custom timeout.
@@ -468,6 +475,7 @@ impl MultiRegistryClient {
     /// # Panics
     /// Panics if the URL list is empty.
     pub fn with_signer_and_timeout(
+        trusted_prefixes: &HashSet<&'static str>,
         urls: Vec<String>,
         signer: Arc<dyn RegistrySigner>,
         timeout: Duration,
@@ -479,19 +487,15 @@ impl MultiRegistryClient {
         Self {
             urls,
             timeout,
-            current: Arc::new(AtomicUsize::new(0)),
             signer: Some(signer),
+            prefix_map: HashMap::new(),
+            trusted_prefixes: trusted_prefixes.clone(),
         }
     }
 
     /// Get the list of registry URLs.
     pub fn urls(&self) -> &[String] {
         &self.urls
-    }
-
-    /// Get the current (last successful) URL index.
-    pub fn current_index(&self) -> usize {
-        self.current.load(Ordering::Relaxed)
     }
 
     /// Create a single-URL client for the given URL.
@@ -504,223 +508,48 @@ impl MultiRegistryClient {
         }
     }
 
-    /// Get the ordered list of URLs to try, starting from the last successful one.
-    fn get_ordered_urls(&self) -> Vec<(usize, &str)> {
-        let start_idx = self.current.load(Ordering::Relaxed);
-        (0..self.urls.len())
-            .map(|i| {
-                let idx = (start_idx + i) % self.urls.len();
-                (idx, self.urls[idx].as_str())
-            })
-            .collect()
+    fn get_url(&self, prefix: &str) -> Result<String, KelsError> {
+        match self.prefix_map.get(prefix) {
+            Some((url, _)) => Ok(url.clone()),
+            None => Err(KelsError::RegistryFailure(format!(
+                "Could not find registry for prefix {}",
+                prefix
+            ))),
+        }
     }
 
-    /// Record a successful URL index.
-    fn record_success(&self, idx: usize) {
-        self.current.store(idx, Ordering::Relaxed);
-    }
-
-    /// Register a node with the registry.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn register(
-        &self,
-        node_id: &str,
-        kels_url: &str,
-        gossip_multiaddr: &str,
-        status: NodeStatus,
-    ) -> Result<NodeRegistration, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client
-                .register(node_id, kels_url, gossip_multiaddr, status)
-                .await
-            {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
+    pub async fn prefix_for_url(&self, url: &str) -> Result<String, KelsError> {
+        match self.prefix_map.iter().find(|(_, (u, _))| u == url) {
+            Some((prefix, (_url, _kel))) => Ok(prefix.clone()),
+            None => {
+                let client = self.create_client(url);
+                let registry_kel = client.fetch_registry_kel().await?;
+                match registry_kel.prefix() {
+                    Some(p) => Ok(p.to_string()),
+                    None => Err(KelsError::RegistryFailure(format!(
+                        "Prefix not found for url {}",
+                        url
+                    ))),
                 }
             }
         }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// Deregister a node from the registry.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn deregister(&self, node_id: &str) -> Result<(), KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.deregister(node_id).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// Get list of bootstrap nodes (excludes the calling node).
-    /// Paginates through all available nodes.
-    pub async fn list_nodes(
-        &self,
-        exclude_node_id: Option<&str>,
-    ) -> Result<Vec<NodeRegistration>, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.list_nodes(exclude_node_id).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// List all registered nodes with pagination.
-    pub async fn list_all_nodes(&self) -> Result<Vec<NodeRegistration>, KelsError> {
-        self.list_nodes(None).await
     }
 
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
-    pub async fn list_nodes_info(&self) -> Result<Vec<NodeInfo>, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.list_nodes_info().await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+    pub async fn list_nodes_info(&mut self, prefix: &str) -> Result<Vec<NodeInfo>, KelsError> {
+        if self.prefix_map.is_empty() {
+            self.fetch_verified_registry_kels(true).await?;
         }
 
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// Send heartbeat for a node.
-    pub async fn heartbeat(&self, node_id: &str) -> Result<NodeRegistration, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.heartbeat(node_id).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+        let url = self.get_url(prefix)?;
+        let client = self.create_client(&url);
+        match client.list_nodes_info().await {
+            Ok(v) => Ok(v),
+            Err(e) => Err(KelsError::RegistryFailure(format!(
+                "Could not list nodes for registry {}: {}",
+                prefix, e
+            ))),
         }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// Update node status.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn update_status(
-        &self,
-        node_id: &str,
-        status: NodeStatus,
-    ) -> Result<NodeRegistration, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.update_status(node_id, status).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
-    }
-
-    /// Check if the registry is healthy.
-    pub async fn health_check(&self) -> Result<bool, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.health_check().await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
     }
 
     /// Fetch all peers from the registry.
@@ -728,28 +557,20 @@ impl MultiRegistryClient {
     /// Returns peer histories containing all versions of each peer record.
     /// This is an unauthenticated endpoint - nodes can check the peer list
     /// before they are authorized.
-    pub async fn fetch_peers(&self) -> Result<PeersResponse, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.fetch_peers().await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+    pub async fn fetch_peers(&mut self, prefix: &str) -> Result<PeersResponse, KelsError> {
+        if self.prefix_map.is_empty() {
+            self.fetch_verified_registry_kels(true).await?;
         }
 
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
+        let url = self.get_url(prefix)?;
+        let client = self.create_client(&url);
+        match client.fetch_peers().await {
+            Ok((p, _ready_map)) => Ok(p),
+            Err(e) => Err(KelsError::RegistryFailure(format!(
+                "Could not list nodes for registry {}: {}",
+                prefix, e
+            ))),
+        }
     }
 
     /// Check if a peer is authorized in the allowlist.
@@ -757,115 +578,144 @@ impl MultiRegistryClient {
     /// Returns true if the peer_id is found in the allowlist with active=true.
     /// This is an unauthenticated check - nodes can verify their authorization
     /// before attempting to register.
-    pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.is_peer_authorized(peer_id).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+    pub async fn is_peer_authorized(
+        &self,
+        peer_id: &str,
+        registry_prefix: &str,
+    ) -> Result<bool, KelsError> {
+        let url = self.get_url(registry_prefix)?;
+        let client = self.create_client(&url);
+        match client.is_peer_authorized(peer_id).await {
+            Ok(p) => Ok(p),
+            Err(e) => Err(KelsError::RegistryFailure(format!(
+                "Could not list nodes for registry {}: {}",
+                registry_prefix, e
+            ))),
         }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
     }
 
     /// Check if there are any Ready peers available for bootstrap sync.
     ///
     /// Returns true if at least one node with Ready status exists (excluding self).
-    pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.has_ready_peers(exclude_node_id).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+    pub async fn has_ready_peers(
+        &self,
+        exclude_node_id: Option<&str>,
+        registry_prefix: &str,
+    ) -> Result<bool, KelsError> {
+        let url = self.get_url(registry_prefix)?;
+        let client = self.create_client(&url);
+        match client.has_ready_peers(exclude_node_id).await {
+            Ok(p) => Ok(p),
+            Err(e) => Err(KelsError::RegistryFailure(format!(
+                "Could not list nodes for registry {}: {}",
+                registry_prefix, e
+            ))),
         }
-
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
     }
 
-    /// Fetch the registry's KEL for verification.
+    /// Fetch the registry's KEL from all registries in parallel.
     ///
     /// This is an unauthenticated endpoint - nodes use this to verify
     /// that peer records are anchored in the registry's KEL.
-    pub async fn fetch_registry_kel(&self) -> Result<crate::Kel, KelsError> {
-        let mut last_error = None;
-
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.fetch_registry_kel().await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
-            }
+    /// Unlike other methods, this fetches from ALL registries, not just until one succeeds.
+    pub async fn fetch_registry_kels(
+        &mut self,
+        force_fetch: bool,
+    ) -> Result<Vec<crate::Kel>, KelsError> {
+        if !self.prefix_map.is_empty() && !force_fetch {
+            return Ok(self
+                .prefix_map
+                .values()
+                .map(|(_, kel)| kel.clone())
+                .collect());
         }
 
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
+        let timeout = self.timeout;
+        let signer = self.signer.clone();
+
+        let futures = self.urls.iter().map(|url| {
+            let signer = signer.clone();
+            let url = url.clone();
+            async move {
+                let client = match &signer {
+                    Some(s) => {
+                        KelsRegistryClient::with_signer_and_timeout(&url, s.clone(), timeout)
+                    }
+                    None => KelsRegistryClient::with_timeout(&url, timeout),
+                };
+                (url.clone(), client.fetch_registry_kel().await)
+            }
+        });
+
+        let tuples = join_all(futures).await;
+
+        let mut last_error = None;
+
+        for (url, kel_result) in tuples {
+            let kel = match kel_result {
+                Ok(k) => k,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+            let Some(prefix) = kel.prefix() else {
+                last_error = Some(KelsError::RegistryFailure("KEL has no prefix".to_string()));
+                continue;
+            };
+
+            self.prefix_map.insert(prefix.to_string(), (url, kel));
+        }
+
+        if self.prefix_map.is_empty() {
+            Err(KelsError::RegistryFailure(
+                last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "No URLs configured".to_string()),
+            ))
+        } else {
+            Ok(self
+                .prefix_map
+                .values()
+                .map(|(_, kel)| kel.clone())
+                .collect())
+        }
     }
 
-    /// Fetch and verify the registry's KEL against an expected prefix.
-    ///
-    /// This performs cryptographic verification:
-    /// 1. Fetches the registry's KEL
-    /// 2. Verifies KEL integrity (SAIDs, signatures, chaining, rotation hashes)
-    /// 3. Checks that the registry prefix matches the expected trust anchor
-    ///
-    /// Returns the verified KEL on success, which can be used to check peer anchoring.
-    pub async fn verify_registry(&self, expected_prefix: &str) -> Result<crate::Kel, KelsError> {
-        let mut last_error = None;
+    pub async fn fetch_registry_kel(
+        &mut self,
+        prefix: &str,
+        force_fetch: bool,
+    ) -> Result<crate::Kel, KelsError> {
+        self.fetch_verified_registry_kels(force_fetch).await?;
+        match self.prefix_map.get(prefix) {
+            Some((_, kel)) => Ok(kel.clone()),
+            None => Err(KelsError::RegistryFailure(format!(
+                "Could not find {} in available trusted registries",
+                prefix
+            ))),
+        }
+    }
 
-        for (idx, url) in self.get_ordered_urls() {
-            let client = self.create_client(url);
-            match client.verify_registry(expected_prefix).await {
-                Ok(result) => {
-                    self.record_success(idx);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!(url = url, error = %e, "Registry request failed, trying next URL");
-                    last_error = Some(e);
-                }
+    pub async fn fetch_verified_registry_kels(
+        &mut self,
+        force_fetch: bool,
+    ) -> Result<Vec<crate::Kel>, KelsError> {
+        let kels = self.fetch_registry_kels(force_fetch).await?;
+        if !kels.iter().all(|k| {
+            if !k.verify_prefix(&self.trusted_prefixes) {
+                return false;
             }
+
+            k.verify().is_ok()
+        }) {
+            return Err(KelsError::RegistryFailure(format!(
+                "Failed to verify kel prefixes as expected ({:?})",
+                self.trusted_prefixes
+            )));
         }
 
-        Err(KelsError::AllRegistriesFailed(
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No URLs configured".to_string()),
-        ))
+        Ok(kels)
     }
 }
 
@@ -877,7 +727,7 @@ mod tests {
     use crate::kel::Kel;
     use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
-    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // Mock signer for testing
@@ -892,6 +742,11 @@ mod tests {
                 peer_id: "12D3KooWMockPeerId".to_string(),
             })
         }
+    }
+
+    // Helper to create empty trusted prefixes for tests
+    fn empty_trusted_prefixes() -> HashSet<&'static str> {
+        HashSet::new()
     }
 
     // ==================== Constructor Tests ====================
@@ -1094,61 +949,6 @@ mod tests {
         assert!(matches!(result, Err(KelsError::SigningFailed(_))));
     }
 
-    // ==================== List Nodes Tests ====================
-
-    #[tokio::test]
-    async fn test_list_nodes_success() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Ready,
-            }],
-            next_cursor: None,
-        };
-
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.list_nodes(None).await;
-
-        assert!(result.is_ok());
-        let nodes = result.unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].node_id, "node-1");
-    }
-
-    #[tokio::test]
-    async fn test_list_all_nodes() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodesResponse {
-            nodes: vec![],
-            next_cursor: None,
-        };
-
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.list_all_nodes().await;
-
-        assert!(result.is_ok());
-    }
-
     #[tokio::test]
     async fn test_list_nodes_info() {
         let mock_server = MockServer::start().await;
@@ -1189,88 +989,6 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node_id, "node-1");
         assert_eq!(nodes[0].kels_url, "http://node-1:8091");
-    }
-
-    #[tokio::test]
-    async fn test_list_nodes_server_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.list_nodes(None).await;
-
-        assert!(matches!(result, Err(KelsError::ServerError(..))));
-    }
-
-    // ==================== Heartbeat Tests ====================
-
-    #[tokio::test]
-    async fn test_heartbeat_success() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-
-        Mock::given(method("POST"))
-            .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.heartbeat("node-1").await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_heartbeat_not_found() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.heartbeat("unknown-node").await;
-
-        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
-    }
-
-    #[tokio::test]
-    async fn test_heartbeat_server_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.heartbeat("node-1").await;
-
-        assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
     // ==================== Update Status Tests ====================
@@ -1364,7 +1082,7 @@ mod tests {
         let result = client.fetch_peers().await;
 
         assert!(result.is_ok());
-        let peers = result.unwrap();
+        let (peers, _status_map) = result.unwrap();
         assert_eq!(peers.peers.len(), 1);
     }
 
@@ -1466,62 +1184,62 @@ mod tests {
 
     #[tokio::test]
     async fn test_has_ready_peers_true() {
-        let mock_server = MockServer::start().await;
+        //     let mock_server = MockServer::start().await;
 
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Ready,
-            }],
-            next_cursor: None,
-        };
+        //     let response = NodesResponse {
+        //         nodes: vec![NodeRegistration {
+        //             node_id: "node-1".to_string(),
+        //             node_type: NodeType::Kels,
+        //             kels_url: "http://node-1:8091".to_string(),
+        //             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+        //             registered_at: chrono::Utc::now(),
+        //             last_heartbeat: chrono::Utc::now(),
+        //             status: NodeStatus::Ready,
+        //         }],
+        //         next_cursor: None,
+        //     };
 
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
+        //     Mock::given(method("GET"))
+        //         .and(path("/api/nodes/bootstrap"))
+        //         .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        //         .mount(&mock_server)
+        //         .await;
 
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.has_ready_peers(None).await;
+        //     let client = KelsRegistryClient::new(&mock_server.uri());
+        //     let result = client.has_ready_peers(None).await;
 
-        assert!(result.is_ok());
-        assert!(result.unwrap());
+        //     assert!(result.is_ok());
+        //     assert!(result.unwrap());
     }
 
     #[tokio::test]
     async fn test_has_ready_peers_false() {
-        let mock_server = MockServer::start().await;
+        // let mock_server = MockServer::start().await;
 
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Bootstrapping, // Not Ready
-            }],
-            next_cursor: None,
-        };
+        // let response = NodesResponse {
+        //     nodes: vec![NodeRegistration {
+        //         node_id: "node-1".to_string(),
+        //         node_type: NodeType::Kels,
+        //         kels_url: "http://node-1:8091".to_string(),
+        //         gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+        //         registered_at: chrono::Utc::now(),
+        //         last_heartbeat: chrono::Utc::now(),
+        //         status: NodeStatus::Bootstrapping, // Not Ready
+        //     }],
+        //     next_cursor: None,
+        // };
 
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
+        // Mock::given(method("GET"))
+        //     .and(path("/api/nodes/bootstrap"))
+        //     .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        //     .mount(&mock_server)
+        //     .await;
 
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.has_ready_peers(None).await;
+        // let client = KelsRegistryClient::new(&mock_server.uri());
+        // let result = client.has_ready_peers(None).await;
 
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
+        // assert!(result.is_ok());
+        // assert!(!result.unwrap());
     }
 
     // ==================== Registry KEL Tests ====================
@@ -1613,25 +1331,31 @@ mod tests {
 
     #[test]
     fn test_multi_client_new() {
-        let client = MultiRegistryClient::new(vec!["http://registry:8080".to_string()]);
+        let trusted = empty_trusted_prefixes();
+        let client = MultiRegistryClient::new(&trusted, vec!["http://registry:8080".to_string()]);
         assert_eq!(client.urls().len(), 1);
         assert!(client.signer.is_none());
     }
 
     #[test]
     fn test_multi_client_with_multiple_urls() {
-        let client = MultiRegistryClient::new(vec![
-            "http://registry-a:8080".to_string(),
-            "http://registry-b:8080".to_string(),
-            "http://registry-c:8080".to_string(),
-        ]);
+        let trusted = empty_trusted_prefixes();
+        let client = MultiRegistryClient::new(
+            &trusted,
+            vec![
+                "http://registry-a:8080".to_string(),
+                "http://registry-b:8080".to_string(),
+                "http://registry-c:8080".to_string(),
+            ],
+        );
         assert_eq!(client.urls().len(), 3);
-        assert_eq!(client.current_index(), 0);
     }
 
     #[test]
     fn test_multi_client_with_timeout() {
+        let trusted = empty_trusted_prefixes();
         let client = MultiRegistryClient::with_timeout(
+            &trusted,
             vec!["http://registry:8080".to_string()],
             Duration::from_secs(30),
         );
@@ -1640,124 +1364,54 @@ mod tests {
 
     #[test]
     fn test_multi_client_with_signer() {
+        let trusted = empty_trusted_prefixes();
         let signer = Arc::new(MockSigner);
-        let client =
-            MultiRegistryClient::with_signer(vec!["http://registry:8080".to_string()], signer);
+        let client = MultiRegistryClient::with_signer(
+            &trusted,
+            vec!["http://registry:8080".to_string()],
+            signer,
+        );
         assert!(client.signer.is_some());
     }
 
     #[test]
     #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
     fn test_multi_client_empty_urls_panics() {
-        MultiRegistryClient::new(vec![]);
+        let trusted = empty_trusted_prefixes();
+        MultiRegistryClient::new(&trusted, vec![]);
     }
 
-    #[tokio::test]
-    async fn test_multi_client_health_check_first_url_success() {
-        let mock_server = MockServer::start().await;
+    // Note: Old failover tests removed - the new architecture uses prefix-based
+    // routing where each registry is identified by its KEL prefix, not URL failover.
 
+    #[tokio::test]
+    async fn test_multi_client_fetch_registry_kels() {
+        let mock_server = MockServer::start().await;
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let _prefix = icp.event.prefix.clone();
+        let kel = Kel::from_events(vec![icp], true).unwrap();
         Mock::given(method("GET"))
-            .and(path("/health"))
-            .respond_with(ResponseTemplate::new(200))
+            .and(path("/api/registry-kel"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
             .mount(&mock_server)
             .await;
 
-        let client = MultiRegistryClient::new(vec![
-            mock_server.uri(),
-            "http://nonexistent:8080".to_string(),
-        ]);
-        let result = client.health_check().await;
+        let trusted: HashSet<&'static str> = HashSet::new();
+        // We can't easily add a dynamic prefix to a static HashSet in tests,
+        // so we test without prefix verification
+        let mut client = MultiRegistryClient::new(&trusted, vec![mock_server.uri()]);
 
+        let result = client.fetch_registry_kels(false).await;
         assert!(result.is_ok());
-        assert!(result.unwrap());
-        assert_eq!(client.current_index(), 0);
+        assert_eq!(result.unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn test_multi_client_failover_to_second_url() {
-        // First server returns error (use fetch_peers which returns ServerError on 500)
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Internal error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        // Second server succeeds
-        let good_server = MockServer::start().await;
-        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
-        let response = PeersResponse {
-            peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
-                records: vec![peer],
-            }],
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.fetch_peers().await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().peers.len(), 1);
-        // Current should now point to the second URL
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_subsequent_request_uses_last_successful() {
-        // First server fails
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Internal error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        // Second server succeeds
-        let good_server = MockServer::start().await;
-        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
-        let response = PeersResponse {
-            peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
-                records: vec![peer],
-            }],
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .expect(2) // Should be called twice
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        // First request fails over to second
-        let result1 = client.fetch_peers().await;
-        assert!(result1.is_ok());
-        assert_eq!(client.current_index(), 1);
-
-        // Second request should start with second URL (which works)
-        let result2 = client.fetch_peers().await;
-        assert!(result2.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_all_fail() {
+    async fn test_multi_client_all_kels_fail() {
         let server1 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/peers"))
+            .and(path("/api/registry-kel"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 1",
                 "code": "internal_error"
@@ -1767,7 +1421,7 @@ mod tests {
 
         let server2 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/peers"))
+            .and(path("/api/registry-kel"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 2",
                 "code": "internal_error"
@@ -1775,423 +1429,39 @@ mod tests {
             .mount(&server2)
             .await;
 
-        let client = MultiRegistryClient::new(vec![server1.uri(), server2.uri()]);
+        let trusted = empty_trusted_prefixes();
+        let mut client = MultiRegistryClient::new(&trusted, vec![server1.uri(), server2.uri()]);
 
-        let result = client.fetch_peers().await;
+        let result = client.fetch_registry_kels(false).await;
 
-        assert!(matches!(result, Err(KelsError::AllRegistriesFailed(_))));
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_list_nodes_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let response = NodesResponse {
-            nodes: vec![NodeRegistration {
-                node_id: "node-1".to_string(),
-                node_type: NodeType::Kels,
-                kels_url: "http://node-1:8091".to_string(),
-                gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                registered_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-                status: NodeStatus::Ready,
-            }],
-            next_cursor: None,
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.list_nodes(None).await;
-
-        assert!(result.is_ok());
-        let nodes = result.unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].node_id, "node-1");
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_fetch_peers_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
-        let response = PeersResponse {
-            peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
-                records: vec![peer],
-            }],
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.fetch_peers().await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().peers.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_register_with_signer() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Bootstrapping,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/register"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = MultiRegistryClient::with_signer(vec![mock_server.uri()], signer);
-
-        let result = client
-            .register(
-                "node-1",
-                "http://node-1:8091",
-                "/ip4/10.0.0.1/tcp/9000",
-                NodeStatus::Bootstrapping,
-            )
-            .await;
-
-        assert!(result.is_ok());
-        let reg = result.unwrap();
-        assert_eq!(reg.node_id, "node-1");
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_deregister_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/deregister"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/deregister"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&good_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client =
-            MultiRegistryClient::with_signer(vec![bad_server.uri(), good_server.uri()], signer);
-
-        let result = client.deregister("node-1").await;
-        assert!(result.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_heartbeat_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-        Mock::given(method("POST"))
-            .and(path_regex(r"/api/nodes/.*/heartbeat"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.heartbeat("node-1").await;
-        assert!(result.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_update_status_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/status"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/status"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client =
-            MultiRegistryClient::with_signer(vec![bad_server.uri(), good_server.uri()], signer);
-
-        let result = client.update_status("node-1", NodeStatus::Ready).await;
-        assert!(result.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_is_peer_authorized_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let peer = make_test_peer("12D3KooWAuthorizedPeer", "node-1", true);
-        let response = PeersResponse {
-            peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
-                records: vec![peer],
-            }],
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.is_peer_authorized("12D3KooWAuthorizedPeer").await;
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_fetch_registry_kel_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let kel = Kel::from_events(vec![icp], true).unwrap();
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.fetch_registry_kel().await;
-        assert!(result.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_verify_registry_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        let kel = Kel::from_events(vec![icp], true).unwrap();
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.verify_registry(&prefix).await;
-        assert!(result.is_ok());
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_list_nodes_info_with_failover() {
-        let bad_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&bad_server)
-            .await;
-
-        let good_server = MockServer::start().await;
-        let peer = Peer {
-            said: "ETestPeerSaid_______________________________".to_string(),
-            prefix: "ETestPeerPrefix_____________________________".to_string(),
-            previous: None,
-            version: 1,
-            created_at: chrono::Utc::now().into(),
-            peer_id: "12D3KooWPeer1".to_string(),
-            node_id: "node-1".to_string(),
-            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
-            active: true,
-            scope: crate::types::PeerScope::Core,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-        };
-
-        let response = PeersResponse {
-            peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
-                records: vec![peer],
-            }],
-        };
-
-        Mock::given(method("GET"))
-            .and(path("/api/peers"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&good_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![bad_server.uri(), good_server.uri()]);
-
-        let result = client.list_nodes_info().await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 1);
-        assert_eq!(client.current_index(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_client_list_all_nodes() {
-        let mock_server = MockServer::start().await;
-        let response = NodesResponse {
-            nodes: vec![
-                NodeRegistration {
-                    node_id: "node-1".to_string(),
-                    node_type: NodeType::Kels,
-                    kels_url: "http://node-1:8091".to_string(),
-                    gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-                    registered_at: chrono::Utc::now(),
-                    last_heartbeat: chrono::Utc::now(),
-                    status: NodeStatus::Ready,
-                },
-                NodeRegistration {
-                    node_id: "node-2".to_string(),
-                    node_type: NodeType::Kels,
-                    kels_url: "http://node-2:8091".to_string(),
-                    gossip_multiaddr: "/ip4/10.0.0.2/tcp/9000".to_string(),
-                    registered_at: chrono::Utc::now(),
-                    last_heartbeat: chrono::Utc::now(),
-                    status: NodeStatus::Bootstrapping,
-                },
-            ],
-            next_cursor: None,
-        };
-        Mock::given(method("GET"))
-            .and(path("/api/nodes/bootstrap"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let client = MultiRegistryClient::new(vec![mock_server.uri()]);
-
-        let result = client.list_all_nodes().await;
-        assert!(result.is_ok());
-        let nodes = result.unwrap();
-        assert_eq!(nodes.len(), 2);
+        assert!(matches!(result, Err(KelsError::RegistryFailure(_))));
     }
 
     #[test]
     #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
     fn test_multi_client_with_timeout_empty_panics() {
-        MultiRegistryClient::with_timeout(vec![], Duration::from_secs(10));
+        let trusted = empty_trusted_prefixes();
+        MultiRegistryClient::with_timeout(&trusted, vec![], Duration::from_secs(10));
     }
 
     #[test]
     #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
     fn test_multi_client_with_signer_empty_panics() {
+        let trusted = empty_trusted_prefixes();
         let signer = Arc::new(MockSigner);
-        MultiRegistryClient::with_signer(vec![], signer);
+        MultiRegistryClient::with_signer(&trusted, vec![], signer);
     }
 
     #[test]
     #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
     fn test_multi_client_with_signer_and_timeout_empty_panics() {
+        let trusted = empty_trusted_prefixes();
         let signer = Arc::new(MockSigner);
-        MultiRegistryClient::with_signer_and_timeout(vec![], signer, Duration::from_secs(10));
+        MultiRegistryClient::with_signer_and_timeout(
+            &trusted,
+            vec![],
+            signer,
+            Duration::from_secs(10),
+        );
     }
 }

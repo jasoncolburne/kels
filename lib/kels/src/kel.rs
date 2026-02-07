@@ -73,6 +73,13 @@ impl Kel {
         self.0.first().map(|e| e.event.prefix.as_str())
     }
 
+    pub fn verify_prefix(&self, trusted_prefixes: &HashSet<&str>) -> bool {
+        match self.prefix() {
+            Some(p) => trusted_prefixes.contains(&p),
+            None => false,
+        }
+    }
+
     // ==================== State Queries ====================
 
     pub fn confirmed_length(&self) -> usize {

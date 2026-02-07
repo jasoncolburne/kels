@@ -68,7 +68,8 @@ pub async fn run_swarm(
     peer_addrs: Vec<Multiaddr>,
     topic_name: &str,
     allowlist: SharedAllowlist,
-    registry_client: MultiRegistryClient,
+    registry_client: &mut MultiRegistryClient,
+    registry_prefix: &str,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
 ) -> Result<(), GossipError> {
@@ -108,7 +109,8 @@ pub async fn run_swarm(
             Some(()) = refresh_rx.recv() => {
                 debug!("Refreshing allowlist due to unknown peer connection");
                 if let Err(e) = crate::allowlist::refresh_allowlist(
-                    &registry_client,
+                    registry_client,
+                    registry_prefix,
                     &allowlist,
                 ).await {
                     warn!("Failed to refresh allowlist: {}", e);

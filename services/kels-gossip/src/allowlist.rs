@@ -224,7 +224,8 @@ pub async fn get_local_scope(peer_id: &PeerId, allowlist: &SharedAllowlist) -> k
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_client: &MultiRegistryClient,
+    registry_client: &mut MultiRegistryClient,
+    registry_prefix: &str,
     allowlist: &SharedAllowlist,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
@@ -234,7 +235,7 @@ pub async fn refresh_allowlist(
     // Fetch peers
     debug!("Fetching peers");
     let response = registry_client
-        .fetch_peers()
+        .fetch_peers(registry_prefix)
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
@@ -257,7 +258,7 @@ pub async fn refresh_allowlist(
             // Fetch and verify the registry's KEL
             debug!("Verifying registry KEL");
             let registry_kel = registry_client
-                .verify_registry(&latest.authorizing_kel)
+                .fetch_registry_kel(&latest.authorizing_kel, true)
                 .await
                 .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
@@ -312,7 +313,8 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_client: MultiRegistryClient,
+    registry_client: &mut MultiRegistryClient,
+    registry_prefix: &str,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
 ) {
@@ -322,7 +324,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(&registry_client, &allowlist).await {
+        match refresh_allowlist(registry_client, registry_prefix, &allowlist).await {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }

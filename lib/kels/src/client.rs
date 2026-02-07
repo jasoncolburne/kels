@@ -11,40 +11,6 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-/// Check if a node is ready by querying its KELS service /ready endpoint.
-/// The KELS service reads gossip ready state from Redis.
-async fn check_node_ready_status(kels_url: &str) -> NodeStatus {
-    let ready_url = format!("{}/ready", kels_url.trim_end_matches('/'));
-
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(500))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return NodeStatus::Unhealthy,
-    };
-
-    match client.get(&ready_url).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                // Parse the JSON response to check if ready=true
-                if let Ok(body) = response.json::<serde_json::Value>().await
-                    && body.get("ready") == Some(&serde_json::Value::Bool(true))
-                {
-                    return NodeStatus::Ready;
-                }
-                NodeStatus::Bootstrapping
-            } else if response.status().as_u16() == 503 {
-                // SERVICE_UNAVAILABLE means bootstrapping
-                NodeStatus::Bootstrapping
-            } else {
-                NodeStatus::Unhealthy
-            }
-        }
-        Err(_) => NodeStatus::Unhealthy,
-    }
-}
-
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
 
@@ -500,35 +466,11 @@ impl KelsClient {
         Ok(nodes)
     }
 
-    /// Discover nodes from a MultiRegistryClient and test latency to each.
-    /// Returns nodes sorted by latency (fastest first), with Ready nodes prioritized.
-    ///
-    /// This queries each node's gossip service `/ready` endpoint to get the actual
-    /// status, since the registry may not have up-to-date status information.
-    pub async fn discover_nodes_with_registry(
-        registry: &crate::MultiRegistryClient,
+    pub async fn nodes_sorted_by_latency(
+        registry: &mut crate::MultiRegistryClient,
+        registry_prefix: &str,
     ) -> Result<Vec<NodeInfo>, KelsError> {
-        let mut nodes = registry.list_nodes_info().await?;
-
-        // First, query each node's /ready endpoint to get actual status
-        let status_futures: Vec<_> = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| {
-                let kels_url = n.kels_url.clone();
-                let node_id = n.node_id.clone();
-                async move {
-                    let status = check_node_ready_status(&kels_url).await;
-                    tracing::debug!("Node {} ready status: {:?}", node_id, status);
-                    (i, status)
-                }
-            })
-            .collect();
-
-        let status_results = futures::future::join_all(status_futures).await;
-        for (i, status) in status_results {
-            nodes[i].status = status;
-        }
+        let mut nodes = registry.list_nodes_info(registry_prefix).await?;
 
         // Test latency to each Ready node concurrently (with short timeout)
         let latency_futures: Vec<_> = nodes

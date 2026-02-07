@@ -1,6 +1,6 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
@@ -214,47 +214,11 @@ fn parse_registry_urls(registry: &str) -> Vec<String> {
 }
 
 /// Parse trusted registry prefixes from compile-time constant.
-fn parse_trusted_prefixes() -> Vec<String> {
+fn parse_trusted_prefixes() -> HashSet<&'static str> {
     TRUSTED_REGISTRY_PREFIXES
         .split(',')
-        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-/// Verify the registry's KEL and check its prefix is in our trusted list.
-/// Returns the verified prefix on success.
-async fn verify_registry(registry_urls: &[String]) -> Result<String> {
-    let registry_client = MultiRegistryClient::new(registry_urls.to_vec());
-
-    // Fetch the registry's KEL to discover its prefix
-    let registry_kel = registry_client
-        .fetch_registry_kel()
-        .await
-        .context("Failed to fetch registry KEL")?;
-
-    // Verify the KEL is valid
-    registry_kel
-        .verify()
-        .context("Registry KEL verification failed")?;
-
-    // Get the prefix from the KEL
-    let prefix = registry_kel
-        .prefix()
-        .ok_or_else(|| anyhow::anyhow!("Registry KEL has no prefix"))?
-        .to_string();
-
-    // Verify the prefix is in our compiled-in trusted set
-    let trusted_prefixes = parse_trusted_prefixes();
-    if !trusted_prefixes.contains(&prefix) {
-        return Err(anyhow::anyhow!(
-            "Registry prefix '{}' is not trusted. Valid prefixes: {:?}",
-            prefix,
-            trusted_prefixes
-        ));
-    }
-
-    Ok(prefix)
 }
 
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
@@ -264,11 +228,9 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             return Err(anyhow::anyhow!("No registry URLs provided"));
         }
 
-        // Verify registry identity before trusting node list
-        verify_registry(&registry_urls).await?;
-
-        let registry_client = MultiRegistryClient::new(registry_urls);
-        let nodes = KelsClient::discover_nodes_with_registry(&registry_client)
+        let trusted_prefixes = parse_trusted_prefixes();
+        let mut registry_client = MultiRegistryClient::new(&trusted_prefixes, registry_urls);
+        let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -285,53 +247,13 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
                 .unwrap_or_else(|| "timeout".to_string());
             println!("  {} [{}] - {}", node.node_id, status_str, latency_str);
         }
-
-        // Select best node (randomly among ties)
-        use rand::seq::SliceRandom;
-
-        // Filter to ready nodes with successful latency measurements
-        let ready_nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
-            .collect();
-
-        if ready_nodes.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No ready nodes with successful latency measurements available"
-            ));
-        }
-
-        // Find minimum latency
-        let min_latency = ready_nodes
-            .iter()
-            .filter_map(|n| n.latency_ms)
-            .min()
-            .context("No nodes with latency measurements")?;
-
-        // Get all nodes with the minimum latency and pick randomly among ties
-        let best_nodes: Vec<_> = ready_nodes
-            .into_iter()
-            .filter(|n| n.latency_ms == Some(min_latency))
-            .collect();
-
-        let best_node = best_nodes
-            .choose(&mut rand::thread_rng())
-            .context("No nodes available")?
-            .clone();
-
-        let latency = best_node
-            .latency_ms
-            .context("Selected node missing latency")?;
-
-        println!(
-            "{} {} ({}ms)",
-            "Selected:".green().bold(),
-            best_node.node_id,
-            latency
-        );
         println!();
 
-        Ok(KelsClient::new(&best_node.kels_url))
+        let url = match nodes.first() {
+            Some(n) => n.kels_url.clone(),
+            None => anyhow::bail!("Failed to find kels url in fastest node"),
+        };
+        Ok(KelsClient::new(&url))
     } else {
         Ok(KelsClient::new(&cli.url))
     }
@@ -354,16 +276,15 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
         return Err(anyhow::anyhow!("No registry URLs provided"));
     }
 
-    // Verify registry identity before trusting node list
-    verify_registry(&registry_urls).await?;
+    let trusted_prefixes = parse_trusted_prefixes();
 
     println!(
         "{}",
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let registry_client = MultiRegistryClient::new(registry_urls);
-    let nodes = KelsClient::discover_nodes_with_registry(&registry_client).await?;
+    let mut registry_client = MultiRegistryClient::new(&trusted_prefixes, registry_urls);
+    let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry).await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());

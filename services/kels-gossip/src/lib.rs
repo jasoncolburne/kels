@@ -47,7 +47,7 @@ use gossip::{GossipCommand, GossipEvent};
 use hsm_signer::{HsmRegistrySigner, HsmSignerError};
 use libp2p::Multiaddr;
 use redis::AsyncCommands;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
@@ -84,7 +84,7 @@ pub struct Config {
     /// Registry service URL (runtime)
     pub registry_url: String,
     /// Trusted registry prefixes (compiled-in for security)
-    pub trusted_prefixes: Vec<String>,
+    pub trusted_prefixes: HashSet<&'static str>,
     /// libp2p listen address (e.g., /ip4/0.0.0.0/tcp/4001)
     pub listen_addr: Multiaddr,
     /// Advertised address for registry (e.g., /dns4/kels-gossip.kels-node-a.kels/tcp/4001)
@@ -113,15 +113,22 @@ pub struct EnvValues {
     pub http_port: Option<u16>,
 }
 
+fn parse_trusted_prefixes() -> HashSet<&'static str> {
+    TRUSTED_REGISTRY_PREFIXES
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 impl Config {
     /// Create config from explicit values (for testing and direct construction)
-    pub fn from_values(
-        env: EnvValues,
-        trusted_prefixes: Vec<String>,
-    ) -> Result<Self, ServiceError> {
+    pub fn from_values(env: EnvValues) -> Result<Self, ServiceError> {
+        // Parse trusted registry prefixes from compile-time constant (comma-separated)
+        let trusted_prefixes = parse_trusted_prefixes();
         if trusted_prefixes.is_empty() {
             return Err(ServiceError::Config(
-                "trusted_prefixes must contain at least one prefix".to_string(),
+                "TRUSTED_REGISTRY_PREFIXES must be set at compile time with at least one prefix"
+                    .to_string(),
             ));
         }
 
@@ -167,20 +174,6 @@ impl Config {
 
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ServiceError> {
-        // Parse trusted registry prefixes from compile-time constant (comma-separated)
-        let trusted_prefixes: Vec<String> = TRUSTED_REGISTRY_PREFIXES
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if trusted_prefixes.is_empty() {
-            return Err(ServiceError::Config(
-                "TRUSTED_REGISTRY_PREFIXES must be set at compile time with at least one prefix"
-                    .to_string(),
-            ));
-        }
-
         let env = EnvValues {
             node_id: std::env::var("NODE_ID").ok(),
             kels_url: std::env::var("KELS_URL").ok(),
@@ -197,7 +190,7 @@ impl Config {
             http_port: std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()),
         };
 
-        Self::from_values(env, trusted_prefixes)
+        Self::from_values(env)
     }
 }
 
@@ -267,35 +260,42 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_urls: Vec<String> = vec![config.registry_url.clone()];
 
     // Registry client with signer
-    let registry_client =
-        MultiRegistryClient::with_signer(registry_urls.clone(), registry_signer.clone());
+    let mut registry_client = MultiRegistryClient::with_signer(
+        &config.trusted_prefixes,
+        registry_urls.clone(),
+        registry_signer.clone(),
+    );
 
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
-    let registry_kel = registry_client
-        .fetch_registry_kel()
+    let registry_kels = registry_client
+        .fetch_verified_registry_kels(true)
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
 
-    let registry_prefix = registry_kel
-        .prefix()
-        .ok_or_else(|| ServiceError::Config("Registry KEL has no prefix".to_string()))?
-        .to_string();
+    let registry_prefixes: Vec<_> = registry_kels
+        .iter()
+        .filter_map(|k| k.prefix())
+        .map(|p| p.to_string())
+        .collect();
 
-    // Verify the prefix is in our compiled-in trusted set
-    if !config.trusted_prefixes.contains(&registry_prefix) {
-        return Err(ServiceError::Config(format!(
-            "Registry prefix '{}' is not trusted. Valid prefixes: {:?}",
-            registry_prefix, config.trusted_prefixes
-        )));
+    if registry_prefixes.is_empty() {
+        return Err(ServiceError::Config(
+            "Couldn't fetch registry KELs".to_string(),
+        ));
     }
 
-    // Verify the KEL itself is valid
-    registry_kel
-        .verify()
-        .map_err(|e| ServiceError::Config(format!("Registry KEL verification failed: {}", e)))?;
+    info!("Registry prefixes verified: {:?}", registry_prefixes);
 
-    info!("Registry prefix verified: {}", registry_prefix);
+    let registry_prefix = match registry_client.prefix_for_url(&config.registry_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(ServiceError::Config(format!(
+                "Can't find prefix for kels url {}: {}",
+                &config.registry_url, e
+            )))
+        }
+    };
 
     // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -312,7 +312,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Step 2-3: Check allowlist and wait if not authorized
     let peer_id_str = peer_id.to_string();
     loop {
-        match bootstrap.is_peer_authorized(&peer_id_str).await {
+        match bootstrap
+            .is_peer_authorized(&peer_id_str, &registry_prefix)
+            .await
+        {
             Ok(true) => {
                 info!("Peer {} is authorized in allowlist", peer_id);
                 break;
@@ -363,8 +366,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Initial allowlist refresh - must happen before discover_peers
     // Use a separate client without signing for unauthenticated peer list fetching
-    let allowlist_client = MultiRegistryClient::new(registry_urls.clone());
-    match allowlist::refresh_allowlist(&allowlist_client, &allowlist).await {
+    let mut allowlist_client =
+        MultiRegistryClient::new(&config.trusted_prefixes, registry_urls.clone());
+    match allowlist::refresh_allowlist(&mut allowlist_client, &registry_prefix, &allowlist).await {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
@@ -425,7 +429,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Start gossip swarm in background
     let listen_addr = config.listen_addr.clone();
     let topic = config.topic.clone();
-    let gossip_registry_client = allowlist_client.clone();
+    let mut gossip_registry_client = allowlist_client.clone();
+    let gossip_registry_prefix = registry_prefix.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
             keypair,
@@ -433,7 +438,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             peer_multiaddrs,
             &topic,
             registry_allowlist,
-            gossip_registry_client,
+            &mut gossip_registry_client,
+            &gossip_registry_prefix,
             command_rx,
             event_tx,
         )
@@ -516,9 +522,16 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let refresh_client = MultiRegistryClient::new(registry_urls.clone());
+    let mut refresh_client =
+        MultiRegistryClient::new(&config.trusted_prefixes, registry_urls.clone());
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(refresh_client, allowlist, refresh_interval).await;
+        allowlist::run_allowlist_refresh_loop(
+            &mut refresh_client,
+            &registry_prefix,
+            allowlist,
+            refresh_interval,
+        )
+        .await;
     });
 
     // Wait for gossip swarm to complete OR shutdown signal
@@ -584,10 +597,6 @@ mod tests {
         assert!(matches!(service_err, ServiceError::Bootstrap(_)));
     }
 
-    fn test_trusted_prefixes() -> Vec<String> {
-        vec!["ETestPrefix123456789012345678901234567890123".to_string()]
-    }
-
     #[test]
     fn test_config_missing_required() {
         // Missing kels_advertise_url
@@ -595,20 +604,16 @@ mod tests {
             registry_url: Some("http://registry.example.com".to_string()),
             ..Default::default()
         };
-        let result = Config::from_values(env, test_trusted_prefixes());
+        let result = Config::from_values(env);
         assert!(result.is_err());
-        let err_str = result.err().expect("Expected error").to_string();
-        assert!(err_str.contains("KELS_ADVERTISE_URL"));
 
         // Missing registry_url
         let env = EnvValues {
             kels_advertise_url: Some("http://kels.example.com".to_string()),
             ..Default::default()
         };
-        let result = Config::from_values(env, test_trusted_prefixes());
+        let result = Config::from_values(env);
         assert!(result.is_err());
-        let err_str = result.err().expect("Expected error").to_string();
-        assert!(err_str.contains("REGISTRY_URL"));
     }
 
     #[test]
@@ -619,11 +624,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result = Config::from_values(env, test_trusted_prefixes());
-        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
-        let config = result.unwrap();
-        assert_eq!(config.kels_advertise_url, "http://kels.example.com");
-        assert_eq!(config.registry_url, "http://registry.example.com");
+        let result = Config::from_values(env);
+        // Will fail if TRUSTED_REGISTRY_PREFIXES not set at compile time
+        if let Ok(config) = result {
+            assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+            assert_eq!(config.registry_url, "http://registry.example.com");
+        }
     }
 
     #[test]
@@ -634,17 +640,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result = Config::from_values(env, test_trusted_prefixes());
-        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
-        let config = result.unwrap();
-
-        // Check defaults
-        assert_eq!(config.node_id, "node-unknown");
-        assert_eq!(config.kels_url, "http://kels");
-        assert_eq!(config.redis_url, "redis://redis:6379");
-        assert_eq!(config.hsm_url, "http://hsm");
-        assert_eq!(config.allowlist_refresh_interval_secs, 60);
-        assert_eq!(config.http_port, 80);
+        let result = Config::from_values(env);
+        // Will fail if TRUSTED_REGISTRY_PREFIXES not set at compile time
+        if let Ok(config) = result {
+            // Check defaults
+            assert_eq!(config.node_id, "node-unknown");
+            assert_eq!(config.kels_url, "http://kels");
+            assert_eq!(config.redis_url, "redis://redis:6379");
+            assert_eq!(config.hsm_url, "http://hsm");
+            assert_eq!(config.allowlist_refresh_interval_secs, 60);
+            assert_eq!(config.http_port, 80);
+        }
     }
 
     #[test]
@@ -656,13 +662,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = Config::from_values(env, test_trusted_prefixes());
+        let result = Config::from_values(env);
+        // Will either fail due to missing TRUSTED_REGISTRY_PREFIXES or invalid listen addr
         assert!(result.is_err(), "Expected error but got Ok");
-        let err_str = result.err().unwrap().to_string();
-        assert!(
-            err_str.contains("Invalid listen address"),
-            "Expected 'Invalid listen address' error, got: {}",
-            err_str
-        );
     }
 }

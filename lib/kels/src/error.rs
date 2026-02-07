@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Clone, Debug)]
 pub enum KelsError {
     #[error("Key not found: {0}")]
     KeyNotFound(String),
@@ -80,13 +80,13 @@ pub enum KelsError {
     MissingKeys,
 
     #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
+    HttpError(String),
 
     #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    JsonError(String),
 
     #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(String),
 
     #[error("Cryptographic error: {0}")]
     CryptoError(String),
@@ -131,12 +131,30 @@ pub enum KelsError {
     NoReadyNodes,
 
     #[error("All registries failed: {0}")]
-    AllRegistriesFailed(String),
+    RegistryFailure(String),
 }
 
 impl From<cesr::CesrError> for KelsError {
     fn from(e: cesr::CesrError) -> Self {
         KelsError::CryptoError(e.to_string())
+    }
+}
+
+impl From<reqwest::Error> for KelsError {
+    fn from(e: reqwest::Error) -> Self {
+        KelsError::HttpError(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for KelsError {
+    fn from(e: serde_json::Error) -> Self {
+        KelsError::JsonError(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for KelsError {
+    fn from(e: std::io::Error) -> Self {
+        KelsError::IoError(e.to_string())
     }
 }
 
@@ -212,7 +230,7 @@ mod tests {
             KelsError::AnchorVerificationFailed("anchor failed".to_string()),
             KelsError::HardwareError("hw error".to_string()),
             KelsError::NoReadyNodes,
-            KelsError::AllRegistriesFailed("all failed".to_string()),
+            KelsError::RegistryFailure("all failed".to_string()),
         ];
 
         for err in errors {

@@ -146,8 +146,15 @@ impl BootstrapSync {
     }
 
     /// Check if a peer is authorized in the allowlist.
-    pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, BootstrapError> {
-        Ok(self.registry.is_peer_authorized(peer_id).await?)
+    pub async fn is_peer_authorized(
+        &self,
+        peer_id: &str,
+        registry_prefix: &str,
+    ) -> Result<bool, BootstrapError> {
+        Ok(self
+            .registry
+            .is_peer_authorized(peer_id, registry_prefix)
+            .await?)
     }
 
     /// Check if there are Ready peers we should resync from.

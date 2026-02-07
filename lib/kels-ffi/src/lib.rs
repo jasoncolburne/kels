@@ -17,15 +17,25 @@ use kels::HardwareKeyProvider;
 use kels::SoftwareKeyProvider;
 use kels::{
     FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, MultiRegistryClient, NodeStatus, PeersResponse,
+    KeyProvider, MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
 use verifiable_storage::Chained;
+
+const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
+
+fn parse_trusted_prefixes() -> HashSet<&'static str> {
+    TRUSTED_REGISTRY_PREFIXES
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .collect()
+}
 
 // ==================== Key State Persistence ====================
 
@@ -1673,8 +1683,11 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     };
 
-    // registry_prefix is optional - if provided, we verify against it
-    let expected_prefix = from_c_string(registry_prefix);
+    let Some(ref expected_prefix) = from_c_string(registry_prefix) else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Invalid registry prefix");
+        return;
+    };
 
     // Create runtime for async operations
     let Ok(runtime) = Runtime::new() else {
@@ -1683,46 +1696,44 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     };
 
+    let trusted_prefixes = parse_trusted_prefixes();
+
     let discover_result = runtime.block_on(async {
         let registry_client = KelsRegistryClient::new(&url);
-        let registry = MultiRegistryClient::new(vec![url.clone()]);
+        let mut registry = MultiRegistryClient::new(&trusted_prefixes, vec![url.clone()]);
 
         // Build set of verified node_ids from peer records
-        let verified_node_ids: std::collections::HashSet<String> =
-            if let Some(ref expected) = expected_prefix {
-                // Verify registry and get the KEL for peer anchoring checks
-                let registry_kel = registry_client.verify_registry(expected).await?;
+        let verified_node_ids: std::collections::HashSet<String> = {
+            // Verify registry and get the KEL for peer anchoring checks
+            let registry_kel = registry_client.verify_registry(expected_prefix).await?;
 
-                // Fetch and verify peers, collecting verified node_ids
-                let peers_response: PeersResponse = registry_client.fetch_peers().await?;
+            // Fetch and verify peers, collecting verified node_ids
+            let (peers_response, _status_map) = registry_client.fetch_peers().await?;
 
-                let mut verified = std::collections::HashSet::new();
-                for history in &peers_response.peers {
-                    if let Some(latest) = history.records.last() {
-                        // Skip peers with invalid SAID
-                        if latest.verify().is_err() {
-                            continue;
-                        }
+            let mut verified = std::collections::HashSet::new();
+            for history in &peers_response.peers {
+                if let Some(latest) = history.records.last() {
+                    // Skip peers with invalid SAID
+                    if latest.verify().is_err() {
+                        continue;
+                    }
 
-                        // Skip peers not anchored in registry's KEL
-                        if !registry_kel.contains_anchor(&latest.said) {
-                            continue;
-                        }
+                    // Skip peers not anchored in registry's KEL
+                    if !registry_kel.contains_anchor(&latest.said) {
+                        continue;
+                    }
 
-                        // This peer is verified - trust its node_id
-                        if latest.active {
-                            verified.insert(latest.node_id.clone());
-                        }
+                    // This peer is verified - trust its node_id
+                    if latest.active {
+                        verified.insert(latest.node_id.clone());
                     }
                 }
-                verified
-            } else {
-                // No verification - empty set means accept all nodes
-                std::collections::HashSet::new()
-            };
+            }
+            verified
+        };
 
         // Discover nodes with proper status checking and latency testing
-        let nodes = KelsClient::discover_nodes_with_registry(&registry).await?;
+        let nodes = KelsClient::nodes_sorted_by_latency(&mut registry, expected_prefix).await?;
 
         // Filter to verified nodes and convert to JSON format
         let mut node_infos: Vec<NodeInfoJson> = nodes
