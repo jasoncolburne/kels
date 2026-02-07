@@ -579,19 +579,22 @@ struct SettingsTab: View {
                             Text(registry.0).tag(registry.0)
                         }
                     }
+                    .onChange(of: viewModel.selectedRegistry) {
+                        viewModel.onRegistryChanged()
+                    }
 
                     TextField("Registry URL", text: $viewModel.registryUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
 
-                    HStack {
-                        Button(action: {
+                    HStack(spacing: 16) {
+                        Button {
                             isDiscovering = true
                             Task {
                                 await viewModel.discoverNodes()
                                 isDiscovering = false
                             }
-                        }) {
+                        } label: {
                             HStack {
                                 if isDiscovering {
                                     ProgressView()
@@ -601,23 +604,25 @@ struct SettingsTab: View {
                                 }
                                 Text("Discover")
                             }
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
 
-                        Spacer()
-
-                        Button(action: {
+                        Button {
                             isDiscovering = true
                             Task {
                                 await viewModel.autoSelectNode()
                                 isDiscovering = false
                             }
-                        }) {
+                        } label: {
                             HStack {
                                 Image(systemName: "bolt.fill")
                                 Text("Auto-Select")
                             }
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
                     }
                 }

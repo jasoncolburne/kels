@@ -66,10 +66,14 @@ class KelsViewModel: ObservableObject {
             if let url = Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 {
                 registryUrl = url
             }
-            // Discover nodes from the newly selected registry
-            Task {
-                await discoverNodes()
-            }
+            // Note: Discovery is triggered by .onChange in ContentView to avoid race conditions
+        }
+    }
+
+    /// Called when registry selection actually changes (from View's .onChange)
+    func onRegistryChanged() {
+        Task {
+            await discoverNodes()
         }
     }
 
@@ -162,7 +166,8 @@ class KelsViewModel: ObservableObject {
     // MARK: - Registry Discovery
 
     /// Discover nodes from the configured registry
-    func discoverNodes() async {
+    /// - Parameter forceAutoSelect: If true, always select the fastest node regardless of current selection
+    func discoverNodes(forceAutoSelect: Bool = false) async {
         guard !registryUrl.isEmpty else {
             log("ERROR: Registry URL not configured")
             errorMessage = "Registry URL not configured"
@@ -172,8 +177,8 @@ class KelsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        // Remember current selection before refresh
-        let previousSelection = selectedDiscoveredNode
+        // Remember current selection before refresh (unless forcing auto-select)
+        let previousSelection = forceAutoSelect ? nil : selectedDiscoveredNode
 
         log("Discovering nodes from \(registryUrl)...")
 
@@ -204,14 +209,8 @@ class KelsViewModel: ObservableObject {
                 // Update the selection with fresh latency data but don't switch nodes
                 selectedDiscoveredNode = stillVisible
                 log("Preserved selection: \(stillVisible.displayName)")
-            } else if previousSelection != nil {
-                // Previously selected node is no longer visible (regional node from different registry)
-                if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                    selectNode(fastestNode)
-                    log("Previous node no longer visible, auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
-                }
             } else {
-                // No previous selection, auto-select fastest
+                // No previous selection or node not visible, auto-select fastest
                 if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
                     selectNode(fastestNode)
                     log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
@@ -245,45 +244,7 @@ class KelsViewModel: ObservableObject {
 
     /// Auto-select the fastest available node from registry
     func autoSelectNode() async {
-        guard !registryUrl.isEmpty else {
-            log("ERROR: Registry URL not configured")
-            errorMessage = "Registry URL not configured"
-            return
-        }
-
-        isLoading = true
-        defer { isLoading = false }
-
-        log("Auto-selecting fastest node...")
-
-        do {
-            // Fetch the registry's prefix from its KEL and verify it's trusted
-            let registryPrefix = try await NodeDiscovery.fetchRegistryPrefix(registryUrl: registryUrl)
-
-            guard Self.isTrustedPrefix(registryPrefix) else {
-                throw NSError(domain: "KelsClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "Registry prefix '\(registryPrefix)' is not trusted"])
-            }
-
-            // Discover nodes (this will also cache them)
-            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
-            discoveredNodes = nodes
-            saveCachedNodes(nodes)
-
-            if let fastestNode = nodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                selectNode(fastestNode)
-                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
-            } else {
-                log("ERROR: No ready nodes available")
-                errorMessage = "No ready nodes available"
-            }
-        } catch {
-            log("ERROR: Registry unavailable: \(error.localizedDescription)")
-
-            // Clear cached nodes on verification failure - don't trust unverified data
-            discoveredNodes = []
-            clearCachedNodes()
-            errorMessage = "Auto-select failed: \(error.localizedDescription)"
-        }
+        await discoverNodes(forceAutoSelect: true)
     }
 
     /// Test latency to a KELS node
