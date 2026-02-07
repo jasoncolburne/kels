@@ -330,10 +330,18 @@ async fn main() -> Result<()> {
 
     let (large_kel, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
+            let kel = match client.get_kel(prefix).await {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Couldn't fetch kel");
+                    std::process::exit(1);
+                }
+            };
+
             println!("{}", "Skipping setup, using provided prefix...".yellow());
             (
                 TestKelConfig {
-                    event_count: 0,
+                    event_count: kel.len(),
                     prefix: Some(prefix.clone()),
                 },
                 vec![],
