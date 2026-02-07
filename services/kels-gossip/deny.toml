@@ -24,7 +24,8 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
-    "ISC",  # ring (dev dependency via testcontainers → rustls)
+    "ISC",
+    "CDLA-Permissive-2.0",
     "Unlicense",
     "Zlib",
     "Unicode-3.0",

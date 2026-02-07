@@ -22,6 +22,8 @@ allow = [
     "Unlicense",
     "CC0-1.0",
     "MPL-2.0",  # cbindgen (build dependency)
+    "ISC",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 exceptions = []
