@@ -107,7 +107,7 @@ coverage:
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
 
-test-comprehensive:
+test-comprehensive: clean-garden
 	garden run coredns-config
 
 	echo '{}' > .kels/federated-registries.json
