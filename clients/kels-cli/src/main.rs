@@ -293,13 +293,8 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     let client = create_client(cli).await?;
     let key_provider = SoftwareKeyProvider::new();
 
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        None,
-        None,
-    )
-    .await?;
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, Some(client), None, None).await?;
 
     let icp = builder.incept().await.context("Inception failed")?;
 
