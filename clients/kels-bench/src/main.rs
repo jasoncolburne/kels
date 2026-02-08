@@ -380,7 +380,10 @@ async fn main() -> Result<()> {
     stats.reset().await;
 
     if !batch_kels.is_empty() {
-        let prefixes: Vec<String> = batch_kels.iter().filter_map(|c| c.prefix.clone()).collect();
+        let prefixes: Vec<String> = batch_kels
+            .iter()
+            .filter_map(|config| config.prefix.clone())
+            .collect();
 
         if !prefixes.is_empty() {
             run_benchmark(
