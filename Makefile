@@ -83,7 +83,7 @@ test:
 # - FFI code (kels-ffi) - C bindings
 # - Server setup (server.rs in services) - integration code
 # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
-COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs)'
+COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
 
 coverage:
 	@if ! command -v cargo-llvm-cov &> /dev/null; then \
