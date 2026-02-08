@@ -1,7 +1,7 @@
 //! Key Event Log (KEL) - cryptographically linked chain of key events
 
+use super::{KelMergeResult, KeyEvent, SignedKeyEvent};
 use crate::error::KelsError;
-use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
 use cesr::{Digest, Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

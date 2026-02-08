@@ -2,9 +2,8 @@
 
 use crate::{
     error::KelsError,
-    kel::Kel,
     types::{
-        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, KelMergeResult,
+        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
         KelResponse, SignedKeyEvent,
     },
 };

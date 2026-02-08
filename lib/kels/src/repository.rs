@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::error::KelsError;
-use crate::kel::Kel;
+use crate::types::Kel;
 
 /// Implemented by repositories generated with `#[stored(signed_events = true)]`.
 /// Wrap with `RepositoryKelStore` to use as `KelStore`.

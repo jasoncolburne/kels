@@ -525,7 +525,7 @@ impl MultiRegistryClient {
         }
     }
 
-    pub async fn kel_for_url(&self, url: &str) -> Result<crate::kel::Kel, KelsError> {
+    pub async fn kel_for_url(&self, url: &str) -> Result<crate::types::Kel, KelsError> {
         match self.prefix_map.iter().find(|(_, (u, _))| u == url) {
             Some((_prefix, (_url, kel))) => Ok(kel.clone()),
             None => {
@@ -747,7 +747,7 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
-    use crate::kel::Kel;
+    use crate::types::Kel;
     use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
     use wiremock::matchers::{method, path};

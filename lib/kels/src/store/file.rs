@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 
+use super::KelStore;
 use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::store::KelStore;
+use crate::types::Kel;
 use crate::types::SignedKeyEvent;
 
 /// File-based KEL store for CLI and desktop apps

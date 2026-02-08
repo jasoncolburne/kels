@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use crate::client::KelsClient;
 use crate::crypto::KeyProvider;
 use crate::error::KelsError;
-use crate::kel::Kel;
 use crate::store::KelStore;
+use crate::types::Kel;
 use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey};
 

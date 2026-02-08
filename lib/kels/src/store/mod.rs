@@ -1,9 +1,15 @@
 //! KEL Storage trait - persisting Key Event Logs locally
 
+pub mod file;
+pub mod repository;
+
+pub use file::FileKelStore;
+pub use repository::RepositoryKelStore;
+
 use async_trait::async_trait;
 
 use crate::error::KelsError;
-use crate::kel::Kel;
+use crate::types::Kel;
 
 /// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
 /// authoritative state from being overwritten by server-fetched data.
