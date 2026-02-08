@@ -9,9 +9,8 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
     FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
-    ProviderConfig, SoftwareProviderConfig,
+    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
 };
-use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
@@ -174,13 +173,6 @@ enum AdversaryCommands {
     },
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct Config {
-    default_url: Option<String>,
-    default_prefix: Option<String>,
-}
-
 fn config_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(ref dir) = cli.config_dir {
         return Ok(dir.clone());
@@ -303,9 +295,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
     let client = create_client(cli).await?;
-    // Use a temporary config for init - we don't know the prefix yet
-    let temp_config = SoftwareProviderConfig::new(config_dir(cli)?.join("keys").join("temp"));
-    let key_provider = temp_config.load_provider().await?;
+    let key_provider = SoftwareKeyProvider::new();
     let kel_store = create_kel_store(cli, None)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
