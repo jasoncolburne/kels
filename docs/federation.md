@@ -208,15 +208,15 @@ kels-registry-admin peer add --peer-id Qm... --node-id node-regional --scope reg
 
 ### Federation Membership
 
-- Membership is controlled by the `FEDERATION_MEMBERS` environment variable
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_PREFIXES` constant
 - Only known registry prefixes can participate in consensus
-- This cannot be modified via the API - requires registry restart
+- Cannot be changed at runtime - must be baked into the binary at build time
 
 ### Message Authentication
 
 - All Raft messages are signed with the sender's identity key (HSM-backed)
 - Recipients verify signatures against the sender's KEL
-- Messages from prefixes not in `FEDERATION_MEMBERS` are rejected
+- Messages from prefixes not in `TRUSTED_REGISTRY_PREFIXES` are rejected
 
 ### Member KEL Caching
 
@@ -232,9 +232,9 @@ If a federation member is compromised:
 
 1. **Detection**: Audit logs show unexpected core peer changes with the rogue registry's prefix
 
-2. **Isolation**: Update `FEDERATION_MEMBERS` on honest registries to exclude the rogue:
+2. **Isolation**: Update `TRUSTED_REGISTRY_PREFIXES` on honest registries to exclude the rogue:
    ```bash
-   FEDERATION_MEMBERS=ERegistryAcme...,ERegistryGamma...  # Beta removed
+   TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryGamma...  # Beta removed
    ```
 
 3. **Redeploy**: Restart honest registries with updated config
@@ -276,18 +276,31 @@ GET /api/peers
 
 Returns combined list of core peers (from Raft state machine) and regional peers (from local database).
 
-### Core Peer Proposals
+### Registry KELs
 ```
-GET /api/federation/proposals
-```
-
-Returns list of pending core peer proposals.
-
-```
-GET /api/federation/proposals/:id
+GET /api/registry-kels
 ```
 
-Returns details of a specific proposal including votes and status.
+Returns KELs for all federation members (for cross-registry verification).
+
+### Admin API (localhost only)
+
+Core peer proposal management:
+
+```
+GET    /api/admin/proposals                      # List pending proposals
+POST   /api/admin/proposals                      # Propose a new core peer
+GET    /api/admin/proposals/:proposal_id         # Get proposal details
+POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal
+DELETE /api/admin/proposals/:proposal_id         # Withdraw a proposal
+```
+
+Regional peer management:
+
+```
+POST   /api/admin/peers              # Add a regional peer
+DELETE /api/admin/peers/:peer_id     # Remove a peer
+```
 
 ### Federation RPC (Internal)
 ```

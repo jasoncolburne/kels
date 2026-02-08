@@ -58,6 +58,7 @@ The registry namespace includes a dedicated identity service (single replica) th
 | `GET` | `/api/identity` | Get registry prefix |
 | `GET` | `/api/identity/kel` | Get registry's full KEL |
 | `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
+| `POST` | `/api/identity/sign` | Sign data with registry's current key |
 
 ## Components
 
@@ -151,13 +152,9 @@ struct SignedRequest<T> {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/nodes` | List registered nodes |
-| `GET` | `/api/nodes/bootstrap` | Get bootstrap peers |
-| `GET` | `/api/nodes/:node_id` | Get specific node |
-| `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
 | `GET` | `/api/peers` | Get peer allowlist |
-
-**Note:** Heartbeat remains unauthenticated as it only extends TTL for already-registered nodes. Status updates are authenticated to prevent availability attacks (e.g., marking healthy nodes as Bootstrapping).
+| `GET` | `/api/registry-kel` | Get registry's KEL |
+| `GET` | `/health` | Health check |
 
 ## Verification Flow
 
@@ -347,12 +344,11 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 
 | Operation | Authentication |
 |-----------|---------------|
-| Read node list | None (public) |
 | Read KELS data | None (public) |
+| Read peer list | None (public) |
 | Register node | Signed + allowlist |
 | Deregister node | Signed + allowlist |
 | Status update | Signed + allowlist |
-| Heartbeat | None (extends TTL only) |
 | Gossip connection | Allowlist check after handshake |
 
 ## Deployment
