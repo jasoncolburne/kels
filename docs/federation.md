@@ -1,6 +1,6 @@
 # Multi-Registry Federation
 
-This document describes the multi-registry federation architecture that enables multiple independent registries across different clouds/regions with automatic failover and peer management.
+This document describes the multi-registry federation architecture that enables independent registries across different clouds/regions with automatic failover and peer management.
 
 ## Overview
 
