@@ -2,8 +2,14 @@
 //!
 //! Sets up gossipsub for KEL update announcements.
 
-use crate::allowlist::{AllowlistBehaviour, SharedAllowlist};
-use crate::protocol::KelAnnouncement;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    time::Duration,
+};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
+
 use futures::prelude::*;
 use kels::MultiRegistryClient;
 use libp2p::{
@@ -12,12 +18,12 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+
+use crate::{
+    allowlist::{AllowlistBehaviour, SharedAllowlist},
+    protocol::KelAnnouncement,
+};
 
 /// Default gossipsub topic for KEL announcements
 pub const DEFAULT_TOPIC: &str = "kels/events/v1";

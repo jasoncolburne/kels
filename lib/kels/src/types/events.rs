@@ -1,13 +1,17 @@
 //! Key event model & signatures
 
-use crate::error::KelsError;
+use std::{
+    cmp::{Eq, PartialEq},
+    collections::HashSet,
+    fmt,
+    hash::{Hash, Hasher},
+    str::FromStr,
+};
+
 use serde::{Deserialize, Serialize};
-use std::cmp::{Eq, PartialEq};
-use std::collections::HashSet;
-use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::str::FromStr;
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
+
+use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

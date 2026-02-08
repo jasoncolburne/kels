@@ -2,20 +2,27 @@
 //!
 //! Disconnects peers not in the authorized allowlist after connection establishment.
 
-use libp2p::swarm::behaviour::ConnectionEstablished;
-use libp2p::swarm::{
-    CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
-    THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
 };
-use libp2p::{Multiaddr, PeerId};
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
-use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
+
+use kels::MultiRegistryClient;
+use libp2p::{
+    swarm::{
+        behaviour::ConnectionEstablished, CloseConnection, ConnectionClosed, ConnectionDenied,
+        ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent,
+        ToSwarm,
+    },
+    Multiaddr, PeerId,
+};
+use thiserror::Error;
+use verifiable_storage::Chained;
 
 /// NetworkBehaviour that disconnects peers not in the allowlist.
 ///
@@ -197,10 +204,6 @@ pub enum AllowlistRefreshError {
     #[error("KEL verification failed: {0}")]
     KelVerificationFailed(String),
 }
-
-// Use types from kels library
-use kels::MultiRegistryClient;
-use verifiable_storage::Chained;
 
 /// Shared allowlist type - maps PeerId to full Peer data
 pub type SharedAllowlist = Arc<RwLock<HashMap<PeerId, kels::Peer>>>;

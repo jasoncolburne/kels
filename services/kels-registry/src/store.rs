@@ -1,15 +1,11 @@
 //! Redis-backed storage for node registrations
 
-use chrono::Utc;
-use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
-use thiserror::Error;
+use tracing::info;
 
-// Re-export shared types from kels library
-pub use kels::{
-    DeregisterRequest, NodeRegistration, NodeStatus, NodeType, RegisterNodeRequest,
-    StatusUpdateRequest,
-};
+use chrono::Utc;
+use kels::{NodeRegistration, NodeStatus, RegisterNodeRequest};
+use redis::{AsyncCommands, aio::ConnectionManager};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -75,10 +71,9 @@ impl RegistryStore {
             .query_async(&mut conn)
             .await?;
 
-        tracing::info!(
+        info!(
             "Registered node {} with status {:?}",
-            request.node_id,
-            registration.status
+            request.node_id, registration.status
         );
 
         Ok(registration)
@@ -97,7 +92,7 @@ impl RegistryStore {
             .query_async(&mut conn)
             .await?;
 
-        tracing::info!("Deregistered node {}", node_id);
+        info!("Deregistered node {}", node_id);
 
         Ok(())
     }
@@ -122,7 +117,7 @@ impl RegistryStore {
         let updated_json = serde_json::to_string(&registration)?;
         let _: () = conn.set(&key, &updated_json).await?;
 
-        tracing::info!("Node {} status updated to {:?}", node_id, status);
+        info!("Node {} status updated to {:?}", node_id, status);
 
         Ok(registration)
     }
@@ -131,6 +126,7 @@ impl RegistryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kels::{DeregisterRequest, NodeType, StatusUpdateRequest};
 
     // ==================== StoreError Display Tests ====================
 

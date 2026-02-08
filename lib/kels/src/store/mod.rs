@@ -8,8 +8,7 @@ pub use repository::RepositoryKelStore;
 
 use async_trait::async_trait;
 
-use crate::error::KelsError;
-use crate::types::Kel;
+use crate::{error::KelsError, types::Kel};
 
 /// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
 /// authoritative state from being overwritten by server-fetched data.
@@ -45,11 +44,10 @@ pub trait KelStore: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
     use super::*;
-    use crate::builder::KeyEventBuilder;
-    use crate::crypto::SoftwareKeyProvider;
-    use std::collections::HashMap;
-    use std::sync::RwLock;
+    use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
 
     /// In-memory store for testing
     struct MemoryStore {

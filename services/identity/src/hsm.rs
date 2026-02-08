@@ -1,8 +1,11 @@
 //! HSM Client - HTTP client for the HSM service
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 use async_trait::async_trait;
 use cesr::{Matter, PublicKey, Signature};
-use kels::KelsError;
+use kels::{KelsError, KeyProvider, compute_rotation_hash};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -151,10 +154,6 @@ impl HsmOperations for HsmClient {
         Ok(Signature::from_qb64(&resp.signature)?)
     }
 }
-
-use kels::{KeyProvider, compute_rotation_hash};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// HSM-backed key provider with two-phase rotation support.
 ///

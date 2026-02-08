@@ -1,16 +1,19 @@
 //! kels-bench - KELS Load Testing Tool
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+use tokio::{sync::Mutex, task::JoinSet};
 
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
 use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider};
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
 use verifiable_storage::compute_said;
 
 fn test_said(name: &str) -> String {

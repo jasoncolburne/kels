@@ -1,26 +1,31 @@
 //! Raft state machine for the core peer set.
 
-use super::config::FederationConfig;
-use super::types::{
-    CorePeerSnapshot, FederationRequest, FederationResponse, PeerProposal, ProposalStatus,
-    TypeConfig, Vote,
+use std::{
+    collections::HashMap,
+    io::{self, Cursor},
+    sync::Arc,
 };
-use crate::identity_client::IdentityClient;
-use crate::peer_store::PeerRepository;
-use futures::stream::StreamExt;
-use kels::{Kel, Peer, PeerScope};
-use openraft::storage::EntryResponder;
-use openraft::{
-    EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
-    StoredMembership, storage::RaftStateMachine,
-};
-use std::collections::HashMap;
-use std::io::{self, Cursor};
-use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
+
+use futures::stream::StreamExt;
+use kels::{Kel, Peer, PeerScope};
+use openraft::{
+    EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
+    StoredMembership,
+    storage::{EntryResponder, RaftStateMachine},
+};
 use verifiable_storage::{Chained, ChainedRepository, SelfAddressed};
 use verifiable_storage_postgres::{Order, Query, QueryExecutor};
+
+use super::{
+    config::FederationConfig,
+    types::{
+        CorePeerSnapshot, FederationRequest, FederationResponse, PeerProposal, ProposalStatus,
+        TypeConfig, Vote,
+    },
+};
+use crate::{identity_client::IdentityClient, peer_store::PeerRepository};
 
 /// State machine that manages the core peer set.
 ///

@@ -3,14 +3,6 @@
 //! Shared client used by gossip nodes, CLI, and other clients to interact
 //! with the kels-registry service.
 
-use futures::future::join_all;
-
-use crate::KelsClient;
-use crate::error::KelsError;
-use crate::types::{
-    DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, PeersResponse,
-    RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
-};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
@@ -18,6 +10,17 @@ use std::{
     time::Duration,
 };
 use tracing::{info, warn};
+
+use futures::future::join_all;
+
+use crate::{
+    client::KelsClient,
+    error::KelsError,
+    types::{
+        DeregisterRequest, ErrorResponse, Kel, NodeInfo, NodeRegistration, NodeStatus, Peer,
+        PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    },
+};
 
 /// Trusted registry prefixes for verifying registry identity.
 /// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
@@ -154,7 +157,7 @@ impl KelsRegistryClient {
         // Sign the request
         let signed_request = self.sign_request(&request).await?;
 
-        tracing::info!("${:?}", signed_request);
+        info!("${:?}", signed_request);
 
         let response = self
             .client
@@ -375,7 +378,7 @@ impl KelsRegistryClient {
 
     async fn check_nodes_ready_status(
         &self,
-        peers: &[&crate::types::Peer],
+        peers: &[&Peer],
     ) -> Result<HashMap<String, NodeStatus>, KelsError> {
         let mut map: HashMap<String, NodeStatus> = HashMap::with_capacity(peers.len());
 
@@ -525,7 +528,7 @@ impl MultiRegistryClient {
         }
     }
 
-    pub async fn kel_for_url(&self, url: &str) -> Result<crate::types::Kel, KelsError> {
+    pub async fn kel_for_url(&self, url: &str) -> Result<Kel, KelsError> {
         match self.prefix_map.iter().find(|(_, (u, _))| u == url) {
             Some((_prefix, (_url, kel))) => Ok(kel.clone()),
             None => {
@@ -747,8 +750,7 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
-    use crate::types::Kel;
-    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
+    use crate::types::{Kel, NodeRegistration, NodeType, Peer, PeerHistory, PeerScope};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -981,7 +983,7 @@ mod tests {
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            scope: crate::types::PeerScope::Core,
+            scope: PeerScope::Core,
             kels_url: "http://node-1:8091".to_string(),
             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
         };
@@ -1071,7 +1073,7 @@ mod tests {
             node_id.to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             active,
-            crate::types::PeerScope::Regional,
+            PeerScope::Regional,
             format!("http://{}:8080", node_id),
             format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
         )

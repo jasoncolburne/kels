@@ -1,5 +1,7 @@
 //! KELS Registry REST API Handlers
 
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 use axum::{
     Json,
     extract::{ConnectInfo, Path, State},
@@ -7,26 +9,22 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{
-    ErrorCode, ErrorResponse, Kel, Peer, PeerHistory, PeerScope, PeersResponse, SignedRequest,
+    DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration, Peer, PeerHistory,
+    PeerScope, PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use verifiable_storage::ChainedRepository;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
-use verifiable_storage::ChainedRepository;
-
-use crate::federation::{
-    FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
-    PeerProposal, SignedFederationRpc, Vote,
-};
-use crate::identity_client::IdentityClient;
-use crate::repository::RegistryRepository;
-use crate::signature::{self, SignatureError};
-use crate::store::{
-    DeregisterRequest, NodeRegistration, RegisterNodeRequest, RegistryStore, StatusUpdateRequest,
-    StoreError,
+use crate::{
+    federation::{
+        FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
+        PeerProposal, SignedFederationRpc, Vote,
+    },
+    identity_client::IdentityClient,
+    repository::RegistryRepository,
+    signature::{self, SignatureError},
+    store::{RegistryStore, StoreError},
 };
 
 pub struct AppState {

@@ -35,18 +35,18 @@ mod http;
 mod protocol;
 mod sync;
 
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio::sync::{mpsc, RwLock};
+use tracing::{error, info};
+
+use libp2p::Multiaddr;
+use redis::AsyncCommands;
+use thiserror::Error;
+
 use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use gossip::{GossipCommand, GossipEvent};
 use hsm_signer::{HsmRegistrySigner, HsmSignerError};
-use libp2p::Multiaddr;
-use redis::AsyncCommands;
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::Arc;
-use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info};
 
 #[derive(Error, Debug)]
 pub enum ServiceError {

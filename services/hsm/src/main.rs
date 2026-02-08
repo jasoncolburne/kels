@@ -1,5 +1,6 @@
 //! HSM Service - SoftHSM2 PKCS#11 wrapper
 
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -13,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer().json())
         .init();
 
-    tracing::info!("Starting HSM Service");
+    info!("Starting HSM Service");
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "80".to_string())

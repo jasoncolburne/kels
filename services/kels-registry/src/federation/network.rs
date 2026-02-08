@@ -4,19 +4,24 @@
 //! All RPC messages are signed with the sender's identity key and
 //! verified against the sender's KEL by the receiver.
 
-use super::config::FederationConfig;
-use super::types::{FederationError, FederationNodeId, TypeConfig};
-use crate::identity_client::IdentityClient;
-use openraft::error::{RPCError, Unreachable};
-use openraft::network::v2::RaftNetworkV2;
-use openraft::network::{RPCOption, RaftNetworkFactory};
-use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, SnapshotResponse, VoteRequest, VoteResponse,
-};
-use openraft::{BasicNode, SnapshotMeta, Vote};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
+
+use openraft::{
+    BasicNode, SnapshotMeta, Vote,
+    error::{RPCError, Unreachable},
+    network::{RPCOption, RaftNetworkFactory, v2::RaftNetworkV2},
+    raft::{
+        AppendEntriesRequest, AppendEntriesResponse, SnapshotResponse, VoteRequest, VoteResponse,
+    },
+};
+use serde::{Deserialize, Serialize};
+
+use super::{
+    config::FederationConfig,
+    types::{FederationError, FederationNodeId, TypeConfig},
+};
+use crate::identity_client::IdentityClient;
 
 /// Snapshot transfer data for federation RPC.
 ///

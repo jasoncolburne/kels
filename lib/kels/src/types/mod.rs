@@ -18,8 +18,9 @@ pub use sync::*;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use verifiable_storage::Chained;
+
+    use super::*;
 
     #[test]
     fn test_event_kind_serialization() {

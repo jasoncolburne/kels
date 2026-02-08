@@ -7,7 +7,7 @@ use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{error, info};
 
 /// Shared ready state
 pub type SharedReadyState = Arc<RwLock<bool>>;
@@ -47,13 +47,13 @@ pub async fn run_http_server(addr: std::net::SocketAddr, ready_state: SharedRead
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!("Failed to bind HTTP server: {}", e);
+            error!("Failed to bind HTTP server: {}", e);
             return;
         }
     };
 
     if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!("HTTP server error: {}", e);
+        error!("HTTP server error: {}", e);
     }
 }
 

@@ -1,5 +1,8 @@
 //! Identity Service REST API Handlers
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 use axum::{
     Json,
     extract::State,
@@ -7,13 +10,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{Kel, KelsError, KeyEventBuilder};
-
-use crate::hsm::HsmKeyProvider;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
-use crate::repository::{IdentityRepository, KeyEventRepository};
+use crate::{
+    hsm::HsmKeyProvider,
+    repository::{IdentityRepository, KeyEventRepository},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

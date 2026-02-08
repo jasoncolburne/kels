@@ -5,6 +5,14 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, RwLock},
+};
+use tokio::runtime::Runtime;
+
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -20,11 +28,6 @@ use kels::{
     MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
-use tokio::runtime::Runtime;
 use verifiable_storage::Chained;
 
 // ==================== Key State Persistence ====================

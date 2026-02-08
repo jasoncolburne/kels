@@ -1,8 +1,10 @@
 //! Cryptographic Key Provider
 
-use crate::{compute_rotation_hash, error::KelsError};
-use cesr::{Matter, PrivateKey, PublicKey, Signature, generate_secp256r1};
 use std::path::{Path, PathBuf};
+
+use cesr::{Matter, PrivateKey, PublicKey, Signature, generate_secp256r1};
+
+use crate::{compute_rotation_hash, error::KelsError};
 
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),

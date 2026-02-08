@@ -4,9 +4,11 @@
 
 use verifiable_storage_postgres::Stored;
 
-use crate::peer_store::PeerRepository;
-use crate::raft_store::{
-    RaftLogAuditRepository, RaftLogRepository, RaftStateRepository, RaftVoteRepository,
+use crate::{
+    peer_store::PeerRepository,
+    raft_store::{
+        RaftLogAuditRepository, RaftLogRepository, RaftStateRepository, RaftVoteRepository,
+    },
 };
 
 /// Combined repository that manages all kels-registry database tables.

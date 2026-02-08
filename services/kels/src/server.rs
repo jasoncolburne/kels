@@ -1,5 +1,9 @@
 //! KELS HTTP Server
 
+use std::{net::SocketAddr, sync::Arc};
+use tokio::sync::RwLock;
+use tracing::{error, info, warn};
+
 use axum::{
     Router,
     routing::{get, post},
@@ -7,13 +11,12 @@ use axum::{
 use cacheable::create_pubsub_subscriber;
 use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal};
 use redis::Client as RedisClient;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use verifiable_storage_postgres::RepositoryConnection;
 
-use crate::handlers::{self, AppState};
-use crate::repository::KelsRepository;
+use crate::{
+    handlers::{self, AppState},
+    repository::KelsRepository,
+};
 
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -31,23 +34,23 @@ pub async fn run(
     database_url: &str,
     redis_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tracing::info!("Connecting to database");
+    info!("Connecting to database");
     let repo = KelsRepository::connect(database_url)
         .await
         .map_err(|e| format!("Failed to connect to database: {}", e))?;
-    tracing::info!("Running migrations");
+    info!("Running migrations");
     repo.initialize()
         .await
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
-    tracing::info!("Database connected");
+    info!("Database connected");
 
-    tracing::info!("Connecting to Redis at {}", redis_url);
+    info!("Connecting to Redis at {}", redis_url);
     let redis_client = RedisClient::open(redis_url)
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)
         .await
         .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
-    tracing::info!("Connected to Redis");
+    info!("Connected to Redis");
 
     let kel_cache = ServerKelCache::new(redis_conn.clone(), "kels:kel");
     let state = Arc::new(AppState {
@@ -61,7 +64,7 @@ pub async fn run(
 
     let app = create_router(state);
 
-    tracing::info!(
+    info!(
         "KELS service listening on {}",
         listener
             .local_addr()
@@ -82,7 +85,7 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
     let mut pubsub = match create_pubsub_subscriber(&redis_url, pubsub_channel()).await {
         Ok(ps) => ps,
         Err(e) => {
-            tracing::error!("Failed to subscribe to cache sync channel: {}", e);
+            error!("Failed to subscribe to cache sync channel: {}", e);
             return;
         }
     };
@@ -92,7 +95,7 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
         let payload: String = match msg.get_payload() {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!("Failed to get cache sync message payload: {}", e);
+                warn!("Failed to get cache sync message payload: {}", e);
                 continue;
             }
         };
@@ -103,5 +106,5 @@ async fn cache_sync_subscriber(redis_url: String, local_cache: Arc<RwLock<LocalC
         }
     }
 
-    tracing::warn!("Cache sync subscriber ended unexpectedly");
+    warn!("Cache sync subscriber ended unexpectedly");
 }

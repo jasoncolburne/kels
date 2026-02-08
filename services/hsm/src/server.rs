@@ -1,14 +1,14 @@
 //! HSM Service HTTP Server
 
+use std::{net::SocketAddr, sync::Arc};
+use tracing::{error, info};
+
 use axum::{
     Router,
     routing::{get, post},
 };
-use std::net::SocketAddr;
-use std::sync::Arc;
 
-use crate::handlers;
-use crate::pkcs11::HsmContext;
+use crate::{handlers, pkcs11::HsmContext};
 
 /// Create and configure the Axum router
 pub fn create_router(hsm: Arc<HsmContext>) -> Router {
@@ -35,17 +35,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let pin = std::env::var("HSM_PIN").unwrap_or_else(|_| "1234".to_string());
 
     // Initialize HSM context
-    tracing::info!("Initializing SoftHSM2 from {}", library_path);
+    info!("Initializing SoftHSM2 from {}", library_path);
     let hsm = HsmContext::new(&library_path, slot_index, &pin)
         .map_err(|e| format!("Failed to initialize HSM: {}", e))?;
-    tracing::info!("SoftHSM2 initialized successfully");
+    info!("SoftHSM2 initialized successfully");
 
     let hsm = Arc::new(hsm);
 
     // Create router
     let app = create_router(hsm);
 
-    tracing::info!(
+    info!(
         "HSM service listening on {}",
         listener
             .local_addr()
@@ -65,8 +65,8 @@ async fn shutdown_signal() {
 
     let ctrl_c = async {
         match signal::ctrl_c().await {
-            Ok(()) => tracing::info!("Received Ctrl+C signal"),
-            Err(e) => tracing::error!("Failed to listen for Ctrl+C: {}", e),
+            Ok(()) => info!("Received Ctrl+C signal"),
+            Err(e) => error!("Failed to listen for Ctrl+C: {}", e),
         }
     };
 
@@ -75,10 +75,10 @@ async fn shutdown_signal() {
         match signal::unix::signal(signal::unix::SignalKind::terminate()) {
             Ok(mut sig) => {
                 sig.recv().await;
-                tracing::info!("Received SIGTERM signal");
+                info!("Received SIGTERM signal");
             }
             Err(e) => {
-                tracing::error!("Failed to install SIGTERM handler: {}", e);
+                error!("Failed to install SIGTERM handler: {}", e);
                 // Wait forever since we can't receive SIGTERM
                 std::future::pending::<()>().await;
             }
@@ -93,5 +93,5 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    tracing::info!("Starting graceful shutdown...");
+    info!("Starting graceful shutdown...");
 }

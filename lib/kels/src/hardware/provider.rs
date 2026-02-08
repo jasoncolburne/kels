@@ -1,10 +1,11 @@
 //! Hardware Key Provider - Secure Enclave backed key storage
 
-use crate::error::KelsError;
-use crate::{compute_rotation_hash, crypto::KeyProvider};
-use cesr::{Matter, PublicKey, Signature};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use cesr::{Matter, PublicKey, Signature};
+
+use crate::{compute_rotation_hash, crypto::KeyProvider, error::KelsError};
 
 use super::secure_enclave::{
     DefaultSecureEnclave, SecureEnclaveKeyHandle, SecureEnclaveOperations,

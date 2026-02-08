@@ -1,19 +1,21 @@
 //! KELS HTTP Client
 
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
+
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
+
 use crate::{
     error::KelsError,
     types::{
         BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
         KelResponse, SignedKeyEvent,
     },
-};
-use futures::future::join_all;
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
 };
 
 #[cfg(feature = "redis")]

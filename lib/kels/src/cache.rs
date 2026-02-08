@@ -14,13 +14,16 @@
 //! - **Count-Min Sketch**: Estimates access frequency with minimal memory
 //! - **Admission**: Items evicted from window compete with main's victim on frequency
 
-use crate::{KelsError, SignedKeyEvent};
-use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
-use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, VecDeque},
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 use tokio::sync::RwLock;
+
+use redis::{AsyncCommands, aio::ConnectionManager};
+
+use crate::{KelsError, SignedKeyEvent};
 
 const LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
 const PUBSUB_CHANNEL: &str = "kel_updates";

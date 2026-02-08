@@ -6,18 +6,24 @@
 //! - Processing incoming announcements and fetching missing KELs via HTTP
 //! - Submitting fetched events to local KELS
 
-use crate::allowlist::SharedAllowlist;
-use crate::gossip::{GossipCommand, GossipEvent};
-use crate::protocol::{AnnouncementScope, KelAnnouncement};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, error, info, warn};
+
 use futures::StreamExt;
 use kels::{KelsClient, KelsError, PeerScope, SignedKeyEvent};
 use libp2p::PeerId;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+
+use crate::{
+    allowlist::SharedAllowlist,
+    gossip::{GossipCommand, GossipEvent},
+    protocol::{AnnouncementScope, KelAnnouncement},
+};
 
 /// Tracks prefix:said pairs recently stored via gossip to prevent feedback loops.
 /// When gossip stores events, KELS publishes to Redis, which would re-trigger announcement.

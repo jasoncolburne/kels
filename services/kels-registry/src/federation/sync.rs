@@ -5,15 +5,15 @@
 //!
 //! Note: Raft->DB sync happens immediately in the state machine apply() method.
 
-use super::FederationNode;
-use crate::repository::RegistryRepository;
-use kels::{Peer, PeerScope};
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
+
+use kels::{Peer, PeerScope};
 use verifiable_storage::{Order, Query, QueryExecutor};
+
+use super::FederationNode;
+use crate::repository::RegistryRepository;
 
 /// Run the DB->Raft sync loop for the leader.
 ///

@@ -4,21 +4,22 @@
 //! auditable Raft state persistence. Truncate and purge operations move entries
 //! to an audit table rather than deleting them.
 
-use super::types::{FederationRequest, TypeConfig};
-use crate::raft_store::{RaftLogRepository, RaftStateRepository, RaftVoteRepository};
-use kels::{RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
-use openraft::storage::IOFlushed;
-use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
-use openraft::{Entry, LogId, LogState, OptionalSend, Vote};
-use std::fmt::Debug;
-use std::io;
-use std::ops::RangeBounds;
-use std::sync::Arc;
+use std::{fmt::Debug, io, ops::RangeBounds, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
+
+use kels::{RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
+use openraft::{
+    Entry, LogId, LogState, OptionalSend, Vote,
+    storage::IOFlushed,
+    type_config::alias::{CommittedLeaderIdOf, LogIdOf},
+};
 use verifiable_storage::{
     Chained, Delete, Filter, Order, Query, QueryExecutor, TransactionExecutor,
 };
+
+use super::types::{FederationRequest, TypeConfig};
+use crate::raft_store::{RaftLogRepository, RaftStateRepository, RaftVoteRepository};
 
 /// PostgreSQL-backed Raft log storage using verifiable-storage.
 #[derive(Clone)]

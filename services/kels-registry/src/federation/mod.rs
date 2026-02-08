@@ -33,13 +33,17 @@ pub use types::{
     ProposalStatus, TypeConfig, Vote,
 };
 
-use crate::repository::RegistryRepository;
-use kels::{Peer, PeerScope};
-use openraft::Raft;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+
+use kels::{Peer, PeerScope};
+use openraft::Raft;
+
+use crate::repository::RegistryRepository;
 
 /// Federation node that participates in multi-registry consensus.
 ///

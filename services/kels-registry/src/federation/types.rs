@@ -2,12 +2,12 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use std::fmt;
+
 use kels::Peer;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use thiserror::Error;
-use verifiable_storage::Chained;
-use verifiable_storage::{SelfAddressed, StorageDatetime};
+use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
 /// Node ID type for Raft (numeric).
 pub type FederationNodeId = u64;

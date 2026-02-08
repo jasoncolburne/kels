@@ -1,5 +1,6 @@
 //! KELS Registry - Node Registration Service
 
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -12,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer().json())
         .init();
 
-    tracing::info!("Starting KELS Registry Service");
+    info!("Starting KELS Registry Service");
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "80".to_string())

@@ -1,7 +1,8 @@
 //! Federation configuration types.
 
-use super::types::{FederationError, FederationNodeId};
 use serde::{Deserialize, Serialize};
+
+use super::types::{FederationError, FederationNodeId};
 
 /// Trusted registry prefixes - MUST be set at compile time.
 /// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
