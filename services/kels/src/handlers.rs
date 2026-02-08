@@ -13,6 +13,7 @@ use kels::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use crate::repository::KelsRepository;
 
@@ -32,6 +33,7 @@ impl IntoResponse for PreSerializedJson {
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
+    pub(crate) redis_conn: redis::aio::ConnectionManager,
 }
 
 // ==================== Error Handling ====================
@@ -129,6 +131,58 @@ pub(crate) async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+/// Ready response
+#[derive(serde::Serialize)]
+pub(crate) struct ReadyResponse {
+    ready: bool,
+    status: String,
+}
+
+/// Check if the node is ready by reading gossip service state from Redis.
+pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ReadyResponse>) {
+    use redis::AsyncCommands;
+
+    let mut conn = state.redis_conn.clone();
+
+    match conn.get::<_, Option<String>>("kels:gossip:ready").await {
+        Ok(Some(status)) if status == "true" => (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                ready: true,
+                status: "ready".to_string(),
+            }),
+        ),
+        Ok(Some(status)) if status == "bootstrapping" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "bootstrapping".to_string(),
+            }),
+        ),
+        Ok(Some(status)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status,
+            }),
+        ),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "unknown".to_string(),
+            }),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ReadyResponse {
+                ready: false,
+                status: "error".to_string(),
+            }),
+        ),
+    }
+}
+
 // ==================== Event Handlers ====================
 
 /// Submit key events with signatures.
@@ -191,7 +245,7 @@ pub(crate) async fn submit_events(
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
     kel.sort();
 
-    tracing::debug!(
+    debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
         prefix,
         events.len(),
@@ -213,7 +267,7 @@ pub(crate) async fn submit_events(
         .cloned()
         .collect();
 
-    tracing::debug!(
+    debug!(
         "submit_events: new_events={} (kinds: {:?})",
         new_events.len(),
         new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
@@ -233,7 +287,7 @@ pub(crate) async fn submit_events(
         .merge(new_events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
-    tracing::debug!("submit_events: merge result={:?}", result);
+    debug!("submit_events: merge result={:?}", result);
 
     for event in &events_to_add {
         tx.insert_signed_event(event).await?;
@@ -274,7 +328,7 @@ pub(crate) async fn submit_events(
         // Always fetch and store the updated KEL (including after recovery/contest)
         // This publishes the correct SAID for gossip synchronization
         if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
-            tracing::warn!("Failed to update cache: {}", e);
+            warn!("Failed to update cache: {}", e);
         }
     }
 
@@ -327,7 +381,7 @@ pub(crate) async fn get_kel(
         }
         Ok(None) => {}
         Err(e) => {
-            tracing::warn!("Cache error for prefix {}: {}", prefix, e);
+            warn!("Cache error for prefix {}: {}", prefix, e);
         }
     }
 
@@ -343,7 +397,7 @@ pub(crate) async fn get_kel(
 
     // Store in cache
     if let Err(e) = state.kel_cache.store(&prefix, &signed_events).await {
-        tracing::warn!("Failed to cache KEL: {}", e);
+        warn!("Failed to cache KEL: {}", e);
     }
 
     Ok(Json(signed_events).into_response())
@@ -421,7 +475,7 @@ pub(crate) async fn get_kels_batch(
                 if !events.is_empty()
                     && let Err(e) = state.kel_cache.store(&prefix, &events).await
                 {
-                    tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
+                    warn!("Failed to cache KEL for {}: {}", prefix, e);
                 }
 
                 let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());

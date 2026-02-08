@@ -1,18 +1,25 @@
 #!/bin/bash
 # test-bootstrap.sh - Bootstrap Sync Integration Tests
-# Tests registry-based node discovery and bootstrap sync functionality
+# Tests peer allowlist, bootstrap sync, and cross-node event propagation
 #
-# This script tests the KELS node registration and bootstrap sync protocol:
-# 1. Registry lists registered nodes
-# 2. CLI can discover nodes from registry
-# 3. Nodes sync KELs during bootstrap
+# This script tests the KELS peer allowlist and bootstrap sync protocol:
+# 1. Registry lists peers in allowlist
+# 2. Nodes sync KELs during bootstrap
+# 3. Events submitted to regional nodes propagate to core nodes
+#
+# Node topology:
+#   Registry A: nodes a (core), d (regional)
+#   Registry B: node b (core)
+#   Registry C: node c (core)
 #
 # Usage: test-bootstrap.sh
 #
 # Environment variables:
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
-#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.svc.cluster.local)
-#   REGISTRY_HOST - registry hostname (default: kels-registry.kels-registry.svc.cluster.local)
+#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
+#   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.kels-node-c.kels)
+#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
+#   REGISTRY_HOST - registry hostname (default: kels-registry.kels-registry-a.kels)
 
 # Colors
 RED='\033[0;31m'
@@ -23,10 +30,18 @@ NC='\033[0m' # No Color
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
-NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.svc.cluster.local}"
-REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry.svc.cluster.local}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
+NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.kels-node-c.kels}"
+NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
+NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
+NODE_F_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-f.kels}"
+REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry-a.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
+NODE_C_URL="http://${NODE_C_KELS_HOST}"
+NODE_D_URL="http://${NODE_D_KELS_HOST}"
+NODE_E_URL="http://${NODE_E_KELS_HOST}"
+NODE_F_URL="http://${NODE_F_KELS_HOST}"
 REGISTRY_URL="http://${REGISTRY_HOST}"
 
 # Test state
@@ -63,17 +78,14 @@ check_registry_health() {
     curl -s "$REGISTRY_URL/health" > /dev/null 2>&1
 }
 
-get_node_count() {
-    curl -s "$REGISTRY_URL/api/nodes" | jq '.nodes | length'
+get_peer_count() {
+    # Get active peers from the allowlist
+    curl -s "$REGISTRY_URL/api/peers" | jq '[.peers[].records[-1] | select(.active == true)] | length'
 }
 
-get_ready_node_count() {
-    curl -s "$REGISTRY_URL/api/nodes" | jq '[.nodes[] | select(.status == "ready")] | length'
-}
-
-node_is_registered() {
-    local node_id="$1"
-    curl -s "$REGISTRY_URL/api/nodes" | jq -e ".nodes[] | select(.nodeId == \"$node_id\")" > /dev/null
+peer_exists() {
+    local peer_id="$1"
+    curl -s "$REGISTRY_URL/api/peers" | jq -e ".peers[].records[-1] | select(.peerId == \"$peer_id\")" > /dev/null
 }
 
 get_prefix_count() {
@@ -88,6 +100,10 @@ echo "KELS Bootstrap Sync Test Suite"
 echo "========================================="
 echo "Node-A URL:    $NODE_A_URL"
 echo "Node-B URL:    $NODE_B_URL"
+echo "Node-C URL:    $NODE_C_URL"
+echo "Node-D URL:    $NODE_D_URL"
+echo "Node-E URL:    $NODE_E_URL"
+echo "Node-F URL:    $NODE_F_URL"
 echo "Registry URL:  $REGISTRY_URL"
 echo "Config:        $KELS_CLI_HOME"
 echo "========================================="
@@ -111,7 +127,7 @@ for i in {1..30}; do
 done
 
 # Wait for KELS servers
-for url in "$NODE_A_URL" "$NODE_B_URL"; do
+for url in "$NODE_A_URL" "$NODE_B_URL" "$NODE_C_URL" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"; do
     for i in {1..30}; do
         if curl -s "$url/health" > /dev/null 2>&1; then
             echo "  $url is ready"
@@ -142,38 +158,21 @@ else
 fi
 
 # ========================================
-# Scenario 2: Node Registration
+# Scenario 2: Peer Allowlist
 # ========================================
 if check_registry_health; then
-    echo -e "${CYAN}=== Scenario 2: Node Registration ===${NC}"
-    echo "Verify nodes are registered in the registry"
+    echo -e "${CYAN}=== Scenario 2: Peer Allowlist ===${NC}"
+    echo "Verify peers are in the allowlist"
     echo ""
 
-    NODE_COUNT=$(get_node_count)
-    echo "Nodes registered: $NODE_COUNT"
-    run_test "At least one node registered" [ "$NODE_COUNT" -ge 1 ]
+    PEER_COUNT=$(get_peer_count)
+    echo "Active peers: $PEER_COUNT"
+    run_test "At least one peer in allowlist" [ "$PEER_COUNT" -ge 1 ]
 
-    READY_COUNT=$(get_ready_node_count)
-    echo "Ready nodes: $READY_COUNT"
-    run_test "At least one ready node" [ "$READY_COUNT" -ge 1 ]
-
-    # List all nodes
+    # List all peers
     echo ""
-    echo "Registered nodes:"
-    curl -s "$REGISTRY_URL/api/nodes" | jq -r '.nodes[] | "  \(.nodeId) [\(.status)] - \(.kelsUrl)"'
-    echo ""
-fi
-
-# ========================================
-# Scenario 3: CLI Node Discovery
-# ========================================
-if check_registry_health; then
-    echo -e "${CYAN}=== Scenario 3: CLI Node Discovery ===${NC}"
-    echo "Test CLI list-nodes command"
-    echo ""
-
-    # Test list-nodes command
-    run_test "CLI list-nodes" kels-cli --registry "$REGISTRY_URL" list-nodes
+    echo "Allowlist peers:"
+    curl -s "$REGISTRY_URL/api/peers" | jq -r '.peers[].records[-1] | select(.active == true) | "  \(.nodeId) - \(.kelsUrl)"'
     echo ""
 fi
 
@@ -264,14 +263,78 @@ kel_exists_on_node() {
 
 run_test "Created KEL exists on node-a" kel_exists_on_node "$NODE_A_URL" "$PREFIX1"
 run_test "Created KEL synced to node-b" kel_exists_on_node "$NODE_B_URL" "$PREFIX1"
+run_test "Created KEL synced to node-c" kel_exists_on_node "$NODE_C_URL" "$PREFIX1"
+run_test "Created KEL synced to node-d" kel_exists_on_node "$NODE_D_URL" "$PREFIX1"
 
 echo ""
 
 # ========================================
-# Scenario 7: Auto-Select Node (if registry available)
+# Scenario 7: Cross-Node Event Propagation
+# ========================================
+echo -e "${CYAN}=== Scenario 7: Cross-Node Event Propagation ===${NC}"
+echo "Submit events via node-d (regional peer), verify propagation to nodes b and c"
+echo ""
+
+# Get the current KEL length on node A (source of truth for this KEL)
+get_kel_length() {
+    local url="$1"
+    local prefix="$2"
+    curl -s "$url/api/kels/kel/$prefix" | jq 'length'
+}
+
+INITIAL_LENGTH_A=$(get_kel_length "$NODE_A_URL" "$PREFIX1")
+echo "Initial KEL length on node-a: $INITIAL_LENGTH_A"
+
+# Submit an anchor event via node-d
+# Generate a test SAID (44 chars, starts with E)
+TEST_SAID="ETestAnchorSaid_$(date +%s)_________________________"
+TEST_SAID="${TEST_SAID:0:44}"
+echo "Submitting anchor event via node-d with SAID: $TEST_SAID"
+
+ANCHOR_OUTPUT=$(kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID" 2>&1)
+echo "$ANCHOR_OUTPUT"
+
+if echo "$ANCHOR_OUTPUT" | grep -q "Anchored"; then
+    run_test "Anchor event submitted via node-d" true
+else
+    run_test "Anchor event submitted via node-d" false
+fi
+
+# Wait for gossip propagation
+echo "Waiting for gossip propagation..."
+sleep 6
+
+# Verify KEL length increased on all nodes
+NEW_LENGTH_A=$(get_kel_length "$NODE_A_URL" "$PREFIX1")
+NEW_LENGTH_B=$(get_kel_length "$NODE_B_URL" "$PREFIX1")
+NEW_LENGTH_C=$(get_kel_length "$NODE_C_URL" "$PREFIX1")
+NEW_LENGTH_D=$(get_kel_length "$NODE_D_URL" "$PREFIX1")
+NEW_LENGTH_E=$(get_kel_length "$NODE_E_URL" "$PREFIX1")
+NEW_LENGTH_F=$(get_kel_length "$NODE_F_URL" "$PREFIX1")
+
+echo "KEL lengths after anchor:"
+echo "  Node-A: $NEW_LENGTH_A"
+echo "  Node-B: $NEW_LENGTH_B"
+echo "  Node-C: $NEW_LENGTH_C"
+echo "  Node-D: $NEW_LENGTH_D"
+echo "  Node-E: $NEW_LENGTH_E"
+echo "  Node-F: $NEW_LENGTH_F"
+
+# All nodes should have the same KEL length, greater than initial
+run_test "KEL grew after anchor on node-a" [ "$NEW_LENGTH_A" -gt "$INITIAL_LENGTH_A" ]
+run_test "Anchor propagated to node-b" [ "$NEW_LENGTH_B" = "$NEW_LENGTH_A" ]
+run_test "Anchor propagated to node-c" [ "$NEW_LENGTH_C" = "$NEW_LENGTH_A" ]
+run_test "Anchor propagated to node-d" [ "$NEW_LENGTH_D" = "$NEW_LENGTH_A" ]
+run_test "Anchor propagated to node-e" [ "$NEW_LENGTH_E" = "$NEW_LENGTH_A" ]
+run_test "Anchor propagated to node-f" [ "$NEW_LENGTH_F" = "$NEW_LENGTH_A" ]
+
+echo ""
+
+# ========================================
+# Scenario 8: Auto-Select Node (if registry available)
 # ========================================
 if check_registry_health; then
-    echo -e "${CYAN}=== Scenario 7: Auto-Select Fastest Node ===${NC}"
+    echo -e "${CYAN}=== Scenario 8: Auto-Select Fastest Node ===${NC}"
     echo "Test CLI auto-select functionality"
     echo ""
 

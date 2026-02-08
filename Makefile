@@ -10,14 +10,18 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
-# Read registry prefix from file (required for CLI builds)
-REGISTRY_PREFIX_FILE := .kels/registry_prefix
-REGISTRY_PREFIX := $(shell cat $(REGISTRY_PREFIX_FILE) 2>/dev/null || echo "")
-export REGISTRY_PREFIX
+# Read federated registries - just the prefixes (for compile-time trust anchor)
+TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
 
 all: fmt-check deny clippy test build
+
+benchmark: clean-garden
+	garden run coredns-unconfig
+	garden deploy test-client --env=node-a
+	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 5
 
 build:
 	cargo build --workspace --all-features
@@ -26,6 +30,21 @@ clean:
 	@echo "Cleaning workspace..."
 	cargo clean
 	find . -type d -name "target" -exec rm -rf {} +
+	make -C clients/kels-client clean
+
+clean-garden:
+	# Cleanup all environments
+	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
+	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
+
+clean-docker:
+	@echo "Cleaning docker caches..."
+	docker system prune -af --volumes && docker builder prune -af
+
+clean-test-containers:
+	@echo "Stopping and removing test containers..."
+	@docker ps -q --filter "label=kels-test=true" | xargs -r docker stop 2>/dev/null || true
+	@docker ps -aq --filter "label=kels-test=true" | xargs -r docker rm 2>/dev/null || true
 
 clippy:
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -59,6 +78,13 @@ install-deny:
 test:
 	cargo test --workspace
 
+# Files excluded from coverage (can't be meaningfully unit tested):
+# - Binary mains (main.rs, admin.rs) - entry points only
+# - FFI code (kels-ffi) - C bindings
+# - Server setup (server.rs in services) - integration code
+# - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
+COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
+
 coverage:
 	@if ! command -v cargo-llvm-cov &> /dev/null; then \
 		echo "cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov"; \
@@ -66,7 +92,7 @@ coverage:
 	fi
 	@printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
 	@echo ""
-	@cargo llvm-cov --workspace 2>&1 | awk '\
+	@cargo llvm-cov --workspace $(COV_EXCLUDES) 2>&1 | awk '\
 		NR == 1 { next } \
 		/^-+$$/ { next } \
 		/^TOTAL/ { print $$10 > "/tmp/cov_total"; next } \
@@ -74,39 +100,69 @@ coverage:
 		| sort -k3 -rn
 	@echo ""
 	@echo "TOTAL: $$(cat /tmp/cov_total)"
-	@cargo llvm-cov --workspace --html --no-run >/dev/null 2>&1
+	@cargo llvm-cov --workspace $(COV_EXCLUDES) --html --no-run >/dev/null 2>&1
 	@echo ""
 	@echo "Full report: target/llvm-cov/html/index.html"
 
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
 
-test-comprehensive:
-	touch .kels/registry_prefix
+test-comprehensive: clean-garden
+	garden run coredns-config
 
-	garden cleanup deploy && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=registry
-	garden deploy --env=registry && garden run fetch-registry-prefix --env=registry
+	echo '{}' > .kels/federated-registries.json
 
-	garden deploy --env node-a && garden run add-node-a --env registry
+	# Deploy registries and fetch prefixes
+	garden deploy --env=registry-a && garden run fetch-registry-prefix --env=registry-a
+	garden deploy --env=registry-b && garden run fetch-registry-prefix --env=registry-b
+	garden deploy --env=registry-c && garden run fetch-registry-prefix --env=registry-c
+
+	# Redeploy registries with federation config (now that all prefixes are known)
+	garden deploy --env=registry-a
+	garden deploy --env=registry-b
+	garden deploy --env=registry-c
+
+	# Wait for federation leader election
+	sleep 3
+
+	# Deploy nodes and add as core peers via multi-party approval
+	garden deploy --env=node-a
+	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	garden deploy --env=node-c && garden run add-node-c --env registry
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-
-	garden deploy --env=node-b && garden run add-node-b --env registry
+	garden deploy --env=node-b
+	garden run propose-node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
-	kubectl exec -it test-client -- ./test-kels.sh
-	kubectl exec -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	kubectl exec -it test-client -- ./test-gossip.sh
-	kubectl exec -it test-client -- ./test-bootstrap.sh
+	garden deploy --env=node-c
+	garden run propose-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-b
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-d as regional to registry-a only (not replicated via federation)
+	garden deploy --env=node-d && garden run add-regional-node-d --env=registry-a
+	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-e as regional to registry-b only (not replicated via federation)
+	garden deploy --env=node-e && garden run add-regional-node-e --env=registry-b
+	kubectl rollout restart deployment/kels-gossip -n kels-node-e && kubectl rollout status deployment/kels-gossip -n kels-node-e
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	# Deploy node-f as regional to registry-c only (not replicated via federation)
+	garden deploy --env=node-f && garden run add-regional-node-f --env=registry-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-f && kubectl rollout status deployment/kels-gossip -n kels-node-f
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
+	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
+	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh

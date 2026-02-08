@@ -2,20 +2,27 @@
 //!
 //! Disconnects peers not in the authorized allowlist after connection establishment.
 
-use libp2p::swarm::behaviour::ConnectionEstablished;
-use libp2p::swarm::{
-    CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
-    THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
 };
-use libp2p::{Multiaddr, PeerId};
-use std::collections::HashSet;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
-use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
+
+use kels::MultiRegistryClient;
+use libp2p::{
+    swarm::{
+        behaviour::ConnectionEstablished, CloseConnection, ConnectionClosed, ConnectionDenied,
+        ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent,
+        ToSwarm,
+    },
+    Multiaddr, PeerId,
+};
+use thiserror::Error;
+use verifiable_storage::Chained;
 
 /// NetworkBehaviour that disconnects peers not in the allowlist.
 ///
@@ -24,8 +31,8 @@ use tracing::{debug, error, info, warn};
 /// for an allowlist refresh and holds the peer in a pending state. After refresh,
 /// `verify_pending_peers` should be called to disconnect still-unauthorized peers.
 pub struct AllowlistBehaviour {
-    /// Shared allowlist of authorized PeerIds
-    allowlist: Arc<RwLock<HashSet<PeerId>>>,
+    /// Shared allowlist of authorized PeerIds mapped to their Peer data
+    allowlist: SharedAllowlist,
     /// Peers awaiting verification after allowlist refresh
     pending_verification: HashSet<PeerId>,
     /// Pending disconnections to emit
@@ -38,7 +45,7 @@ impl AllowlistBehaviour {
     /// Create a new AllowlistBehaviour with the given shared allowlist.
     ///
     /// Returns the behaviour and a receiver that signals when refresh is needed.
-    pub fn new(allowlist: Arc<RwLock<HashSet<PeerId>>>) -> (Self, mpsc::Receiver<()>) {
+    pub fn new(allowlist: SharedAllowlist) -> (Self, mpsc::Receiver<()>) {
         let (tx, rx) = mpsc::channel(1);
         (
             Self {
@@ -55,7 +62,7 @@ impl AllowlistBehaviour {
     fn is_peer_allowed(&self, peer: &PeerId) -> bool {
         self.allowlist
             .try_read()
-            .map(|guard| guard.contains(peer))
+            .map(|guard| guard.contains_key(peer))
             .unwrap_or(false)
     }
 
@@ -64,7 +71,7 @@ impl AllowlistBehaviour {
     pub async fn verify_pending_peers(&mut self) {
         let allowlist = self.allowlist.read().await;
         for peer_id in self.pending_verification.drain() {
-            if !allowlist.contains(&peer_id) {
+            if !allowlist.contains_key(&peer_id) {
                 warn!(
                     peer_id = %peer_id,
                     "Peer not in allowlist after refresh, disconnecting"
@@ -198,12 +205,18 @@ pub enum AllowlistRefreshError {
     KelVerificationFailed(String),
 }
 
-// Use types from kels library
-use kels::KelsRegistryClient;
-use verifiable_storage::Chained;
+/// Shared allowlist type - maps PeerId to full Peer data
+pub type SharedAllowlist = Arc<RwLock<HashMap<PeerId, kels::Peer>>>;
 
-/// Shared allowlist type
-pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
+/// Get this node's scope from the allowlist.
+/// Returns Regional as a safe default if not found.
+pub async fn get_local_scope(peer_id: &PeerId, allowlist: &SharedAllowlist) -> kels::PeerScope {
+    let guard = allowlist.read().await;
+    guard
+        .get(peer_id)
+        .map(|peer| peer.scope)
+        .unwrap_or(kels::PeerScope::Regional)
+}
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
@@ -214,25 +227,22 @@ pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_client: &KelsRegistryClient,
+    registry_client: &mut MultiRegistryClient,
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
 ) -> Result<usize, AllowlistRefreshError> {
-    // Fetch and verify the registry's KEL
-    debug!("Verifying registry KEL");
-    let registry_kel = registry_client
-        .verify_registry(registry_prefix)
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    let original_peers = allowlist.read().await;
+    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
+    drop(original_peers);
 
     // Fetch peers
     debug!("Fetching peers");
     let response = registry_client
-        .fetch_peers()
+        .fetch_peers(registry_prefix)
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
-    let mut authorized_peers = HashSet::new();
+    let mut authorized_peers = HashMap::new();
 
     for history in response.peers {
         // Get the latest (last) record
@@ -248,6 +258,13 @@ pub async fn refresh_allowlist(
                 continue;
             }
 
+            // Fetch and verify the registry's KEL
+            debug!("Verifying registry KEL");
+            let registry_kel = registry_client
+                .fetch_registry_kel(&latest.authorizing_kel, true)
+                .await
+                .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+
             // Verify the peer's SAID is anchored in the registry's KEL
             if !registry_kel.contains_anchor(&latest.said) {
                 warn!(
@@ -261,7 +278,7 @@ pub async fn refresh_allowlist(
             if latest.active {
                 match PeerId::from_str(&latest.peer_id) {
                     Ok(peer_id) => {
-                        authorized_peers.insert(peer_id);
+                        authorized_peers.insert(peer_id, latest.clone());
                     }
                     Err(e) => {
                         warn!(
@@ -277,13 +294,20 @@ pub async fn refresh_allowlist(
 
     let count = authorized_peers.len();
 
-    // Update the shared allowlist
-    *allowlist.write().await = authorized_peers;
+    if original_saids.len() != count
+        || authorized_peers
+            .iter()
+            .any(|(_, p)| !original_saids.contains(&p.said))
+    {
+        // Update the shared allowlist
+        *allowlist.write().await = authorized_peers;
 
-    info!(
-        "Allowlist refreshed with {} verified authorized peers",
-        count
-    );
+        info!(
+            "Allowlist refreshed with {} verified authorized peers",
+            count
+        );
+    }
+
     Ok(count)
 }
 
@@ -292,8 +316,8 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_client: KelsRegistryClient,
-    registry_prefix: String,
+    registry_client: &mut MultiRegistryClient,
+    registry_prefix: &str,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
 ) {
@@ -303,7 +327,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(&registry_client, &registry_prefix, &allowlist).await {
+        match refresh_allowlist(registry_client, registry_prefix, &allowlist).await {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }
@@ -320,16 +344,33 @@ pub async fn run_allowlist_refresh_loop(
 mod tests {
     use super::*;
 
+    fn create_test_peer(peer_id: &PeerId) -> kels::Peer {
+        kels::Peer {
+            said: "test-said".to_string(),
+            prefix: "test-prefix".to_string(),
+            previous: None,
+            version: 1,
+            created_at: verifiable_storage::StorageDatetime::now(),
+            peer_id: peer_id.to_string(),
+            node_id: "test-node".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            active: true,
+            scope: kels::PeerScope::Core,
+            kels_url: "http://test:8080".to_string(),
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+        }
+    }
+
     #[test]
     fn test_allowlist_behaviour_creation() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _refresh_rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.pending_disconnects.is_empty());
     }
 
     #[test]
     fn test_allowlist_behaviour_initial_state() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.pending_verification.is_empty());
         assert!(behaviour.pending_disconnects.is_empty());
@@ -337,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_is_peer_allowed_empty_allowlist() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         // Generate a random PeerId
         let peer_id = PeerId::random();
@@ -347,16 +388,16 @@ mod tests {
     #[tokio::test]
     async fn test_is_peer_allowed_with_peer() {
         let peer_id = PeerId::random();
-        let mut set = HashSet::new();
-        set.insert(peer_id);
-        let allowlist = Arc::new(RwLock::new(set));
+        let mut map = HashMap::new();
+        map.insert(peer_id, create_test_peer(&peer_id));
+        let allowlist = Arc::new(RwLock::new(map));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.is_peer_allowed(&peer_id));
     }
 
     #[tokio::test]
     async fn test_verify_pending_peers_removes_unauthorized() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
         let peer_id = PeerId::random();
@@ -371,9 +412,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_pending_peers_keeps_authorized() {
         let peer_id = PeerId::random();
-        let mut set = HashSet::new();
-        set.insert(peer_id);
-        let allowlist = Arc::new(RwLock::new(set));
+        let mut map = HashMap::new();
+        map.insert(peer_id, create_test_peer(&peer_id));
+        let allowlist = Arc::new(RwLock::new(map));
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
         behaviour.pending_verification.insert(peer_id);

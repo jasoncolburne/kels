@@ -19,10 +19,11 @@ COPY lib/kels /app/lib/kels
 COPY services/kels /app/services/kels
 
 # Build with BuildKit cache mounts for cargo registry and target directory
+ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/services/kels
-RUN --mount=type=cache,id=kels-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-target,target=/app/services/kels/target \
-    cargo build --release --bin kels && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin kels && \
     cp /app/services/kels/target/release/kels /app/kels
 
 # Final stage
@@ -33,7 +34,6 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y \
-    ca-certificates \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 

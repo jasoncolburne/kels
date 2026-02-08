@@ -2,10 +2,11 @@
 
 use async_trait::async_trait;
 
-use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::store::KelStore;
-use crate::types::SignedKeyEvent;
+use super::KelStore;
+use crate::{
+    error::KelsError,
+    types::{Kel, SignedKeyEvent},
+};
 
 /// File-based KEL store for CLI and desktop apps
 pub struct FileKelStore {
@@ -97,10 +98,10 @@ impl KelStore for FileKelStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::SoftwareKeyProvider;
-    use crate::builder::KeyEventBuilder;
     use tempfile::TempDir;
+
+    use super::*;
+    use crate::{SoftwareKeyProvider, builder::KeyEventBuilder};
 
     async fn create_test_kel() -> Kel {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);

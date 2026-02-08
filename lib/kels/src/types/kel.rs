@@ -1,12 +1,16 @@
 //! Key Event Log (KEL) - cryptographically linked chain of key events
 
-use crate::error::KelsError;
-use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::{Deref, DerefMut},
+};
+
 use cesr::{Digest, Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
 use verifiable_storage::Chained;
+
+use super::{KelMergeResult, KeyEvent, SignedKeyEvent};
+use crate::error::KelsError;
 
 pub fn compute_rotation_hash(public_key: &str) -> String {
     let digest = Digest::blake3_256(public_key.as_bytes());
@@ -71,6 +75,13 @@ impl Kel {
 
     pub fn prefix(&self) -> Option<&str> {
         self.0.first().map(|e| e.event.prefix.as_str())
+    }
+
+    pub fn verify_prefix(&self, trusted_prefixes: &HashSet<&str>) -> bool {
+        match self.prefix() {
+            Some(p) => trusted_prefixes.contains(&p),
+            None => false,
+        }
     }
 
     // ==================== State Queries ====================

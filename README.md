@@ -156,8 +156,8 @@ Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
 First, add the following entries to `/etc/hosts` to enable local hostname resolution:
 
 ```
-127.0.0.1 kels.kels-node-a.local
-127.0.0.1 kels.kels-node-b.local
+127.0.0.1 kels.kels-node-a.kels
+127.0.0.1 kels.kels-node-b.kels
 ```
 
 This allows the CLI and iOS app to connect to the local KELS nodes using their service names.
@@ -218,6 +218,7 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
+| `GET` | `/ready` | Readiness check (gossip sync status) |
 | `POST` | `/api/kels/events` | Submit signed events |
 | `GET` | `/api/kels/kel/:prefix` | Fetch KEL by prefix |
 | `GET` | `/api/kels/kel/:prefix?audit=true` | Fetch KEL with audit records |
@@ -248,7 +249,7 @@ For VSCode with rust-analyzer, copy the example settings to enable proper lintin
 cp -r .vscode.example .vscode
 ```
 
-This provides rust-analyzer with required environment variables (like `REGISTRY_PREFIX`) for analysis without affecting actual builds.
+This provides rust-analyzer with required environment variables (like `TRUSTED_REGISTRY_PREFIXES`) for analysis without affecting actual builds.
 
 ### Testing
 
@@ -282,6 +283,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
 - [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
 - [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
+- [Multi-Registry Federation](docs/federation.md) - Federated registries with Raft consensus
 
 ## License
 

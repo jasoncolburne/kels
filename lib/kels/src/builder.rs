@@ -2,13 +2,15 @@
 
 use std::collections::HashSet;
 
-use crate::client::KelsClient;
-use crate::crypto::KeyProvider;
-use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::store::KelStore;
-use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey};
+
+use crate::{
+    client::KelsClient,
+    crypto::KeyProvider,
+    error::KelsError,
+    store::KelStore,
+    types::{Kel, KeyEvent, SignedKeyEvent},
+};
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
@@ -654,9 +656,10 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::{Digest, Matter};
+
     use super::*;
     use crate::crypto::SoftwareKeyProvider;
-    use cesr::{Digest, Matter};
 
     fn make_anchor() -> String {
         Digest::blake3_256(b"test_anchor").qb64()

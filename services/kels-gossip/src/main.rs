@@ -1,6 +1,7 @@
 //! KELS Gossip Service Entry Point
 
 use kels_gossip::Config;
+use tracing::error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -18,14 +19,14 @@ async fn main() {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("Configuration error: {}", e);
+            error!("Configuration error: {}", e);
             std::process::exit(1);
         }
     };
 
     // Run the service
     if let Err(e) = kels_gossip::run(config).await {
-        tracing::error!("Service error: {}", e);
+        error!("Service error: {}", e);
         std::process::exit(1);
     }
 }

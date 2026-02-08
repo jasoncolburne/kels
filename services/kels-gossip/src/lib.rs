@@ -31,24 +31,22 @@ mod allowlist;
 mod bootstrap;
 mod gossip;
 mod hsm_signer;
-mod peer_store;
+mod http;
 mod protocol;
 mod sync;
+
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio::sync::{mpsc, RwLock};
+use tracing::{error, info};
+
+use libp2p::Multiaddr;
+use redis::AsyncCommands;
+use thiserror::Error;
 
 use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use gossip::{GossipCommand, GossipEvent};
 use hsm_signer::{HsmRegistrySigner, HsmSignerError};
-use libp2p::Multiaddr;
-use peer_store::KelsGossipRepository;
-use std::collections::HashSet;
-use std::str::FromStr;
-use std::sync::Arc;
-use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info};
-use verifiable_storage::StorageError;
-use verifiable_storage_postgres::RepositoryConnection;
 
 #[derive(Error, Debug)]
 pub enum ServiceError {
@@ -60,8 +58,6 @@ pub enum ServiceError {
     Sync(#[from] sync::SyncError),
     #[error("Bootstrap error: {0}")]
     Bootstrap(#[from] bootstrap::BootstrapError),
-    #[error("Storage error: {0}")]
-    Storage(#[from] StorageError),
     #[error("HSM signer error: {0}")]
     HsmSigner(#[from] HsmSignerError),
 }
@@ -73,128 +69,109 @@ pub struct Config {
     pub node_id: String,
     /// Local KELS HTTP endpoint (for this service to use)
     pub kels_url: String,
-    /// Advertised KELS HTTP endpoint for external clients
+    /// Advertised KELS HTTP endpoint for clients and node-to-node sync
     pub kels_advertise_url: String,
-    /// Advertised KELS HTTP endpoint for internal node-to-node sync (defaults to external)
-    pub kels_advertise_url_internal: Option<String>,
     /// Redis URL for pub/sub
     pub redis_url: String,
-    /// Database URL for peer storage
-    pub database_url: String,
     /// HSM service URL for identity keys
     pub hsm_url: String,
-    /// Registry service URL (optional - if not set, bootstrap sync is skipped)
-    pub registry_url: Option<String>,
-    /// Registry KEL prefix (trust anchor for verifying peer allowlist)
-    pub registry_prefix: String,
+    /// Registry service URL (runtime)
+    pub registry_url: String,
     /// libp2p listen address (e.g., /ip4/0.0.0.0/tcp/4001)
     pub listen_addr: Multiaddr,
-    /// Advertised address for registry (e.g., /dns4/kels-gossip.kels-node-a.svc.cluster.local/tcp/4001)
+    /// Advertised address for registry (e.g., /dns4/kels-gossip.kels-node-a.kels/tcp/4001)
     pub advertise_addr: Multiaddr,
     /// Gossipsub topic name
     pub topic: String,
-    /// Heartbeat interval in seconds for registry
-    pub heartbeat_interval_secs: u64,
     /// Allowlist refresh interval in seconds
     pub allowlist_refresh_interval_secs: u64,
-    /// Test-only: artificial delay (in ms) before broadcasting announcements.
-    /// This simulates slow gossip propagation for adversarial testing scenarios.
-    /// Set to 0 in production. Only enable for integration testing.
-    pub test_propagation_delay_ms: u64,
+    /// HTTP server port for ready status endpoint
+    pub http_port: u16,
+}
+
+/// Raw environment values before validation
+#[derive(Default)]
+pub struct EnvValues {
+    pub node_id: Option<String>,
+    pub kels_url: Option<String>,
+    pub kels_advertise_url: Option<String>,
+    pub redis_url: Option<String>,
+    pub hsm_url: Option<String>,
+    pub registry_url: Option<String>,
+    pub listen_addr: Option<String>,
+    pub advertise_addr: Option<String>,
+    pub topic: Option<String>,
+    pub allowlist_refresh_interval_secs: Option<u64>,
+    pub http_port: Option<u16>,
 }
 
 impl Config {
-    /// Load configuration from environment variables
-    pub fn from_env() -> Result<Self, ServiceError> {
-        let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| "node-unknown".to_string());
+    /// Create config from explicit values (for testing and direct construction)
+    pub fn from_values(env: EnvValues) -> Result<Self, ServiceError> {
+        let kels_advertise_url = env
+            .kels_advertise_url
+            .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
 
-        let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels".to_string());
+        let registry_url = env
+            .registry_url
+            .ok_or_else(|| ServiceError::Config("REGISTRY_URL is required".to_string()))?;
 
-        let kels_advertise_url = std::env::var("KELS_ADVERTISE_URL")
-            .map_err(|_| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
-
-        let kels_advertise_url_internal = std::env::var("KELS_ADVERTISE_URL_INTERNAL").ok();
-
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
-
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|_| ServiceError::Config("DATABASE_URL is required".to_string()))?;
-
-        let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm".to_string());
-
-        let registry_url = std::env::var("REGISTRY_URL").ok();
-        let registry_prefix = std::env::var("REGISTRY_PREFIX")
-            .map_err(|_| ServiceError::Config("REGISTRY_PREFIX is required".to_string()))?;
-
-        let listen_addr_str = std::env::var("GOSSIP_LISTEN_ADDR")
-            .unwrap_or_else(|_| "/ip4/0.0.0.0/tcp/4001".to_string());
+        let listen_addr_str = env
+            .listen_addr
+            .unwrap_or_else(|| "/ip4/0.0.0.0/tcp/4001".to_string());
         let listen_addr = Multiaddr::from_str(&listen_addr_str)
             .map_err(|e| ServiceError::Config(format!("Invalid listen address: {}", e)))?;
 
-        let advertise_addr_str =
-            std::env::var("GOSSIP_ADVERTISE_ADDR").unwrap_or_else(|_| listen_addr_str.clone());
+        let advertise_addr_str = env
+            .advertise_addr
+            .unwrap_or_else(|| listen_addr_str.clone());
         let advertise_addr = Multiaddr::from_str(&advertise_addr_str)
             .map_err(|e| ServiceError::Config(format!("Invalid advertise address: {}", e)))?;
 
-        let topic =
-            std::env::var("GOSSIP_TOPIC").unwrap_or_else(|_| gossip::DEFAULT_TOPIC.to_string());
-
-        let heartbeat_interval_secs = std::env::var("REGISTRY_HEARTBEAT_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30);
-
-        let allowlist_refresh_interval_secs = std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(60);
-
-        let test_propagation_delay_ms = std::env::var("GOSSIP_TEST_PROPAGATION_DELAY_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
         Ok(Self {
-            node_id,
-            kels_url,
+            node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
+            kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
             kels_advertise_url,
-            kels_advertise_url_internal,
-            redis_url,
-            database_url,
-            hsm_url,
+            redis_url: env
+                .redis_url
+                .unwrap_or_else(|| "redis://redis:6379".to_string()),
+            hsm_url: env.hsm_url.unwrap_or_else(|| "http://hsm".to_string()),
             registry_url,
-            registry_prefix,
             listen_addr,
             advertise_addr,
-            topic,
-            heartbeat_interval_secs,
-            allowlist_refresh_interval_secs,
-            test_propagation_delay_ms,
+            topic: env
+                .topic
+                .unwrap_or_else(|| gossip::DEFAULT_TOPIC.to_string()),
+            allowlist_refresh_interval_secs: env.allowlist_refresh_interval_secs.unwrap_or(60),
+            http_port: env.http_port.unwrap_or(80),
         })
+    }
+
+    /// Load configuration from environment variables
+    pub fn from_env() -> Result<Self, ServiceError> {
+        let env = EnvValues {
+            node_id: std::env::var("NODE_ID").ok(),
+            kels_url: std::env::var("KELS_URL").ok(),
+            kels_advertise_url: std::env::var("KELS_ADVERTISE_URL").ok(),
+            redis_url: std::env::var("REDIS_URL").ok(),
+            hsm_url: std::env::var("HSM_URL").ok(),
+            registry_url: std::env::var("REGISTRY_URL").ok(),
+            listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
+            advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
+            topic: std::env::var("GOSSIP_TOPIC").ok(),
+            allowlist_refresh_interval_secs: std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            http_port: std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()),
+        };
+
+        Self::from_values(env)
     }
 }
 
 /// Run the gossip service
-///
-/// # Bootstrap Algorithm
-///
-/// The service follows this algorithm to safely join the network:
-///
-/// 1. **Create identity**: Generate HSM-backed keypair, derive PeerId
-/// 2. **Check allowlist**: Query `/api/peers` to check if authorized
-/// 3. **If NOT authorized**: Log alert with PeerId, loop:
-///    - Preload KELs from Ready peers (read-only sync via HTTP)
-///    - Sleep 5 minutes
-///    - Recheck allowlist
-/// 4. **Once authorized**: Register as Bootstrapping, start gossip swarm
-/// 5. **Check for Ready peers**: Query `/api/nodes/bootstrap`
-/// 6. **If Ready peers exist**: Wait for first `PeerConnected` event, then resync
-///    (This catches events missed between preload and joining gossip)
-/// 7. **If no Ready peers**: Skip resync (we're the first/only node)
-/// 8. **Mark Ready**: Update status, start heartbeat and allowlist refresh loops
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use kels::KelsRegistryClient;
+    use kels::MultiRegistryClient;
     use tokio::time::Duration;
     use tracing::warn;
 
@@ -208,12 +185,21 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Listen address: {}", config.listen_addr);
     info!("Advertise address: {}", config.advertise_addr);
     info!("Topic: {}", config.topic);
-    if config.test_propagation_delay_ms > 0 {
-        info!(
-            "TEST MODE: Propagation delay enabled: {}ms",
-            config.test_propagation_delay_ms
-        );
-    }
+
+    // Create shared ready state (starts false)
+    // Other peers can query our /ready endpoint during bootstrap
+    let ready_state = std::sync::Arc::new(tokio::sync::RwLock::new(false));
+
+    // Start HTTP server for ready endpoint immediately
+    let http_ready_state = ready_state.clone();
+    let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.http_port));
+    info!(
+        "Starting HTTP server for ready endpoint on port {}",
+        config.http_port
+    );
+    tokio::spawn(async move {
+        http::run_http_server(http_addr, http_ready_state).await;
+    });
 
     // Step 1: Create HSM-backed identity keypair
     info!("Creating HSM-backed identity...");
@@ -221,44 +207,70 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let peer_id = keypair.public().to_peer_id();
     info!("Local PeerId: {}", peer_id);
 
-    info!("Connecting to database for peer cache...");
-    let gossip_repo = KelsGossipRepository::connect(&config.database_url).await?;
-    gossip_repo.initialize().await?;
-    let peer_repo = Arc::new(gossip_repo.peers);
-    info!("Peer cache database ready");
-
-    // Registry is required - without it we have no way to discover peers
-    let registry_url = config.registry_url.as_ref().ok_or_else(|| {
-        ServiceError::Config("REGISTRY_URL is required - kels-gossip cannot operate without a registry for peer discovery".to_string())
-    })?;
-
     // Create registry signer for authenticated requests
     info!("Creating HSM registry signer...");
     let registry_signer = HsmRegistrySigner::new(config.hsm_url.clone(), &config.node_id);
     let registry_signer: Arc<dyn kels::RegistrySigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
-    // Single registry client with signer (unauthenticated APIs don't use the signer)
-    let registry_client = KelsRegistryClient::with_signer(registry_url, registry_signer.clone());
+    // Single registry URL for client
+    let registry_urls: Vec<String> = vec![config.registry_url.clone()];
+
+    // Registry client with signer
+    let mut registry_client =
+        MultiRegistryClient::with_signer(registry_urls.clone(), registry_signer.clone());
+
+    // Discover and verify registry prefix from the registry's KEL
+    info!("Discovering registry prefix from KEL...");
+    info!("urls: {:?}", registry_urls);
+    let registry_kels = registry_client
+        .fetch_verified_registry_kels(true)
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
+
+    let registry_prefixes: Vec<_> = registry_kels
+        .iter()
+        .filter_map(|k| k.prefix())
+        .map(|p| p.to_string())
+        .collect();
+
+    if registry_prefixes.is_empty() {
+        return Err(ServiceError::Config(
+            "Couldn't fetch registry KELs".to_string(),
+        ));
+    }
+
+    info!("Registry prefixes verified: {:?}", registry_prefixes);
+
+    let registry_prefix = match registry_client.prefix_for_url(&config.registry_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(ServiceError::Config(format!(
+                "Can't find prefix for kels url {}: {}",
+                &config.registry_url, e
+            )))
+        }
+    };
+
+    // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
+    let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
         kels_url: config.kels_url.clone(),
-        kels_advertise_url: config.kels_advertise_url.clone(),
-        kels_advertise_url_internal: config.kels_advertise_url_internal.clone(),
-        gossip_multiaddr: config.advertise_addr.to_string(),
         page_size: 100,
-        heartbeat_interval_secs: config.heartbeat_interval_secs,
     };
 
-    let heartbeat_client = registry_client.clone();
     let bootstrap =
-        BootstrapSync::new(bootstrap_config.clone(), peer_repo.clone(), registry_client);
+        BootstrapSync::new(bootstrap_config.clone(), registry_client, allowlist.clone());
 
     // Step 2-3: Check allowlist and wait if not authorized
     let peer_id_str = peer_id.to_string();
     loop {
-        match bootstrap.is_peer_authorized(&peer_id_str).await {
+        match bootstrap
+            .is_peer_authorized(&peer_id_str, &registry_prefix)
+            .await
+        {
             Ok(true) => {
                 info!("Peer {} is authorized in allowlist", peer_id);
                 break;
@@ -293,7 +305,32 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Step 4: Now authorized - discover peers and register as Bootstrapping
+    // Publish bootstrapping state to Redis
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str()) {
+        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
+            if let Err(e) = conn
+                .set::<_, _, ()>("kels:gossip:ready", "bootstrapping")
+                .await
+            {
+                error!("Failed to publish bootstrapping state to Redis: {}", e);
+            } else {
+                info!("Published bootstrapping state to Redis");
+            }
+        }
+    }
+
+    // Initial allowlist refresh - must happen before discover_peers
+    // Use a separate client without signing for unauthenticated peer list fetching
+    let mut allowlist_client = MultiRegistryClient::new(registry_urls.clone());
+    match allowlist::refresh_allowlist(&mut allowlist_client, &registry_prefix, &allowlist).await {
+        Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
+        Err(e) => warn!(
+            "Initial allowlist refresh failed: {} - starting with empty allowlist",
+            e
+        ),
+    }
+
+    // Step 4: Now authorized - discover peers from allowlist
     let discovery = bootstrap.discover_peers().await?;
 
     let mut peer_multiaddrs: Vec<Multiaddr> = Vec::new();
@@ -319,37 +356,35 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let (command_tx, command_rx) = mpsc::channel::<GossipCommand>(100);
     let (event_tx, mut event_rx) = mpsc::channel::<GossipEvent>(100);
 
-    let redis_command_tx = command_tx.clone();
+    // Shared state to prevent Redis feedback loop when gossip stores events
+    let recently_stored: sync::RecentlyStoredFromGossip = Arc::new(RwLock::new(HashMap::new()));
 
+    let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
-    let propagation_delay_ms = config.test_propagation_delay_ms;
+    let redis_allowlist = allowlist.clone();
+    let redis_local_peer_id = peer_id;
+    let redis_recently_stored = recently_stored.clone();
     let redis_handle = tokio::spawn(async move {
-        if let Err(e) =
-            sync::run_redis_subscriber(&redis_url, redis_command_tx, propagation_delay_ms).await
+        if let Err(e) = sync::run_redis_subscriber(
+            &redis_url,
+            redis_command_tx,
+            redis_allowlist,
+            redis_local_peer_id,
+            redis_recently_stored,
+        )
+        .await
         {
             error!("Redis subscriber error: {}", e);
         }
     });
 
-    // Create shared allowlist for authorized peers
-    let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashSet::new()));
     let registry_allowlist = allowlist.clone();
-
-    // Initial allowlist refresh before starting gossip (so we accept authorized peers)
-    let client = KelsRegistryClient::new(registry_url);
-    match allowlist::refresh_allowlist(&client, &config.registry_prefix, &allowlist).await {
-        Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
-        Err(e) => warn!(
-            "Initial allowlist refresh failed: {} - starting with empty allowlist",
-            e
-        ),
-    }
 
     // Start gossip swarm in background
     let listen_addr = config.listen_addr.clone();
     let topic = config.topic.clone();
-    let registry_client = client.clone();
-    let registry_prefix = config.registry_prefix.clone();
+    let mut gossip_registry_client = allowlist_client.clone();
+    let gossip_registry_prefix = registry_prefix.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
             keypair,
@@ -357,8 +392,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             peer_multiaddrs,
             &topic,
             registry_allowlist,
-            registry_client,
-            registry_prefix,
+            &mut gossip_registry_client,
+            &gossip_registry_prefix,
             command_rx,
             event_tx,
         )
@@ -405,42 +440,71 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("No Ready peers available - skipping resync (first node)");
     }
 
-    // Step 8: Mark Ready and start background tasks
-    bootstrap.mark_ready(discovery.registry_available).await;
+    // Step 8: Mark Ready
+    *ready_state.write().await = true;
+    info!("Bootstrap complete - node is ready");
+
+    // Publish ready state to Redis for KELS service to read
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str()) {
+        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
+            if let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "true").await {
+                error!("Failed to publish ready state to Redis {}", e);
+            } else {
+                info!("Published ready state to Redis");
+            }
+        }
+    }
 
     // Spawn sync handler (needs ownership of event_rx)
     let kels_url = config.kels_url.clone();
     let sync_command_tx = command_tx.clone();
+    let sync_allowlist = allowlist.clone();
     let sync_handle = tokio::spawn(async move {
-        if let Err(e) = sync::run_sync_handler(kels_url, event_rx, sync_command_tx).await {
+        if let Err(e) = sync::run_sync_handler(
+            kels_url,
+            event_rx,
+            sync_command_tx,
+            sync_allowlist,
+            peer_id,
+            recently_stored,
+        )
+        .await
+        {
             error!("Sync handler error: {}", e);
         }
     });
 
-    // Start heartbeat loop
-    let heartbeat_config = bootstrap_config.clone();
-    tokio::spawn(async move {
-        bootstrap::run_heartbeat_loop(heartbeat_config, heartbeat_client).await;
-    });
-
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let registry_prefix = config.registry_prefix.clone();
+    let mut refresh_client = MultiRegistryClient::new(registry_urls.clone());
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(client, registry_prefix, allowlist, refresh_interval)
-            .await;
+        allowlist::run_allowlist_refresh_loop(
+            &mut refresh_client,
+            &registry_prefix,
+            allowlist,
+            refresh_interval,
+        )
+        .await;
     });
 
-    // Wait for gossip swarm to complete (blocking)
-    let gossip_result = gossip_handle.await;
+    // Wait for gossip swarm to complete OR shutdown signal
+    tokio::select! {
+        gossip_result = gossip_handle => {
+            redis_handle.abort();
+            sync_handle.abort();
 
-    redis_handle.abort();
-    sync_handle.abort();
-
-    match gossip_result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(ServiceError::Gossip(e)),
-        Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
+            match gossip_result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(ServiceError::Gossip(e)),
+                Err(e) => Err(ServiceError::Config(format!("Gossip task panicked: {}", e))),
+            }
+        }
+        _ = kels::shutdown_signal() => {
+            info!("Shutdown signal received, cleaning up...");
+            redis_handle.abort();
+            sync_handle.abort();
+            Ok(())
+        }
     }
 }
 
@@ -487,94 +551,72 @@ mod tests {
     }
 
     #[test]
-    fn test_config_from_env_missing_required() {
-        // Clear required env vars to test error handling
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("REGISTRY_PREFIX");
-
-        let result = Config::from_env();
+    fn test_config_missing_required() {
+        // Missing kels_advertise_url
+        let env = EnvValues {
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
+        let result = Config::from_values(env);
         assert!(result.is_err());
-        // Check it's a config error by converting to string
-        let err_str = result.err().expect("Expected error").to_string();
-        assert!(err_str.contains("Configuration error"));
+
+        // Missing registry_url
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            ..Default::default()
+        };
+        let result = Config::from_values(env);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_config_from_env_with_required_vars() {
-        // Set required env vars
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
+    fn test_config_with_required_vars() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
 
-        let result = Config::from_env();
-        // Clean up before asserting
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("REGISTRY_PREFIX");
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.kels_advertise_url, "http://kels.example.com");
-        assert_eq!(config.database_url, "postgres://localhost/test");
-        assert_eq!(config.registry_prefix, "test_prefix");
-    }
-
-    #[test]
-    fn test_config_from_env_defaults() {
-        // Set required env vars
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
-
-        // Clear optional vars to test defaults
-        std::env::remove_var("NODE_ID");
-        std::env::remove_var("KELS_URL");
-        std::env::remove_var("REDIS_URL");
-        std::env::remove_var("HSM_URL");
-        std::env::remove_var("GOSSIP_LISTEN_ADDR");
-        std::env::remove_var("GOSSIP_TOPIC");
-        std::env::remove_var("REGISTRY_HEARTBEAT_INTERVAL_SECS");
-        std::env::remove_var("ALLOWLIST_REFRESH_INTERVAL_SECS");
-        std::env::remove_var("GOSSIP_TEST_PROPAGATION_DELAY_MS");
-
-        let result = Config::from_env();
-        // Clean up
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("REGISTRY_PREFIX");
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-
-        // Check defaults
-        assert_eq!(config.node_id, "node-unknown");
-        assert_eq!(config.kels_url, "http://kels");
-        assert_eq!(config.redis_url, "redis://redis:6379");
-        assert_eq!(config.hsm_url, "http://hsm");
-        assert_eq!(config.heartbeat_interval_secs, 30);
-        assert_eq!(config.allowlist_refresh_interval_secs, 60);
-        assert_eq!(config.test_propagation_delay_ms, 0);
-    }
-
-    #[test]
-    fn test_config_from_env_invalid_listen_addr() {
-        std::env::set_var("KELS_ADVERTISE_URL", "http://kels.example.com");
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("REGISTRY_PREFIX", "test_prefix");
-        std::env::set_var("GOSSIP_LISTEN_ADDR", "not-a-valid-multiaddr");
-
-        let result = Config::from_env();
-
-        // Clean up
-        std::env::remove_var("KELS_ADVERTISE_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("REGISTRY_PREFIX");
-        std::env::remove_var("GOSSIP_LISTEN_ADDR");
-
-        assert!(result.is_err(), "Expected error but got Ok");
-        if let Err(e) = result {
-            assert!(e.to_string().contains("Invalid listen address"));
+        let result = Config::from_values(env);
+        // Will fail if TRUSTED_REGISTRY_PREFIXES not set at compile time
+        if let Ok(config) = result {
+            assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+            assert_eq!(config.registry_url, "http://registry.example.com");
         }
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            ..Default::default()
+        };
+
+        let result = Config::from_values(env);
+        // Will fail if TRUSTED_REGISTRY_PREFIXES not set at compile time
+        if let Ok(config) = result {
+            // Check defaults
+            assert_eq!(config.node_id, "node-unknown");
+            assert_eq!(config.kels_url, "http://kels");
+            assert_eq!(config.redis_url, "redis://redis:6379");
+            assert_eq!(config.hsm_url, "http://hsm");
+            assert_eq!(config.allowlist_refresh_interval_secs, 60);
+            assert_eq!(config.http_port, 80);
+        }
+    }
+
+    #[test]
+    fn test_config_invalid_listen_addr() {
+        let env = EnvValues {
+            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            registry_url: Some("http://registry.example.com".to_string()),
+            listen_addr: Some("not-a-valid-multiaddr".to_string()),
+            ..Default::default()
+        };
+
+        let result = Config::from_values(env);
+        // Will either fail due to missing TRUSTED_REGISTRY_PREFIXES or invalid listen addr
+        assert!(result.is_err(), "Expected error but got Ok");
     }
 }

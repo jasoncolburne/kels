@@ -2,10 +2,8 @@
 
 use async_trait::async_trait;
 
-use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::repository::SignedEventRepository;
-use crate::store::KelStore;
+use super::KelStore;
+use crate::{error::KelsError, repository::SignedEventRepository, types::Kel};
 
 /// Wraps a SignedEventRepository to provide KelStore functionality.
 pub struct RepositoryKelStore<R: SignedEventRepository> {

@@ -10,7 +10,7 @@
 # Environment variables:
 #   GOSSIP_PROPAGATION_DELAY - Time to wait for gossip propagation (default: 5s)
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
-#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.svc.cluster.local)
+#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
 
 # Colors
 RED='\033[0;31m'
@@ -20,9 +20,9 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-0.25}"
+GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-2.666}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
-NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.svc.cluster.local}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 
@@ -283,6 +283,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "EOwnerCausesDivergence______________________" 2>&1 || true
 
     wait_for_propagation
+    wait_for_propagation
 
     # Check event count on node-b (should have divergent events)
     COUNT_B=$(get_event_count "$NODE_B_URL" "$PREFIX6")
@@ -307,6 +308,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
         # Recover on node-a
         run_test "Owner recovers on node-a" kels-cli -u "$NODE_A_URL" recover --prefix "$PREFIX6"
 
+        wait_for_propagation
         wait_for_propagation
 
         # Verify recovery propagated - SAIDs should match after recovery

@@ -50,7 +50,7 @@ thiserror = "1"
 async-trait = "0.1"
 
 # HTTP client for kels and HSM services
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Base64 encoding
 base64 = "0.22"
@@ -71,6 +71,7 @@ default = []
 # Testing
 tokio-test = "0.4"
 testcontainers = "0.26"
+ctor = "0.4"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

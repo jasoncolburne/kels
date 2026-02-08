@@ -58,6 +58,7 @@ The registry namespace includes a dedicated identity service (single replica) th
 | `GET` | `/api/identity` | Get registry prefix |
 | `GET` | `/api/identity/kel` | Get registry's full KEL |
 | `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
+| `POST` | `/api/identity/sign` | Sign data with registry's current key |
 
 ## Components
 
@@ -93,18 +94,31 @@ Authorized peers are stored in PostgreSQL using verifiable-storage patterns:
 
 ```rust
 struct Peer {
-    said: String,           // Content hash (CESR Blake3)
-    prefix: String,         // Stable lineage ID (peer-{peer_id})
+    said: String,             // Content hash (CESR Blake3)
+    prefix: String,           // Stable lineage ID (peer-{peer_id})
     previous: Option<String>, // SAID of previous version
-    version: u64,           // Version number
+    version: u64,             // Version number
     created_at: DateTime,
-    peer_id: String,        // libp2p PeerId (Base58)
-    node_id: String,        // Human-readable name (e.g., "node-a")
-    active: bool,           // Current authorization status
+    peer_id: String,          // libp2p PeerId (Base58)
+    node_id: String,          // Human-readable name (e.g., "node-a")
+    authorizing_kel: String,  // Prefix of the KEL that authorized this peer
+    active: bool,             // Current authorization status
+    scope: PeerScope,         // Core (federated) or Regional (local-only)
+    kels_url: String,         // HTTP URL for KELS service
+    gossip_multiaddr: String, // libp2p multiaddr for gossip connections
 }
 ```
 
 Each peer is a versioned entity - deactivation creates a new version with `active: false` rather than deleting the record.
+
+**Authorizing KEL:**
+The `authorizing_kel` field identifies which registry's KEL contains the cryptographic anchor for this peer record. When verifying a peer, the gossip node fetches the KEL for the `authorizing_kel` prefix and checks that the peer's SAID is anchored in it. This allows federated registries to authorize peers independently while maintaining cryptographic proof of authorization.
+
+**Peer Scopes:**
+- `Core`: Replicated across all registries in a federation via Raft consensus
+- `Regional`: Local to this registry only, not shared across federation
+
+For more details on peer scopes and federation, see [Multi-Registry Federation](./federation.md).
 
 ## Signed Request Format
 
@@ -138,13 +152,9 @@ struct SignedRequest<T> {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/nodes` | List registered nodes |
-| `GET` | `/api/nodes/bootstrap` | Get bootstrap peers |
-| `GET` | `/api/nodes/:node_id` | Get specific node |
-| `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
 | `GET` | `/api/peers` | Get peer allowlist |
-
-**Note:** Heartbeat remains unauthenticated as it only extends TTL for already-registered nodes. Status updates are authenticated to prevent availability attacks (e.g., marking healthy nodes as Bootstrapping).
+| `GET` | `/api/registry-kel` | Get registry's KEL |
+| `GET` | `/health` | Health check |
 
 ## Verification Flow
 
@@ -222,8 +232,16 @@ The HSM sign endpoint returns both signature and public key in a single call, av
 The `kels-registry-admin` CLI manages the peer allowlist:
 
 ```bash
-# Add a peer to allowlist
-kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a
+# Add a peer to allowlist (regional scope by default)
+kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
+  --kels-url http://kels.kels-node-a.kels \
+  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
+
+# Add a core peer (in federated mode, must run on leader registry)
+kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
+  --scope core \
+  --kels-url http://kels.kels-node-a.kels \
+  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
 
 # Remove a peer (creates deactivated version)
 kels-registry-admin peer remove --peer-id 12D3KooWAbc...
@@ -231,6 +249,8 @@ kels-registry-admin peer remove --peer-id 12D3KooWAbc...
 # List all authorized peers
 kels-registry-admin peer list
 ```
+
+See [Multi-Registry Federation](./federation.md) for details on core vs regional peer scopes.
 
 ### Getting a Node's PeerId
 
@@ -324,12 +344,11 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 
 | Operation | Authentication |
 |-----------|---------------|
-| Read node list | None (public) |
 | Read KELS data | None (public) |
+| Read peer list | None (public) |
 | Register node | Signed + allowlist |
 | Deregister node | Signed + allowlist |
 | Status update | Signed + allowlist |
-| Heartbeat | None (extends TTL only) |
 | Gossip connection | Allowlist check after handshake |
 
 ## Deployment

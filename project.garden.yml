@@ -1,29 +1,56 @@
 apiVersion: garden.io/v2
 kind: Project
 name: kels
-defaultEnvironment: node-a
+defaultEnvironment: registry-a
 
 environments:
-  - name: registry
-    defaultNamespace: kels-registry
+  - name: registry-a
+    defaultNamespace: kels-registry-a
+    variables:
+      envType: registry
+  - name: registry-b
+    defaultNamespace: kels-registry-b
+    variables:
+      envType: registry
+  - name: registry-c
+    defaultNamespace: kels-registry-c
+    variables:
+      envType: registry
   - name: node-a
     defaultNamespace: kels-node-a
+    variables:
+      envType: node
   - name: node-b
     defaultNamespace: kels-node-b
+    variables:
+      envType: node
   - name: node-c
     defaultNamespace: kels-node-c
+    variables:
+      envType: node
+  - name: node-d
+    defaultNamespace: kels-node-d
+    variables:
+      envType: node
+  - name: node-e
+    defaultNamespace: kels-node-e
+    variables:
+      envType: node
+  - name: node-f
+    defaultNamespace: kels-node-f
+    variables:
+      envType: node
 
 providers:
   - name: local-kubernetes
-    environments: [registry, node-a, node-b, node-c]
+    environments: [registry-a, registry-b, registry-c, node-a, node-b, node-c, node-d, node-e, node-f]
     namespace:
       name: ${environment.namespace}
     setupIngressController: nginx
-    defaultHostname: ${environment.namespace}.local
+    defaultHostname: ${environment.namespace}.kels
     buildMode: local-docker
 
 variables:
-  registryUrl: "http://kels-registry.kels-registry.svc.cluster.local"
   rustLogLevel: info
   postgres:
     user: kels_admin
@@ -43,13 +70,14 @@ variables:
   gossip:
     replicas: 1
     port: 4001
+    httpPort: "80"
     topic: "kels/events/v1"
     listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
     # Test-only: delay in ms before broadcasting announcements.
     # Set to "0" for production. Use higher values (e.g., "5000") for adversarial testing.
     testPropagationDelayMs: "0"
   registry:
-    replicas: 2
+    replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
   hsm:

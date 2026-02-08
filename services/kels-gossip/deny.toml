@@ -14,8 +14,6 @@ ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant unmaintained - transitive via libp2p/futures-ticker" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained - transitive via libp2p/netlink-packet-utils" },
     { id = "RUSTSEC-2026-0002", reason = "lru unsound - transitive via libp2p, awaiting libp2p update" },
-    # Unmaintained crates - warnings only
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained - transitive dev dependency via testcontainers" },
 ]
 
 [licenses]
@@ -26,8 +24,8 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
-    "CDLA-Permissive-2.0",
     "ISC",
+    "CDLA-Permissive-2.0",
     "Unlicense",
     "Zlib",
     "Unicode-3.0",

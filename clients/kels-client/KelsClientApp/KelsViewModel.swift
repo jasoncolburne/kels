@@ -37,9 +37,50 @@ class KelsViewModel: ObservableObject {
     private let prefixKey = "com.kels.currentPrefix"
     private let registryUrlKey = "com.kels.registryUrl"
     private let nodeUrlKey = "com.kels.nodeUrl"
+    private let selectedRegistryKey = "com.kels.selectedRegistry"
     private let keyNamespace = "com.kels.kelsclient"
-    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
-    private let defaultNodeUrl = "http://kels.kels-node-a.local"
+
+    // Available registries with their URLs (hardcoded for UI selector)
+    static let registryUrls = [
+        ("registry-a", "http://kels-registry.kels-registry-a.kels"),
+        ("registry-b", "http://kels-registry.kels-registry-b.kels"),
+        ("registry-c", "http://kels-registry.kels-registry-c.kels")
+    ]
+
+    // Parse TRUSTED_REGISTRY_PREFIXES from Generated.swift (compiled-in for security)
+    static let trustedPrefixes: [String] = {
+        TRUSTED_REGISTRY_PREFIXES
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }()
+
+    /// Verify a registry prefix is in the compiled-in trusted set
+    static func isTrustedPrefix(_ prefix: String) -> Bool {
+        trustedPrefixes.contains(prefix)
+    }
+    @Published var selectedRegistry: String = "registry-a" {
+        didSet {
+            UserDefaults.standard.set(selectedRegistry, forKey: selectedRegistryKey)
+            // Update registry URL when selection changes
+            if let url = Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 {
+                registryUrl = url
+            }
+            // Note: Discovery is triggered by .onChange in ContentView to avoid race conditions
+        }
+    }
+
+    /// Called when registry selection actually changes (from View's .onChange)
+    func onRegistryChanged() {
+        Task {
+            await discoverNodes()
+        }
+    }
+
+    private var defaultRegistryUrl: String {
+        Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 ?? Self.registryUrls[0].1
+    }
+    private let defaultNodeUrl = "http://kels.kels-node-a.kels"
 
     // Developer tools logging
     #if DEV_TOOLS
@@ -60,6 +101,12 @@ class KelsViewModel: ObservableObject {
     // MARK: - Persistence
 
     private func loadSavedSettings() {
+        // Load selected registry first
+        if let savedRegistry = UserDefaults.standard.string(forKey: selectedRegistryKey),
+           Self.registryUrls.contains(where: { $0.0 == savedRegistry }) {
+            selectedRegistry = savedRegistry
+        }
+
         if let savedRegistryUrl = UserDefaults.standard.string(forKey: registryUrlKey), !savedRegistryUrl.isEmpty {
             registryUrl = savedRegistryUrl
         } else {
@@ -119,7 +166,8 @@ class KelsViewModel: ObservableObject {
     // MARK: - Registry Discovery
 
     /// Discover nodes from the configured registry
-    func discoverNodes() async {
+    /// - Parameter forceAutoSelect: If true, always select the fastest node regardless of current selection
+    func discoverNodes(forceAutoSelect: Bool = false) async {
         guard !registryUrl.isEmpty else {
             log("ERROR: Registry URL not configured")
             errorMessage = "Registry URL not configured"
@@ -129,11 +177,22 @@ class KelsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        // Remember current selection before refresh (unless forcing auto-select)
+        let previousSelection = forceAutoSelect ? nil : selectedDiscoveredNode
+
         log("Discovering nodes from \(registryUrl)...")
 
         do {
-            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
-            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
+            // Fetch the registry's prefix from its KEL and verify it's trusted
+            log("Fetching registry prefix...")
+            let registryPrefix = try await NodeDiscovery.fetchRegistryPrefix(registryUrl: registryUrl)
+
+            guard Self.isTrustedPrefix(registryPrefix) else {
+                throw NSError(domain: "KelsClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "Registry prefix '\(registryPrefix)' is not trusted"])
+            }
+            log("Registry prefix verified: \(registryPrefix)")
+
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
             log("Found \(discoveredNodes.count) nodes")
 
             // Cache nodes for fallback
@@ -144,10 +203,18 @@ class KelsViewModel: ObservableObject {
                 log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
             }
 
-            // Auto-select the fastest ready node
-            if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                selectNode(fastestNode)
-                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+            // Preserve selection if the node is still visible, otherwise auto-select fastest
+            if let previous = previousSelection,
+               let stillVisible = discoveredNodes.first(where: { $0.nodeId == previous.nodeId }) {
+                // Update the selection with fresh latency data but don't switch nodes
+                selectedDiscoveredNode = stillVisible
+                log("Preserved selection: \(stillVisible.displayName)")
+            } else {
+                // No previous selection or node not visible, auto-select fastest
+                if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
+                    selectNode(fastestNode)
+                    log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
+                }
             }
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")
@@ -177,39 +244,7 @@ class KelsViewModel: ObservableObject {
 
     /// Auto-select the fastest available node from registry
     func autoSelectNode() async {
-        guard !registryUrl.isEmpty else {
-            log("ERROR: Registry URL not configured")
-            errorMessage = "Registry URL not configured"
-            return
-        }
-
-        isLoading = true
-        defer { isLoading = false }
-
-        log("Auto-selecting fastest node...")
-
-        do {
-            // Use REGISTRY_PREFIX from Generated.swift for cryptographic verification
-            // Discover nodes (this will also cache them)
-            let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: REGISTRY_PREFIX)
-            discoveredNodes = nodes
-            saveCachedNodes(nodes)
-
-            if let fastestNode = nodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                selectNode(fastestNode)
-                log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
-            } else {
-                log("ERROR: No ready nodes available")
-                errorMessage = "No ready nodes available"
-            }
-        } catch {
-            log("ERROR: Registry unavailable: \(error.localizedDescription)")
-
-            // Clear cached nodes on verification failure - don't trust unverified data
-            discoveredNodes = []
-            clearCachedNodes()
-            errorMessage = "Auto-select failed: \(error.localizedDescription)"
-        }
+        await discoverNodes(forceAutoSelect: true)
     }
 
     /// Test latency to a KELS node

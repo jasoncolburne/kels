@@ -20,7 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "sync"] }
 
 # Web framework
 axum = "0.7"
@@ -67,11 +67,23 @@ clap = { version = "4", features = ["derive"] }
 # Async traits
 async-trait = "0.1"
 
+# Futures for Stream support
+futures = "0.3"
+
 # libp2p for PeerId parsing and HSM-backed identity (forked with external-signer support)
 libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer", features = ["peerid", "ecdsa", "external-signer"] }
 
 # p256 for public key decompression (libp2p requires uncompressed format)
 p256 = { version = "0.13", features = ["ecdsa"] }
+
+# OpenRaft for federation consensus (0.10 alpha has simpler trait API)
+openraft = { git = "https://github.com/datafuselabs/openraft", tag = "v0.10.0-alpha.13", features = ["serde"] }
+
+# Byte order for node IDs
+byteorder = "1"
+
+# UUID generation for proposal IDs
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

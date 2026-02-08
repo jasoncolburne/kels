@@ -8,17 +8,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, NodeStatus, ProviderConfig,
-    SoftwareProviderConfig,
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
+    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
 };
-use serde::{Deserialize, Serialize};
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
-const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry.local";
-
-/// Registry KEL prefix - trust anchor for verifying registry identity.
-/// Must be set at compile time via REGISTRY_PREFIX environment variable.
-const REGISTRY_PREFIX: &str = env!("REGISTRY_PREFIX");
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
+const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,8 +22,8 @@ struct Cli {
     #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
     url: String,
 
-    /// Registry URL for node discovery
-    #[arg(long, env = "KELS_REGISTRY_URL", default_value = DEFAULT_REGISTRY_URL)]
+    /// Registry URLs for node discovery (comma-separated)
+    #[arg(long, env = "KELS_REGISTRY_URLS", default_value = DEFAULT_REGISTRY_URL)]
     registry: String,
 
     /// Auto-select the fastest available node from registry (requires --registry)
@@ -178,13 +173,6 @@ enum AdversaryCommands {
     },
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct Config {
-    default_url: Option<String>,
-    default_prefix: Option<String>,
-}
-
 fn config_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(ref dir) = cli.config_dir {
         return Ok(dir.clone());
@@ -203,25 +191,25 @@ fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     Ok(SoftwareProviderConfig::new(key_dir))
 }
 
-/// Verify the registry's KEL matches the expected prefix (trust anchor).
-async fn verify_registry(registry_url: &str) -> Result<()> {
-    use kels::KelsRegistryClient;
-
-    let registry_client = KelsRegistryClient::new(registry_url);
-    registry_client
-        .verify_registry(REGISTRY_PREFIX)
-        .await
-        .context("Registry verification failed")?;
-
-    Ok(())
+/// Parse comma-separated registry URLs into a Vec.
+fn parse_registry_urls(registry: &str) -> Vec<String> {
+    registry
+        .split(',')
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect()
 }
 
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
-        // Verify registry identity before trusting node list
-        verify_registry(&cli.registry).await?;
+        let registry_urls = parse_registry_urls(&cli.registry);
+        if registry_urls.is_empty() {
+            return Err(anyhow::anyhow!("No registry URLs provided"));
+        }
 
-        let nodes = KelsClient::discover_nodes(&cli.registry)
+        let mut registry_client = MultiRegistryClient::new(registry_urls);
+        let nodes = registry_client
+            .nodes_sorted_by_latency(&cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -238,79 +226,40 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
                 .unwrap_or_else(|| "timeout".to_string());
             println!("  {} [{}] - {}", node.node_id, status_str, latency_str);
         }
-
-        // Select best node (randomly among ties)
-        use rand::seq::SliceRandom;
-
-        // Filter to ready nodes with successful latency measurements
-        let ready_nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
-            .collect();
-
-        if ready_nodes.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No ready nodes with successful latency measurements available"
-            ));
-        }
-
-        // Find minimum latency
-        let min_latency = ready_nodes
-            .iter()
-            .filter_map(|n| n.latency_ms)
-            .min()
-            .context("No nodes with latency measurements")?;
-
-        // Get all nodes with the minimum latency and pick randomly among ties
-        let best_nodes: Vec<_> = ready_nodes
-            .into_iter()
-            .filter(|n| n.latency_ms == Some(min_latency))
-            .collect();
-
-        let best_node = best_nodes
-            .choose(&mut rand::thread_rng())
-            .context("No nodes available")?
-            .clone();
-
-        let latency = best_node
-            .latency_ms
-            .context("Selected node missing latency")?;
-
-        println!(
-            "{} {} ({}ms)",
-            "Selected:".green().bold(),
-            best_node.node_id,
-            latency
-        );
         println!();
 
-        Ok(KelsClient::new(&best_node.kels_url))
+        let url = match nodes.first() {
+            Some(n) => n.kels_url.clone(),
+            None => return Err(anyhow::anyhow!("Failed to find kels url of fastest node")),
+        };
+        Ok(KelsClient::new(&url))
     } else {
         Ok(KelsClient::new(&cli.url))
     }
 }
 
-fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
+fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
-    if let Some(p) = prefix {
-        FileKelStore::with_owner(dir, p.to_string()).context("Failed to create KEL store")
-    } else {
-        FileKelStore::new(dir).context("Failed to create KEL store")
-    }
+    FileKelStore::with_owner(dir, prefix.to_string()).context("Failed to create KEL store")
 }
 
 // ==================== Command Handlers ====================
 
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
-    // Verify registry identity before trusting node list
-    verify_registry(&cli.registry).await?;
+    let registry_urls = parse_registry_urls(&cli.registry);
+    if registry_urls.is_empty() {
+        return Err(anyhow::anyhow!("No registry URLs provided"));
+    }
 
     println!(
         "{}",
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let nodes = KelsClient::discover_nodes(&cli.registry).await?;
+    let mut registry_client = MultiRegistryClient::new(registry_urls);
+    let nodes = registry_client
+        .nodes_sorted_by_latency(&cli.registry)
+        .await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());
@@ -345,25 +294,17 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
     let client = create_client(cli).await?;
-    // Use a temporary config for init - we don't know the prefix yet
-    let temp_config = SoftwareProviderConfig::new(config_dir(cli)?.join("keys").join("temp"));
-    let key_provider = temp_config.load_provider().await?;
-    let kel_store = create_kel_store(cli, None)?;
+    let key_provider = SoftwareKeyProvider::new();
 
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        None,
-    )
-    .await?;
+    let mut builder =
+        KeyEventBuilder::with_dependencies(key_provider, Some(client), None, None).await?;
 
     let icp = builder.incept().await.context("Inception failed")?;
 
     // Save to the correct prefix directory
     let config = provider_config(cli, &icp.event.prefix)?;
     config.save_provider(builder.key_provider()).await?;
-    let kel_store = create_kel_store(cli, Some(&icp.event.prefix))?;
+    let kel_store = create_kel_store(cli, &icp.event.prefix)?;
     kel_store.save(builder.kel()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
@@ -382,7 +323,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -423,7 +364,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -450,7 +391,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -475,7 +416,7 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -504,7 +445,7 @@ async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -534,7 +475,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -694,7 +635,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 }
 
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let kel = kel_store
         .load(prefix)
@@ -830,7 +771,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
         format!("Truncating local KEL {} to {} events...", prefix, count).yellow()
     );
 
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut kel = kel_store
         .load(prefix)
@@ -855,7 +796,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 
 #[cfg(feature = "dev-tools")]
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let kel = kel_store
         .load(prefix)
@@ -878,7 +819,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     );
 
     // Load the local KEL to get the chain state
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
     let kel = kel_store
         .load(prefix)
         .await?

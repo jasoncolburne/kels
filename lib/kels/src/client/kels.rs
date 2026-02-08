@@ -1,28 +1,35 @@
 //! KELS HTTP Client
 
-use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::types::{
-    BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, KelMergeResult, KelResponse,
-    NodeInfo, NodeStatus, NodesResponse, SignedKeyEvent,
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    error::KelsError,
+    types::{
+        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
+        KelResponse, SignedKeyEvent,
+    },
+};
 
 #[cfg(feature = "redis")]
 use redis::aio::ConnectionManager;
 
 #[doc(hidden)]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CachedKelEntry {
     kel: Kel,
     last_access: u64,
 }
 
 #[doc(hidden)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct KelCacheInner {
     entries: HashMap<String, CachedKelEntry>,
     access_counter: u64,
@@ -386,99 +393,6 @@ impl KelsClient {
         Ok(start.elapsed())
     }
 
-    /// Discover nodes from registry and test latency to each.
-    /// Returns nodes sorted by latency (fastest first), with Ready nodes prioritized.
-    pub async fn discover_nodes(registry_url: &str) -> Result<Vec<NodeInfo>, KelsError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()?;
-
-        // Paginate through all nodes
-        let base_url = registry_url.trim_end_matches('/');
-        let mut all_nodes: Vec<NodeInfo> = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let mut url = format!("{}/api/nodes?limit=100", base_url);
-            if let Some(ref c) = cursor {
-                url.push_str(&format!("&cursor={}", c));
-            }
-
-            let resp = client.get(&url).send().await?;
-
-            if !resp.status().is_success() {
-                let err: ErrorResponse = resp.json().await?;
-                return Err(KelsError::ServerError(err.error, err.code));
-            }
-
-            let page: NodesResponse = resp.json().await?;
-            all_nodes.extend(page.nodes.into_iter().map(NodeInfo::from));
-
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-
-        let mut nodes = all_nodes;
-
-        // Test latency to each Ready node concurrently (with short timeout)
-        let latency_futures: Vec<_> = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.status == NodeStatus::Ready)
-            .map(|(i, n)| {
-                let url = n.kels_url.clone();
-                let node_id = n.node_id.clone();
-                async move {
-                    let client = KelsClient::with_timeout(&url, Duration::from_millis(500));
-                    let latency = client.test_latency().await.ok();
-                    if let Some(ref lat) = latency {
-                        tracing::info!("Node {} latency: {}ms", node_id, lat.as_millis());
-                    } else {
-                        tracing::warn!("Node {} latency test failed/timed out", node_id);
-                    }
-                    (i, latency)
-                }
-            })
-            .collect();
-
-        let results = futures::future::join_all(latency_futures).await;
-        for (i, latency) in results {
-            if let Some(lat) = latency {
-                nodes[i].latency_ms = Some(lat.as_millis() as u64);
-            }
-        }
-
-        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
-        nodes.sort_by(|a, b| match (&a.status, &b.status) {
-            (NodeStatus::Ready, NodeStatus::Ready) => match (&a.latency_ms, &b.latency_ms) {
-                (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            },
-            (NodeStatus::Ready, _) => std::cmp::Ordering::Less,
-            (_, NodeStatus::Ready) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        });
-
-        Ok(nodes)
-    }
-
-    /// Create a client connected to the fastest available node from the registry.
-    /// Only considers Ready nodes. Returns error if no Ready nodes are available.
-    pub async fn with_discovery(registry_url: &str) -> Result<Self, KelsError> {
-        let nodes = Self::discover_nodes(registry_url).await?;
-
-        let best_node = nodes
-            .into_iter()
-            .find(|n| n.status == NodeStatus::Ready && n.latency_ms.is_some())
-            .ok_or(KelsError::NoReadyNodes)?;
-
-        Ok(Self::new(&best_node.kels_url))
-    }
-
     pub async fn submit_events(
         &self,
         events: &[SignedKeyEvent],
@@ -606,14 +520,14 @@ impl KelsClient {
         }
 
         // Build batch request for missing and stale prefixes
-        let batch_prefixes: Vec<&str> = missing_prefixes
+        let batch_prefixes: HashSet<&str> = missing_prefixes
             .iter()
             .chain(prefixes_missing_anchors.iter())
             .copied()
             .collect();
 
         let request = BatchKelsRequest {
-            prefixes: batch_prefixes.iter().map(|p| (*p).to_string()).collect(),
+            prefixes: batch_prefixes.iter().map(|p| p.to_string()).collect(),
         };
 
         let resp = self
@@ -654,7 +568,7 @@ impl KelsClient {
                         Ok((_, _, KelMergeResult::Verified)) => {
                             result_kels.insert((*prefix).to_string(), kel);
                         }
-                        Ok(_) | Err(_) => {
+                        _ => {
                             diverged_prefixes.push((*prefix).to_string());
                         }
                     }
@@ -669,16 +583,26 @@ impl KelsClient {
             }
         }
 
+        let mut futures = Vec::new();
         // Re-fetch diverged KELs from scratch
         for prefix in &diverged_prefixes {
             self.invalidate_cache_async(prefix).await?;
-            let fresh_kel = self.get_kel(prefix).await?;
-            result_kels.insert(prefix.clone(), fresh_kel);
+            futures.push(async move {
+                let kel = match self.get_kel(prefix).await {
+                    Ok(k) => k,
+                    Err(_) => return None,
+                };
+
+                Some((prefix.clone(), kel))
+            });
         }
 
-        // Update cache with all fetched KELs
-        for (prefix, kel) in &result_kels {
-            self.cache_set(prefix, kel).await?;
+        let diverged_results = join_all(futures).await;
+
+        // Merge diverged KELs back and update cache
+        for (prefix, kel) in diverged_results.into_iter().flatten() {
+            self.cache_set(&prefix, &kel).await?;
+            result_kels.insert(prefix, kel);
         }
 
         // Verify all required anchors are present
@@ -704,7 +628,7 @@ impl KelsClient {
             .map(|p| {
                 result_kels
                     .remove(*p)
-                    .ok_or_else(|| KelsError::KeyNotFound((*p).to_string()))
+                    .ok_or(KelsError::KeyNotFound((*p).to_string()))
             })
             .collect::<Result<Vec<_>, _>>()
     }

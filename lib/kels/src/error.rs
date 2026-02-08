@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Clone, Debug)]
 pub enum KelsError {
     #[error("Key not found: {0}")]
     KeyNotFound(String),
@@ -80,13 +80,13 @@ pub enum KelsError {
     MissingKeys,
 
     #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
+    HttpError(String),
 
     #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    JsonError(String),
 
     #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(String),
 
     #[error("Cryptographic error: {0}")]
     CryptoError(String),
@@ -129,11 +129,32 @@ pub enum KelsError {
 
     #[error("No ready nodes available in registry")]
     NoReadyNodes,
+
+    #[error("All registries failed: {0}")]
+    RegistryFailure(String),
 }
 
 impl From<cesr::CesrError> for KelsError {
     fn from(e: cesr::CesrError) -> Self {
         KelsError::CryptoError(e.to_string())
+    }
+}
+
+impl From<reqwest::Error> for KelsError {
+    fn from(e: reqwest::Error) -> Self {
+        KelsError::HttpError(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for KelsError {
+    fn from(e: serde_json::Error) -> Self {
+        KelsError::JsonError(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for KelsError {
+    fn from(e: std::io::Error) -> Self {
+        KelsError::IoError(e.to_string())
     }
 }
 
@@ -169,5 +190,99 @@ mod tests {
         let cesr_err = cesr::Signature::from_qb64("invalid").unwrap_err();
         let kels_err: KelsError = cesr_err.into();
         assert!(matches!(kels_err, KelsError::CryptoError(_)));
+    }
+
+    #[test]
+    fn test_error_variants_display() {
+        // Test all error variants have proper display messages
+        let errors: Vec<KelsError> = vec![
+            KelsError::NoNextKey,
+            KelsError::NoRecoveryKey,
+            KelsError::NoStagedKey,
+            KelsError::NoStagedRecoveryKey,
+            KelsError::CurrentlyStaged,
+            KelsError::AlreadyStagedRecovery,
+            KelsError::InvalidSignature("bad sig".to_string()),
+            KelsError::InvalidKeyEvent("bad event".to_string()),
+            KelsError::InvalidKel("bad kel".to_string()),
+            KelsError::NotIncepted,
+            KelsError::KelDecommissioned,
+            KelsError::SubmissionFailed("failed".to_string()),
+            KelsError::OfflineMode("offline".to_string()),
+            KelsError::NoRecoveryNeeded("no recovery".to_string()),
+            KelsError::KeyMismatch("mismatch".to_string()),
+            KelsError::SignatureVerificationFailed,
+            KelsError::VerificationFailed("verify failed".to_string()),
+            KelsError::SigningFailed("sign failed".to_string()),
+            KelsError::KeyGenerationFailed("keygen failed".to_string()),
+            KelsError::MissingKeys,
+            KelsError::CryptoError("crypto error".to_string()),
+            KelsError::CacheError("cache error".to_string()),
+            KelsError::StorageError("storage error".to_string()),
+            KelsError::ContestedKel("contested".to_string()),
+            KelsError::RecoveryProtected,
+            KelsError::Diverged("diverged".to_string()),
+            KelsError::Frozen,
+            KelsError::ContestRequired,
+            KelsError::InvalidSaid("bad said".to_string()),
+            KelsError::InvalidPrefix("bad prefix".to_string()),
+            KelsError::InvalidVersion("bad version".to_string()),
+            KelsError::AnchorVerificationFailed("anchor failed".to_string()),
+            KelsError::HardwareError("hw error".to_string()),
+            KelsError::NoReadyNodes,
+            KelsError::RegistryFailure("all failed".to_string()),
+        ];
+
+        for err in errors {
+            // Just ensure Display doesn't panic and produces non-empty output
+            let msg = err.to_string();
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_server_error_with_code() {
+        use crate::types::ErrorCode;
+
+        let err = KelsError::ServerError("not found".to_string(), ErrorCode::NotFound);
+        let msg = err.to_string();
+        assert!(msg.contains("not found"));
+        assert!(msg.contains("NotFound"));
+    }
+
+    #[test]
+    fn test_divergence_detected_fields() {
+        let err = KelsError::DivergenceDetected {
+            diverged_at: 10,
+            submission_accepted: false,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("10"));
+        assert!(msg.contains("false"));
+    }
+
+    #[test]
+    fn test_from_storage_error() {
+        // Create a storage error by triggering a JSON parse error
+        let json_err: Result<String, serde_json::Error> = serde_json::from_str("invalid");
+        let storage_err =
+            verifiable_storage::StorageError::SerializationError(json_err.unwrap_err());
+        let kels_err: KelsError = storage_err.into();
+        assert!(matches!(kels_err, KelsError::StorageError(_)));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let kels_err: KelsError = io_err.into();
+        assert!(matches!(kels_err, KelsError::IoError(_)));
+    }
+
+    #[test]
+    fn test_from_json_error() {
+        let json_result: Result<String, serde_json::Error> = serde_json::from_str("invalid json");
+        let json_err = json_result.unwrap_err();
+        let kels_err: KelsError = json_err.into();
+        assert!(matches!(kels_err, KelsError::JsonError(_)));
     }
 }

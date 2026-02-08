@@ -1,21 +1,21 @@
 //! Identity Service HTTP Server
 
+use std::{net::SocketAddr, sync::Arc};
+use tokio::sync::RwLock;
+use tracing::info;
+
 use axum::{
     Router,
     routing::{get, post},
 };
-use kels::shutdown_signal;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-use crate::handlers::{self, AppState};
-use crate::hsm::HsmClient;
-use crate::repository::{
-    AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository,
-};
-use kels::{KelStore, RepositoryKelStore};
+use kels::{KelStore, RepositoryKelStore, shutdown_signal};
 use verifiable_storage::{ChainedRepository, RepositoryConnection};
+
+use crate::{
+    handlers::{self, AppState},
+    hsm::HsmClient,
+    repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
+};
 
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -23,10 +23,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/identity", get(handlers::get_identity))
         .route("/api/identity/kel", get(handlers::get_kel))
         .route("/api/identity/anchor", post(handlers::anchor))
+        .route("/api/identity/sign", post(handlers::sign))
         .with_state(state)
 }
 
-pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     use crate::hsm::HsmKeyProvider;
     use kels::{KeyEventBuilder, KeyProvider};
 
@@ -36,18 +37,18 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
 
-    tracing::info!("Connecting to database");
+    info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)
         .await
         .map_err(|e| format!("Failed to connect to database: {}", e))?;
 
-    tracing::info!("Running migrations");
+    info!("Running migrations");
     repo.initialize()
         .await
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
-    tracing::info!("Database connected");
+    info!("Database connected");
 
-    tracing::info!("Connecting to HSM service at {}", hsm_url);
+    info!("Connecting to HSM service at {}", hsm_url);
     let hsm = Arc::new(HsmClient::new(&hsm_url));
 
     let kel_repo = Arc::new(crate::repository::KeyEventRepository::new(
@@ -58,7 +59,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
     {
         let prefix = mapping.kel_prefix.clone();
-        tracing::info!("Found registry prefix: {}", prefix);
+        info!("Found registry prefix: {}", prefix);
 
         let binding = repo
             .hsm_bindings
@@ -66,7 +67,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .await?
             .ok_or_else(|| format!("HSM binding not found for KEL prefix: {}", prefix))?;
 
-        tracing::info!(
+        info!(
             "Restored HSM binding: current={}, next={}, recovery={}, signing_gen={}, recovery_gen={}",
             binding.current_key_handle,
             binding.next_key_handle,
@@ -94,7 +95,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to create builder: {}", e))?
     } else {
-        tracing::info!("No existing identity - auto-incepting");
+        info!("No existing identity - auto-incepting");
 
         let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
 
@@ -108,7 +109,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to incept: {}", e))?;
 
-        tracing::info!("Generated registry prefix: {}", icp.event.prefix);
+        info!("Generated registry prefix: {}", icp.event.prefix);
 
         let current_handle = builder
             .key_provider()
@@ -162,10 +163,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = create_router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("Identity service listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(
+        "Identity service listening on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

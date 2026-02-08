@@ -1,23 +1,26 @@
 //! kels-bench - KELS Load Testing Tool
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+use tokio::{sync::Mutex, task::JoinSet};
 
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
 use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider};
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
 use verifiable_storage::compute_said;
 
 fn test_said(name: &str) -> String {
     compute_said(&name.to_string()).expect("valid said computation")
 }
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.local";
+const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -330,10 +333,18 @@ async fn main() -> Result<()> {
 
     let (large_kel, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
+            let kel = match client.get_kel(prefix).await {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Couldn't fetch kel: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
             println!("{}", "Skipping setup, using provided prefix...".yellow());
             (
                 TestKelConfig {
-                    event_count: 0,
+                    event_count: kel.len(),
                     prefix: Some(prefix.clone()),
                 },
                 vec![],
@@ -369,7 +380,10 @@ async fn main() -> Result<()> {
     stats.reset().await;
 
     if !batch_kels.is_empty() {
-        let prefixes: Vec<String> = batch_kels.iter().filter_map(|k| k.prefix.clone()).collect();
+        let prefixes: Vec<String> = batch_kels
+            .iter()
+            .filter_map(|config| config.prefix.clone())
+            .collect();
 
         if !prefixes.is_empty() {
             run_benchmark(

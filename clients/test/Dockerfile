@@ -13,20 +13,21 @@ COPY lib/kels-derive /app/lib/kels-derive
 COPY clients/kels-bench /app/clients/kels-bench
 COPY clients/kels-cli /app/clients/kels-cli
 
+# TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries
+ARG TRUSTED_REGISTRY_PREFIXES
+
 # Build kels-bench
 WORKDIR /app/clients/kels-bench
-RUN --mount=type=cache,id=kels-bench-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-bench-target,target=/app/target \
-    cargo build --release && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release && \
     cp /app/target/release/kels-bench /app/kels-bench
 
 # Build kels-cli with dev-tools for adversarial testing
-# REGISTRY_PREFIX is required at compile time for trust anchor verification
-ARG REGISTRY_PREFIX
 WORKDIR /app/clients/kels-cli
-RUN --mount=type=cache,id=kels-cli-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-cli-target,target=/app/target \
-    REGISTRY_PREFIX="${REGISTRY_PREFIX}" cargo build --release --features dev-tools && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --features dev-tools && \
     cp /app/target/release/kels-cli /app/kels-cli
 
 # Stage 2: Final test client image

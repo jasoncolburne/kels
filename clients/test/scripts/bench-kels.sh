@@ -27,7 +27,11 @@ echo "KELS URL:    $KELS_URL"
 echo "========================================="
 echo ""
 
-kels-bench --url "$KELS_URL" --concurrency "$CONCURRENCY" --duration "$DURATION" --throughput-only --warmup 2
+kels-bench --url "$KELS_URL" --concurrency "$CONCURRENCY" --duration "$DURATION" --throughput-only --warmup 1
+
+PREFIX=$(kels-cli --url "$KELS_URL" incept | grep Prefix | grep -oE 'E[A-Za-z0-9_-]{43}')
+
+kels-bench --url "$KELS_URL" --concurrency "$CONCURRENCY" --duration "$DURATION" --throughput-only --warmup 1 --prefix "$PREFIX" --skip-setup
 
 echo ""
 echo -e "\033[0;32m=== KELS Benchmark Complete ===\033[0m"
