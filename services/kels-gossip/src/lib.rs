@@ -27,12 +27,6 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
-/// Trusted registry prefixes for verifying registry identity.
-/// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
-/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
-/// Can be empty string for bootstrap mode (first node in new deployment).
-const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
-
 mod allowlist;
 mod bootstrap;
 mod gossip;
@@ -47,7 +41,7 @@ use gossip::{GossipCommand, GossipEvent};
 use hsm_signer::{HsmRegistrySigner, HsmSignerError};
 use libp2p::Multiaddr;
 use redis::AsyncCommands;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
@@ -83,8 +77,6 @@ pub struct Config {
     pub hsm_url: String,
     /// Registry service URL (runtime)
     pub registry_url: String,
-    /// Trusted registry prefixes (compiled-in for security)
-    pub trusted_prefixes: HashSet<&'static str>,
     /// libp2p listen address (e.g., /ip4/0.0.0.0/tcp/4001)
     pub listen_addr: Multiaddr,
     /// Advertised address for registry (e.g., /dns4/kels-gossip.kels-node-a.kels/tcp/4001)
@@ -113,25 +105,9 @@ pub struct EnvValues {
     pub http_port: Option<u16>,
 }
 
-fn parse_trusted_prefixes() -> HashSet<&'static str> {
-    TRUSTED_REGISTRY_PREFIXES
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
 impl Config {
     /// Create config from explicit values (for testing and direct construction)
     pub fn from_values(env: EnvValues) -> Result<Self, ServiceError> {
-        // Parse trusted registry prefixes from compile-time constant (comma-separated)
-        let trusted_prefixes = parse_trusted_prefixes();
-        if trusted_prefixes.is_empty() {
-            return Err(ServiceError::Config(
-                "TRUSTED_REGISTRY_PREFIXES must be set at compile time with at least one prefix"
-                    .to_string(),
-            ));
-        }
-
         let kels_advertise_url = env
             .kels_advertise_url
             .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
@@ -161,7 +137,6 @@ impl Config {
                 .unwrap_or_else(|| "redis://redis:6379".to_string()),
             hsm_url: env.hsm_url.unwrap_or_else(|| "http://hsm".to_string()),
             registry_url,
-            trusted_prefixes,
             listen_addr,
             advertise_addr,
             topic: env
@@ -224,7 +199,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Redis URL: {}", config.redis_url);
     info!("HSM URL: {}", config.hsm_url);
     info!("Registry URL: {:?}", config.registry_url);
-    info!("Trusted prefixes: {:?}", config.trusted_prefixes);
     info!("Listen address: {}", config.listen_addr);
     info!("Advertise address: {}", config.advertise_addr);
     info!("Topic: {}", config.topic);
@@ -260,14 +234,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_urls: Vec<String> = vec![config.registry_url.clone()];
 
     // Registry client with signer
-    let mut registry_client = MultiRegistryClient::with_signer(
-        &config.trusted_prefixes,
-        registry_urls.clone(),
-        registry_signer.clone(),
-    );
+    let mut registry_client =
+        MultiRegistryClient::with_signer(registry_urls.clone(), registry_signer.clone());
 
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
+    info!("urls: {:?}", registry_urls);
     let registry_kels = registry_client
         .fetch_verified_registry_kels(true)
         .await
@@ -366,8 +338,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Initial allowlist refresh - must happen before discover_peers
     // Use a separate client without signing for unauthenticated peer list fetching
-    let mut allowlist_client =
-        MultiRegistryClient::new(&config.trusted_prefixes, registry_urls.clone());
+    let mut allowlist_client = MultiRegistryClient::new(registry_urls.clone());
     match allowlist::refresh_allowlist(&mut allowlist_client, &registry_prefix, &allowlist).await {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
@@ -522,8 +493,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let mut refresh_client =
-        MultiRegistryClient::new(&config.trusted_prefixes, registry_urls.clone());
+    let mut refresh_client = MultiRegistryClient::new(registry_urls.clone());
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &mut refresh_client,

@@ -10,6 +10,7 @@ use kels::{
     ErrorCode, ErrorResponse, Kel, Peer, PeerHistory, PeerScope, PeersResponse, SignedRequest,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
@@ -384,6 +385,7 @@ pub struct RegistryKelState {
 pub struct FederationState {
     pub node: Arc<FederationNode>,
     pub repo: Arc<RegistryRepository>,
+    pub identity_client: Arc<IdentityClient>,
 }
 
 /// Handle incoming Raft RPC from federation members.
@@ -945,6 +947,29 @@ pub async fn get_registry_kel(
         .map_err(|e| ApiError::internal_error(format!("Failed to fetch KEL: {}", e)))?;
 
     Ok(Json(kel))
+}
+
+/// Public endpoint to get all cached federation member KELs.
+/// Used for high availability - clients can fetch all KELs from any registry.
+pub async fn get_registry_kels(
+    State(state): State<Arc<FederationState>>,
+) -> Result<Json<HashMap<String, Kel>>, ApiError> {
+    let mut kels = state.node.get_all_member_kels().await;
+
+    // Add our own fresh KEL (not cached, always current)
+    let own_kel = state
+        .identity_client
+        .get_kel()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
+
+    let prefix = own_kel.prefix().ok_or(ApiError::internal_error(
+        "Own KEL has no prefix".to_string(),
+    ))?;
+
+    kels.insert(prefix.to_string(), own_kel);
+
+    Ok(Json(kels))
 }
 
 #[cfg(test)]

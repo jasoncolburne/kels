@@ -16,26 +16,16 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, MultiRegistryClient, NodeStatus,
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
+    MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
 use verifiable_storage::Chained;
-
-const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
-
-fn parse_trusted_prefixes() -> HashSet<&'static str> {
-    TRUSTED_REGISTRY_PREFIXES
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .collect()
-}
 
 // ==================== Key State Persistence ====================
 
@@ -1696,15 +1686,8 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     };
 
-    let trusted_prefixes = parse_trusted_prefixes();
-    if trusted_prefixes.is_empty() {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to parse trusted registry prefixes");
-        return;
-    }
-
     let discover_result = runtime.block_on(async {
-        let mut registry = MultiRegistryClient::new(&trusted_prefixes, vec![url.clone()]);
+        let mut registry = MultiRegistryClient::new(vec![url.clone()]);
 
         // Fetch and verify all registry KELs upfront
         registry.fetch_verified_registry_kels(true).await?;
@@ -1894,21 +1877,11 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     };
 
     let fetch_result = runtime.block_on(async {
-        let client = KelsRegistryClient::new(&url);
-        let registry_kel = client.fetch_registry_kel().await?;
+        let mut registry = MultiRegistryClient::new(vec![url.clone()]);
+        registry.fetch_verified_registry_kels(true).await?;
+        let prefix = registry.prefix_for_url(&url).await?;
 
-        // Verify the KEL's cryptographic integrity
-        registry_kel.verify().map_err(|e| {
-            KelsError::VerificationFailed(format!("Registry KEL verification failed: {}", e))
-        })?;
-
-        // Extract the prefix
-        let prefix = registry_kel
-            .prefix()
-            .ok_or_else(|| KelsError::VerificationFailed("Registry KEL has no prefix".to_string()))?
-            .to_string();
-
-        Ok::<String, KelsError>(prefix)
+        Ok(prefix)
     });
 
     match fetch_result {

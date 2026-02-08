@@ -1,6 +1,6 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::{collections::HashSet, path::PathBuf};
+use std::path::PathBuf;
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
@@ -15,11 +15,6 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
-
-/// Trusted registry prefixes for verifying registry identity.
-/// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
-/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
-const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -213,14 +208,6 @@ fn parse_registry_urls(registry: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse trusted registry prefixes from compile-time constant.
-fn parse_trusted_prefixes() -> HashSet<&'static str> {
-    TRUSTED_REGISTRY_PREFIXES
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
 async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
         let registry_urls = parse_registry_urls(&cli.registry);
@@ -228,12 +215,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             return Err(anyhow::anyhow!("No registry URLs provided"));
         }
 
-        let trusted_prefixes = parse_trusted_prefixes();
-        if trusted_prefixes.is_empty() {
-            return Err(anyhow::anyhow!("No trusted registry prefixes provided"));
-        }
-
-        let mut registry_client = MultiRegistryClient::new(&trusted_prefixes, registry_urls);
+        let mut registry_client = MultiRegistryClient::new(registry_urls);
         let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
@@ -280,17 +262,12 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
         return Err(anyhow::anyhow!("No registry URLs provided"));
     }
 
-    let trusted_prefixes = parse_trusted_prefixes();
-    if trusted_prefixes.is_empty() {
-        return Err(anyhow::anyhow!("No trusted registry prefixes provided"));
-    }
-
     println!(
         "{}",
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let mut registry_client = MultiRegistryClient::new(&trusted_prefixes, registry_urls);
+    let mut registry_client = MultiRegistryClient::new(registry_urls);
     let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry).await?;
 
     if nodes.is_empty() {

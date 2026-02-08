@@ -421,6 +421,11 @@ impl FederationNode {
     pub async fn get_member_kel(&self, prefix: &str) -> Option<kels::Kel> {
         self.member_kels.read().await.get(prefix).cloned()
     }
+
+    /// Get all cached member KELs.
+    pub async fn get_all_member_kels(&self) -> HashMap<String, kels::Kel> {
+        self.member_kels.read().await.clone()
+    }
 }
 
 /// Fetch a member's KEL from their registry.

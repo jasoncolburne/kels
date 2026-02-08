@@ -46,6 +46,7 @@ pub fn create_router(
         // Federation mode: peers come from Raft state machine + regional DB
         Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
+            .route("/api/registry-kels", get(handlers::get_registry_kels))
             .route("/api/federation/rpc", post(handlers::federation_rpc))
             .route("/api/federation/status", get(handlers::federation_status))
             // Admin API (localhost only) for proposal management
@@ -172,6 +173,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                     Some(Arc::new(FederationState {
                         node,
                         repo: repo.clone(),
+                        identity_client: identity_client.clone(),
                     }))
                 }
                 Err(e) => {

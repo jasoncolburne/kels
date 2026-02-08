@@ -14,6 +14,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Trusted registry prefixes for verifying registry identity.
+/// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
+/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
+const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
+
+fn parse_trusted_prefixes() -> HashSet<&'static str> {
+    TRUSTED_REGISTRY_PREFIXES
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Get the compiled-in trusted registry prefixes.
+pub fn trusted_prefixes() -> HashSet<&'static str> {
+    parse_trusted_prefixes()
+}
+
 /// Result of a signing operation, containing all data needed for a SignedRequest.
 #[derive(Debug, Clone)]
 pub struct SignResult {
@@ -388,30 +405,23 @@ impl KelsRegistryClient {
         }
     }
 
-    /// Fetch and verify the registry's KEL against an expected prefix.
+    /// Fetch all cached federation member KELs from the registry.
     ///
-    /// This performs cryptographic verification:
-    /// 1. Fetches the registry's KEL
-    /// 2. Verifies KEL integrity (SAIDs, signatures, chaining, rotation hashes)
-    /// 3. Checks that the registry prefix matches the expected trust anchor
-    ///
-    /// Returns the verified KEL on success, which can be used to check peer anchoring.
-    pub async fn verify_registry(&self, expected_prefix: &str) -> Result<crate::Kel, KelsError> {
-        let registry_kel = self.fetch_registry_kel().await?;
+    /// Returns a map of prefix -> KEL for all federation members.
+    /// Used for high availability - clients can fetch all KELs from any registry.
+    pub async fn fetch_registry_kels(&self) -> Result<HashMap<String, crate::Kel>, KelsError> {
+        let response = self
+            .client
+            .get(format!("{}/api/registry-kels", self.base_url))
+            .send()
+            .await?;
 
-        registry_kel.verify().map_err(|e| {
-            KelsError::VerificationFailed(format!("Registry KEL verification failed: {}", e))
-        })?;
-
-        let actual_prefix = registry_kel.prefix().map(|s| s.to_string());
-        if actual_prefix.as_deref() != Some(expected_prefix) {
-            return Err(KelsError::VerificationFailed(format!(
-                "Registry prefix mismatch: expected {}, got {:?}",
-                expected_prefix, actual_prefix
-            )));
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
         }
-
-        Ok(registry_kel)
     }
 }
 
@@ -429,67 +439,38 @@ impl MultiRegistryClient {
     /// Create a new multi-registry client with default timeout (no signing capability).
     ///
     /// URLs are tried in order, with automatic failover to the next URL on failure.
-    ///
-    /// # Panics
-    /// Panics if the URL list is empty.
-    pub fn new(trusted_prefixes: &HashSet<&'static str>, urls: Vec<String>) -> Self {
-        Self::with_timeout(trusted_prefixes, urls, Duration::from_secs(10))
+    pub fn new(urls: Vec<String>) -> Self {
+        Self::with_timeout(urls, Duration::from_secs(10))
     }
 
     /// Create a new multi-registry client with custom timeout (no signing capability).
-    ///
-    /// # Panics
-    /// Panics if the URL list is empty.
-    pub fn with_timeout(
-        trusted_prefixes: &HashSet<&'static str>,
-        urls: Vec<String>,
-        timeout: Duration,
-    ) -> Self {
-        assert!(
-            !urls.is_empty(),
-            "MultiRegistryClient requires at least one URL"
-        );
+    pub fn with_timeout(urls: Vec<String>, timeout: Duration) -> Self {
         Self {
             urls,
             timeout,
             signer: None,
             prefix_map: HashMap::new(),
-            trusted_prefixes: trusted_prefixes.clone(),
+            trusted_prefixes: parse_trusted_prefixes(),
         }
     }
 
     /// Create a new multi-registry client with signing capability.
-    ///
-    /// # Panics
-    /// Panics if the URL list is empty.
-    pub fn with_signer(
-        trusted_prefixes: &HashSet<&'static str>,
-        urls: Vec<String>,
-        signer: Arc<dyn RegistrySigner>,
-    ) -> Self {
-        Self::with_signer_and_timeout(trusted_prefixes, urls, signer, Duration::from_secs(10))
+    pub fn with_signer(urls: Vec<String>, signer: Arc<dyn RegistrySigner>) -> Self {
+        Self::with_signer_and_timeout(urls, signer, Duration::from_secs(10))
     }
 
     /// Create a new multi-registry client with signing capability and custom timeout.
-    ///
-    /// # Panics
-    /// Panics if the URL list is empty.
     pub fn with_signer_and_timeout(
-        trusted_prefixes: &HashSet<&'static str>,
         urls: Vec<String>,
         signer: Arc<dyn RegistrySigner>,
         timeout: Duration,
     ) -> Self {
-        assert!(
-            !urls.is_empty(),
-            "MultiRegistryClient requires at least one URL"
-        );
         Self {
             urls,
             timeout,
             signer: Some(signer),
             prefix_map: HashMap::new(),
-            trusted_prefixes: trusted_prefixes.clone(),
+            trusted_prefixes: parse_trusted_prefixes(),
         }
     }
 
@@ -641,49 +622,23 @@ impl MultiRegistryClient {
                 .collect());
         }
 
-        let timeout = self.timeout;
-        let signer = self.signer.clone();
+        self.prefix_map.clear();
 
-        let futures = self.urls.iter().map(|url| {
-            let signer = signer.clone();
-            let url = url.clone();
-            async move {
-                let client = match &signer {
-                    Some(s) => {
-                        KelsRegistryClient::with_signer_and_timeout(&url, s.clone(), timeout)
-                    }
-                    None => KelsRegistryClient::with_timeout(&url, timeout),
-                };
-                (url.clone(), client.fetch_registry_kel().await)
+        for url in &self.urls {
+            let client = self.create_client(url);
+            let kel_map = match client.fetch_registry_kels().await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            for (prefix, kel) in kel_map {
+                self.prefix_map.insert(prefix, (url.clone(), kel));
             }
-        });
-
-        let tuples = join_all(futures).await;
-
-        let mut last_error = None;
-
-        for (url, kel_result) in tuples {
-            let kel = match kel_result {
-                Ok(k) => k,
-                Err(e) => {
-                    last_error = Some(e);
-                    continue;
-                }
-            };
-            let Some(prefix) = kel.prefix() else {
-                last_error = Some(KelsError::RegistryFailure("KEL has no prefix".to_string()));
-                continue;
-            };
-
-            self.prefix_map.insert(prefix.to_string(), (url, kel));
+            break;
         }
 
         if self.prefix_map.is_empty() {
-            Err(KelsError::RegistryFailure(
-                last_error
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "No URLs configured".to_string()),
-            ))
+            Err(KelsError::RegistryFailure("No URLs configured".to_string()))
         } else {
             Ok(self
                 .prefix_map
@@ -713,13 +668,10 @@ impl MultiRegistryClient {
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
         let kels = self.fetch_registry_kels(force_fetch).await?;
-        if !kels.iter().all(|k| {
-            if !k.verify_prefix(&self.trusted_prefixes) {
-                return false;
-            }
-
-            k.verify().is_ok()
-        }) {
+        if !kels
+            .iter()
+            .all(|k| k.verify().is_ok() && k.verify_prefix(&self.trusted_prefixes))
+        {
             return Err(KelsError::RegistryFailure(format!(
                 "Failed to verify kel prefixes as expected ({:?})",
                 self.trusted_prefixes
@@ -753,11 +705,6 @@ mod tests {
                 peer_id: "12D3KooWMockPeerId".to_string(),
             })
         }
-    }
-
-    // Helper to create empty trusted prefixes for tests
-    fn empty_trusted_prefixes() -> HashSet<&'static str> {
-        HashSet::new()
     }
 
     // ==================== Constructor Tests ====================
@@ -1295,78 +1242,28 @@ mod tests {
         assert!(matches!(result, Err(KelsError::ServerError(..))));
     }
 
-    #[tokio::test]
-    async fn test_verify_registry_success() {
-        let mock_server = MockServer::start().await;
-
-        // Create a valid KEL for response
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        let kel = Kel::from_events(vec![icp], true).unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.verify_registry(&prefix).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_verify_registry_prefix_mismatch() {
-        let mock_server = MockServer::start().await;
-
-        // Create a valid KEL for response
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let kel = Kel::from_events(vec![icp], true).unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.verify_registry("Ewrong_prefix").await;
-
-        assert!(matches!(result, Err(KelsError::VerificationFailed(_))));
-    }
-
     // ==================== MultiRegistryClient Tests ====================
 
     #[test]
     fn test_multi_client_new() {
-        let trusted = empty_trusted_prefixes();
-        let client = MultiRegistryClient::new(&trusted, vec!["http://registry:8080".to_string()]);
+        let client = MultiRegistryClient::new(vec!["http://registry:8080".to_string()]);
         assert_eq!(client.urls().len(), 1);
         assert!(client.signer.is_none());
     }
 
     #[test]
     fn test_multi_client_with_multiple_urls() {
-        let trusted = empty_trusted_prefixes();
-        let client = MultiRegistryClient::new(
-            &trusted,
-            vec![
-                "http://registry-a:8080".to_string(),
-                "http://registry-b:8080".to_string(),
-                "http://registry-c:8080".to_string(),
-            ],
-        );
+        let client = MultiRegistryClient::new(vec![
+            "http://registry-a:8080".to_string(),
+            "http://registry-b:8080".to_string(),
+            "http://registry-c:8080".to_string(),
+        ]);
         assert_eq!(client.urls().len(), 3);
     }
 
     #[test]
     fn test_multi_client_with_timeout() {
-        let trusted = empty_trusted_prefixes();
         let client = MultiRegistryClient::with_timeout(
-            &trusted,
             vec!["http://registry:8080".to_string()],
             Duration::from_secs(30),
         );
@@ -1375,21 +1272,10 @@ mod tests {
 
     #[test]
     fn test_multi_client_with_signer() {
-        let trusted = empty_trusted_prefixes();
         let signer = Arc::new(MockSigner);
-        let client = MultiRegistryClient::with_signer(
-            &trusted,
-            vec!["http://registry:8080".to_string()],
-            signer,
-        );
+        let client =
+            MultiRegistryClient::with_signer(vec!["http://registry:8080".to_string()], signer);
         assert!(client.signer.is_some());
-    }
-
-    #[test]
-    #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
-    fn test_multi_client_empty_urls_panics() {
-        let trusted = empty_trusted_prefixes();
-        MultiRegistryClient::new(&trusted, vec![]);
     }
 
     // Note: Old failover tests removed - the new architecture uses prefix-based
@@ -1400,18 +1286,18 @@ mod tests {
         let mock_server = MockServer::start().await;
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder.incept().await.unwrap();
-        let _prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix.clone();
         let kel = Kel::from_events(vec![icp], true).unwrap();
+        let mut map = HashMap::new();
+        map.insert(prefix, kel);
         Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
+            .and(path("/api/registry-kels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&map))
             .mount(&mock_server)
             .await;
 
-        let trusted: HashSet<&'static str> = HashSet::new();
-        // We can't easily add a dynamic prefix to a static HashSet in tests,
-        // so we test without prefix verification
-        let mut client = MultiRegistryClient::new(&trusted, vec![mock_server.uri()]);
+        // Trusted prefixes are now baked in at compile time
+        let mut client = MultiRegistryClient::new(vec![mock_server.uri()]);
 
         let result = client.fetch_registry_kels(false).await;
         assert!(result.is_ok());
@@ -1440,39 +1326,10 @@ mod tests {
             .mount(&server2)
             .await;
 
-        let trusted = empty_trusted_prefixes();
-        let mut client = MultiRegistryClient::new(&trusted, vec![server1.uri(), server2.uri()]);
+        let mut client = MultiRegistryClient::new(vec![server1.uri(), server2.uri()]);
 
         let result = client.fetch_registry_kels(false).await;
 
         assert!(matches!(result, Err(KelsError::RegistryFailure(_))));
-    }
-
-    #[test]
-    #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
-    fn test_multi_client_with_timeout_empty_panics() {
-        let trusted = empty_trusted_prefixes();
-        MultiRegistryClient::with_timeout(&trusted, vec![], Duration::from_secs(10));
-    }
-
-    #[test]
-    #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
-    fn test_multi_client_with_signer_empty_panics() {
-        let trusted = empty_trusted_prefixes();
-        let signer = Arc::new(MockSigner);
-        MultiRegistryClient::with_signer(&trusted, vec![], signer);
-    }
-
-    #[test]
-    #[should_panic(expected = "MultiRegistryClient requires at least one URL")]
-    fn test_multi_client_with_signer_and_timeout_empty_panics() {
-        let trusted = empty_trusted_prefixes();
-        let signer = Arc::new(MockSigner);
-        MultiRegistryClient::with_signer_and_timeout(
-            &trusted,
-            vec![],
-            signer,
-            Duration::from_secs(10),
-        );
     }
 }
