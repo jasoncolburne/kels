@@ -66,7 +66,7 @@ The Raft state machine maintains:
 - Each entry is cryptographically anchored in the leader's KEL
 
 ### Fault Tolerance
-- Requires majority quorum (e.g., 2 of 3 registries) for core peer changes
+- Requires consensus (1/3 of registries, min 2) for core peer changes
 - Regional operations continue independently during network partitions
 - Leader election occurs automatically if current leader fails
 
