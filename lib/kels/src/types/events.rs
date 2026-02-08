@@ -658,3 +658,13 @@ pub struct KelResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audit_records: Option<Vec<KelsAuditRecord>>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "server-caching", derive(cacheable::Cacheable))]
+#[cfg_attr(feature = "server-caching", cache(prefix = "kels:kel", ttl = 3600))]
+#[serde(rename_all = "camelCase")]
+pub struct CachedKel {
+    #[cfg_attr(feature = "server-caching", cache_key(primary))]
+    pub prefix: String,
+    pub events: Vec<SignedKeyEvent>,
+}
