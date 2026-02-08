@@ -208,7 +208,8 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         }
 
         let mut registry_client = MultiRegistryClient::new(registry_urls);
-        let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry)
+        let nodes = registry_client
+            .nodes_sorted_by_latency(&cli.registry)
             .await
             .context("Failed to discover nodes from registry")?;
 
@@ -256,7 +257,9 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     );
 
     let mut registry_client = MultiRegistryClient::new(registry_urls);
-    let nodes = KelsClient::nodes_sorted_by_latency(&mut registry_client, &cli.registry).await?;
+    let nodes = registry_client
+        .nodes_sorted_by_latency(&cli.registry)
+        .await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());

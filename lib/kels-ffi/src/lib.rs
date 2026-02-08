@@ -1728,7 +1728,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
         };
 
         // Discover nodes with proper status checking and latency testing
-        let nodes = KelsClient::nodes_sorted_by_latency(&mut registry, expected_prefix).await?;
+        let nodes = registry.nodes_sorted_by_latency(expected_prefix).await?;
 
         // Filter to verified nodes and convert to JSON format
         let mut node_infos: Vec<NodeInfoJson> = nodes

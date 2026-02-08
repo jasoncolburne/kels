@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -161,38 +161,6 @@ async fn verify_and_authorize<T: serde::Serialize>(
     }
 }
 
-const MAX_PAGE_SIZE: usize = 1000;
-const DEFAULT_PAGE_SIZE: usize = 100;
-
-#[derive(Debug, Deserialize)]
-pub struct PaginationQuery {
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
-impl PaginationQuery {
-    fn effective_limit(&self) -> usize {
-        self.limit
-            .map(|l| l.min(MAX_PAGE_SIZE))
-            .unwrap_or(DEFAULT_PAGE_SIZE)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BootstrapQuery {
-    pub exclude: Option<String>,
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
-impl BootstrapQuery {
-    fn effective_limit(&self) -> usize {
-        self.limit
-            .map(|l| l.min(MAX_PAGE_SIZE))
-            .unwrap_or(DEFAULT_PAGE_SIZE)
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct NodesResponse {
     pub nodes: Vec<NodeRegistration>,
@@ -245,38 +213,6 @@ pub async fn deregister_node(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn list_nodes(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<PaginationQuery>,
-) -> Result<Json<NodesResponse>, ApiError> {
-    let limit = query.effective_limit();
-    let (nodes, next_cursor) = state
-        .store
-        .list_paginated(query.cursor.as_deref(), limit)
-        .await?;
-    Ok(Json(NodesResponse { nodes, next_cursor }))
-}
-
-pub async fn get_bootstrap_nodes(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<BootstrapQuery>,
-) -> Result<Json<NodesResponse>, ApiError> {
-    let limit = query.effective_limit();
-    let (nodes, next_cursor) = state
-        .store
-        .get_bootstrap_nodes_paginated(query.exclude.as_deref(), query.cursor.as_deref(), limit)
-        .await?;
-    Ok(Json(NodesResponse { nodes, next_cursor }))
-}
-
-pub async fn heartbeat(
-    State(state): State<Arc<AppState>>,
-    Path(node_id): Path<String>,
-) -> Result<Json<NodeRegistration>, ApiError> {
-    let registration = state.store.heartbeat(&node_id).await?;
-    Ok(Json(registration))
-}
-
 pub async fn update_status(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
@@ -295,18 +231,6 @@ pub async fn update_status(
         .store
         .update_status(&request.node_id, request.status)
         .await?;
-    Ok(Json(registration))
-}
-
-pub async fn get_node(
-    State(state): State<Arc<AppState>>,
-    Path(node_id): Path<String>,
-) -> Result<Json<NodeRegistration>, ApiError> {
-    let registration = state
-        .store
-        .get(&node_id)
-        .await?
-        .ok_or_else(|| ApiError::not_found(format!("Node not found: {}", node_id)))?;
     Ok(Json(registration))
 }
 
@@ -1086,85 +1010,6 @@ mod tests {
         assert!(api_err.1.error.contains("Serialization error"));
     }
 
-    // ==================== PaginationQuery Tests ====================
-
-    #[test]
-    fn test_pagination_query_effective_limit_none() {
-        let query = PaginationQuery {
-            cursor: None,
-            limit: None,
-        };
-        assert_eq!(query.effective_limit(), DEFAULT_PAGE_SIZE);
-    }
-
-    #[test]
-    fn test_pagination_query_effective_limit_under_max() {
-        let query = PaginationQuery {
-            cursor: None,
-            limit: Some(50),
-        };
-        assert_eq!(query.effective_limit(), 50);
-    }
-
-    #[test]
-    fn test_pagination_query_effective_limit_at_max() {
-        let query = PaginationQuery {
-            cursor: None,
-            limit: Some(MAX_PAGE_SIZE),
-        };
-        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
-    }
-
-    #[test]
-    fn test_pagination_query_effective_limit_over_max() {
-        let query = PaginationQuery {
-            cursor: None,
-            limit: Some(MAX_PAGE_SIZE + 500),
-        };
-        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
-    }
-
-    #[test]
-    fn test_pagination_query_effective_limit_zero() {
-        let query = PaginationQuery {
-            cursor: None,
-            limit: Some(0),
-        };
-        assert_eq!(query.effective_limit(), 0);
-    }
-
-    // ==================== BootstrapQuery Tests ====================
-
-    #[test]
-    fn test_bootstrap_query_effective_limit_none() {
-        let query = BootstrapQuery {
-            exclude: None,
-            cursor: None,
-            limit: None,
-        };
-        assert_eq!(query.effective_limit(), DEFAULT_PAGE_SIZE);
-    }
-
-    #[test]
-    fn test_bootstrap_query_effective_limit_under_max() {
-        let query = BootstrapQuery {
-            exclude: Some("node-1".to_string()),
-            cursor: None,
-            limit: Some(25),
-        };
-        assert_eq!(query.effective_limit(), 25);
-    }
-
-    #[test]
-    fn test_bootstrap_query_effective_limit_over_max() {
-        let query = BootstrapQuery {
-            exclude: None,
-            cursor: Some("cursor".to_string()),
-            limit: Some(2000),
-        };
-        assert_eq!(query.effective_limit(), MAX_PAGE_SIZE);
-    }
-
     // ==================== ErrorResponse Tests ====================
 
     #[test]
@@ -1209,55 +1054,5 @@ mod tests {
     async fn test_health() {
         let status = health().await;
         assert_eq!(status, StatusCode::OK);
-    }
-
-    // ==================== Constants Tests ====================
-
-    #[test]
-    fn test_max_page_size_constant() {
-        assert_eq!(MAX_PAGE_SIZE, 1000);
-    }
-
-    #[test]
-    fn test_default_page_size_constant() {
-        assert_eq!(DEFAULT_PAGE_SIZE, 100);
-    }
-
-    // ==================== PaginationQuery Serde Tests ====================
-
-    #[test]
-    fn test_pagination_query_deserialization_empty() {
-        let json = "{}";
-        let query: PaginationQuery = serde_json::from_str(json).unwrap();
-        assert!(query.cursor.is_none());
-        assert!(query.limit.is_none());
-    }
-
-    #[test]
-    fn test_pagination_query_deserialization_full() {
-        let json = r#"{"cursor": "abc", "limit": 50}"#;
-        let query: PaginationQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.cursor, Some("abc".to_string()));
-        assert_eq!(query.limit, Some(50));
-    }
-
-    // ==================== BootstrapQuery Serde Tests ====================
-
-    #[test]
-    fn test_bootstrap_query_deserialization_empty() {
-        let json = "{}";
-        let query: BootstrapQuery = serde_json::from_str(json).unwrap();
-        assert!(query.exclude.is_none());
-        assert!(query.cursor.is_none());
-        assert!(query.limit.is_none());
-    }
-
-    #[test]
-    fn test_bootstrap_query_deserialization_full() {
-        let json = r#"{"exclude": "node-1", "cursor": "xyz", "limit": 25}"#;
-        let query: BootstrapQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.exclude, Some("node-1".to_string()));
-        assert_eq!(query.cursor, Some("xyz".to_string()));
-        assert_eq!(query.limit, Some(25));
     }
 }

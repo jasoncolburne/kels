@@ -5,14 +5,19 @@
 
 use futures::future::join_all;
 
+use crate::KelsClient;
 use crate::error::KelsError;
 use crate::types::{
     DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration, NodeStatus, PeersResponse,
     RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
+use tracing::{info, warn};
 
 /// Trusted registry prefixes for verifying registry identity.
 /// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
@@ -489,6 +494,10 @@ impl MultiRegistryClient {
         }
     }
 
+    fn create_kels_client(&self, url: &str) -> KelsClient {
+        KelsClient::with_timeout(url, self.timeout)
+    }
+
     fn get_url(&self, prefix: &str) -> Result<String, KelsError> {
         match self.prefix_map.get(prefix) {
             Some((url, _)) => Ok(url.clone()),
@@ -603,6 +612,57 @@ impl MultiRegistryClient {
                 registry_prefix, e
             ))),
         }
+    }
+
+    pub async fn nodes_sorted_by_latency(
+        &mut self,
+        registry_prefix: &str,
+    ) -> Result<Vec<NodeInfo>, KelsError> {
+        let mut nodes = self.list_nodes_info(registry_prefix).await?;
+
+        // Test latency to each Ready node concurrently (with short timeout)
+        let latency_futures: Vec<_> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == NodeStatus::Ready)
+            .map(|(i, n)| {
+                let url = n.kels_url.clone();
+                let node_id = n.node_id.clone();
+                let registry = self.clone();
+                async move {
+                    let client = registry.create_kels_client(&url);
+                    let latency = client.test_latency().await.ok();
+                    if let Some(ref lat) = latency {
+                        info!("Node {} latency: {}ms", node_id, lat.as_millis());
+                    } else {
+                        warn!("Node {} latency test failed/timed out", node_id);
+                    }
+                    (i, latency)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(latency_futures).await;
+        for (i, latency) in results {
+            if let Some(lat) = latency {
+                nodes[i].latency_ms = Some(lat.as_millis() as u64);
+            }
+        }
+
+        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
+        nodes.sort_by(|a, b| match (&a.status, &b.status) {
+            (NodeStatus::Ready, NodeStatus::Ready) => match (&a.latency_ms, &b.latency_ms) {
+                (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            },
+            (NodeStatus::Ready, _) => Ordering::Less,
+            (_, NodeStatus::Ready) => Ordering::Greater,
+            _ => Ordering::Equal,
+        });
+
+        Ok(nodes)
     }
 
     /// Fetch the registry's KEL from all registries in parallel.
@@ -1136,68 +1196,6 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(!result.unwrap());
-    }
-
-    // ==================== Has Ready Peers Tests ====================
-
-    #[tokio::test]
-    async fn test_has_ready_peers_true() {
-        //     let mock_server = MockServer::start().await;
-
-        //     let response = NodesResponse {
-        //         nodes: vec![NodeRegistration {
-        //             node_id: "node-1".to_string(),
-        //             node_type: NodeType::Kels,
-        //             kels_url: "http://node-1:8091".to_string(),
-        //             gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-        //             registered_at: chrono::Utc::now(),
-        //             last_heartbeat: chrono::Utc::now(),
-        //             status: NodeStatus::Ready,
-        //         }],
-        //         next_cursor: None,
-        //     };
-
-        //     Mock::given(method("GET"))
-        //         .and(path("/api/nodes/bootstrap"))
-        //         .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-        //         .mount(&mock_server)
-        //         .await;
-
-        //     let client = KelsRegistryClient::new(&mock_server.uri());
-        //     let result = client.has_ready_peers(None).await;
-
-        //     assert!(result.is_ok());
-        //     assert!(result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_has_ready_peers_false() {
-        // let mock_server = MockServer::start().await;
-
-        // let response = NodesResponse {
-        //     nodes: vec![NodeRegistration {
-        //         node_id: "node-1".to_string(),
-        //         node_type: NodeType::Kels,
-        //         kels_url: "http://node-1:8091".to_string(),
-        //         gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
-        //         registered_at: chrono::Utc::now(),
-        //         last_heartbeat: chrono::Utc::now(),
-        //         status: NodeStatus::Bootstrapping, // Not Ready
-        //     }],
-        //     next_cursor: None,
-        // };
-
-        // Mock::given(method("GET"))
-        //     .and(path("/api/nodes/bootstrap"))
-        //     .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-        //     .mount(&mock_server)
-        //     .await;
-
-        // let client = KelsRegistryClient::new(&mock_server.uri());
-        // let result = client.has_ready_peers(None).await;
-
-        // assert!(result.is_ok());
-        // assert!(!result.unwrap());
     }
 
     // ==================== Registry KEL Tests ====================

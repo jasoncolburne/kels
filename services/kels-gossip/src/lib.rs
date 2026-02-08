@@ -170,23 +170,6 @@ impl Config {
 }
 
 /// Run the gossip service
-///
-/// # Bootstrap Algorithm
-///
-/// The service follows this algorithm to safely join the network:
-///
-/// 1. **Create identity**: Generate HSM-backed keypair, derive PeerId
-/// 2. **Check allowlist**: Query `/api/peers` to check if authorized
-/// 3. **If NOT authorized**: Log alert with PeerId, loop:
-///    - Preload KELs from Ready peers (read-only sync via HTTP)
-///    - Sleep 5 minutes
-///    - Recheck allowlist
-/// 4. **Once authorized**: Register as Bootstrapping, start gossip swarm
-/// 5. **Check for Ready peers**: Query `/api/nodes/bootstrap`
-/// 6. **If Ready peers exist**: Wait for first `PeerConnected` event, then resync
-///    (This catches events missed between preload and joining gossip)
-/// 7. **If no Ready peers**: Skip resync (we're the first/only node)
-/// 8. **Mark Ready**: Update status, start heartbeat and allowlist refresh loops
 pub async fn run(config: Config) -> Result<(), ServiceError> {
     use kels::MultiRegistryClient;
     use tokio::time::Duration;

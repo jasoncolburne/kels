@@ -28,11 +28,7 @@ pub fn create_router(
     // Node management routes with AppState
     let node_router = Router::new()
         .route("/api/nodes/register", post(handlers::register_node))
-        .route("/api/nodes", get(handlers::list_nodes))
-        .route("/api/nodes/bootstrap", get(handlers::get_bootstrap_nodes))
-        .route("/api/nodes/:node_id", get(handlers::get_node))
         .route("/api/nodes/deregister", post(handlers::deregister_node))
-        .route("/api/nodes/:node_id/heartbeat", post(handlers::heartbeat))
         .route("/api/nodes/status", post(handlers::update_status))
         .with_state(state);
 
@@ -90,11 +86,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let postgres_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@postgres:5432/kels".to_string());
 
-    let heartbeat_timeout_secs: i64 = std::env::var("HEARTBEAT_TIMEOUT_SECS")
-        .unwrap_or_else(|_| "30".to_string())
-        .parse()
-        .map_err(|e| format!("HEARTBEAT_TIMEOUT_SECS must be a valid number: {}", e))?;
-
     tracing::info!("Connecting to Redis at {}", redis_url);
     let redis_client = RedisClient::open(redis_url.as_str())
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
@@ -115,7 +106,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     tracing::info!("Database initialized");
 
     let repo = Arc::new(repo);
-    let store = RegistryStore::new(redis_conn, "kels-registry", heartbeat_timeout_secs);
+    let store = RegistryStore::new(redis_conn, "kels-registry");
     let state = Arc::new(AppState {
         store,
         repo: repo.clone(),
