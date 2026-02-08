@@ -237,13 +237,9 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
     }
 }
 
-fn create_kel_store(cli: &Cli, prefix: Option<&str>) -> Result<FileKelStore> {
+fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
-    if let Some(p) = prefix {
-        FileKelStore::with_owner(dir, p.to_string()).context("Failed to create KEL store")
-    } else {
-        FileKelStore::new(dir).context("Failed to create KEL store")
-    }
+    FileKelStore::with_owner(dir, prefix.to_string()).context("Failed to create KEL store")
 }
 
 // ==================== Command Handlers ====================
@@ -296,12 +292,11 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = SoftwareKeyProvider::new();
-    let kel_store = create_kel_store(cli, None)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
         Some(client),
-        Some(std::sync::Arc::new(kel_store)),
+        None,
         None,
     )
     .await?;
@@ -311,7 +306,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     // Save to the correct prefix directory
     let config = provider_config(cli, &icp.event.prefix)?;
     config.save_provider(builder.key_provider()).await?;
-    let kel_store = create_kel_store(cli, Some(&icp.event.prefix))?;
+    let kel_store = create_kel_store(cli, &icp.event.prefix)?;
     kel_store.save(builder.kel()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
@@ -330,7 +325,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -371,7 +366,7 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -398,7 +393,7 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -423,7 +418,7 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -452,7 +447,7 @@ async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -482,7 +477,7 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -642,7 +637,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 }
 
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let kel = kel_store
         .load(prefix)
@@ -778,7 +773,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
         format!("Truncating local KEL {} to {} events...", prefix, count).yellow()
     );
 
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let mut kel = kel_store
         .load(prefix)
@@ -803,7 +798,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 
 #[cfg(feature = "dev-tools")]
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
 
     let kel = kel_store
         .load(prefix)
@@ -826,7 +821,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     );
 
     // Load the local KEL to get the chain state
-    let kel_store = create_kel_store(cli, Some(prefix))?;
+    let kel_store = create_kel_store(cli, prefix)?;
     let kel = kel_store
         .load(prefix)
         .await?
