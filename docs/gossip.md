@@ -50,11 +50,13 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 
 1. `kels-gossip` receives `KelAnnouncement` from gossipsub
 2. Compares announced SAID with local latest SAID for that prefix
-3. If SAIDs differ (or prefix unknown locally):
-   - Sends `KelRequest { prefix }` to announcing peer via request-response
-   - Receives `KelResponse { prefix, events }` with full KEL
-   - Submits events to local KELS via `KelsClient::submit_events()`
-4. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
+3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
+4. If SAID is new:
+   - **Delta fetch** (`fetch_kel_since`): requests only events after local state
+   - **Audit fetch** (on `KeyNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
+   - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
+   - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence
+5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
 ### Why SAID comparison?
 
@@ -144,12 +146,14 @@ Gossip nodes use persistent HSM-backed identities:
 - Unauthorized peers are disconnected immediately after the Noise handshake
 - See [Secure Registration](secure-registration.md) for details on the peer allowlist
 
-### Full KEL fetch (not incremental)
+### Delta-based sync with full-fetch fallback
 
-- Simpler implementation - no generation tracking needed
+- **Delta fetch** (`?since=<said>`) is the primary sync mechanism — only fetches events newer than local state
+- Uses the `serial` field on `KeyEvent` for efficient DB-ordered queries (`ORDER BY serial ASC`)
+- Falls back to **full KEL fetch** when delta is unavailable (e.g., new prefix, network error)
+- **Recovery-aware audit fetch**: when a delta fetch fails with `KeyNotFound` (local SAID was purged by recovery on the remote), fetches with `?audit=true` to retrieve both the clean chain and archived adversary events
+- Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split at the first recovery-revealing event and submitted in stages so merge() processes recovery correctly
 - KELS handles duplicate events idempotently
-- Works correctly with divergence scenarios
-- Bandwidth overhead acceptable for typical KEL sizes
 
 ### Registry-based discovery (not hardcoded bootstrap peers)
 

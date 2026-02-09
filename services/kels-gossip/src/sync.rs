@@ -4,7 +4,10 @@
 //! - Subscribing to Redis for local KEL updates
 //! - Broadcasting announcements to gossip network
 //! - Processing incoming announcements and fetching missing KELs via HTTP
-//! - Submitting fetched events to local KELS
+//! - Delta-based sync (fetch only events after local state) with full-fetch fallback
+//! - Recovery-aware audit fetch: when delta fails due to recovery, fetches archived
+//!   adversary events and submits them in stages so merge() resolves divergence correctly
+//! - Event partitioning: separates adversary and recovery branches for proper merge ordering
 
 use std::{
     collections::HashMap,
@@ -678,6 +681,7 @@ pub async fn run_sync_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kels::{EventKind, KeyEvent};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -690,6 +694,31 @@ mod tests {
             local_peer_id,
             recently_stored,
         )
+    }
+
+    /// Create a minimal SignedKeyEvent for testing partition logic.
+    /// Uses the `said` as a simple identifier and `previous` for chain linking.
+    fn make_event(said: &str, previous: Option<&str>, kind: EventKind) -> SignedKeyEvent {
+        SignedKeyEvent {
+            event: KeyEvent {
+                said: said.to_string(),
+                prefix: "test-prefix".to_string(),
+                previous: previous.map(|s| s.to_string()),
+                serial: 0,
+                public_key: None,
+                rotation_hash: None,
+                recovery_key: if kind.reveals_recovery_key() {
+                    Some("recovery-key".to_string())
+                } else {
+                    None
+                },
+                recovery_hash: None,
+                kind,
+                anchor: None,
+                delegating_prefix: None,
+            },
+            signatures: vec![],
+        }
     }
 
     #[test]
@@ -773,5 +802,314 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
+    }
+
+    // --- partition_events tests ---
+
+    #[test]
+    fn test_partition_events_empty() {
+        let (adversary, recovery) = SyncHandler::partition_events(vec![]);
+        assert!(adversary.is_empty());
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_events_single_event() {
+        let events = vec![make_event("icp1", None, EventKind::Icp)];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 1);
+        assert_eq!(adversary[0].event.said, "icp1");
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_events_linear_chain_no_recovery() {
+        // A simple chain: icp → rot → ixn — no partitioning needed
+        let events = vec![
+            make_event("icp1", None, EventKind::Icp),
+            make_event("rot1", Some("icp1"), EventKind::Rot),
+            make_event("ixn1", Some("rot1"), EventKind::Ixn),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 3);
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_events_linear_chain_with_recovery() {
+        // A single chain with recovery: icp → ixn → rec → rot
+        // Single root — cannot partition, returns everything as adversary
+        let events = vec![
+            make_event("icp1", None, EventKind::Icp),
+            make_event("ixn1", Some("icp1"), EventKind::Ixn),
+            make_event("rec1", Some("ixn1"), EventKind::Rec),
+            make_event("rot1", Some("rec1"), EventKind::Rot),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 4);
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_events_two_branches_recovery_detected() {
+        // Two branches from a shared ancestor (not in batch):
+        // Branch 1 (adversary): adv1 → adv2 (previous "shared" not in batch)
+        // Branch 2 (recovery):  rec1 → rot1 (previous "shared" not in batch)
+        let events = vec![
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("adv2", Some("adv1"), EventKind::Ixn),
+            make_event("rec1", Some("shared"), EventKind::Rec),
+            make_event("rot1", Some("rec1"), EventKind::Rot),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        // Recovery branch has rec1 and rot1
+        assert_eq!(recovery.len(), 2);
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(recovery_saids.contains(&"rec1"));
+        assert!(recovery_saids.contains(&"rot1"));
+        // Adversary branch has adv1 and adv2
+        assert_eq!(adversary.len(), 2);
+        let adversary_saids: Vec<_> = adversary.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(adversary_saids.contains(&"adv1"));
+        assert!(adversary_saids.contains(&"adv2"));
+    }
+
+    #[test]
+    fn test_partition_events_two_branches_contest_detected() {
+        // Contest event (cnt) also reveals recovery key
+        let events = vec![
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("cnt1", Some("shared"), EventKind::Cnt),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 1);
+        assert_eq!(adversary[0].event.said, "adv1");
+        assert_eq!(recovery.len(), 1);
+        assert_eq!(recovery[0].event.said, "cnt1");
+    }
+
+    #[test]
+    fn test_partition_events_two_branches_no_recovery_in_either() {
+        // Two branches but neither has recovery events — returns all as adversary
+        let events = vec![
+            make_event("ixn1", Some("shared"), EventKind::Ixn),
+            make_event("ixn2", Some("shared"), EventKind::Ixn),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 2);
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_events_recovery_branch_with_pre_recovery_events() {
+        // Recovery branch: ixn1 → rec1 → rot1 (ixn before recovery)
+        // Adversary branch: adv1 → adv2 → adv3
+        // Both branch from "shared" (not in batch)
+        let events = vec![
+            make_event("ixn1", Some("shared"), EventKind::Ixn),
+            make_event("rec1", Some("ixn1"), EventKind::Rec),
+            make_event("rot1", Some("rec1"), EventKind::Rot),
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("adv2", Some("adv1"), EventKind::Ixn),
+            make_event("adv3", Some("adv2"), EventKind::Ixn),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        // Recovery chain includes ixn1, rec1, rot1 (the whole chain from the recovery root)
+        assert_eq!(recovery.len(), 3);
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(recovery_saids.contains(&"ixn1"));
+        assert!(recovery_saids.contains(&"rec1"));
+        assert!(recovery_saids.contains(&"rot1"));
+        // Adversary chain
+        assert_eq!(adversary.len(), 3);
+        let adversary_saids: Vec<_> = adversary.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(adversary_saids.contains(&"adv1"));
+        assert!(adversary_saids.contains(&"adv2"));
+        assert!(adversary_saids.contains(&"adv3"));
+    }
+
+    #[test]
+    fn test_partition_events_decommission_detected_as_recovery() {
+        // Decommission (dec) also reveals recovery key
+        let events = vec![
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("dec1", Some("shared"), EventKind::Dec),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 1);
+        assert_eq!(adversary[0].event.said, "adv1");
+        assert_eq!(recovery.len(), 1);
+        assert_eq!(recovery[0].event.said, "dec1");
+    }
+
+    #[test]
+    fn test_partition_events_single_root_shared_by_both_branches() {
+        // Both branches descend from icp (which IS in the batch) → single root
+        // partition_events cannot split these — returns all as adversary
+        let events = vec![
+            make_event("icp1", None, EventKind::Icp),
+            make_event("ixn1", Some("icp1"), EventKind::Ixn),
+            make_event("rec1", Some("ixn1"), EventKind::Rec),
+            make_event("adv1", Some("icp1"), EventKind::Ixn),
+            make_event("adv2", Some("adv1"), EventKind::Ixn),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        // Single root (icp1) — cannot partition
+        assert_eq!(adversary.len(), 5);
+        assert!(recovery.is_empty());
+    }
+
+    // --- handle_rebroadcast tests ---
+
+    #[tokio::test]
+    async fn test_handle_rebroadcast_regional_to_core_rebroadcasts_core_to_core() {
+        let local_peer_id = PeerId::random();
+        let mut handler = create_test_handler(local_peer_id);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let announcement = KelAnnouncement::from_pubsub_message(
+            "test-prefix:test-said",
+            AnnouncementScope::Regional,
+            AnnouncementScope::Core,
+            "sender-peer".to_string(),
+        )
+        .unwrap();
+
+        handler
+            .handle_rebroadcast(
+                "test-prefix",
+                Some("test-said".to_string()),
+                true,
+                &announcement,
+                &command_tx,
+            )
+            .await;
+
+        // Should rebroadcast core→core
+        let cmd = command_rx.try_recv().unwrap();
+        let GossipCommand::Announce(ann) = cmd;
+        assert_eq!(ann.origin, AnnouncementScope::Core);
+        assert_eq!(ann.destination, AnnouncementScope::Core);
+
+        // SAID cache should be updated
+        assert_eq!(
+            handler.local_saids.get("test-prefix"),
+            Some(&"test-said".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_rebroadcast_core_to_core_rebroadcasts_core_to_regional() {
+        let local_peer_id = PeerId::random();
+        let mut handler = create_test_handler(local_peer_id);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let announcement = KelAnnouncement::from_pubsub_message(
+            "test-prefix:test-said",
+            AnnouncementScope::Core,
+            AnnouncementScope::Core,
+            "sender-peer".to_string(),
+        )
+        .unwrap();
+
+        handler
+            .handle_rebroadcast(
+                "test-prefix",
+                Some("test-said".to_string()),
+                true,
+                &announcement,
+                &command_tx,
+            )
+            .await;
+
+        let cmd = command_rx.try_recv().unwrap();
+        let GossipCommand::Announce(ann) = cmd;
+        assert_eq!(ann.origin, AnnouncementScope::Core);
+        assert_eq!(ann.destination, AnnouncementScope::Regional);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rebroadcast_core_to_regional_no_rebroadcast() {
+        let local_peer_id = PeerId::random();
+        let mut handler = create_test_handler(local_peer_id);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let announcement = KelAnnouncement::from_pubsub_message(
+            "test-prefix:test-said",
+            AnnouncementScope::Core,
+            AnnouncementScope::Regional,
+            "sender-peer".to_string(),
+        )
+        .unwrap();
+
+        handler
+            .handle_rebroadcast(
+                "test-prefix",
+                Some("test-said".to_string()),
+                true,
+                &announcement,
+                &command_tx,
+            )
+            .await;
+
+        // No rebroadcast for core→regional
+        assert!(command_rx.try_recv().is_err());
+        // But SAID cache should still be updated
+        assert_eq!(
+            handler.local_saids.get("test-prefix"),
+            Some(&"test-said".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_rebroadcast_not_accepted_no_rebroadcast() {
+        let local_peer_id = PeerId::random();
+        let mut handler = create_test_handler(local_peer_id);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let announcement = KelAnnouncement::from_pubsub_message(
+            "test-prefix:test-said",
+            AnnouncementScope::Regional,
+            AnnouncementScope::Core,
+            "sender-peer".to_string(),
+        )
+        .unwrap();
+
+        handler
+            .handle_rebroadcast(
+                "test-prefix",
+                Some("test-said".to_string()),
+                false, // not accepted
+                &announcement,
+                &command_tx,
+            )
+            .await;
+
+        // Not accepted: no rebroadcast and no SAID cache update
+        assert!(command_rx.try_recv().is_err());
+        assert!(!handler.local_saids.contains_key("test-prefix"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_rebroadcast_no_tip_said() {
+        let local_peer_id = PeerId::random();
+        let mut handler = create_test_handler(local_peer_id);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
+
+        let announcement = KelAnnouncement::from_pubsub_message(
+            "test-prefix:test-said",
+            AnnouncementScope::Regional,
+            AnnouncementScope::Core,
+            "sender-peer".to_string(),
+        )
+        .unwrap();
+
+        handler
+            .handle_rebroadcast("test-prefix", None, true, &announcement, &command_tx)
+            .await;
+
+        // No tip SAID: no rebroadcast, no cache update
+        assert!(command_rx.try_recv().is_err());
+        assert!(!handler.local_saids.contains_key("test-prefix"));
     }
 }
