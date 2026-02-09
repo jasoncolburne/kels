@@ -114,6 +114,8 @@ pub struct KeyEvent {
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
+    #[version]
+    pub serial: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
     /// Digest of next signing key
@@ -139,21 +141,18 @@ impl KeyEvent {
         rotation_hash: String,
         recovery_hash: String,
     ) -> Result<Self, KelsError> {
-        let mut icp = Self {
-            said: String::new(),
-            prefix: String::new(),
-            previous: None,
-            public_key: Some(public_key),
-            rotation_hash: Some(rotation_hash),
-            recovery_key: None,
-            recovery_hash: Some(recovery_hash),
-            kind: EventKind::Icp,
-            anchor: None,
-            delegating_prefix: None,
-        };
-        icp.derive_prefix()?;
-        icp.derive_said()?;
-        Ok(icp)
+        match Self::create(
+            Some(public_key),
+            Some(rotation_hash),
+            None,
+            Some(recovery_hash),
+            EventKind::Icp,
+            None,
+            None,
+        ) {
+            Ok(e) => Ok(e),
+            Err(e) => Err(KelsError::StorageError(e.to_string())),
+        }
     }
 
     pub fn create_delegated_inception(
@@ -162,21 +161,18 @@ impl KeyEvent {
         recovery_hash: String,
         delegating_prefix: String,
     ) -> Result<Self, KelsError> {
-        let mut dip = Self {
-            said: String::new(),
-            prefix: String::new(),
-            previous: None,
-            public_key: Some(public_key),
-            rotation_hash: Some(rotation_hash),
-            recovery_key: None,
-            recovery_hash: Some(recovery_hash),
-            kind: EventKind::Dip,
-            anchor: None,
-            delegating_prefix: Some(delegating_prefix),
-        };
-        dip.derive_prefix()?;
-        dip.derive_said()?;
-        Ok(dip)
+        match Self::create(
+            Some(public_key),
+            Some(rotation_hash),
+            None,
+            Some(recovery_hash),
+            EventKind::Dip,
+            None,
+            Some(delegating_prefix),
+        ) {
+            Ok(e) => Ok(e),
+            Err(e) => Err(KelsError::StorageError(e.to_string())),
+        }
     }
 
     pub fn create_rotation(

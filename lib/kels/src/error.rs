@@ -112,6 +112,9 @@ pub enum KelsError {
     #[error("KEL recovery key revealed, contest required")]
     ContestRequired,
 
+    #[error("Invalid serial: {0}")]
+    InvalidSerial(String),
+
     #[error("Invalid SAID: {0}")]
     InvalidSaid(String),
 
@@ -224,6 +227,7 @@ mod tests {
             KelsError::Diverged("diverged".to_string()),
             KelsError::Frozen,
             KelsError::ContestRequired,
+            KelsError::InvalidSerial("bad serial".to_string()),
             KelsError::InvalidSaid("bad said".to_string()),
             KelsError::InvalidPrefix("bad prefix".to_string()),
             KelsError::InvalidVersion("bad version".to_string()),

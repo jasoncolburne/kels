@@ -13,10 +13,11 @@ use tracing::{debug, error, info, warn};
 use futures::prelude::*;
 use kels::MultiRegistryClient;
 use libp2p::{
+    Multiaddr, PeerId, Swarm, SwarmBuilder,
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+    tcp, yamux,
 };
 use thiserror::Error;
 

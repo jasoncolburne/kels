@@ -15,6 +15,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+use verifiable_storage::ChainedRepository;
+
 use crate::repository::KelsRepository;
 
 pub(crate) struct PreSerializedJson(pub Arc<Vec<u8>>);
@@ -243,7 +245,6 @@ pub(crate) async fn submit_events(
     // Load existing KEL within transaction (sees latest committed state)
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
-    kel.sort();
 
     debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
@@ -342,6 +343,7 @@ pub(crate) async fn submit_events(
 pub(crate) struct GetKelParams {
     #[serde(default)]
     pub audit: bool,
+    pub since: Option<String>,
 }
 
 pub(crate) async fn get_kel(
@@ -349,6 +351,30 @@ pub(crate) async fn get_kel(
     Path(prefix): Path<String>,
     Query(params): Query<GetKelParams>,
 ) -> Result<Response, ApiError> {
+    // If since parameter provided, return delta events after the given SAID
+    if let Some(ref since_said) = params.since {
+        let since_event = state
+            .repo
+            .key_events
+            .get_by_said(since_said)
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("Since SAID {} not found", since_said)))?;
+
+        let events = state
+            .repo
+            .key_events
+            .get_signed_history_since(&prefix, since_event.serial)
+            .await?;
+
+        // Filter out the since event itself — caller already has it
+        let delta: Vec<SignedKeyEvent> = events
+            .into_iter()
+            .filter(|e| e.event.said != *since_said)
+            .collect();
+
+        return Ok(Json(delta).into_response());
+    }
+
     // If audit requested, skip cache and return full KelResponse
     if params.audit {
         let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
@@ -401,6 +427,19 @@ pub(crate) async fn get_kel(
     }
 
     Ok(Json(signed_events).into_response())
+}
+
+// ==================== Event Exists ====================
+
+pub(crate) async fn event_exists(
+    State(state): State<Arc<AppState>>,
+    Path(said): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if state.repo.key_events.event_exists_by_said(&said).await? {
+        Ok(StatusCode::OK)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
 }
 
 // ==================== Prefix Listing ====================

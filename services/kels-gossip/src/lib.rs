@@ -36,7 +36,7 @@ mod protocol;
 mod sync;
 
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info};
 
 use libp2p::Multiaddr;
@@ -248,7 +248,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             return Err(ServiceError::Config(format!(
                 "Can't find prefix for kels url {}: {}",
                 &config.registry_url, e
-            )))
+            )));
         }
     };
 
@@ -261,7 +261,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         page_size: 100,
     };
 
-    let bootstrap =
+    let mut bootstrap =
         BootstrapSync::new(bootstrap_config.clone(), registry_client, allowlist.clone());
 
     // Step 2-3: Check allowlist and wait if not authorized
@@ -306,16 +306,16 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     // Publish bootstrapping state to Redis
-    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str()) {
-        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-            if let Err(e) = conn
-                .set::<_, _, ()>("kels:gossip:ready", "bootstrapping")
-                .await
-            {
-                error!("Failed to publish bootstrapping state to Redis: {}", e);
-            } else {
-                info!("Published bootstrapping state to Redis");
-            }
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str())
+        && let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
+    {
+        if let Err(e) = conn
+            .set::<_, _, ()>("kels:gossip:ready", "bootstrapping")
+            .await
+        {
+            error!("Failed to publish bootstrapping state to Redis: {}", e);
+        } else {
+            info!("Published bootstrapping state to Redis");
         }
     }
 
@@ -445,13 +445,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Bootstrap complete - node is ready");
 
     // Publish ready state to Redis for KELS service to read
-    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str()) {
-        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-            if let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "true").await {
-                error!("Failed to publish ready state to Redis {}", e);
-            } else {
-                info!("Published ready state to Redis");
-            }
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str())
+        && let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
+    {
+        if let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "true").await {
+            error!("Failed to publish ready state to Redis {}", e);
+        } else {
+            info!("Published ready state to Redis");
         }
     }
 

@@ -3,7 +3,7 @@
 //! Exposes a `/ready` endpoint that other gossip nodes can query to determine
 //! if this node is ready to sync KELs from.
 
-use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;

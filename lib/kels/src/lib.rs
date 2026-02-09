@@ -7,6 +7,27 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
+/// Try an async operation and check the result. If the check fails, evaluate and
+/// await the retry expression (which may use different parameters) and check again.
+///
+/// Returns `Ok(Some(value))` if the check passes, `Ok(None)` if it fails after retry,
+/// or `Err(e)` if either operation errors.
+#[macro_export]
+macro_rules! retry_once {
+    ($initial:expr, $check:expr, $retry:expr $(,)?) => {{
+        let result = $initial.await;
+        match result {
+            Ok(val) if $check(&val) => Ok(Some(val)),
+            Ok(_) => match $retry.await {
+                Ok(val) if $check(&val) => Ok(Some(val)),
+                Ok(_) => Ok(None),
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }};
+}
+
 #[cfg(feature = "redis")]
 pub mod cache;
 

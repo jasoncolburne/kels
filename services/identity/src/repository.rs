@@ -93,7 +93,7 @@ impl AuthorityRepository {
 }
 
 #[derive(Stored, SignedEvents)]
-#[stored(item_type = KeyEvent, table = "identity_key_events")]
+#[stored(item_type = KeyEvent, table = "identity_key_events", version_field = "serial")]
 #[signed_events(signatures_table = "identity_key_event_signatures")]
 pub struct KeyEventRepository {
     pub pool: PgPool,

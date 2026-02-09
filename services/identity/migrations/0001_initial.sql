@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS identity_key_events (
     said CHAR(44) PRIMARY KEY,
     prefix CHAR(44) NOT NULL,
     previous CHAR(44),
+    serial BIGINT NOT NULL,
     public_key CHAR(48),
     rotation_hash CHAR(44),
     kind VARCHAR(16) NOT NULL,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS identity_key_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_key_events_prefix ON identity_key_events(prefix);
+CREATE INDEX IF NOT EXISTS idx_key_events_prefix_serial ON identity_key_events(prefix, serial);
 
 -- Signatures for key events
 CREATE TABLE IF NOT EXISTS identity_key_event_signatures (

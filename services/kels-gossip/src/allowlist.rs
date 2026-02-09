@@ -9,17 +9,17 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use kels::MultiRegistryClient;
+use kels::{MultiRegistryClient, retry_once};
 use libp2p::{
-    swarm::{
-        behaviour::ConnectionEstablished, CloseConnection, ConnectionClosed, ConnectionDenied,
-        ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent,
-        ToSwarm,
-    },
     Multiaddr, PeerId,
+    swarm::{
+        CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm,
+        NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+        behaviour::ConnectionEstablished,
+    },
 };
 use thiserror::Error;
 use verifiable_storage::Chained;
@@ -238,7 +238,7 @@ pub async fn refresh_allowlist(
     // Fetch peers
     debug!("Fetching peers");
     let response = registry_client
-        .fetch_peers(registry_prefix)
+        .fetch_verified_peers(registry_prefix)
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
@@ -258,15 +258,17 @@ pub async fn refresh_allowlist(
                 continue;
             }
 
-            // Fetch and verify the registry's KEL
+            // Fetch and verify the registry's KEL, retrying with a forced refresh if
+            // the anchor isn't found in the cached version
             debug!("Verifying registry KEL");
-            let registry_kel = registry_client
-                .fetch_registry_kel(&latest.authorizing_kel, true)
-                .await
-                .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+            let maybe_kel = retry_once!(
+                registry_client.fetch_registry_kel(&latest.authorizing_kel, false),
+                |kel: &kels::Kel| kel.contains_anchor(&latest.said),
+                registry_client.fetch_registry_kel(&latest.authorizing_kel, true),
+            )
+            .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
-            // Verify the peer's SAID is anchored in the registry's KEL
-            if !registry_kel.contains_anchor(&latest.said) {
+            if maybe_kel.is_none() {
                 warn!(
                     peer_id = %latest.peer_id,
                     said = %latest.said,

@@ -24,6 +24,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/ready", get(handlers::ready))
         .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
+        .route("/api/kels/events/:said/exists", get(handlers::event_exists))
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .route("/api/kels/prefixes", get(handlers::list_prefixes))
         .with_state(state)

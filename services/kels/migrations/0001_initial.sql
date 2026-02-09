@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS kels_key_events (
     said CHAR(44) PRIMARY KEY,
     prefix CHAR(44) NOT NULL,
     previous CHAR(44),
+    serial BIGINT NOT NULL,
     public_key CHAR(48),
     rotation_hash CHAR(44),
     recovery_key CHAR(48),
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS kels_key_events (
 );
 
 CREATE INDEX IF NOT EXISTS kels_key_events_prefix_idx ON kels_key_events(prefix);
+CREATE INDEX IF NOT EXISTS kels_key_events_prefix_serial_idx ON kels_key_events(prefix, serial);
 
 -- Signatures table
 CREATE TABLE IF NOT EXISTS kels_key_event_signatures (

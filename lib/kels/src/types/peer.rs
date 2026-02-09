@@ -1,7 +1,12 @@
 //! Peer allowlist & federation
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
+
+use super::Kel;
+use crate::KelsError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +119,55 @@ impl Peer {
 pub struct PeerHistory {
     pub prefix: String,
     pub records: Vec<Peer>,
+}
+
+impl PeerHistory {
+    pub fn verify(
+        &self,
+        trusted_prefixes: &HashSet<&'static str>,
+        kels: &[&Kel],
+    ) -> Result<(), KelsError> {
+        for kel in kels {
+            if !kel.verify_prefix(trusted_prefixes) {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Could not verify KEL {} as trusted",
+                    kel.prefix().unwrap_or("unknown")
+                )));
+            }
+        }
+
+        let mut last_said: Option<String> = None;
+        for (i, peer_record) in self.records.iter().enumerate() {
+            peer_record.verify()?;
+
+            if let Some(said) = last_said {
+                if let Some(previous) = peer_record.previous.clone() {
+                    if previous != said {
+                        return Err(KelsError::RegistryFailure(format!(
+                            "Peer record {} previous doesn't match {}",
+                            peer_record.said, said
+                        )));
+                    }
+                } else {
+                    return Err(KelsError::RegistryFailure(format!(
+                        "Peer record {} is unchained from {}",
+                        peer_record.said, said
+                    )));
+                }
+            }
+
+            if i as u64 != peer_record.version {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Peer record {} has incorrect version {}",
+                    peer_record.said, peer_record.version
+                )));
+            }
+
+            last_said = Some(peer_record.said.clone());
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

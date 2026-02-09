@@ -491,11 +491,7 @@ impl Kel {
     }
 
     pub fn sort(&mut self) {
-        let sorted: Vec<SignedKeyEvent> = self
-            .walk_generations()
-            .flat_map(|(_, events)| events.into_iter().cloned())
-            .collect();
-        self.0 = sorted;
+        self.0.sort_by_key(|e| e.event.serial);
     }
 
     /// Walk the KEL generation by generation, yielding events at each generation.
@@ -606,8 +602,31 @@ impl Kel {
             }
 
             match event.previous.as_deref() {
-                Some(prev) => current_said = prev,
-                None => break, // Reached inception
+                Some(prev) => {
+                    // Verify serial monotonicity: previous event must have serial - 1
+                    if let Some(prev_event) = events_by_said.get(prev)
+                        && event.serial != prev_event.event.serial + 1
+                    {
+                        return Err(KelsError::InvalidSerial(format!(
+                            "Event {} has serial {} but previous event {} has serial {}",
+                            event.said,
+                            event.serial,
+                            prev_event.event.said,
+                            prev_event.event.serial
+                        )));
+                    }
+                    current_said = prev;
+                }
+                None => {
+                    // Inception event must have serial 0
+                    if event.serial != 0 {
+                        return Err(KelsError::InvalidSerial(format!(
+                            "Inception event {} has serial {} but expected 0",
+                            event.said, event.serial
+                        )));
+                    }
+                    break;
+                }
             }
         }
 

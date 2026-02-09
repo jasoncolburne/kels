@@ -432,6 +432,45 @@ impl KelsClient {
         Ok(kel)
     }
 
+    /// Fetch KEL events after a given SAID (delta fetch).
+    pub async fn fetch_kel_since(
+        &self,
+        prefix: &str,
+        since: &str,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/api/kels/kel/{}?since={}",
+                self.base_url, prefix, since
+            ))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::KeyNotFound(format!(
+                "Since SAID {} not found for prefix {}",
+                since, prefix
+            )))
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Check if an event SAID exists on the server.
+    pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
+        let resp = self
+            .client
+            .get(format!("{}/api/kels/events/{}/exists", self.base_url, said))
+            .send()
+            .await?;
+
+        Ok(resp.status().is_success())
+    }
+
     pub async fn fetch_full_kel(&self, prefix: &str, skip_verify: bool) -> Result<Kel, KelsError> {
         let resp = self
             .client

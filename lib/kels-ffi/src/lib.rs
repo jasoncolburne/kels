@@ -28,7 +28,6 @@ use kels::{
     MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
-use verifiable_storage::Chained;
 
 // ==================== Key State Persistence ====================
 
@@ -1692,51 +1691,12 @@ pub unsafe extern "C" fn kels_discover_nodes(
     let discover_result = runtime.block_on(async {
         let mut registry = MultiRegistryClient::new(vec![url.clone()]);
 
-        // Fetch and verify all registry KELs upfront
-        registry.fetch_verified_registry_kels(true).await?;
-
-        // Build set of verified node_ids from peer records
-        let verified_node_ids: std::collections::HashSet<String> = {
-            // Fetch peers from the target registry
-            let peers_response = registry.fetch_peers(expected_prefix).await?;
-
-            let mut verified = std::collections::HashSet::new();
-            for history in &peers_response.peers {
-                if let Some(latest) = history.records.last() {
-                    // Skip peers with invalid SAID
-                    if latest.verify().is_err() {
-                        continue;
-                    }
-
-                    // Fetch the KEL that authorized this peer
-                    let authorizing_kel = registry
-                        .fetch_registry_kel(&latest.authorizing_kel, false)
-                        .await?;
-
-                    // Verify peer is anchored in its authorizing KEL
-                    if !authorizing_kel.contains_anchor(&latest.said) {
-                        return Err(KelsError::AnchorVerificationFailed(format!(
-                            "Peer {} not anchored in authorizing KEL {}",
-                            latest.peer_id, latest.authorizing_kel
-                        )));
-                    }
-
-                    // This peer is verified - trust its node_id
-                    if latest.active {
-                        verified.insert(latest.node_id.clone());
-                    }
-                }
-            }
-            verified
-        };
-
         // Discover nodes with proper status checking and latency testing
         let nodes = registry.nodes_sorted_by_latency(expected_prefix).await?;
 
         // Filter to verified nodes and convert to JSON format
-        let mut node_infos: Vec<NodeInfoJson> = nodes
+        let node_infos: Vec<NodeInfoJson> = nodes
             .into_iter()
-            .filter(|node| verified_node_ids.contains(&node.node_id))
             .map(|node| NodeInfoJson {
                 node_id: node.node_id,
                 kels_url: node.kels_url,
@@ -1748,24 +1708,6 @@ pub unsafe extern "C" fn kels_discover_nodes(
                 latency_ms: node.latency_ms,
             })
             .collect();
-
-        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
-        node_infos.sort_by(|a, b| {
-            let a_ready = a.status == "ready";
-            let b_ready = b.status == "ready";
-
-            match (a_ready, b_ready) {
-                (true, true) => match (&a.latency_ms, &b.latency_ms) {
-                    (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                },
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (false, false) => std::cmp::Ordering::Equal,
-            }
-        });
 
         Ok(node_infos)
     });

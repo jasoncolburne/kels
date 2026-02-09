@@ -147,7 +147,7 @@ impl BootstrapSync {
 
     /// Check if a peer is authorized in the allowlist.
     pub async fn is_peer_authorized(
-        &self,
+        &mut self,
         peer_id: &str,
         registry_prefix: &str,
     ) -> Result<bool, BootstrapError> {

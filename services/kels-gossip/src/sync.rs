@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
@@ -189,6 +189,86 @@ impl SyncHandler {
         }
     }
 
+    /// Partition events into two branches based on content analysis.
+    /// Returns (adversary_branch, recovery_branch) where the recovery branch contains
+    /// events that reveal recovery keys (rec/cnt/ror/dec). The adversary branch should
+    /// be submitted first to establish divergence context, then the recovery branch.
+    fn partition_events(events: Vec<SignedKeyEvent>) -> (Vec<SignedKeyEvent>, Vec<SignedKeyEvent>) {
+        if events.len() <= 1 {
+            return (events, vec![]);
+        }
+
+        let saids: std::collections::HashSet<String> =
+            events.iter().map(|e| e.event.said.clone()).collect();
+
+        // An event is a "root" if its previous is not in this batch
+        let roots: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.event
+                    .previous
+                    .as_ref()
+                    .map(|p| !saids.contains(p))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        // If 0 or 1 roots, everything is one chain — no partitioning needed
+        if roots.len() <= 1 {
+            return (events, vec![]);
+        }
+
+        // Multiple roots: build chains from each root
+        let children: HashMap<String, Vec<&SignedKeyEvent>> = {
+            let mut map: HashMap<String, Vec<&SignedKeyEvent>> = HashMap::new();
+            for e in &events {
+                if let Some(prev) = &e.event.previous {
+                    map.entry(prev.clone()).or_default().push(e);
+                }
+            }
+            map
+        };
+
+        // Walk each chain and check if it contains recovery-revealing events
+        let mut recovery_root_said: Option<String> = None;
+        for root in &roots {
+            let mut current = root.event.said.as_str();
+            let mut has_recovery = root.event.reveals_recovery_key();
+            while let Some(next) = children.get(current).and_then(|v| v.first()) {
+                if next.event.reveals_recovery_key() {
+                    has_recovery = true;
+                }
+                current = &next.event.said;
+            }
+            if has_recovery {
+                recovery_root_said = Some(root.event.said.clone());
+                break;
+            }
+        }
+
+        // If no recovery branch found, fall back to returning everything as one batch
+        let Some(recovery_root) = recovery_root_said else {
+            return (events, vec![]);
+        };
+
+        // Collect the recovery chain's SAIDs
+        let mut recovery_saids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        recovery_saids.insert(recovery_root.clone());
+        let mut current = recovery_root.as_str();
+        while let Some(next) = children.get(current).and_then(|v| v.first()) {
+            recovery_saids.insert(next.event.said.clone());
+            current = &next.event.said;
+        }
+
+        // Adversary events first, recovery events second
+        let (recovery, adversary): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .partition(|e| recovery_saids.contains(&e.event.said));
+
+        (adversary, recovery)
+    }
+
     /// Get the local node's scope from the allowlist
     async fn get_local_scope(&self) -> AnnouncementScope {
         match crate::allowlist::get_local_scope(&self.local_peer_id, &self.allowlist).await {
@@ -251,11 +331,20 @@ impl SyncHandler {
         let local_said = self.get_local_said(prefix).await?;
 
         // If SAIDs match, we're in sync
-        if let Some(ref local) = local_said {
-            if local == remote_said {
-                debug!("Already in sync for prefix {}", prefix);
-                return Ok(());
-            }
+        if let Some(ref local) = local_said
+            && local == remote_said
+        {
+            debug!("Already in sync for prefix {}", prefix);
+            return Ok(());
+        }
+
+        // Check if we already have the announced SAID (we may be ahead of the announcer)
+        if self.kels_client.event_exists(remote_said).await? {
+            debug!(
+                "Already have announced SAID {} for prefix {}",
+                remote_said, prefix
+            );
+            return Ok(());
         }
 
         info!(
@@ -282,17 +371,128 @@ impl SyncHandler {
             }
         };
 
-        // Fetch the KEL via HTTP
+        // Fetch events via HTTP — delta when possible, full otherwise
         let remote_client = KelsClient::new(&kels_url);
-        let events = match remote_client.get_kel(prefix).await {
-            Ok(kel) => kel.events().to_vec(),
-            Err(KelsError::KeyNotFound(_)) => {
-                warn!("KEL not found on remote for {}", prefix);
-                return Ok(());
+        let events = if let Some(ref local_said) = local_said {
+            // Delta fetch: only events after our local state
+            match remote_client.fetch_kel_since(prefix, local_said).await {
+                Ok(events) => events,
+                Err(KelsError::KeyNotFound(_)) => {
+                    // Since SAID was removed by recovery/contest on remote.
+                    // Fetch with audit to get archived adversary events.
+                    info!(
+                        "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
+                        prefix
+                    );
+                    match remote_client.fetch_kel_with_audit(prefix).await {
+                        Ok(response) => {
+                            let clean_chain = response.events;
+                            let archived_events = response
+                                .audit_records
+                                .as_ref()
+                                .and_then(|records| records.last())
+                                .and_then(|record| match record.as_signed_key_events() {
+                                    Ok(events) if !events.is_empty() => {
+                                        info!(
+                                            "Got {} archived adversary events for {}",
+                                            events.len(),
+                                            prefix
+                                        );
+                                        Some(events)
+                                    }
+                                    Ok(_) => None,
+                                    Err(e) => {
+                                        warn!("Failed to deserialize audit events: {}", e);
+                                        None
+                                    }
+                                })
+                                .unwrap_or_default();
+
+                            if archived_events.is_empty() {
+                                // No audit data — fall through to normal submission
+                                clean_chain
+                            } else {
+                                // Recovery with archived events: multi-step submission
+                                // 1. Submit archived adversary events (establishes adversary branch)
+                                // 2. Submit clean chain pre-recovery events (creates fork)
+                                // 3. Submit recovery + post-recovery events (merge Path 1 resolves)
+                                let tip_said = clean_chain.last().map(|e| e.event.said.clone());
+
+                                // Mark recently stored BEFORE submission
+                                if let Some(ref said) = tip_said {
+                                    let key = format!("{}:{}", prefix, said);
+                                    self.recently_stored
+                                        .write()
+                                        .await
+                                        .insert(key, Instant::now());
+                                }
+
+                                // Step 1: Submit archived adversary events
+                                let _ = self.submit_events_to_kels(&archived_events).await;
+
+                                // Step 2+3: Split clean chain at first recovery-revealing event
+                                let accepted = if let Some(idx) = clean_chain
+                                    .iter()
+                                    .position(|e| e.event.reveals_recovery_key())
+                                    && idx > 0
+                                {
+                                    let _ = self.submit_events_to_kels(&clean_chain[..idx]).await;
+                                    self.submit_events_to_kels(&clean_chain[idx..]).await?
+                                } else {
+                                    self.submit_events_to_kels(&clean_chain).await?
+                                };
+
+                                self.handle_rebroadcast(
+                                    prefix,
+                                    tip_said,
+                                    accepted,
+                                    &announcement,
+                                    command_tx,
+                                )
+                                .await;
+                                return Ok(());
+                            }
+                        }
+                        Err(KelsError::KeyNotFound(_)) => {
+                            warn!("KEL not found on remote for {}", prefix);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
+                        kels_url, prefix, e
+                    );
+                    match remote_client.get_kel(prefix).await {
+                        Ok(kel) => kel.events().to_vec(),
+                        Err(KelsError::KeyNotFound(_)) => {
+                            warn!("KEL not found on remote for {}", prefix);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                            return Ok(());
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                return Ok(());
+        } else {
+            // No local state — fetch full KEL
+            match remote_client.get_kel(prefix).await {
+                Ok(kel) => kel.events().to_vec(),
+                Err(KelsError::KeyNotFound(_)) => {
+                    warn!("KEL not found on remote for {}", prefix);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                    return Ok(());
+                }
             }
         };
 
@@ -308,9 +508,17 @@ impl SyncHandler {
             kels_url
         );
 
+        // Partition events by content: adversary branch first, recovery branch second.
+        // The adversary branch establishes divergence context; the recovery branch resolves it.
+        let (adversary_events, recovery_events) = Self::partition_events(events);
+
         // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
         // KELS publishes to Redis immediately when storing, so we must mark first.
-        let said = events.last().map(|e| e.event.said.clone());
+        let all_events: Vec<_> = adversary_events
+            .iter()
+            .chain(recovery_events.iter())
+            .collect();
+        let said = all_events.last().map(|e| e.event.said.clone());
         if let Some(ref said) = said {
             let key = format!("{}:{}", prefix, said);
             self.recently_stored
@@ -319,61 +527,21 @@ impl SyncHandler {
                 .insert(key, Instant::now());
         }
 
-        // Submit the events to local KELS and check if they were accepted
-        let accepted = self.submit_events_to_kels(&events).await?;
-
-        // Update our local SAID cache and re-broadcast only if we stored new events
-        if accepted {
-            if let Some(said) = said {
-                self.local_saids.insert(prefix.clone(), said);
-
-                // Determine rebroadcast based on original announcement's routing
-                let sender = self.local_peer_id.to_string();
-
-                // Rebroadcast rules:
-                // regional→core => rebroadcast core→core
-                // core→core => rebroadcast core→regional
-                // core→regional => don't rebroadcast
-                // regional→regional => don't rebroadcast
-                let rebroadcast = match (announcement.origin, announcement.destination) {
-                    (AnnouncementScope::Regional, AnnouncementScope::Core) => {
-                        Some(announcement.rebroadcast(
-                            AnnouncementScope::Core,
-                            AnnouncementScope::Core,
-                            sender,
-                        ))
-                    }
-                    (AnnouncementScope::Core, AnnouncementScope::Core) => {
-                        Some(announcement.rebroadcast(
-                            AnnouncementScope::Core,
-                            AnnouncementScope::Regional,
-                            sender,
-                        ))
-                    }
-                    _ => None, // core→regional or regional→regional: no rebroadcast
-                };
-
-                if let Some(ann) = rebroadcast {
-                    info!(
-                        "Re-broadcasting: prefix={}, {}->{}",
-                        ann.prefix, ann.origin, ann.destination
-                    );
-                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
-                        warn!("Failed to re-broadcast announcement - channel closed");
-                    }
-                } else {
-                    debug!(
-                        "No rebroadcast needed for prefix={} ({}->{})",
-                        prefix, announcement.origin, announcement.destination
-                    );
-                }
-            }
+        // Submit adversary events first (establishes divergence), then recovery events
+        let accepted = if recovery_events.is_empty() {
+            // No recovery branch — submit everything as one batch
+            self.submit_events_to_kels(&adversary_events).await?
+        } else if adversary_events.is_empty() {
+            // No adversary branch — submit recovery events directly
+            self.submit_events_to_kels(&recovery_events).await?
         } else {
-            debug!(
-                "Events not accepted, skipping re-broadcast for prefix={}",
-                prefix
-            );
-        }
+            // Both branches: adversary first to establish divergence, then recovery
+            let _ = self.submit_events_to_kels(&adversary_events).await;
+            self.submit_events_to_kels(&recovery_events).await?
+        };
+
+        self.handle_rebroadcast(prefix, said, accepted, &announcement, command_tx)
+            .await;
 
         Ok(())
     }
@@ -402,6 +570,62 @@ impl SyncHandler {
             Ok(kel) => Ok(kel.events().to_vec()),
             Err(KelsError::KeyNotFound(_)) => Ok(vec![]),
             Err(e) => Err(SyncError::Kels(e)),
+        }
+    }
+
+    /// Handle post-submission steps: update SAID cache and rebroadcast if accepted.
+    async fn handle_rebroadcast(
+        &mut self,
+        prefix: &str,
+        tip_said: Option<String>,
+        accepted: bool,
+        announcement: &KelAnnouncement,
+        command_tx: &mpsc::Sender<GossipCommand>,
+    ) {
+        if accepted {
+            if let Some(said) = tip_said {
+                self.local_saids.insert(prefix.to_string(), said);
+
+                let sender = self.local_peer_id.to_string();
+
+                let rebroadcast = match (announcement.origin, announcement.destination) {
+                    (AnnouncementScope::Regional, AnnouncementScope::Core) => {
+                        Some(announcement.rebroadcast(
+                            AnnouncementScope::Core,
+                            AnnouncementScope::Core,
+                            sender,
+                        ))
+                    }
+                    (AnnouncementScope::Core, AnnouncementScope::Core) => {
+                        Some(announcement.rebroadcast(
+                            AnnouncementScope::Core,
+                            AnnouncementScope::Regional,
+                            sender,
+                        ))
+                    }
+                    _ => None,
+                };
+
+                if let Some(ann) = rebroadcast {
+                    info!(
+                        "Re-broadcasting: prefix={}, {}->{}",
+                        ann.prefix, ann.origin, ann.destination
+                    );
+                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
+                        warn!("Failed to re-broadcast announcement - channel closed");
+                    }
+                } else {
+                    debug!(
+                        "No rebroadcast needed for prefix={} ({}->{})",
+                        prefix, announcement.origin, announcement.destination
+                    );
+                }
+            }
+        } else {
+            debug!(
+                "Events not accepted, skipping re-broadcast for prefix={}",
+                prefix
+            );
         }
     }
 
