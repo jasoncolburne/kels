@@ -87,7 +87,7 @@ for i in "${!NODE_NAMES[@]}"; do
         echo "$response" | jq -r '.prefixes[].prefix' >> "$prefix_file" 2>/dev/null
 
         # Check for next page
-        cursor=$(echo "$response" | jq -r '.next_cursor // empty' 2>/dev/null)
+        cursor=$(echo "$response" | jq -r '.nextCursor // empty' 2>/dev/null)
         if [ -z "$cursor" ]; then
             break
         fi

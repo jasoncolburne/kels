@@ -24,7 +24,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-5}"
+GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-2.5}"
 NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
 NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
 NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
