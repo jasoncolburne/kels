@@ -417,18 +417,18 @@ impl SyncHandler {
                                 // Pre-recovery events create divergence, then recovery resolves it.
                                 // If recovery fails (frozen KEL rejected pre-rec events),
                                 // retry with the full chain — merge look-ahead handles it.
-                                let accepted = if let Some(idx) = clean_chain
+                                let applied = if let Some(idx) = clean_chain
                                     .iter()
                                     .position(|e| e.event.reveals_recovery_key())
                                     && idx > 0
                                 {
                                     let _ = self.submit_events_to_kels(&clean_chain[..idx]).await;
-                                    let recovery_accepted =
+                                    let recovery_applied =
                                         self.submit_events_to_kels(&clean_chain[idx..]).await?;
-                                    if !recovery_accepted {
+                                    if !recovery_applied {
                                         self.submit_events_to_kels(&clean_chain).await?
                                     } else {
-                                        recovery_accepted
+                                        recovery_applied
                                     }
                                 } else {
                                     self.submit_events_to_kels(&clean_chain).await?
@@ -437,7 +437,7 @@ impl SyncHandler {
                                 self.handle_rebroadcast(
                                     prefix,
                                     tip_said,
-                                    accepted,
+                                    applied,
                                     &announcement,
                                     command_tx,
                                 )
@@ -521,7 +521,7 @@ impl SyncHandler {
         }
 
         // Submit adversary events first (establishes divergence), then recovery events
-        let initial_accepted = if recovery_events.is_empty() {
+        let initially_applied = if recovery_events.is_empty() {
             // No recovery branch — submit everything as one batch
             self.submit_events_to_kels(&adversary_events).await?
         } else if adversary_events.is_empty() {
@@ -536,9 +536,9 @@ impl SyncHandler {
         // If recovery events were rejected (e.g., frozen KEL missing owner's
         // predecessor events), retry with the full remote KEL so merge's
         // look-ahead can process [owner_events..., rec] as one batch.
-        let accepted = if !initial_accepted && has_recovery {
+        let applied = if !initially_applied && has_recovery {
             info!(
-                "Recovery not accepted for {} — retrying with full KEL from {}",
+                "Recovery not applied for {} — retrying with full KEL from {}",
                 prefix, kels_url
             );
             match remote_client.get_kel(prefix).await {
@@ -552,10 +552,10 @@ impl SyncHandler {
                 }
             }
         } else {
-            initial_accepted
+            initially_applied
         };
 
-        self.handle_rebroadcast(prefix, said, accepted, &announcement, command_tx)
+        self.handle_rebroadcast(prefix, said, applied, &announcement, command_tx)
             .await;
 
         Ok(())
@@ -588,16 +588,16 @@ impl SyncHandler {
         }
     }
 
-    /// Handle post-submission steps: update SAID cache and rebroadcast if accepted.
+    /// Handle post-submission steps: update SAID cache and rebroadcast if applied.
     async fn handle_rebroadcast(
         &mut self,
         prefix: &str,
         tip_said: Option<String>,
-        accepted: bool,
+        applied: bool,
         announcement: &KelAnnouncement,
         command_tx: &mpsc::Sender<GossipCommand>,
     ) {
-        if accepted {
+        if applied {
             if let Some(said) = tip_said {
                 self.local_saids.insert(prefix.to_string(), said);
 
@@ -631,23 +631,23 @@ impl SyncHandler {
             }
         } else {
             debug!(
-                "Events not accepted, skipping re-broadcast for prefix={}",
+                "Events not applied, skipping re-broadcast for prefix={}",
                 prefix
             );
         }
     }
 
     /// Submit events to local KELS using the client library.
-    /// Returns true if events were accepted (new events stored).
+    /// Returns true if events were applied (new events stored).
     async fn submit_events_to_kels(&self, events: &[SignedKeyEvent]) -> Result<bool, SyncError> {
         match self.kels_client.submit_events(events).await {
             Ok(result) => {
-                if result.accepted {
-                    info!("Events accepted by local KELS");
+                if result.applied {
+                    info!("Events applied by local KELS");
                     Ok(true)
                 } else {
                     warn!(
-                        "Events not accepted by local KELS: diverged_at={:?}",
+                        "Events not applied by local KELS: diverged_at={:?}",
                         result.diverged_at
                     );
                     Ok(false)
@@ -1037,7 +1037,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_rebroadcast_not_accepted_no_rebroadcast() {
+    async fn test_handle_rebroadcast_not_applied_no_rebroadcast() {
         let local_peer_id = PeerId::random();
         let mut handler = create_test_handler(local_peer_id);
         let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
@@ -1054,13 +1054,13 @@ mod tests {
             .handle_rebroadcast(
                 "test-prefix",
                 Some("test-said".to_string()),
-                false, // not accepted
+                false, // not applied
                 &announcement,
                 &command_tx,
             )
             .await;
 
-        // Not accepted: no rebroadcast and no SAID cache update
+        // Not applied: no rebroadcast and no SAID cache update
         assert!(command_rx.try_recv().is_err());
         assert!(!handler.local_saids.contains_key("test-prefix"));
     }

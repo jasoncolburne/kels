@@ -194,12 +194,12 @@ pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Js
 ///
 /// # Response Interpretation
 ///
-/// - `{ diverged_at: None, accepted: true }` = success, all events stored
-/// - `{ diverged_at: Some(said), accepted: true }` = divergence detected and recovered
-/// - `{ diverged_at: Some(said), accepted: false }` = divergence, not recovered
+/// - `{ diverged_at: None, applied: true }` = success, all events stored
+/// - `{ diverged_at: Some(said), applied: true }` = divergence detected and recovered
+/// - `{ diverged_at: Some(said), applied: false }` = divergence, not recovered
 ///   - If adversary revealed recovery key (rec/ror) → contested KEL (unrecoverable)
 ///   - If submitted events have no recovery event → recovery not attempted, needs rec event
-/// - `{ diverged_at: None, accepted: false }` = validation error
+/// - `{ diverged_at: None, applied: false }` = validation error
 ///
 /// Note: Delegation verification is NOT performed here. KELS accepts any valid KEL
 /// starting with `icp` or `dip`. Delegation trust is verified by consumers when they need to
@@ -211,7 +211,7 @@ pub(crate) async fn submit_events(
     if events.is_empty() {
         return Ok(Json(BatchSubmitResponse {
             diverged_at: None,
-            accepted: true,
+            applied: true,
         }));
     }
 
@@ -279,7 +279,7 @@ pub(crate) async fn submit_events(
         tx.commit().await?;
         return Ok(Json(BatchSubmitResponse {
             diverged_at: kel.find_divergence().map(|d| d.diverged_at_generation),
-            accepted: true,
+            applied: true,
         }));
     }
 
@@ -305,13 +305,13 @@ pub(crate) async fn submit_events(
     }
 
     // Handle merge result within transaction
-    let accepted = match result {
-        KelMergeResult::Verified
+    let applied = match result {
+        KelMergeResult::Accepted
         | KelMergeResult::Recovered
         | KelMergeResult::Contested
-        | KelMergeResult::Recoverable => true,
-        KelMergeResult::Frozen => false,
-        KelMergeResult::RecoveryProtected => {
+        | KelMergeResult::Diverged => true,
+        KelMergeResult::Rejected => false,
+        KelMergeResult::Protected => {
             // Adversary used recovery key - owner should contest
             return Err(ApiError::recovery_protected(
                 "Cannot submit event - adversary used recovery key. Use contest to freeze the KEL.",
@@ -325,7 +325,7 @@ pub(crate) async fn submit_events(
     let diverged_at = kel.find_divergence().map(|d| d.diverged_at_generation);
 
     // Update cache outside transaction
-    if accepted {
+    if applied {
         if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
             warn!("Failed to update cache: {}", e);
         }
@@ -346,7 +346,7 @@ pub(crate) async fn submit_events(
 
     Ok(Json(BatchSubmitResponse {
         diverged_at,
-        accepted,
+        applied,
     }))
 }
 

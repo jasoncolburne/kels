@@ -111,12 +111,12 @@ impl FromStr for EventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
-    Verified,          // Events accepted
-    Recovered,         // Recovery succeeded
-    Recoverable,       // Divergence - user can submit rec
-    Contested,         // Both revealed recovery keys, KEL frozen
-    Frozen,            // Already divergent, only rec/cnt allowed
-    RecoveryProtected, // Recovery event protects this version
+    Accepted,  // Events appended normally
+    Recovered, // Recovery succeeded
+    Contested, // Contest accepted, KEL locked
+    Diverged,  // Divergent event accepted, KEL now frozen
+    Rejected,  // Already divergent, submit rec to recover
+    Protected, // Adversary used recovery key, submit contest
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -620,11 +620,11 @@ impl SignedKeyEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "BatchSubmitResponse.accepted must be checked - events may be rejected"]
+#[must_use = "BatchSubmitResponse.applied must be checked - events may be rejected"]
 pub struct BatchSubmitResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
-    pub accepted: bool,
+    pub applied: bool,
 }
 
 /// Audit record for tracking archived events during recovery/contest

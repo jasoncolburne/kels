@@ -604,7 +604,7 @@ impl KelsClient {
                     && !events.is_empty()
                 {
                     match kel.merge(events.clone()) {
-                        Ok((_, _, KelMergeResult::Verified)) => {
+                        Ok((_, _, KelMergeResult::Accepted)) => {
                             result_kels.insert((*prefix).to_string(), kel);
                         }
                         _ => {
@@ -1038,7 +1038,7 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let response = BatchSubmitResponse {
-                accepted: true,
+                applied: true,
                 diverged_at: None,
             };
 
@@ -1057,7 +1057,7 @@ mod tests {
 
             assert!(result.is_ok());
             let resp = result.unwrap();
-            assert!(resp.accepted);
+            assert!(resp.applied);
             assert!(resp.diverged_at.is_none());
         }
 
@@ -1066,7 +1066,7 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let response = BatchSubmitResponse {
-                accepted: true,
+                applied: true,
                 diverged_at: Some(1),
             };
 
@@ -1084,7 +1084,7 @@ mod tests {
 
             assert!(result.is_ok());
             let resp = result.unwrap();
-            assert!(resp.accepted);
+            assert!(resp.applied);
             assert_eq!(resp.diverged_at, Some(1));
         }
 

@@ -279,7 +279,7 @@ async fn test_submit_and_get_kel() {
 
     assert_eq!(response.status(), 200);
     let result: BatchSubmitResponse = response.json().await.unwrap();
-    assert!(result.accepted);
+    assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
     // Retrieve the KEL
@@ -320,7 +320,7 @@ async fn test_submit_multiple_events() {
 
     assert_eq!(response.status(), 200);
     let result: BatchSubmitResponse = response.json().await.unwrap();
-    assert!(result.accepted);
+    assert!(result.applied);
 
     // Retrieve and verify
     let response = harness
@@ -452,7 +452,7 @@ async fn test_idempotent_submit() {
 
         assert_eq!(response.status(), 200);
         let result: BatchSubmitResponse = response.json().await.unwrap();
-        assert!(result.accepted);
+        assert!(result.applied);
     }
 
     // Should still only have one event
@@ -483,7 +483,7 @@ async fn test_submit_empty_events() {
 
     assert_eq!(response.status(), 200);
     let result: BatchSubmitResponse = response.json().await.unwrap();
-    assert!(result.accepted);
+    assert!(result.applied);
 }
 
 #[tokio::test]
@@ -692,7 +692,7 @@ async fn test_submit_rotation_event() {
 
     assert_eq!(response.status(), 200);
     let result: BatchSubmitResponse = response.json().await.unwrap();
-    assert!(result.accepted);
+    assert!(result.applied);
 
     // Verify KEL now has 2 events
     let response = harness
@@ -793,7 +793,7 @@ async fn test_submit_decommission_event() {
 
     assert_eq!(response.status(), 200);
     let result: BatchSubmitResponse = response.json().await.unwrap();
-    assert!(result.accepted);
+    assert!(result.applied);
 
     // Verify KEL now has 2 events (icp + dec)
     let response = harness

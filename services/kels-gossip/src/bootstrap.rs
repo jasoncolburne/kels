@@ -390,12 +390,12 @@ impl BootstrapSync {
                     debug!("Fetched {} events for {} from peer", events.len(), prefix);
                     match local_client.submit_events(events).await {
                         Ok(submit_result) => {
-                            if submit_result.accepted {
+                            if submit_result.applied {
                                 info!("Synced KEL for {} ({} events)", prefix, events.len());
                                 Ok(true)
                             } else {
                                 warn!(
-                                    "KEL for {} not accepted: diverged_at={:?}",
+                                    "KEL for {} not applied: diverged_at={:?}",
                                     prefix, submit_result.diverged_at
                                 );
                                 // Still consider it synced - divergence will be handled by gossip protocol

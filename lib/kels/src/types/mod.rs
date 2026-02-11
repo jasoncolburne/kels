@@ -987,22 +987,22 @@ mod tests {
     // ==================== BatchSubmitResponse tests ====================
 
     #[test]
-    fn test_batch_submit_response_accepted() {
+    fn test_batch_submit_response_applied() {
         let response = BatchSubmitResponse {
-            accepted: true,
+            applied: true,
             diverged_at: None,
         };
-        assert!(response.accepted);
+        assert!(response.applied);
         assert!(response.diverged_at.is_none());
     }
 
     #[test]
     fn test_batch_submit_response_diverged() {
         let response = BatchSubmitResponse {
-            accepted: false,
+            applied: false,
             diverged_at: Some(5),
         };
-        assert!(!response.accepted);
+        assert!(!response.applied);
         assert_eq!(response.diverged_at, Some(5));
     }
 

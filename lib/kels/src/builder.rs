@@ -449,16 +449,16 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         let response = client.submit_events(&pending).await?;
 
-        if response.accepted {
+        if response.applied {
             self.confirmed_cursor = self.kel.confirmed_length();
         }
 
         if let Some(diverged_at) = response.diverged_at {
             Err(KelsError::DivergenceDetected {
                 diverged_at,
-                submission_accepted: response.accepted,
+                submission_accepted: response.applied,
             })
-        } else if !response.accepted {
+        } else if !response.applied {
             Err(KelsError::InvalidKel(
                 "Rejected without divergence".to_string(),
             ))
