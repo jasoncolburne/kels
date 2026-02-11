@@ -52,7 +52,14 @@ If the KEL is already divergent (frozen):
 
 ```
 if KEL has divergence AND first event does NOT reveal recovery key:
-    return Frozen  // Only rec/cnt can resolve divergence
+    // Look ahead for a rec event in the batch — handles the case where
+    // the owner's pre-recovery events precede the recovery event
+    // (e.g., [owner_ixn, rec] submitted to a KEL frozen with only adversary events)
+    if batch contains a rec event:
+        add pre-rec events to establish owner's chain in the fork
+        process rec event via recovery path below
+        return Recovered
+    return Frozen  // No recovery event in batch
 ```
 
 ### 3. Recovery from Divergent KEL
@@ -141,7 +148,15 @@ else if new event is recover:
     remove adversary events (trace owner's chain via previous)
     return Recovered
 else:
-    // No recovery event - freeze KEL, mark as divergent
+    // Look ahead for a rec event in the batch — handles the case where
+    // the owner's pre-recovery events precede the recovery event (e.g.,
+    // [owner_ixn, rec] submitted to a non-divergent KEL containing
+    // only adversary events at the fork generation)
+    if batch contains a rec event:
+        add pre-rec events to establish owner's chain in the fork
+        process rec event via recovery path
+        return Recovered
+    // No recovery event in batch - freeze KEL, mark as divergent
     push single divergent event
     return Recoverable
 ```
@@ -185,7 +200,7 @@ return result
 
 ## Key Invariants
 
-1. **Events are sorted by chain order** - The internal event list is sorted by following `previous` links from inception
+1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7. This ensures deterministic ordering when multiple events of different kinds exist at the same serial (e.g., divergent forks where the owner and adversary submitted different event types)
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
 3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at generation N, divergence at generation <= N is rejected
 4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)

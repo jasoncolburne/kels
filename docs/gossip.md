@@ -42,7 +42,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 ### Outbound (local event → gossip network)
 
 1. Client submits events to KELS via HTTP
-2. KELS writes to DB, publishes `{prefix}:{said}` to Redis `kel_updates` channel
+2. KELS writes to DB, then explicitly publishes `{prefix}:{said}` to Redis `kel_updates` channel, where `said` is the last **submitted** event's SAID (not the sorted KEL's last event — this distinction matters for same-kind forks where the sorted tail may be an event other nodes already have)
 3. `kels-gossip` receives notification via Redis SUBSCRIBE
 4. Broadcasts `KelAnnouncement { prefix, said }` to gossipsub topic
 
@@ -233,3 +233,13 @@ For adversarial testing scenarios, set `GOSSIP_TEST_PROPAGATION_DELAY_MS` to sim
 - Divergence detection via gossip
 - Recovery propagation
 - Decommission propagation
+
+`clients/test/scripts/test-adversarial-advanced.sh` verifies multi-node adversarial scenarios:
+- Dual adversary injection on separate nodes + owner recovery propagation
+- Triple simultaneous events (adversary + adversary + owner) with delayed gossip
+
+`clients/test/scripts/test-consistency.sh` verifies cross-node consistency:
+- All nodes have the same set of prefixes
+- All prefixes have the same event counts
+- SHA-256 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
+- Behavioral state consistency for any mismatched KELs

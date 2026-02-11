@@ -143,6 +143,8 @@ Key rotations use stage/commit/rollback to ensure recovery is possible:
 
 The CLI must save key state whenever keys are committed (both success and accepted divergence).
 
+All key-rotating builder methods (`rotate()`, `rotate_recovery()`, `contest()`) handle `DivergenceDetected { submission_accepted: true }` by returning the signed event successfully, allowing the CLI to persist the new key state.
+
 ### Recovery Events
 
 Recovery (`rec`) is an **establishment event** that proves ownership and rotates keys. It requires dual signatures:
