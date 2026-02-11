@@ -230,17 +230,23 @@ pub async fn refresh_allowlist(
     registry_client: &mut MultiRegistryClient,
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
+    local_scope: kels::PeerScope,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
     drop(original_peers);
 
-    // Fetch peers
-    debug!("Fetching peers");
-    let response = registry_client
-        .fetch_verified_peers(registry_prefix)
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    // Fetch peers — core nodes fetch from all registries, regional from their own
+    debug!("Fetching peers (scope: {:?})", local_scope);
+    let response = match local_scope {
+        kels::PeerScope::Core => registry_client.fetch_verified_core_peers().await,
+        kels::PeerScope::Regional => {
+            registry_client
+                .fetch_verified_regional_peers(registry_prefix)
+                .await
+        }
+    }
+    .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
     let mut authorized_peers = HashMap::new();
 
@@ -322,6 +328,7 @@ pub async fn run_allowlist_refresh_loop(
     registry_prefix: &str,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
+    local_scope: kels::PeerScope,
 ) {
     info!(
         "Starting allowlist refresh loop (interval: {:?})",
@@ -329,7 +336,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(registry_client, registry_prefix, &allowlist).await {
+        match refresh_allowlist(registry_client, registry_prefix, &allowlist, local_scope).await {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }

@@ -63,3 +63,19 @@ spec:
   command:
     - bash
     - scripts/read-federation-prefixes.sh
+
+---
+
+kind: Run
+name: read-federation-registry-urls
+type: exec
+description: Read all federation registry URLs (comma-separated)
+
+include:
+  - .kels/federated-registries.json
+  - scripts/read-federation-registry-urls.sh
+
+spec:
+  command:
+    - bash
+    - scripts/read-federation-registry-urls.sh

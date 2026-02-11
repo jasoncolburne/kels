@@ -2153,10 +2153,7 @@ mod tests {
 
     #[test]
     fn test_key_state_save_and_load() {
-        use std::fs;
-
-        let temp_dir = std::env::temp_dir().join("kels_ffi_test");
-        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
         let state = KeyState {
             signing_generation: 100,
@@ -2164,18 +2161,16 @@ mod tests {
         };
 
         // Save
-        state.save(&temp_dir, "test_prefix").expect("save failed");
+        state
+            .save(temp_dir.path(), "test_prefix")
+            .expect("save failed");
 
         // Load
-        let loaded = KeyState::load(&temp_dir, "test_prefix");
+        let loaded = KeyState::load(temp_dir.path(), "test_prefix");
         assert!(loaded.is_some());
         let loaded = loaded.expect("should load");
         assert_eq!(loaded.signing_generation, 100);
         assert_eq!(loaded.recovery_generation, 50);
-
-        // Clean up
-        KeyState::delete(&temp_dir, "test_prefix");
-        let _ = fs::remove_dir(&temp_dir);
     }
 
     #[test]

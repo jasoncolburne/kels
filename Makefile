@@ -163,7 +163,8 @@ test-comprehensive: clean-garden
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
-	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh 
+	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh

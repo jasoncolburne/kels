@@ -77,6 +77,7 @@ pub async fn run_swarm(
     allowlist: SharedAllowlist,
     registry_client: &mut MultiRegistryClient,
     registry_prefix: &str,
+    local_scope: kels::PeerScope,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
 ) -> Result<(), GossipError> {
@@ -119,6 +120,7 @@ pub async fn run_swarm(
                     registry_client,
                     registry_prefix,
                     &allowlist,
+                    local_scope,
                 ).await {
                     warn!("Failed to refresh allowlist: {}", e);
                 }
@@ -149,6 +151,9 @@ fn build_swarm(
         .heartbeat_interval(Duration::from_secs(1))
         .validation_mode(ValidationMode::Strict)
         .message_id_fn(message_id_fn)
+        .mesh_outbound_min(1)
+        .mesh_n_low(2)
+        .mesh_n(3)
         .build()
         .map_err(|e| GossipError::Gossipsub(e.to_string()))?;
 

@@ -177,7 +177,7 @@ while IFS= read -r prefix; do
         fi
 
         event_count=$(echo "$kel_response" | jq 'length' 2>/dev/null)
-        digest=$(echo "$kel_response" | sha256sum | awk '{print $1}')
+        digest=$(echo "$kel_response" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | sha256sum | awk '{print $1}')
 
         # Determine behavioral state from event kinds and structure
         state=$(echo "$kel_response" | jq -r '

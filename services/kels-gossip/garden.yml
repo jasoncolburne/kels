@@ -35,6 +35,7 @@ disabled: ${var.envType == "registry"}
 
 dependencies:
   - run.read-registry-url
+  - run.read-federation-registry-urls
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
@@ -44,6 +45,7 @@ variables:
   kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
   gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.kels/tcp/${var.gossip.port}"
   registryUrl: ${actions.run.read-registry-url.outputs.log}
+  federationRegistryUrls: ${actions.run.read-federation-registry-urls.outputs.log}
 
 spec:
   manifestTemplates:

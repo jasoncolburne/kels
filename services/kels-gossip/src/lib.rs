@@ -77,6 +77,8 @@ pub struct Config {
     pub hsm_url: String,
     /// Registry service URL (runtime)
     pub registry_url: String,
+    /// All federation registry URLs (for core nodes to discover all peers)
+    pub federation_registry_urls: Vec<String>,
     /// libp2p listen address (e.g., /ip4/0.0.0.0/tcp/4001)
     pub listen_addr: Multiaddr,
     /// Advertised address for registry (e.g., /dns4/kels-gossip.kels-node-a.kels/tcp/4001)
@@ -98,6 +100,7 @@ pub struct EnvValues {
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
     pub registry_url: Option<String>,
+    pub federation_registry_urls: Option<String>,
     pub listen_addr: Option<String>,
     pub advertise_addr: Option<String>,
     pub topic: Option<String>,
@@ -128,6 +131,11 @@ impl Config {
         let advertise_addr = Multiaddr::from_str(&advertise_addr_str)
             .map_err(|e| ServiceError::Config(format!("Invalid advertise address: {}", e)))?;
 
+        let federation_registry_urls: Vec<String> = env
+            .federation_registry_urls
+            .map(|s| s.split(',').map(|u| u.trim().to_string()).collect())
+            .unwrap_or_else(|| vec![registry_url.clone()]);
+
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
             kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
@@ -137,6 +145,7 @@ impl Config {
                 .unwrap_or_else(|| "redis://redis:6379".to_string()),
             hsm_url: env.hsm_url.unwrap_or_else(|| "http://hsm".to_string()),
             registry_url,
+            federation_registry_urls,
             listen_addr,
             advertise_addr,
             topic: env
@@ -156,6 +165,7 @@ impl Config {
             redis_url: std::env::var("REDIS_URL").ok(),
             hsm_url: std::env::var("HSM_URL").ok(),
             registry_url: std::env::var("REGISTRY_URL").ok(),
+            federation_registry_urls: std::env::var("FEDERATION_REGISTRY_URLS").ok(),
             listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
             advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
             topic: std::env::var("GOSSIP_TOPIC").ok(),
@@ -182,6 +192,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Redis URL: {}", config.redis_url);
     info!("HSM URL: {}", config.hsm_url);
     info!("Registry URL: {:?}", config.registry_url);
+    info!(
+        "Federation registry URLs: {:?}",
+        config.federation_registry_urls
+    );
     info!("Listen address: {}", config.listen_addr);
     info!("Advertise address: {}", config.advertise_addr);
     info!("Topic: {}", config.topic);
@@ -213,8 +227,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_signer: Arc<dyn kels::RegistrySigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
-    // Single registry URL for client
+    // Local registry URL for authenticated operations (registration, etc.)
     let registry_urls: Vec<String> = vec![config.registry_url.clone()];
+    // All federation registry URLs for peer discovery (core nodes use all)
+    let federation_registry_urls = config.federation_registry_urls.clone();
 
     // Registry client with signer
     let mut registry_client =
@@ -321,13 +337,44 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Initial allowlist refresh - must happen before discover_peers
     // Use a separate client without signing for unauthenticated peer list fetching
-    let mut allowlist_client = MultiRegistryClient::new(registry_urls.clone());
-    match allowlist::refresh_allowlist(&mut allowlist_client, &registry_prefix, &allowlist).await {
+    // First refresh uses Regional scope (single registry) to bootstrap the allowlist,
+    // then we determine our actual scope from the loaded peer data.
+    let mut allowlist_client = MultiRegistryClient::new(federation_registry_urls.clone());
+    match allowlist::refresh_allowlist(
+        &mut allowlist_client,
+        &registry_prefix,
+        &allowlist,
+        kels::PeerScope::Regional,
+    )
+    .await
+    {
         Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
             e
         ),
+    }
+
+    // Determine our scope from the allowlist (defaults to Regional if not found)
+    let local_scope = allowlist::get_local_scope(&peer_id, &allowlist).await;
+    info!("Local scope: {:?}", local_scope);
+
+    // If we're a core node, re-refresh to get peers from all registries
+    if local_scope == kels::PeerScope::Core {
+        match allowlist::refresh_allowlist(
+            &mut allowlist_client,
+            &registry_prefix,
+            &allowlist,
+            local_scope,
+        )
+        .await
+        {
+            Ok(count) => info!(
+                "Core allowlist refreshed with {} peers from all registries",
+                count
+            ),
+            Err(e) => warn!("Core allowlist refresh failed: {}", e),
+        }
     }
 
     // Step 4: Now authorized - discover peers from allowlist
@@ -394,6 +441,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             registry_allowlist,
             &mut gossip_registry_client,
             &gossip_registry_prefix,
+            local_scope,
             command_rx,
             event_tx,
         )
@@ -476,13 +524,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let mut refresh_client = MultiRegistryClient::new(registry_urls.clone());
+    let mut refresh_client = MultiRegistryClient::new(federation_registry_urls);
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &mut refresh_client,
             &registry_prefix,
             allowlist,
             refresh_interval,
+            local_scope,
         )
         .await;
     });

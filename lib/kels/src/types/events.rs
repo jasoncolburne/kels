@@ -40,6 +40,22 @@ impl EventKind {
         }
     }
 
+    /// Sort priority within the same serial (lower = earlier in sorted order).
+    /// Ensures state-determining events (recovery, contest) sort after normal events,
+    /// so `Kel.last()` reflects the most significant event for announcements.
+    pub fn sort_priority(&self) -> u8 {
+        match self {
+            Self::Icp => 0,
+            Self::Dip => 1,
+            Self::Ixn => 2,
+            Self::Rot => 3,
+            Self::Ror => 4,
+            Self::Dec => 5,
+            Self::Rec => 6,
+            Self::Cnt => 7,
+        }
+    }
+
     pub fn is_inception(&self) -> bool {
         matches!(self, Self::Icp | Self::Dip)
     }

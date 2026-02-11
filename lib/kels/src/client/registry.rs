@@ -18,7 +18,7 @@ use crate::{
     error::KelsError,
     types::{
         DeregisterRequest, ErrorResponse, Kel, NodeInfo, NodeRegistration, NodeStatus, Peer,
-        PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+        PeerHistory, PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
     },
 };
 
@@ -548,12 +548,13 @@ impl MultiRegistryClient {
         }
     }
 
-    /// Fetch all peers from the registry.
+    /// Fetch peers from a single registry (for regional nodes).
     ///
-    /// Returns peer histories containing all versions of each peer record.
-    /// This is an unauthenticated endpoint - nodes can check the peer list
-    /// before they are authorized.
-    pub async fn fetch_verified_peers(&mut self, prefix: &str) -> Result<PeersResponse, KelsError> {
+    /// Returns peer histories from the registry matching the given prefix.
+    pub async fn fetch_verified_regional_peers(
+        &mut self,
+        prefix: &str,
+    ) -> Result<PeersResponse, KelsError> {
         self.fetch_verified_registry_kels(false).await?;
 
         let url = self.url_for_prefix(prefix)?;
@@ -568,6 +569,42 @@ impl MultiRegistryClient {
                 prefix, e
             ))),
         }
+    }
+
+    /// Fetch peers from all registries in the federation (for core nodes).
+    ///
+    /// Returns peer histories merged across all registries, deduplicated by peer_id.
+    /// This ensures core nodes know about all peers regardless of which registry
+    /// they registered with.
+    pub async fn fetch_verified_core_peers(&mut self) -> Result<PeersResponse, KelsError> {
+        self.fetch_verified_registry_kels(false).await?;
+
+        let futures = self.urls.iter().map(|url| {
+            let client = self.create_client(url);
+            async move { client.fetch_peers().await.ok() }
+        });
+
+        let results = join_all(futures).await;
+
+        let mut seen_peer_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut merged_peers: Vec<PeerHistory> = Vec::new();
+
+        for result in results.into_iter().flatten() {
+            let (response, _ready_map) = result;
+            for history in response.peers {
+                if let Some(latest) = history.records.last()
+                    && seen_peer_ids.insert(latest.peer_id.clone())
+                {
+                    merged_peers.push(history);
+                }
+            }
+        }
+
+        let merged = PeersResponse {
+            peers: merged_peers,
+        };
+        self.verify_peers_response(&merged).await?;
+        Ok(merged)
     }
 
     async fn verify_peers_response(&mut self, response: &PeersResponse) -> Result<(), KelsError> {

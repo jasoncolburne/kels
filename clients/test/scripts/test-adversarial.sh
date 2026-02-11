@@ -1031,7 +1031,7 @@ echo ""
 # Scenario 19: Contest/Recover on Clean KEL
 # ========================================
 echo -e "${CYAN}=== Scenario 19: Contest/Recover on Clean KEL ===${NC}"
-echo "Attempting contest or recover on a non-divergent KEL should fail"
+echo "Recovery on a non-divergent KEL succeeds (proactive recovery). Contest should still fail."
 echo ""
 
 # Setup
@@ -1043,14 +1043,14 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX19" --said "EOwnerAnchorOnCleanK
 # Verify KEL is OK (not divergent)
 run_test "KEL status is OK (clean)" check_kel_status "$PREFIX19" "OK"
 
-# Try to recover - should fail (nothing to recover from)
-run_test_expect_fail "Recovery rejected on clean KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX19"
+# Recovery on clean KEL succeeds (proactive recovery rotates keys)
+run_test "Recovery succeeds on clean KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX19"
 
 # Try to contest - should fail (nothing to contest)
 run_test_expect_fail "Contest rejected on clean KEL" kels-cli -u "$KELS_URL" contest --prefix "$PREFIX19"
 
 # KEL should still be OK
-run_test "KEL status still OK after rejected operations" check_kel_status "$PREFIX19" "OK"
+run_test "KEL status still OK after operations" check_kel_status "$PREFIX19" "OK"
 
 echo ""
 
@@ -1212,8 +1212,8 @@ run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX23" \
 run_test "First recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 run_test "KEL status is OK after first recovery" check_kel_status "$PREFIX23" "OK"
 
-# Second recovery should fail (no divergence)
-run_test_expect_fail "Second recovery rejected (no divergence)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
+# Second recovery succeeds (proactive recovery on non-divergent KEL)
+run_test "Second recovery succeeds (proactive)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 
 # KEL should still be OK
 run_test "KEL status still OK" check_kel_status "$PREFIX23" "OK"

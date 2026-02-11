@@ -13,6 +13,8 @@ pub enum AnnouncementScope {
     Core,
     /// Regional nodes (same registry only)
     Regional,
+    /// All nodes (core broadcasts to everyone)
+    All,
 }
 
 impl std::fmt::Display for AnnouncementScope {
@@ -20,6 +22,7 @@ impl std::fmt::Display for AnnouncementScope {
         match self {
             AnnouncementScope::Core => write!(f, "core"),
             AnnouncementScope::Regional => write!(f, "regional"),
+            AnnouncementScope::All => write!(f, "all"),
         }
     }
 }
@@ -27,10 +30,8 @@ impl std::fmt::Display for AnnouncementScope {
 /// Gossipsub announcement message
 ///
 /// Bridging rules based on origin→destination:
-/// - regional→core: core receives, rebroadcasts as core→core
-/// - core→core: core receives, rebroadcasts as core→regional
-/// - core→regional: regional receives, no rebroadcast (final)
-/// - regional→regional: no rebroadcast (shouldn't happen)
+/// - regional→core: core receives, rebroadcasts as core→all
+/// - core→all: all nodes receive, no rebroadcast (final)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KelAnnouncement {
     /// The KEL prefix that was updated

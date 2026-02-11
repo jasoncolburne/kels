@@ -107,8 +107,8 @@ get_event_count() {
 kels_match() {
     local prefix="$1"
     local hash_a hash_b
-    hash_a=$(curl -s "$NODE_A_URL/api/kels/kel/$prefix" | md5sum | awk '{print $1}')
-    hash_b=$(curl -s "$NODE_B_URL/api/kels/kel/$prefix" | md5sum | awk '{print $1}')
+    hash_a=$(curl -s "$NODE_A_URL/api/kels/kel/$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
+    hash_b=$(curl -s "$NODE_B_URL/api/kels/kel/$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
     [ "$hash_a" = "$hash_b" ]
 }
 

@@ -52,7 +52,7 @@ pub enum SyncError {
 ///
 /// Initial broadcast routing based on this node's scope:
 /// - Regional: broadcast regional→core (core nodes will bridge)
-/// - Core: broadcast BOTH core→core AND core→regional
+/// - Core: broadcast core→all
 pub async fn run_redis_subscriber(
     redis_url: &str,
     command_tx: mpsc::Sender<GossipCommand>,
@@ -117,40 +117,18 @@ pub async fn run_redis_subscriber(
                 }
             }
             PeerScope::Core => {
-                // Core node: broadcast both core→core AND core→regional
+                // Core node: broadcast core→all
                 if let Some(ann) = KelAnnouncement::from_pubsub_message(
                     &payload,
                     AnnouncementScope::Core,
-                    AnnouncementScope::Core,
-                    sender.clone(),
+                    AnnouncementScope::All,
+                    sender,
                 ) {
                     debug!(
-                        "Broadcasting: prefix={}, said={}, core→core",
+                        "Broadcasting: prefix={}, said={}, core→all",
                         ann.prefix, ann.said
                     );
-                    if command_tx
-                        .send(GossipCommand::Announce(ann.clone()))
-                        .await
-                        .is_err()
-                    {
-                        error!("Failed to send announce command - channel closed");
-                        return Err(SyncError::ChannelClosed);
-                    }
-
-                    let regional_ann = ann.rebroadcast(
-                        AnnouncementScope::Core,
-                        AnnouncementScope::Regional,
-                        sender,
-                    );
-                    debug!(
-                        "Broadcasting: prefix={}, said={}, core→regional",
-                        regional_ann.prefix, regional_ann.said
-                    );
-                    if command_tx
-                        .send(GossipCommand::Announce(regional_ann))
-                        .await
-                        .is_err()
-                    {
+                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
                         error!("Failed to send announce command - channel closed");
                         return Err(SyncError::ChannelClosed);
                     }
@@ -322,7 +300,9 @@ impl SyncHandler {
 
         // Filter by destination - only process messages meant for our scope
         let local_scope = self.get_local_scope().await;
-        if announcement.destination != local_scope {
+        if announcement.destination != AnnouncementScope::All
+            && announcement.destination != local_scope
+        {
             debug!(
                 "Ignoring announcement for {}: destination={} but local_scope={}",
                 prefix, announcement.destination, local_scope
@@ -433,14 +413,23 @@ impl SyncHandler {
                                 // Step 1: Submit archived adversary events
                                 let _ = self.submit_events_to_kels(&archived_events).await;
 
-                                // Step 2+3: Split clean chain at first recovery-revealing event
+                                // Step 2+3: Split clean chain at first recovery-revealing event.
+                                // Pre-recovery events create divergence, then recovery resolves it.
+                                // If recovery fails (frozen KEL rejected pre-rec events),
+                                // retry with the full chain — merge look-ahead handles it.
                                 let accepted = if let Some(idx) = clean_chain
                                     .iter()
                                     .position(|e| e.event.reveals_recovery_key())
                                     && idx > 0
                                 {
                                     let _ = self.submit_events_to_kels(&clean_chain[..idx]).await;
-                                    self.submit_events_to_kels(&clean_chain[idx..]).await?
+                                    let recovery_accepted =
+                                        self.submit_events_to_kels(&clean_chain[idx..]).await?;
+                                    if !recovery_accepted {
+                                        self.submit_events_to_kels(&clean_chain).await?
+                                    } else {
+                                        recovery_accepted
+                                    }
                                 } else {
                                     self.submit_events_to_kels(&clean_chain).await?
                                 };
@@ -513,6 +502,7 @@ impl SyncHandler {
 
         // Partition events by content: adversary branch first, recovery branch second.
         // The adversary branch establishes divergence context; the recovery branch resolves it.
+        let has_recovery = events.iter().any(|e| e.event.is_recover());
         let (adversary_events, recovery_events) = Self::partition_events(events);
 
         // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
@@ -531,7 +521,7 @@ impl SyncHandler {
         }
 
         // Submit adversary events first (establishes divergence), then recovery events
-        let accepted = if recovery_events.is_empty() {
+        let initial_accepted = if recovery_events.is_empty() {
             // No recovery branch — submit everything as one batch
             self.submit_events_to_kels(&adversary_events).await?
         } else if adversary_events.is_empty() {
@@ -541,6 +531,28 @@ impl SyncHandler {
             // Both branches: adversary first to establish divergence, then recovery
             let _ = self.submit_events_to_kels(&adversary_events).await;
             self.submit_events_to_kels(&recovery_events).await?
+        };
+
+        // If recovery events were rejected (e.g., frozen KEL missing owner's
+        // predecessor events), retry with the full remote KEL so merge's
+        // look-ahead can process [owner_events..., rec] as one batch.
+        let accepted = if !initial_accepted && has_recovery {
+            info!(
+                "Recovery not accepted for {} — retrying with full KEL from {}",
+                prefix, kels_url
+            );
+            match remote_client.get_kel(prefix).await {
+                Ok(full_kel) => self
+                    .submit_events_to_kels(full_kel.events())
+                    .await
+                    .unwrap_or(false),
+                Err(e) => {
+                    warn!("Failed to fetch full KEL for retry: {}", e);
+                    false
+                }
+            }
+        } else {
+            initial_accepted
         };
 
         self.handle_rebroadcast(prefix, said, accepted, &announcement, command_tx)
@@ -595,14 +607,7 @@ impl SyncHandler {
                     (AnnouncementScope::Regional, AnnouncementScope::Core) => {
                         Some(announcement.rebroadcast(
                             AnnouncementScope::Core,
-                            AnnouncementScope::Core,
-                            sender,
-                        ))
-                    }
-                    (AnnouncementScope::Core, AnnouncementScope::Core) => {
-                        Some(announcement.rebroadcast(
-                            AnnouncementScope::Core,
-                            AnnouncementScope::Regional,
+                            AnnouncementScope::All,
                             sender,
                         ))
                     }
@@ -962,7 +967,7 @@ mod tests {
     // --- handle_rebroadcast tests ---
 
     #[tokio::test]
-    async fn test_handle_rebroadcast_regional_to_core_rebroadcasts_core_to_core() {
+    async fn test_handle_rebroadcast_regional_to_core_rebroadcasts_core_to_all() {
         let local_peer_id = PeerId::random();
         let mut handler = create_test_handler(local_peer_id);
         let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
@@ -985,11 +990,11 @@ mod tests {
             )
             .await;
 
-        // Should rebroadcast core→core
+        // Should rebroadcast core→all
         let cmd = command_rx.try_recv().unwrap();
         let GossipCommand::Announce(ann) = cmd;
         assert_eq!(ann.origin, AnnouncementScope::Core);
-        assert_eq!(ann.destination, AnnouncementScope::Core);
+        assert_eq!(ann.destination, AnnouncementScope::All);
 
         // SAID cache should be updated
         assert_eq!(
@@ -999,7 +1004,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_rebroadcast_core_to_core_rebroadcasts_core_to_regional() {
+    async fn test_handle_rebroadcast_core_to_all_no_rebroadcast() {
         let local_peer_id = PeerId::random();
         let mut handler = create_test_handler(local_peer_id);
         let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
@@ -1007,7 +1012,7 @@ mod tests {
         let announcement = KelAnnouncement::from_pubsub_message(
             "test-prefix:test-said",
             AnnouncementScope::Core,
-            AnnouncementScope::Core,
+            AnnouncementScope::All,
             "sender-peer".to_string(),
         )
         .unwrap();
@@ -1022,37 +1027,7 @@ mod tests {
             )
             .await;
 
-        let cmd = command_rx.try_recv().unwrap();
-        let GossipCommand::Announce(ann) = cmd;
-        assert_eq!(ann.origin, AnnouncementScope::Core);
-        assert_eq!(ann.destination, AnnouncementScope::Regional);
-    }
-
-    #[tokio::test]
-    async fn test_handle_rebroadcast_core_to_regional_no_rebroadcast() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
-        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
-
-        let announcement = KelAnnouncement::from_pubsub_message(
-            "test-prefix:test-said",
-            AnnouncementScope::Core,
-            AnnouncementScope::Regional,
-            "sender-peer".to_string(),
-        )
-        .unwrap();
-
-        handler
-            .handle_rebroadcast(
-                "test-prefix",
-                Some("test-said".to_string()),
-                true,
-                &announcement,
-                &command_tx,
-            )
-            .await;
-
-        // No rebroadcast for core→regional
+        // No rebroadcast for core→all (final hop)
         assert!(command_rx.try_recv().is_err());
         // But SAID cache should still be updated
         assert_eq!(

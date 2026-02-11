@@ -73,6 +73,8 @@ spec:
               value: "${var.hsm.url}"
             - name: REGISTRY_URL
               value: "${var.registryUrl}"
+            - name: FEDERATION_REGISTRY_URLS
+              value: "${var.federationRegistryUrls}"
             - name: GOSSIP_LISTEN_ADDR
               value: "${var.gossip.listenAddress}"
             - name: GOSSIP_ADVERTISE_ADDR

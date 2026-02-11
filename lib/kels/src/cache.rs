@@ -343,7 +343,7 @@ impl ServerKelCache {
         format!("{}:{}", self.key_prefix, prefix)
     }
 
-    async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
+    pub async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let message = format!("{}:{}", prefix, said);
         let _: () = conn
@@ -353,16 +353,11 @@ impl ServerKelCache {
         Ok(())
     }
 
-    /// Store a complete KEL as pre-serialized JSON
+    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement)
     pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         if events.is_empty() {
             return Ok(());
         }
-
-        let latest_said = match events.last() {
-            Some(e) => &e.event.said,
-            None => return Ok(()),
-        };
 
         let json = serde_json::to_vec(events)?;
 
@@ -379,9 +374,6 @@ impl ServerKelCache {
             let mut local = self.local_cache.write().await;
             local.set(prefix.to_string(), json);
         }
-
-        // Publish for other replicas
-        self.publish_update(prefix, latest_said).await?;
 
         Ok(())
     }

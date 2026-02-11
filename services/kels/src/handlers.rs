@@ -326,10 +326,21 @@ pub(crate) async fn submit_events(
 
     // Update cache outside transaction
     if accepted {
-        // Always fetch and store the updated KEL (including after recovery/contest)
-        // This publishes the correct SAID for gossip synchronization
         if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
             warn!("Failed to update cache: {}", e);
+        }
+
+        // Publish the SAID of the last submitted event (not events.last() from the
+        // sorted KEL). For same-kind forks (e.g., two ixn at the same serial), the
+        // sorted KEL's last event may be one the other nodes already have, which would
+        // cause them to skip the fetch and miss the newly added event.
+        if let Some(last_new) = new_events.last()
+            && let Err(e) = state
+                .kel_cache
+                .publish_update(&prefix, &last_new.event.said)
+                .await
+        {
+            warn!("Failed to publish cache update: {}", e);
         }
     }
 
