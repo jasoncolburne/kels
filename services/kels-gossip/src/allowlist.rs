@@ -231,6 +231,7 @@ pub async fn refresh_allowlist(
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
     local_scope: kels::PeerScope,
+    exclude_node_id: Option<&str>,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
@@ -239,10 +240,10 @@ pub async fn refresh_allowlist(
     // Fetch peers — core nodes fetch from all registries, regional from their own
     debug!("Fetching peers (scope: {:?})", local_scope);
     let response = match local_scope {
-        kels::PeerScope::Core => registry_client.fetch_verified_core_peers().await,
+        kels::PeerScope::Core => registry_client.fetch_all_verified_peers().await,
         kels::PeerScope::Regional => {
             registry_client
-                .fetch_verified_regional_peers(registry_prefix)
+                .fetch_registry_verified_peers(registry_prefix)
                 .await
         }
     }
@@ -300,6 +301,11 @@ pub async fn refresh_allowlist(
         }
     }
 
+    // Filter out the excluded node (e.g., self) from the authorized peers
+    if let Some(excluded) = exclude_node_id {
+        authorized_peers.retain(|_, peer| peer.node_id != excluded);
+    }
+
     let count = authorized_peers.len();
 
     if original_saids.len() != count
@@ -329,6 +335,7 @@ pub async fn run_allowlist_refresh_loop(
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
     local_scope: kels::PeerScope,
+    node_id: &str,
 ) {
     info!(
         "Starting allowlist refresh loop (interval: {:?})",
@@ -336,7 +343,15 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(registry_client, registry_prefix, &allowlist, local_scope).await {
+        match refresh_allowlist(
+            registry_client,
+            registry_prefix,
+            &allowlist,
+            local_scope,
+            Some(node_id),
+        )
+        .await
+        {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }

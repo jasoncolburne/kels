@@ -78,6 +78,7 @@ pub async fn run_swarm(
     registry_client: &mut MultiRegistryClient,
     registry_prefix: &str,
     local_scope: kels::PeerScope,
+    node_id: &str,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
 ) -> Result<(), GossipError> {
@@ -121,6 +122,7 @@ pub async fn run_swarm(
                     registry_prefix,
                     &allowlist,
                     local_scope,
+                    Some(node_id),
                 ).await {
                     warn!("Failed to refresh allowlist: {}", e);
                 }

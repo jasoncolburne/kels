@@ -45,6 +45,14 @@ declare -a NODE_URLS=(
     "http://${NODE_F_KELS_HOST}"
 )
 
+# Nodes with dev-tools enabled (prefixes endpoint accessible without auth via GET)
+declare -a PREFIX_NODE_NAMES=(a b d)
+declare -a PREFIX_NODE_URLS=(
+    "http://${NODE_A_KELS_HOST}"
+    "http://${NODE_B_KELS_HOST}"
+    "http://${NODE_D_KELS_HOST}"
+)
+
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
@@ -55,15 +63,17 @@ echo -e "${CYAN}  KEL Consistency Verification${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo
 
-# --- Step 1: Fetch all prefixes from each node ---
-echo -e "${YELLOW}Fetching prefixes from all nodes...${NC}"
+# --- Step 1: Fetch all prefixes from dev-tools nodes (a, b, d) ---
+# Dev-tools nodes skip signature verification on the prefixes endpoint.
+# We POST a mock signed request (verification is bypassed with dev-tools).
+echo -e "${YELLOW}Fetching prefixes from dev-tools nodes...${NC}"
 
 declare -a REACHABLE_NAMES=()
 declare -a REACHABLE_URLS=()
 
-for i in "${!NODE_NAMES[@]}"; do
-    name="${NODE_NAMES[$i]}"
-    url="${NODE_URLS[$i]}"
+for i in "${!PREFIX_NODE_NAMES[@]}"; do
+    name="${PREFIX_NODE_NAMES[$i]}"
+    url="${PREFIX_NODE_URLS[$i]}"
     prefix_file="$TEMP_DIR/prefixes_${name}.txt"
 
     cursor=""
@@ -71,12 +81,14 @@ for i in "${!NODE_NAMES[@]}"; do
 
     reachable=true
     while true; do
-        query="limit=1000"
+        # Build JSON body for signed prefixes request
         if [ -n "$cursor" ]; then
-            query="${query}&since=${cursor}"
+            body=$(jq -n --arg since "$cursor" '{payload:{timestamp:0,since:$since,limit:1000},peerId:"test",publicKey:"test",signature:"test"}')
+        else
+            body=$(jq -n '{payload:{timestamp:0,since:null,limit:1000},peerId:"test",publicKey:"test",signature:"test"}')
         fi
 
-        response=$(curl -sf "${url}/api/kels/prefixes?${query}" 2>/dev/null)
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/kels/prefixes" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo -e "  node-${name}: ${RED}unreachable${NC}"
             reachable=false
@@ -104,11 +116,29 @@ done
 echo
 
 if [ ${#REACHABLE_NAMES[@]} -lt 2 ]; then
-    echo -e "${RED}Fewer than 2 nodes reachable, cannot compare.${NC}"
+    echo -e "${RED}Fewer than 2 dev-tools nodes reachable for prefix fetching, cannot compare.${NC}"
     exit 1
 fi
 
-# --- Step 2: Compare prefix sets ---
+# Build list of all reachable nodes (all 6) for KEL comparison
+declare -a ALL_REACHABLE_NAMES=()
+declare -a ALL_REACHABLE_URLS=()
+
+for i in "${!NODE_NAMES[@]}"; do
+    name="${NODE_NAMES[$i]}"
+    url="${NODE_URLS[$i]}"
+
+    # Quick health check
+    if curl -sf "${url}/health" > /dev/null 2>&1; then
+        ALL_REACHABLE_NAMES+=("$name")
+        ALL_REACHABLE_URLS+=("$url")
+    fi
+done
+
+echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for KEL comparison${NC}"
+echo
+
+# --- Step 2: Compare prefix sets (across dev-tools nodes) ---
 echo -e "${YELLOW}Comparing prefix sets...${NC}"
 
 reference_name="${REACHABLE_NAMES[0]}"
@@ -163,9 +193,9 @@ while IFS= read -r prefix; do
     declare -a states=()
     declare -a digest_names=()
 
-    for i in "${!REACHABLE_NAMES[@]}"; do
-        name="${REACHABLE_NAMES[$i]}"
-        url="${REACHABLE_URLS[$i]}"
+    for i in "${!ALL_REACHABLE_NAMES[@]}"; do
+        name="${ALL_REACHABLE_NAMES[$i]}"
+        url="${ALL_REACHABLE_URLS[$i]}"
 
         kel_response=$(curl -sf "${url}/api/kels/kel/${prefix}" 2>/dev/null)
         if [ $? -ne 0 ]; then
@@ -241,7 +271,7 @@ while IFS= read -r prefix; do
 done < "$TEMP_DIR/all_prefixes.txt"
 
 echo
-echo -e "  Checked ${total_prefixes} prefixes across ${#REACHABLE_NAMES[@]} nodes"
+echo -e "  Checked ${total_prefixes} prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
 if [ "$count_mismatches" -eq 0 ] && [ "$kel_mismatches" -eq 0 ]; then
     echo -e "  ${GREEN}All event counts and KEL digests match${NC}"
 else

@@ -25,10 +25,11 @@
 
 use kels::{
     BatchKelsRequest, KelsClient, KelsError, MultiRegistryClient, PrefixListResponse, PrefixState,
-    SignedKeyEvent,
+    PrefixesRequest, RegistrySigner, SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
@@ -74,15 +75,17 @@ pub struct BootstrapSync {
     config: BootstrapConfig,
     registry: MultiRegistryClient,
     allowlist: crate::allowlist::SharedAllowlist,
+    signer: Arc<dyn RegistrySigner>,
     http_client: reqwest::Client,
 }
 
 impl BootstrapSync {
-    /// Create a new BootstrapSync with an existing registry client and shared allowlist.
+    /// Create a new BootstrapSync with an existing registry client, shared allowlist, and signer.
     pub fn new(
         config: BootstrapConfig,
         registry: MultiRegistryClient,
         allowlist: crate::allowlist::SharedAllowlist,
+        signer: Arc<dyn RegistrySigner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -93,6 +96,7 @@ impl BootstrapSync {
             config,
             registry,
             allowlist,
+            signer,
             http_client,
         }
     }
@@ -413,22 +417,31 @@ impl BootstrapSync {
         results
     }
 
-    /// Fetch a single page of prefix states.
+    /// Fetch a single page of prefix states via signed POST request.
     async fn fetch_prefix_page(
         &self,
         kels_url: &str,
         cursor: Option<&str>,
     ) -> Result<PrefixListResponse, BootstrapError> {
-        let mut url = format!(
-            "{}/api/kels/prefixes?limit={}",
-            kels_url.trim_end_matches('/'),
-            self.config.page_size
-        );
-        if let Some(c) = cursor {
-            url.push_str(&format!("&since={}", c));
-        }
-
-        let response: PrefixListResponse = self.http_client.get(&url).send().await?.json().await?;
+        let request = PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            since: cursor.map(|s| s.to_string()),
+            limit: Some(self.config.page_size),
+        };
+        let signed = kels::sign_request(self.signer.as_ref(), &request)
+            .await
+            .map_err(|e| {
+                BootstrapError::Failed(format!("Failed to sign prefixes request: {}", e))
+            })?;
+        let url = format!("{}/api/kels/prefixes", kels_url.trim_end_matches('/'));
+        let response: PrefixListResponse = self
+            .http_client
+            .post(&url)
+            .json(&signed)
+            .send()
+            .await?
+            .json()
+            .await?;
 
         Ok(response)
     }

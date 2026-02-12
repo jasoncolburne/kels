@@ -20,26 +20,38 @@ environments:
     defaultNamespace: kels-node-a
     variables:
       envType: node
+      devTools: true
+      nodeType: core
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       envType: node
+      devTools: true
+      nodeType: core
   - name: node-c
     defaultNamespace: kels-node-c
     variables:
       envType: node
+      devTools: false
+      nodeType: core
   - name: node-d
     defaultNamespace: kels-node-d
     variables:
       envType: node
+      devTools: true
+      nodeType: regional
   - name: node-e
     defaultNamespace: kels-node-e
     variables:
       envType: node
+      devTools: false
+      nodeType: regional
   - name: node-f
     defaultNamespace: kels-node-f
     variables:
       envType: node
+      devTools: false
+      nodeType: regional
 
 providers:
   - name: local-kubernetes

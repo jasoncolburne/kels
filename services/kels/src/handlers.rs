@@ -36,6 +36,8 @@ pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
     pub(crate) redis_conn: redis::aio::ConnectionManager,
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    pub(crate) registry_urls: Vec<String>,
 }
 
 // ==================== Error Handling ====================
@@ -69,6 +71,28 @@ impl ApiError {
             Json(ErrorResponse {
                 error: msg.into(),
                 code: ErrorCode::Unauthorized,
+            }),
+        )
+    }
+
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    fn forbidden(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::Unauthorized,
+            }),
+        )
+    }
+
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    fn internal_error(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::InternalError,
             }),
         )
     }
@@ -455,34 +479,95 @@ pub(crate) async fn event_exists(
 
 // ==================== Prefix Listing ====================
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ListPrefixesParams {
-    /// Cursor to start after (prefix string)
-    pub since: Option<String>,
-    /// Maximum prefixes to return (default: 100, max: 1000)
-    #[serde(default = "default_prefix_limit")]
-    pub limit: usize,
-}
-
-fn default_prefix_limit() -> usize {
-    100
-}
-
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
+///
+/// Accepts a `SignedRequest<PrefixesRequest>` via POST.
+/// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<ListPrefixesParams>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
-    // Validate and clamp limit
-    let limit = params.limit.clamp(1, 1000);
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        let payload_json = serde_json::to_vec(&signed_request.payload)
+            .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
+        kels::p2p_signature::verify_signature(
+            &payload_json,
+            &signed_request.peer_id,
+            &signed_request.public_key,
+            &signed_request.signature,
+        )
+        .map_err(|e| ApiError::forbidden(format!("Signature verification failed: {}", e)))?;
 
+        if !kels::p2p_signature::validate_timestamp(signed_request.payload.timestamp, 60) {
+            return Err(ApiError::forbidden("Request timestamp expired"));
+        }
+
+        // Verify peer is in the authorized peer list (cached in Redis)
+        if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
+            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+
+            if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
+                return Err(ApiError::forbidden("Peer not authorized"));
+            }
+        }
+    }
+
+    let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
     let result = state
         .repo
         .key_events
-        .list_prefixes(params.since.as_deref(), limit)
+        .list_prefixes(signed_request.payload.since.as_deref(), limit)
         .await?;
-
     Ok(Json(result))
+}
+
+/// Check if a peer_id exists in the Redis verified peers cache.
+#[cfg(not(feature = "dev-tools"))]
+async fn is_peer_verified(
+    redis_conn: &redis::aio::ConnectionManager,
+    peer_id: &str,
+) -> Result<bool, ApiError> {
+    use redis::AsyncCommands;
+    let mut conn = redis_conn.clone();
+    conn.exists::<_, bool>(format!("kels:verified-peer:{}", peer_id))
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))
+}
+
+/// Fetch verified peers from the registry and store records in Redis.
+#[cfg(not(feature = "dev-tools"))]
+async fn refresh_verified_peers(
+    redis_conn: &redis::aio::ConnectionManager,
+    registry_urls: &[String],
+) -> Result<(), ApiError> {
+    use redis::AsyncCommands;
+
+    if registry_urls.is_empty() {
+        warn!("No registry URLs configured, skipping peer verification refresh");
+        return Ok(());
+    }
+
+    let mut registry = kels::MultiRegistryClient::new(registry_urls.to_vec());
+    let peers_response = registry
+        .fetch_all_verified_peers()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to fetch peers: {}", e)))?;
+
+    let mut conn = redis_conn.clone();
+    for history in &peers_response.peers {
+        if let Some(peer) = history.records.last()
+            && peer.active
+        {
+            let peer_json = serde_json::to_string(peer)
+                .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
+            conn.set::<_, _, ()>(format!("kels:verified-peer:{}", peer.peer_id), peer_json)
+                .await
+                .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+        }
+    }
+
+    Ok(())
 }
 
 // ==================== Batch Handlers ====================
@@ -579,31 +664,6 @@ pub(crate) async fn get_kels_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== default_prefix_limit Tests ====================
-
-    #[test]
-    fn test_default_prefix_limit() {
-        assert_eq!(default_prefix_limit(), 100);
-    }
-
-    // ==================== ListPrefixesParams Tests ====================
-
-    #[test]
-    fn test_list_prefixes_params_defaults() {
-        let json = "{}";
-        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
-        assert!(params.since.is_none());
-        assert_eq!(params.limit, 100);
-    }
-
-    #[test]
-    fn test_list_prefixes_params_with_values() {
-        let json = r#"{"since": "prefix123", "limit": 50}"#;
-        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.since, Some("prefix123".to_string()));
-        assert_eq!(params.limit, 50);
-    }
 
     // ==================== GetKelParams Tests ====================
 

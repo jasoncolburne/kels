@@ -61,6 +61,28 @@ pub trait RegistrySigner: Send + Sync {
     async fn sign(&self, data: &[u8]) -> Result<SignResult, KelsError>;
 }
 
+/// Create a signed request wrapper for the given payload using the provided signer.
+pub async fn sign_request<T>(
+    signer: &dyn RegistrySigner,
+    payload: &T,
+) -> Result<SignedRequest<T>, KelsError>
+where
+    T: serde::Serialize + Clone,
+{
+    // Serialize payload to JSON for signing
+    let payload_json = serde_json::to_vec(payload)?;
+
+    // Sign the payload (returns signature, public key, and peer ID)
+    let sign_result = signer.sign(&payload_json).await?;
+
+    Ok(SignedRequest {
+        payload: payload.clone(),
+        peer_id: sign_result.peer_id,
+        public_key: sign_result.public_key,
+        signature: sign_result.signature,
+    })
+}
+
 /// Client for interacting with the kels-registry service.
 #[derive(Clone)]
 pub struct KelsRegistryClient {
@@ -122,18 +144,7 @@ impl KelsRegistryClient {
             .as_ref()
             .ok_or_else(|| KelsError::SigningFailed("No signer configured".to_string()))?;
 
-        // Serialize payload to JSON for signing
-        let payload_json = serde_json::to_vec(payload)?;
-
-        // Sign the payload (returns signature, public key, and peer ID)
-        let sign_result = signer.sign(&payload_json).await?;
-
-        Ok(SignedRequest {
-            payload: payload.clone(),
-            peer_id: sign_result.peer_id,
-            public_key: sign_result.public_key,
-            signature: sign_result.signature,
-        })
+        sign_request(signer.as_ref(), payload).await
     }
 
     /// Register a node with the registry.
@@ -551,7 +562,7 @@ impl MultiRegistryClient {
     /// Fetch peers from a single registry (for regional nodes).
     ///
     /// Returns peer histories from the registry matching the given prefix.
-    pub async fn fetch_verified_regional_peers(
+    pub async fn fetch_registry_verified_peers(
         &mut self,
         prefix: &str,
     ) -> Result<PeersResponse, KelsError> {
@@ -576,7 +587,7 @@ impl MultiRegistryClient {
     /// Returns peer histories merged across all registries, deduplicated by peer_id.
     /// This ensures core nodes know about all peers regardless of which registry
     /// they registered with.
-    pub async fn fetch_verified_core_peers(&mut self) -> Result<PeersResponse, KelsError> {
+    pub async fn fetch_all_verified_peers(&mut self) -> Result<PeersResponse, KelsError> {
         self.fetch_verified_registry_kels(false).await?;
 
         let futures = self.urls.iter().map(|url| {

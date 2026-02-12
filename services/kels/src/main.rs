@@ -15,6 +15,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting KELS - Key Event Log Service");
 
+    #[cfg(feature = "dev-tools")]
+    tracing::warn!("DEV-TOOLS FEATURE ENABLED — DO NOT USE IN PRODUCTION");
+
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "80".to_string())
         .parse()
@@ -23,11 +26,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
+    let registry_urls: Vec<String> = std::env::var("REGISTRY_URLS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    kels_service::run(listener, &database_url, &redis_url).await?;
+    kels_service::run(listener, &database_url, &redis_url, registry_urls).await?;
 
     Ok(())
 }

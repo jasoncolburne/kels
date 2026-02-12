@@ -59,7 +59,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
    - Register as Bootstrapping
    - Start listening for gossip updates
    - For each bootstrap peer (in parallel):
-     - Fetch prefix list: `GET /api/kels/prefixes?since=&limit=100`
+     - Fetch prefix list: `POST /api/kels/prefixes` (signed request)
      - For each prefix not in local DB:
        - Fetch KEL via gossip request-response
        - Submit to local KELS
@@ -170,11 +170,14 @@ enum NodeStatus {
 
 Added to the KELS service for bootstrap sync:
 
-`GET /api/kels/prefixes?since=<cursor>&limit=<n>`
+`POST /api/kels/prefixes`
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `since` | Cursor (prefix) to start after | (beginning) |
+Accepts a `SignedRequest<PrefixesRequest>` body. Signature and peer verification is enforced unless the `dev-tools` feature is enabled.
+
+| Payload Field | Description | Default |
+|---------------|-------------|---------|
+| `timestamp` | Unix timestamp (replay protection, 60s window) | (required) |
+| `since` | Cursor (prefix) to start after | `null` (beginning) |
 | `limit` | Max prefixes to return | 100 (max: 1000) |
 
 Response includes prefix:SAID pairs for efficient sync comparison:

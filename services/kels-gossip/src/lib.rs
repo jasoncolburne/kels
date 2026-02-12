@@ -277,8 +277,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         page_size: 100,
     };
 
-    let mut bootstrap =
-        BootstrapSync::new(bootstrap_config.clone(), registry_client, allowlist.clone());
+    let mut bootstrap = BootstrapSync::new(
+        bootstrap_config.clone(),
+        registry_client,
+        allowlist.clone(),
+        registry_signer.clone(),
+    );
 
     // Step 2-3: Check allowlist and wait if not authorized
     let peer_id_str = peer_id.to_string();
@@ -335,20 +339,22 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Initial allowlist refresh - must happen before discover_peers
-    // Use a separate client without signing for unauthenticated peer list fetching
-    // First refresh uses Regional scope (single registry) to bootstrap the allowlist,
-    // then we determine our actual scope from the loaded peer data.
+    // Initial allowlist refresh — include self so we can determine our scope from
+    // the verified registry data. Uses Regional scope (single registry) first.
     let mut allowlist_client = MultiRegistryClient::new(federation_registry_urls.clone());
     match allowlist::refresh_allowlist(
         &mut allowlist_client,
         &registry_prefix,
         &allowlist,
         kels::PeerScope::Regional,
+        None,
     )
     .await
     {
-        Ok(count) => info!("Initial allowlist loaded with {} authorized peers", count),
+        Ok(count) => info!(
+            "Initial allowlist loaded with {} peers (including self)",
+            count
+        ),
         Err(e) => warn!(
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
             e
@@ -359,22 +365,21 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let local_scope = allowlist::get_local_scope(&peer_id, &allowlist).await;
     info!("Local scope: {:?}", local_scope);
 
-    // If we're a core node, re-refresh to get peers from all registries
-    if local_scope == kels::PeerScope::Core {
-        match allowlist::refresh_allowlist(
-            &mut allowlist_client,
-            &registry_prefix,
-            &allowlist,
-            local_scope,
-        )
-        .await
-        {
-            Ok(count) => info!(
-                "Core allowlist refreshed with {} peers from all registries",
-                count
-            ),
-            Err(e) => warn!("Core allowlist refresh failed: {}", e),
-        }
+    // Re-refresh with correct scope and self-exclusion
+    match allowlist::refresh_allowlist(
+        &mut allowlist_client,
+        &registry_prefix,
+        &allowlist,
+        local_scope,
+        Some(&config.node_id),
+    )
+    .await
+    {
+        Ok(count) => info!(
+            "Allowlist refreshed with {} peers (scope: {:?})",
+            count, local_scope
+        ),
+        Err(e) => warn!("Allowlist refresh failed: {}", e),
     }
 
     // Step 4: Now authorized - discover peers from allowlist
@@ -408,16 +413,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
-    let redis_allowlist = allowlist.clone();
     let redis_local_peer_id = peer_id;
     let redis_recently_stored = recently_stored.clone();
     let redis_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_redis_subscriber(
             &redis_url,
             redis_command_tx,
-            redis_allowlist,
-            redis_local_peer_id,
+            local_scope,
             redis_recently_stored,
+            redis_local_peer_id,
         )
         .await
         {
@@ -432,6 +436,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let topic = config.topic.clone();
     let mut gossip_registry_client = allowlist_client.clone();
     let gossip_registry_prefix = registry_prefix.clone();
+    let gossip_node_id = config.node_id.clone();
     let gossip_handle = tokio::spawn(async move {
         gossip::run_swarm(
             keypair,
@@ -442,6 +447,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             &mut gossip_registry_client,
             &gossip_registry_prefix,
             local_scope,
+            &gossip_node_id,
             command_rx,
             event_tx,
         )
@@ -514,6 +520,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync_command_tx,
             sync_allowlist,
             peer_id,
+            local_scope,
             recently_stored,
         )
         .await
@@ -525,6 +532,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
     let mut refresh_client = MultiRegistryClient::new(federation_registry_urls);
+    let refresh_node_id = config.node_id.clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &mut refresh_client,
@@ -532,6 +540,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             allowlist,
             refresh_interval,
             local_scope,
+            &refresh_node_id,
         )
         .await;
     });

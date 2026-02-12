@@ -76,7 +76,7 @@ install-deny:
 	cargo install cargo-deny
 
 test:
-	cargo test --workspace
+	cargo test --workspace --all-features
 
 # Files excluded from coverage (can't be meaningfully unit tested):
 # - Binary mains (main.rs, admin.rs) - entry points only

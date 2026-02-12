@@ -37,6 +37,9 @@ pub mod server;
 #[cfg(feature = "secure-enclave")]
 pub mod hardware;
 
+#[cfg(feature = "p2p-verification")]
+pub mod p2p_signature;
+
 pub mod builder;
 pub mod client;
 pub mod crypto;
@@ -61,7 +64,7 @@ pub use hardware::HardwareKeyProvider;
 pub use builder::KeyEventBuilder;
 pub use client::{
     KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient, RegistrySigner,
-    SignResult,
+    SignResult, sign_request,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
@@ -71,7 +74,8 @@ pub use types::{
     BatchKelsRequest, BatchSubmitResponse, CachedKel, DeregisterRequest, ErrorCode, ErrorResponse,
     EventKind, EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent,
     KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerHistory,
-    PeerScope, PeersResponse, PrefixListResponse, PrefixState, RaftLogAuditRecord, RaftLogEntry,
-    RaftState, RaftVote, RegisterNodeRequest, SignedKeyEvent, SignedRequest, StatusUpdateRequest,
+    PeerScope, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, RaftLogAuditRecord,
+    RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, SignedKeyEvent, SignedRequest,
+    StatusUpdateRequest,
 };
 pub use types::{Kel, compute_rotation_hash};

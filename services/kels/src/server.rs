@@ -26,7 +26,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
         .route("/api/kels/events/:said/exists", get(handlers::event_exists))
         .route("/api/kels/kels", post(handlers::get_kels_batch))
-        .route("/api/kels/prefixes", get(handlers::list_prefixes))
+        .route("/api/kels/prefixes", post(handlers::list_prefixes))
         .with_state(state)
 }
 
@@ -34,6 +34,7 @@ pub async fn run(
     listener: tokio::net::TcpListener,
     database_url: &str,
     redis_url: &str,
+    registry_urls: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to database");
     let repo = KelsRepository::connect(database_url)
@@ -58,6 +59,7 @@ pub async fn run(
         repo: Arc::new(repo),
         kel_cache,
         redis_conn,
+        registry_urls,
     });
 
     let local_cache = state.kel_cache.local_cache();

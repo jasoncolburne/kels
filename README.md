@@ -223,7 +223,7 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 | `GET` | `/api/kels/kel/:prefix` | Fetch KEL by prefix |
 | `GET` | `/api/kels/kel/:prefix?audit=true` | Fetch KEL with audit records |
 | `POST` | `/api/kels/kels` | Batch fetch multiple KELs |
-| `GET` | `/api/kels/prefixes` | List prefixes (for bootstrap sync) |
+| `POST` | `/api/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
 ## Development
 

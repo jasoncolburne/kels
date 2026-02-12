@@ -2,6 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Request payload for authenticated prefix listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefixesRequest {
+    pub timestamp: i64,
+    pub since: Option<String>,
+    pub limit: Option<usize>,
+}
+
 /// Response for paginated prefix listing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

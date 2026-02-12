@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cesr::{Digest, Matter};
+use chrono::Utc;
 use ctor::dtor;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SoftwareKeyProvider,
@@ -155,7 +156,7 @@ impl SharedHarness {
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(std_listener)
                     .expect("Failed to convert listener");
-                if let Err(e) = kels_service::run(listener, &db_url, &rd_url).await {
+                if let Err(e) = kels_service::run(listener, &db_url, &rd_url, vec![]).await {
                     panic!("Server error: {}", e);
                 }
             });
@@ -417,10 +418,22 @@ async fn test_list_prefixes() {
         .await
         .unwrap();
 
-    // List prefixes
+    // List prefixes via signed POST
+    let request = kels::SignedRequest {
+        payload: kels::PrefixesRequest {
+            timestamp: Utc::now().timestamp(),
+            since: None,
+            limit: None,
+        },
+        peer_id: "mock".to_string(),
+        public_key: "mock".to_string(),
+        signature: "mock".to_string(),
+    };
+
     let response = harness
         .client()
-        .get(harness.url("/api/kels/prefixes"))
+        .post(harness.url("/api/kels/prefixes"))
+        .json(&request)
         .send()
         .await
         .expect("Failed to list prefixes");
@@ -538,10 +551,22 @@ async fn test_list_prefixes_with_limit() {
             .unwrap();
     }
 
-    // List with limit=2
+    // List with limit=2 via signed POST
+    let request = kels::SignedRequest {
+        payload: kels::PrefixesRequest {
+            timestamp: Utc::now().timestamp(),
+            since: None,
+            limit: Some(2),
+        },
+        peer_id: "mock".to_string(),
+        public_key: "mock".to_string(),
+        signature: "mock".to_string(),
+    };
+
     let response = harness
         .client()
-        .get(harness.url("/api/kels/prefixes?limit=2"))
+        .post(harness.url("/api/kels/prefixes"))
+        .json(&request)
         .send()
         .await
         .expect("Failed to list prefixes");
@@ -726,10 +751,22 @@ async fn test_list_prefixes_pagination_with_cursor() {
             .unwrap();
     }
 
-    // Get first page with limit=1
+    // Get first page with limit=1 via signed POST
+    let request = kels::SignedRequest {
+        payload: kels::PrefixesRequest {
+            timestamp: Utc::now().timestamp(),
+            since: None,
+            limit: Some(1),
+        },
+        peer_id: "mock".to_string(),
+        public_key: "mock".to_string(),
+        signature: "mock".to_string(),
+    };
+
     let response = harness
         .client()
-        .get(harness.url("/api/kels/prefixes?limit=1"))
+        .post(harness.url("/api/kels/prefixes"))
+        .json(&request)
         .send()
         .await
         .expect("Failed to list prefixes");
@@ -740,9 +777,21 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
     // Use cursor to get next page if available
     if let Some(cursor) = &result.next_cursor {
+        let request = kels::SignedRequest {
+            payload: kels::PrefixesRequest {
+                timestamp: Utc::now().timestamp(),
+                since: Some(cursor.clone()),
+                limit: Some(1),
+            },
+            peer_id: "mock".to_string(),
+            public_key: "mock".to_string(),
+            signature: "mock".to_string(),
+        };
+
         let response = harness
             .client()
-            .get(harness.url(&format!("/api/kels/prefixes?since={}&limit=1", cursor)))
+            .post(harness.url("/api/kels/prefixes"))
+            .json(&request)
             .send()
             .await
             .expect("Failed to list prefixes with cursor");

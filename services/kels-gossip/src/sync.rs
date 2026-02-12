@@ -56,9 +56,9 @@ pub enum SyncError {
 pub async fn run_redis_subscriber(
     redis_url: &str,
     command_tx: mpsc::Sender<GossipCommand>,
-    allowlist: SharedAllowlist,
-    local_peer_id: PeerId,
+    local_scope: PeerScope,
     recently_stored: RecentlyStoredFromGossip,
+    local_peer_id: PeerId,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -92,8 +92,6 @@ pub async fn run_redis_subscriber(
                 continue;
             }
         }
-
-        let local_scope = crate::allowlist::get_local_scope(&local_peer_id, &allowlist).await;
 
         let sender = local_peer_id.to_string();
 
@@ -146,10 +144,12 @@ pub struct SyncHandler {
     kels_client: KelsClient,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<String, String>,
-    /// Shared allowlist for determining local scope and peer URLs
+    /// Shared allowlist for peer URL lookups
     allowlist: SharedAllowlist,
     /// This node's peer ID
     local_peer_id: PeerId,
+    /// This node's scope (determined at startup)
+    local_scope: PeerScope,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
 }
@@ -159,6 +159,7 @@ impl SyncHandler {
         kels_url: &str,
         allowlist: SharedAllowlist,
         local_peer_id: PeerId,
+        local_scope: PeerScope,
         recently_stored: RecentlyStoredFromGossip,
     ) -> Self {
         Self {
@@ -166,6 +167,7 @@ impl SyncHandler {
             local_saids: HashMap::new(),
             allowlist,
             local_peer_id,
+            local_scope,
             recently_stored,
         }
     }
@@ -250,9 +252,9 @@ impl SyncHandler {
         (adversary, recovery)
     }
 
-    /// Get the local node's scope from the allowlist
-    async fn get_local_scope(&self) -> AnnouncementScope {
-        match crate::allowlist::get_local_scope(&self.local_peer_id, &self.allowlist).await {
+    /// Get the local node's scope as an announcement scope
+    fn get_local_scope(&self) -> AnnouncementScope {
+        match self.local_scope {
             PeerScope::Core => AnnouncementScope::Core,
             PeerScope::Regional => AnnouncementScope::Regional,
         }
@@ -299,7 +301,7 @@ impl SyncHandler {
         let remote_said = &announcement.said;
 
         // Filter by destination - only process messages meant for our scope
-        let local_scope = self.get_local_scope().await;
+        let local_scope = self.get_local_scope();
         if announcement.destination != AnnouncementScope::All
             && announcement.destination != local_scope
         {
@@ -669,9 +671,16 @@ pub async fn run_sync_handler(
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
     local_peer_id: PeerId,
+    local_scope: PeerScope,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(&kels_url, allowlist, local_peer_id, recently_stored);
+    let mut handler = SyncHandler::new(
+        &kels_url,
+        allowlist,
+        local_peer_id,
+        local_scope,
+        recently_stored,
+    );
 
     while let Some(event) = event_rx.recv().await {
         if let Err(e) = handler.handle_event(event, &command_tx).await {
@@ -697,6 +706,7 @@ mod tests {
             "http://localhost:8080",
             allowlist,
             local_peer_id,
+            PeerScope::Regional,
             recently_stored,
         )
     }
@@ -803,6 +813,7 @@ mod tests {
             command_tx,
             allowlist,
             local_peer_id,
+            PeerScope::Regional,
             recently_stored,
         )
         .await;

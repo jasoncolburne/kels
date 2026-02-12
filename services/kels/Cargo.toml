@@ -14,13 +14,16 @@ path = "src/main.rs"
 name = "kels_service"
 path = "src/lib.rs"
 
+[features]
+dev-tools = []
+
 [dependencies]
 # Local libraries
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 cacheable = { git = "https://github.com/jasoncolburne/cacheable", features = ["redis"] }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
-libkels = { path = "../../lib/kels", features = ["redis", "server-caching", "server"] }
+libkels = { path = "../../lib/kels", features = ["redis", "server-caching", "server", "p2p-verification"] }
 libkels-derive = { path = "../../lib/kels-derive" }
 
 # Async runtime
@@ -50,6 +53,7 @@ futures-util = "0.3"
 
 [dev-dependencies]
 # Testing
+chrono = "0.4"
 tokio-test = "0.4"
 testcontainers = "0.26"
 ctor = "0.4"

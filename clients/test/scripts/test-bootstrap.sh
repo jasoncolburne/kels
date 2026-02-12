@@ -90,8 +90,10 @@ peer_exists() {
 
 get_prefix_count() {
     local url="$1"
+    local body
+    body=$(jq -n '{payload:{timestamp:0,since:null,limit:1000},peerId:"test",publicKey:"test",signature:"test"}')
     local count
-    count=$(curl -s "$url/api/kels/prefixes?limit=1000" | jq '.prefixes | length')
+    count=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/kels/prefixes" | jq '.prefixes | length')
     echo "${count:-0}"
 }
 
@@ -189,8 +191,10 @@ PREFIX1=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $
 PREFIX2=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created: $PREFIX1, $PREFIX2"
 
-# Test prefix listing
-RESPONSE=$(curl -s "$NODE_A_URL/api/kels/prefixes?limit=10")
+# Test prefix listing (POST with mock signed request — dev-tools skips auth)
+RESPONSE=$(curl -s -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n '{payload:{timestamp:0,since:null,limit:10},peerId:"test",publicKey:"test",signature:"test"}')" \
+    "$NODE_A_URL/api/kels/prefixes")
 echo "Prefix list response: $RESPONSE"
 
 PREFIX_COUNT=$(echo "$RESPONSE" | jq '.prefixes | length')
@@ -215,14 +219,18 @@ for i in {1..3}; do
 done
 
 # Test pagination with limit=2
-PAGE1=$(curl -s "$NODE_A_URL/api/kels/prefixes?limit=2")
+PAGE1=$(curl -s -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n '{payload:{timestamp:0,since:null,limit:2},peerId:"test",publicKey:"test",signature:"test"}')" \
+    "$NODE_A_URL/api/kels/prefixes")
 CURSOR=$(echo "$PAGE1" | jq -r '.nextCursor // empty')
 PAGE1_COUNT=$(echo "$PAGE1" | jq '.prefixes | length')
 
 echo "Page 1: $PAGE1_COUNT prefixes, cursor: ${CURSOR:-none}"
 
 if [ -n "$CURSOR" ]; then
-    PAGE2=$(curl -s "$NODE_A_URL/api/kels/prefixes?limit=2&since=$CURSOR")
+    PAGE2=$(curl -s -X POST -H 'Content-Type: application/json' \
+        -d "$(jq -n --arg since "$CURSOR" '{payload:{timestamp:0,since:$since,limit:2},peerId:"test",publicKey:"test",signature:"test"}')" \
+        "$NODE_A_URL/api/kels/prefixes")
     PAGE2_COUNT=$(echo "$PAGE2" | jq '.prefixes | length')
     echo "Page 2: $PAGE2_COUNT prefixes"
 
