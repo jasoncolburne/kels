@@ -63,12 +63,15 @@ jobs:
 
   test:
     name: Test
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+      # this is slightly different than the Makefile, we can't use all-features and must instead
+      # use dev-tools to allow tests to pass without some macos dependencies. dev-tools allows 
+      # certain tests like the prefix fetch tests to avoid constructing authenticated clients
+      - run: cargo test --workspace --features=dev-tools
 
   build:
     name: Build
