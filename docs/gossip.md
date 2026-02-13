@@ -241,5 +241,5 @@ For adversarial testing scenarios, set `GOSSIP_TEST_PROPAGATION_DELAY_MS` to sim
 `clients/test/scripts/test-consistency.sh` verifies cross-node consistency:
 - All nodes have the same set of prefixes
 - All prefixes have the same event counts
-- SHA-256 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
+- MD5 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
 - Behavioral state consistency for any mismatched KELs

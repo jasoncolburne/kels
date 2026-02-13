@@ -49,7 +49,7 @@ Federation enables:
 - Can be added/removed by any registry operator
 - Only trusted by nodes connected to that registry
 
-Gossip nodes compute their allowlist as: `core_peers ∪ regional_peers`
+The registry serves each gossip node an allowlist of `core_peers ∪ regional_peers`, which the node verifies against its trusted registry prefixes.
 
 ## Raft Consensus
 
@@ -63,16 +63,20 @@ Federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distrib
 ### State Machine
 The Raft state machine maintains:
 - List of core peers (peer_id, node_id, active status, scope)
-- Each entry is cryptographically anchored in the leader's KEL
+- Each entry is anchored in a trusted registry's KEL (current leader)
 
 ### Fault Tolerance
-- Requires consensus (1/3 of registries, min 2) for core peer changes
+- Requires unanimous approval for small federations (n <= 3), converging to ceil(n/3) at scale
 - Regional operations continue independently during network partitions
 - Leader election occurs automatically if current leader fails
 
 ## Configuration
 
 All services use **compile-time trusted prefixes** for zero-trust security. The prefixes must be baked into binaries at build time - they cannot be changed at runtime.
+
+### Deployment Impact
+
+Adding a new registry to the federation requires rebuilding and redeploying all existing services with the updated `TRUSTED_REGISTRY_PREFIXES` before the new registry comes online — otherwise existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
 
 ### Registry Configuration
 
@@ -141,10 +145,16 @@ Federation Members:
 
 Core peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers.
 
-**Approval Threshold**: `max(ceil(n/3), 2)` where n = number of federation members
-- 3 members: need 2 approvals
-- 4-6 members: need 2 approvals
-- 7-9 members: need 3 approvals
+**Approval Threshold** (where n = number of federation members):
+
+| n | threshold |
+|---|-----------|
+| 1-3 | n (unanimous) |
+| 4-5 | 3 |
+| 6-9 | 4 |
+| 10+ | ceil(n/3) |
+
+Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), adapted with judgement to require unanimity in small federations and a smooth transition toward ceil(n/3) at scale.
 
 **Step 1: Propose a new core peer**
 
@@ -160,7 +170,7 @@ kels-registry-admin peer propose \
 
 # Output:
 # Proposal created: EProposal123...
-# Waiting for 2 approvals (1/2 so far - proposer auto-votes)
+# Waiting for 3 approvals (0/3 so far)
 ```
 
 **Step 2: Vote on the proposal**

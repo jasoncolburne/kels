@@ -1,6 +1,6 @@
 # KELS - Key Event Log Storage
 
-A Rust implementation of a Key Event Log Storage service and client with pre-rotation key commitment, divergence detection, and recovery mechanisms. KELS provides cryptographically verifiable identity management with protection against key compromise.
+KELS is a decentralized key management infrastructure (DKMI). It provides cryptographically verifiable identity management through key event logs with pre-rotation commitment, divergence detection, and recovery mechanisms — offering protection against key compromise without relying on certificate authorities or centralized trust.
 
 ## Overview
 
@@ -14,6 +14,16 @@ KELS implements a key event log system where:
 
 All events are self-addressing (content-addressed via SAID) and cryptographically signed, making the entire log tamper-evident and end-verifiable. In the event that a divergent KEL is recovered, the removed events
 can be requested alongside the recovered KEL in the form of an audit query.
+
+## Why a DKMI?
+
+The product of a DKMI is **portable identity** — cryptographic identity that belongs to the individual, not to any service provider.
+
+Today, centralized platforms collect and store vast amounts of personal data, much of which they don't actually need. With portable identity, services only need to verify *that you are who you claim to be* — they don't need to be the source of truth for your identity, your data, or your relationships. The bulk of data storage and compute can be offloaded to consumer devices, where it belongs.
+
+This shifts the balance of power. Data is owned and controlled by individuals, not held hostage by corporations. Your identity travels with you across services. Your keys rotate without anyone's permission. And if a service disappears, your identity doesn't disappear with it.
+
+With [federated registries](docs/federation.md), KELS can also serve as a secure identity backbone for multi-cloud, multi-operator applications — independent organizations each run their own registry while sharing a global trust layer, without depending on any single certificate authority or cloud provider.
 
 ## TODO
 
@@ -99,54 +109,6 @@ make clean        # Clean build artifacts
 make test-comprehensive   # Deploy all services and run full test suite
 ```
 
-### Running the Server
-
-```bash
-# Start the KELS server (requires PostgreSQL and optionally Redis)
-cargo run --package kels --release
-```
-
-Environment variables:
-- `DATABASE_URL` - PostgreSQL connection string
-- `REDIS_URL` - Redis connection string (optional, for caching)
-- `PORT` - HTTP port (default: 8091)
-
-### Using the CLI
-
-```bash
-# Create a new KEL
-kels-cli -u http://localhost:8091 incept
-
-# Rotate signing key
-kels-cli -u http://localhost:8091 rotate --prefix <prefix>
-
-# Anchor data in the KEL
-kels-cli -u http://localhost:8091 anchor --prefix <prefix> --said <said>
-
-# Rotate recovery key (proactive security)
-kels-cli -u http://localhost:8091 rotate-recovery --prefix <prefix>
-
-# Fetch a KEL
-kels-cli -u http://localhost:8091 get <prefix>
-
-# Check local status
-kels-cli -u http://localhost:8091 status --prefix <prefix>
-
-# List local KELs
-kels-cli -u http://localhost:8091 list
-
-# Recover from divergence (if adversary attacked)
-kels-cli -u http://localhost:8091 recover --prefix <prefix>
-
-# Decommission a KEL (permanent)
-kels-cli -u http://localhost:8091 decommission --prefix <prefix>
-
-# Reset local state (clear keys and KEL cache)
-kels-cli reset --prefix <prefix>     # Reset specific prefix
-kels-cli reset                        # Reset all local state (prompts for confirmation)
-kels-cli reset -y                     # Reset all without confirmation
-```
-
 ### Deploying with Garden
 
 Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
@@ -158,38 +120,37 @@ First, add the following entries to `/etc/hosts` to enable local hostname resolu
 ```
 127.0.0.1 kels.kels-node-a.kels
 127.0.0.1 kels.kels-node-b.kels
+127.0.0.1 kels.kels-node-c.kels
+127.0.0.1 kels.kels-node-d.kels
+127.0.0.1 kels.kels-node-e.kels
+127.0.0.1 kels.kels-node-f.kels
+127.0.0.1 kels-registry.kels-registry-a.kels
+127.0.0.1 kels-registry.kels-registry-b.kels
+127.0.0.1 kels-registry.kels-registry-c.kels
 ```
 
-This allows the CLI and iOS app to connect to the local KELS nodes using their service names.
+This allows the CLI and iOS app to connect to the local KELS nodes and registries using their service names.
 
 #### Deployment
 
-```bash
-# Set up a local Kubernetes environment (e.g., Docker Desktop, minikube, kind), then:
-garden deploy --env=registry   # Deploy shared registry service first
-garden deploy                  # Deploy node-a (default)
-garden deploy --env=node-b     # Deploy node-b (separate namespace)
+I won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
+deploys 9 independent Kubernetes namespaces.
 
-# Both node deployments include kels-gossip for cross-deployment KEL synchronization
-# Nodes register with the registry and bootstrap sync from existing peers
+This is the flow:
 
-# Run the full test suite
-kubectl exec -n kels-node-a -it test-client -- /tests/run-all-tests.sh
+1. Deploy all registries
+2. Gather their prefixes
+3. Rebuild all software to bake prefixes in
+4. Update environment variables as required
+5. Re-deploy registries
+6. Deploy core nodes
+7. Gather node ids
+8. Propose core nodes
+9. Approve core nodes
+10. Deploy regional nodes
+11. Add regional nodes to respective registries
 
-# Run gossip synchronization tests (requires both nodes deployed)
-kubectl exec -n kels-node-a -it test-client -- /tests/test-gossip.sh
-
-# Run bootstrap sync tests (requires registry and both nodes)
-kubectl exec -n kels-node-a -it test-client -- /tests/test-bootstrap.sh
-
-# Run benchmarks (40 concurrent connections, 10 second duration)
-kubectl exec -n kels-node-a -it test-client -- /tests/bench-kels.sh 40 10
-
-# Clean up and start fresh
-garden cleanup deploy --env=node-b     # Remove node-b deployment
-garden cleanup deploy                  # Remove node-a deployment
-garden cleanup deploy --env=registry   # Remove registry deployment last
-```
+This system assumes operators of registries are coordinated.
 
 ## Security Model
 
@@ -212,6 +173,22 @@ garden cleanup deploy --env=registry   # Remove registry deployment last
 - Rotate signing keys regularly (suggested: every 1-3 months)
 - Rotate recovery keys periodically (suggested: every 3-12 months)
 - Use hardware-backed keys (Secure Enclave, HSM) when possible
+
+### Post-Quantum Considerations
+
+Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotation hash (128-bit effective security under Grover's algorithm) reveals nothing about the next key until rotation occurs, so a quantum adversary cannot derive future keys from the current KEL. Regular key rotation forces a quantum adversary to start from scratch with each new key, limiting their window of attack to the current rotation period.
+
+The current signing keys (ECDSA/P-256) are quantum-vulnerable — a sufficiently powerful quantum computer could derive the private key from the exposed public key without needing physical access. Breaking a single P-256 key via Shor's algorithm requires ~2,330 logical qubits (millions of physical qubits with error correction) and ~1.26 × 10^11 Toffoli gates (Roetteler et al., 2017), translating to hours to weeks per key depending on gate speed:
+
+| Error-corrected gate speed | Time to break one P-256 key |
+|---|---|
+| 100 ns (very optimistic) | ~3.5 hours |
+| 1 μs (optimistic) | ~35 hours |
+| 10 μs (more realistic) | ~15 days |
+
+Even in the most optimistic quantum scenario, a monthly rotation period provides an enormous safety margin — the adversary breaks one key only to find the next is behind a fresh BLAKE3 hash they can't touch.
+
+While these protocols could be upgraded with quantum-safe signature algorithms, such algorithms are not yet widely supported by hardware security modules. Today, hardware-backed keys with pre-commitment provide the strongest practical security against classical adversaries, while frequent rotation provides meaningful mitigation against future quantum threats until PQ hardware support matures.
 
 ## API Endpoints
 
@@ -254,12 +231,19 @@ This provides rust-analyzer with required environment variables (like `TRUSTED_R
 ### Testing
 
 ```bash
-# Unit tests
-make test
+# Full integration test suite (requires Garden + Kubernetes)
+make && make test-comprehensive
 
-# Integration tests (requires running server - use garden for an easy setup)
-./clients/test/scripts/test-kels.sh
-./clients/test/scripts/test-adversarial.sh
+# Stress test (repeats adversarial, gossip, and bootstrap tests)
+for i in {1..10}; do echo && echo "run $i" && echo &&
+    kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh &&
+    kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh &&
+    kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh &&
+    kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || break
+done
+
+# Cross-node consistency check (run separately after stress tests)
+kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 ```
 
 ### Dev Tools
