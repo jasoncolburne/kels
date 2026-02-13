@@ -130,18 +130,16 @@ impl FederationConfig {
     ///
     /// Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), adapted
     /// with judgement to require unanimity in small federations and a smooth
-    /// transition toward ceil(n/3) at scale.
+    /// transition toward ceil(n/3) at scale. Minimum threshold is always 3
+    /// to prevent trivial collusion.
     ///
-    /// - n in [1,3]:  n (unanimous)
-    /// - n in [4,5]:  3
+    /// - n in [0,5]:  3
     /// - n in [6,9]:  4
     /// - n >= 10:     ceil(n/3)
     pub fn approval_threshold(&self) -> usize {
         let n = self.members.len();
         match n {
-            0 => 1, // fail-secure: unreachable threshold prevents approval with no members
-            1..=3 => n,
-            4..=5 => 3,
+            0..=5 => 3,
             6..=9 => 4,
             _ => n.div_ceil(3),
         }
@@ -383,19 +381,19 @@ mod tests {
     #[test]
     fn test_approval_threshold_empty() {
         let config = FederationConfig::new("ERegistry0".to_string(), vec![]);
-        assert_eq!(config.approval_threshold(), 1);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_1_member() {
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(1));
-        assert_eq!(config.approval_threshold(), 1);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_2_members() {
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(2));
-        assert_eq!(config.approval_threshold(), 2);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]

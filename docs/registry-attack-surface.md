@@ -36,16 +36,16 @@ A compromised follower cannot directly write to the Raft log but could:
 - **Mitigation:** All peer records are `SelfAddressed` (SAID integrity). Peer SAIDs must be anchored in a trusted registry's KEL. Gossip nodes verify this on every allowlist refresh.
 
 **Attack 3 — Refuse to participate:** Withhold votes or go offline.
-- **Mitigation:** Raft handles this via leader election and quorum. The approval threshold is designed so a minority of members cannot block consensus (ceil(n/3) for 10+ members).
+- **Mitigation:** Raft handles this via leader election and quorum. The approval threshold has a minimum floor of 3 votes regardless of federation size, scaling to ceil(n/3) for 10+ members.
 
 ## Compromised HSM
 
 If an attacker gains access to the HSM service:
 
-**Attack:** Sign arbitrary data as the registry, forge KEL events, create fraudulent peer records.
-- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access.
-- **Detection:** KEL history is append-only and chained. Unauthorized events create observable forks that other registries would detect during KEL verification.
-- **Recovery:** Key rotation (via `rot` event) invalidates the compromised key. Recovery keys (via `rec`/`ror`) can be used if signing keys are compromised.
+**Attack:** Sign valid events as the registry — add rogue peers, cast fraudulent votes, anchor malicious data. Because the attacker holds the real signing key, events chain perfectly from the current tail with valid signatures. There is no cryptographic distinction between attacker-signed and operator-signed events.
+- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access. Critically, compromising a single registry's HSM is insufficient to add rogue peers to the federation — core peer approval requires a minimum of 3 votes regardless of federation size, each anchored in the voter's KEL. Adding a rogue peer requires colluding with at least 3 independently operated registries (and compromising their HSMs), which represents a significant operational barrier.
+- **Detection:** No cryptographic detection — events are indistinguishable from legitimate ones. Detection is necessarily out-of-band: operators noticing unexpected events in their registry's KEL, or other federation members observing unauthorized proposals, votes, or peer additions that nobody initiated. A rational attacker would not create divergence (which freezes the KEL and is immediately visible) but instead silently extend the chain.
+- **Recovery:** Once detected, the operator submits a `rec` event (requires rotation + recovery key). The merge protocol truncates the attacker's events from the active chain (archiving them for audit) and resumes from the pre-compromise state under a new key. If the attacker has also compromised the rotation key, recovery still works as long as they don't hold the recovery key. If both rotation and recovery keys are compromised, `cnt` (contest) permanently freezes the KEL — the correct outcome when key compromise is total.
 
 ## Network-Level Attacks
 
@@ -95,10 +95,10 @@ If an attacker gains access to the HSM service:
 - **Mitigation:** `is_localhost()` checks `SocketAddr.ip().is_loopback()`. This is a network-level check, not an application-level authentication.
 - **Residual risk:** Container networking or reverse proxy misconfiguration could expose localhost. There is no additional authentication on admin endpoints.
 
-### Missing Localhost Check on Proposal Endpoints
+### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
 `admin_propose_peer` and `admin_vote_proposal` check federation membership but not localhost. They are exposed on the federation-mode router at `/api/admin/proposals` (POST) and `/api/admin/proposals/:id/vote` (POST).
-- **Concern:** Any network client that can reach the registry can submit proposals and votes, as long as the proposer/voter prefix is a federation member. The actual security relies on vote SAID anchoring in the voter's KEL — you need the voter's signing key to create a valid vote.
+- **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Security relies on vote SAID anchoring in the voter's KEL — you need the voter's signing key to create a valid vote, which is unforgeable.
 
 ## Unauthenticated Endpoints
 
@@ -131,7 +131,7 @@ These are intentionally public. The security model relies on cryptographic verif
 ## Summary of Residual Risks
 
 1. **Admin API lacks authentication beyond localhost check** — relies on network isolation
-2. **Proposal/vote endpoints missing localhost check** — relies on KEL anchoring for security
+2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
 5. **No TLS at application level** — relies on overlay network encryption or external termination
@@ -148,12 +148,11 @@ No application-level rate limiting exists on any endpoint. The allowlist pending
 - [x] Add rate limiting middleware to the registry HTTP server (per-IP via GovernorLayer on write endpoints: 200 req/s sustained, 1000 burst; 5 MiB body limit)
 - [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
 
-### Admin API authentication (addresses residual risks 1, 2)
+### Admin API authentication (addresses residual risk 1)
 
-The admin API relies solely on `is_localhost()` for access control. Proposal and vote endpoints don't check localhost at all — they rely on KEL anchoring for security, which is sound but means any network client can submit proposals.
+The admin API relies solely on `is_localhost()` for access control. Proposal and vote endpoints intentionally have no localhost check — they are the federation RPC path used by remote registries to submit proposals and votes. KEL anchoring (vote SAID must be signed by the voter's key and anchored in their KEL) is the correct security mechanism for these endpoints.
 
-- [ ] Add localhost check to `admin_propose_peer` and `admin_vote_proposal` endpoints — this is a simple fix that limits proposal submission to the local operator while KEL anchoring remains the cryptographic backstop
-- [ ] Evaluate whether admin endpoints need an additional authentication layer (e.g., bearer token, mTLS) for defense-in-depth beyond localhost — relevant if container networking or reverse proxy misconfiguration could expose loopback
+- [ ] Evaluate whether non-federation admin endpoints need an additional authentication layer (e.g., bearer token, mTLS) for defense-in-depth beyond localhost — relevant if container networking or reverse proxy misconfiguration could expose loopback
 
 ### TLS between services (addresses residual risk 5)
 

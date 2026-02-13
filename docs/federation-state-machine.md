@@ -130,7 +130,7 @@ Each follower independently verifies every Raft log entry before applying it. Th
 
 ### Layer 4: Multi-Party Voting
 
-Core peer additions require approval from multiple federation members (threshold varies by federation size). A single compromised registry cannot unilaterally add peers.
+Core peer additions require a minimum of 3 votes from federation members (scaling to ceil(n/3) for larger federations). A single compromised registry cannot unilaterally add peers.
 
 ### Layer 5: Tamper-Evident Chaining
 
@@ -169,10 +169,11 @@ The voting threshold for core peer approval scales with federation size:
 
 | Federation Size (n) | Threshold |
 |---------------------|-----------|
-| 1-3 | n (unanimous) |
-| 4-5 | 3 |
+| 0-5 | 3 |
 | 6-9 | 4 |
 | 10+ | ceil(n/3) |
+
+The minimum threshold of 3 prevents trivial collusion — even in the smallest viable federation (3 members), all members must agree.
 
 ## Rogue Leader Attack
 

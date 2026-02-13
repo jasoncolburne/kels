@@ -66,7 +66,7 @@ The Raft state machine maintains:
 - Each entry is anchored in a trusted registry's KEL (current leader)
 
 ### Fault Tolerance
-- Requires unanimous approval for small federations (n <= 3), converging to ceil(n/3) at scale
+- Minimum 3 votes required for core peer approval regardless of federation size, scaling to ceil(n/3) for 10+ members
 - Regional operations continue independently during network partitions
 - Leader election occurs automatically if current leader fails
 
@@ -149,12 +149,11 @@ Core peers require multi-party approval from federation members. This prevents a
 
 | n | threshold |
 |---|-----------|
-| 1-3 | n (unanimous) |
-| 4-5 | 3 |
+| 0-5 | 3 |
 | 6-9 | 4 |
 | 10+ | ceil(n/3) |
 
-Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), adapted with judgement to require unanimity in small federations and a smooth transition toward ceil(n/3) at scale.
+Minimum threshold is always 3 votes to prevent trivial collusion. Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), with a hard floor of 3 and a smooth transition toward ceil(n/3) at scale.
 
 **Step 1: Propose a new core peer**
 
@@ -261,7 +260,7 @@ If a federation member is compromised:
 
 ### Approval Requirements
 
-Core peer changes require the approval threshold described above — unanimous for small federations, converging to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the core peer set.
+Core peer changes require the approval threshold described above — minimum 3 votes, scaling to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the core peer set.
 
 ### Split-Brain Protection
 
