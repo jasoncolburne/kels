@@ -77,7 +77,7 @@ pub use types::{
     NodeStatus, NodeType, Peer, PeerHistory, PeerProposal, PeerScope, PeersResponse,
     PrefixListResponse, PrefixState, PrefixesRequest, ProposalStatus, ProposalWithVotes,
     RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, SignedKeyEvent,
-    SignedRequest, StatusUpdateRequest, Vote,
+    SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
 };
 pub use types::{Kel, compute_rotation_hash};
 

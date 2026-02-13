@@ -38,6 +38,10 @@ impl IntoResponse for PreSerializedJson {
 /// Maximum submissions per prefix per minute (sliding window).
 const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
 
+/// Nonce expiry window in seconds (matches the timestamp validation window).
+#[cfg(not(feature = "dev-tools"))]
+const NONCE_WINDOW_SECS: u64 = 60;
+
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
@@ -46,6 +50,9 @@ pub(crate) struct AppState {
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    pub(crate) nonce_cache: DashMap<String, Instant>,
 }
 
 // ==================== Error Handling ====================
@@ -547,6 +554,21 @@ pub(crate) async fn list_prefixes(
 
         if !kels::p2p_signature::validate_timestamp(signed_request.payload.timestamp, 60) {
             return Err(ApiError::forbidden("Request timestamp expired"));
+        }
+
+        // Nonce deduplication: evict expired entries, then reject duplicates
+        {
+            let now = Instant::now();
+            state.nonce_cache.retain(|_, seen| {
+                now.duration_since(*seen) < Duration::from_secs(NONCE_WINDOW_SECS)
+            });
+            if state
+                .nonce_cache
+                .insert(signed_request.payload.nonce.clone(), now)
+                .is_some()
+            {
+                return Err(ApiError::forbidden("Duplicate nonce"));
+            }
         }
 
         // Verify peer is in the authorized peer list (cached in Redis)

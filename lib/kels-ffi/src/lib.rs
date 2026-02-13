@@ -13,6 +13,8 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+#[cfg(feature = "dev-tools")]
+use kels::EventKind;
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -24,7 +26,7 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    EventKind, FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
     MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};

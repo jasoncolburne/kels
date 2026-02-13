@@ -218,8 +218,11 @@ impl SyncHandler {
             map
         };
 
-        // Walk each chain and check if it contains recovery-revealing events
+        // Walk each chain and check if it contains recovery-revealing events.
+        // Prefer contest roots as "recovery" (submitted second) since contest
+        // requires divergence to already be established by the first batch.
         let mut recovery_root_said: Option<String> = None;
+        let mut contest_root_said: Option<String> = None;
         for root in &roots {
             let mut current = root.event.said.as_str();
             let mut has_recovery = root.event.reveals_recovery_key();
@@ -230,10 +233,14 @@ impl SyncHandler {
                 current = &next.event.said;
             }
             if has_recovery {
-                recovery_root_said = Some(root.event.said.clone());
-                break;
+                if root.event.is_contest() && contest_root_said.is_none() {
+                    contest_root_said = Some(root.event.said.clone());
+                } else if recovery_root_said.is_none() {
+                    recovery_root_said = Some(root.event.said.clone());
+                }
             }
         }
+        let recovery_root_said = contest_root_said.or(recovery_root_said);
 
         // If no recovery branch found, fall back to returning everything as one batch
         let Some(recovery_root) = recovery_root_said else {

@@ -83,6 +83,7 @@ pub async fn run(
         redis_conn,
         registry_urls,
         prefix_rate_limits: dashmap::DashMap::new(),
+        nonce_cache: dashmap::DashMap::new(),
     });
 
     let local_cache = state.kel_cache.local_cache();

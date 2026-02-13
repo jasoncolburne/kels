@@ -185,8 +185,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Replay Attack (Signed Requests)
 
 **Attack:** Replay a captured `list_prefixes` signed request.
-- **Mitigation:** 60-second timestamp window via `validate_timestamp()`. Requests older than 60 seconds are rejected.
-- **Residual risk:** Within the 60-second window, replay is possible. Since `list_prefixes` is a read-only operation, replay has no side effects beyond repeated reads.
+- **Mitigation:** 60-second timestamp window via `validate_timestamp()`. Each request includes a cryptographic nonce (BLAKE3 hash of 32 random bytes). The server tracks nonces within the timestamp window and rejects duplicates. Expired nonces are evicted on each request.
 
 ### Denial of Service — Event Submission Flood
 
@@ -263,7 +262,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. **Bootstrap peer can serve outdated snapshots** — caught by resync but creates a delay window
 5. **Gossip scope filtering is application-level** — protocol layer doesn't enforce boundaries
-6. **60-second replay window on signed requests** — acceptable for read-only operations
+6. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
 7. **Redis state flags lack authentication** — relies on pod-level network isolation
 8. **No real-time detection of selective message dropping** — relies on mesh redundancy and periodic resync
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
@@ -291,6 +290,7 @@ No TLS at the application level. HTTP traffic between gossip nodes and KELS serv
 
 Scope filtering is application-level. There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
+- [x] Fix event partitioning for contest propagation — `partition_events` now places contest events (`cnt`) in the second (recovery) batch, ensuring the non-contest fork event establishes divergence first. Previously, `dec + cnt` pairs could be partitioned with `cnt` first, which was rejected by merge ("Contest requires divergence")
 - [ ] Evaluate per-scope gossipsub topics (e.g., `kels/events/v1/regional`, `kels/events/v1/core`) to enforce scope at the protocol layer
 - [ ] Add gossip liveness monitoring — periodic heartbeat announcements from core nodes, with alerts when a region stops receiving updates for a configurable interval
 - [ ] Add negative caching for failed KEL fetches — if an HTTP fetch for an announced `prefix:said` fails (404, timeout), cache the failure for a short TTL to avoid repeated fetches of the same non-existent data
@@ -310,6 +310,6 @@ Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authenti
 
 ### Signed request replay window (addresses residual risk 6)
 
-`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.
+~~`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.~~
 
-- [ ] Add server-side nonce tracking — reject requests with previously seen `(peer_id, nonce)` pairs within the timestamp window. Trade-off is additional state per peer, but the peer set is small and bounded by the allowlist
+- [x] Add server-side nonce tracking — each `PrefixesRequest` includes a BLAKE3-hashed cryptographic nonce. The server rejects duplicate nonces within the 60s timestamp window, evicting expired entries on each request. Nonce storage is bounded by `max_peers × max_requests_per_peer_per_minute`.

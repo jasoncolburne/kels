@@ -57,7 +57,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
    - **Audit fetch** (on `KeyNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
-   - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence
+   - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
 ### Why SAID comparison?

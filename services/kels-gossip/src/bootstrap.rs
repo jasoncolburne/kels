@@ -428,6 +428,7 @@ impl BootstrapSync {
     ) -> Result<PrefixListResponse, BootstrapError> {
         let request = PrefixesRequest {
             timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
             since: cursor.map(|s| s.to_string()),
             limit: Some(self.config.page_size),
         };

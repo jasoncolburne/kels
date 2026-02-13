@@ -44,6 +44,9 @@ verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storag
 # SAID computation
 blake3 = "1.5"
 
+# Cryptographic randomness
+getrandom = "0.2"
+
 # Time with microsecond precision
 chrono = { version = "0.4", features = ["serde"] }
 

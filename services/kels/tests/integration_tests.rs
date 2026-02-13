@@ -422,6 +422,7 @@ async fn test_list_prefixes() {
     let request = kels::SignedRequest {
         payload: kels::PrefixesRequest {
             timestamp: Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
             since: None,
             limit: None,
         },
@@ -555,6 +556,7 @@ async fn test_list_prefixes_with_limit() {
     let request = kels::SignedRequest {
         payload: kels::PrefixesRequest {
             timestamp: Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
             since: None,
             limit: Some(2),
         },
@@ -755,6 +757,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
     let request = kels::SignedRequest {
         payload: kels::PrefixesRequest {
             timestamp: Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
             since: None,
             limit: Some(1),
         },
@@ -780,6 +783,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
         let request = kels::SignedRequest {
             payload: kels::PrefixesRequest {
                 timestamp: Utc::now().timestamp(),
+                nonce: kels::generate_nonce(),
                 since: Some(cursor.clone()),
                 limit: Some(1),
             },
