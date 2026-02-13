@@ -143,7 +143,7 @@ Federation Members:
 
 ### Adding Core Peers (Multi-Party Approval)
 
-Core peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers.
+Core peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers — though a malicious peer could at most deny service, since all KEL events require valid signatures from the owner's keys and are verified during merge.
 
 **Approval Threshold** (where n = number of federation members):
 
