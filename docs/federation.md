@@ -375,6 +375,6 @@ Registry prefixes are stored in `.kels/federated-registries.json`:
 ```
 
 Node environments are mapped to their registries:
-- `node-a`, `node-d` -> `registry-a`
-- `node-b` -> `registry-b`
-- `node-c` -> `registry-c`
+- `node-a` (core), `node-d` (regional) -> `registry-a`
+- `node-b` (core), `node-e` (regional) -> `registry-b`
+- `node-c` (core), `node-f` (regional) -> `registry-c`
