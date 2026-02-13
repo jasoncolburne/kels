@@ -42,7 +42,17 @@ pub struct KelAnnouncement {
     pub origin: AnnouncementScope,
     /// Target scope for this announcement
     pub destination: AnnouncementScope,
-    /// PeerId of the node sending this announcement (for deduplication)
+    /// Identity of the node sending this announcement (currently a libp2p PeerId).
+    ///
+    /// Receivers use this to look up the sender's KELS URL from the allowlist
+    /// for HTTP event fetching. On rebroadcast (regional→core becomes core→all),
+    /// the sender is replaced with the rebroadcasting core node so that
+    /// cross-registry nodes can reach a KELS service in their allowlist.
+    ///
+    /// This means multiple core nodes rebroadcasting the same announcement produce
+    /// distinct gossipsub messages (different sender = different message ID).
+    /// This is harmless — receivers that already fetched the SAID skip the duplicate
+    /// via the event_exists check in the sync handler.
     pub sender: String,
 }
 

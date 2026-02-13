@@ -323,7 +323,10 @@ impl SyncHandler {
             return Ok(());
         }
 
-        // Check if we already have the announced SAID (we may be ahead of the announcer)
+        // Application-level deduplication: if we already have this SAID, skip.
+        // This handles both the case where we're ahead of the announcer AND duplicate
+        // announcements from multiple core nodes rebroadcasting the same update
+        // (each core node replaces the sender, producing distinct gossipsub messages).
         if self.kels_client.event_exists(remote_said).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
@@ -603,6 +606,8 @@ impl SyncHandler {
             if let Some(said) = tip_said {
                 self.local_saids.insert(prefix.to_string(), said);
 
+                // Replace sender with our own identity so cross-registry nodes
+                // can look us up in their allowlist to fetch events via HTTP.
                 let sender = self.local_peer_id.to_string();
 
                 let rebroadcast = match (announcement.origin, announcement.destination) {
