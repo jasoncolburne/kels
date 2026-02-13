@@ -84,7 +84,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 
 **Attack:** Submit many concurrent events for the same prefix to cause advisory lock contention and slow down the service.
 - **Mitigation:** PostgreSQL advisory locks serialize operations per-prefix, which prevents data corruption but does mean high concurrency on a single prefix causes queuing.
-- **Residual risk:** No per-prefix rate limiting. A flood of submissions for one prefix could degrade performance for that prefix.
+- **Residual risk:** Per-prefix rate limiting (32 submissions/min) mitigates sustained floods, but advisory lock contention still causes queuing under burst traffic within the rate limit window.
 
 ## KEL Merge Exploitation
 
@@ -120,7 +120,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 
 **Attack:** Publish gossip announcements for non-existent prefixes or stale SAIDs, causing nodes to waste bandwidth fetching data.
 - **Mitigation:** Receivers check `event_exists()` before fetching — if the announced SAID already exists locally, the announcement is ignored. For unknown SAIDs, the node fetches the KEL via HTTP and KELS validates all signatures during merge. False announcements waste a single HTTP round-trip but cannot corrupt state.
-- **Residual risk:** No rate limiting on announcement processing. Sustained injection of unique false `prefix:said` pairs causes repeated HTTP fetches.
+- **Residual risk:** Per-peer rate limiting (8192 fetches/min) bounds the damage from sustained injection, but a verified peer could still cause significant HTTP fetch load within the limit.
 
 ### Selective Message Dropping
 
@@ -191,14 +191,14 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Denial of Service — Event Submission Flood
 
 **Attack:** Flood `POST /api/kels/events` with valid-looking but ultimately invalid events.
-- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. But valid-format signatures that fail later verification still consume database resources.
-- **Residual risk:** No rate limiting on any endpoint. Relies on network-level controls (e.g., Kubernetes NetworkPolicy, ingress rate limiting).
+- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (GovernorLayer: 200 req/s sustained, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
+- **Residual risk:** Valid-format signatures that fail later verification still consume database resources within the rate limits.
 
 ### Denial of Service — Batch Request Abuse
 
 **Attack:** Send many batch KEL requests to exhaust memory or database connections.
-- **Mitigation:** Batch size capped at 50 prefixes. Redis cache reduces database load for frequently accessed KELs.
-- **Residual risk:** No request rate limiting. Concurrent batch requests from multiple sources could still exhaust database connections.
+- **Mitigation:** Batch size capped at 50 prefixes. Redis cache reduces database load for frequently accessed KELs. Body size limit (5 MiB) bounds response processing cost.
+- **Residual risk:** Read endpoints are not per-IP rate limited (idempotent and cache-backed). Concurrent batch requests from many distinct sources could still exhaust database connections.
 
 ## Redis Attacks
 
@@ -258,15 +258,15 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 
 ## Summary of Residual Risks
 
-1. **No rate limiting on any endpoint** — relies on network-level controls
+1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
 2. **No TLS at application level** — relies on overlay network encryption or external termination
-3. **Advisory lock contention under high concurrency** — per-prefix queuing, no fairness guarantee
+3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. **Bootstrap peer can serve outdated snapshots** — caught by resync but creates a delay window
 5. **Gossip scope filtering is application-level** — protocol layer doesn't enforce boundaries
 6. **60-second replay window on signed requests** — acceptable for read-only operations
 7. **Redis state flags lack authentication** — relies on pod-level network isolation
 8. **No real-time detection of selective message dropping** — relies on mesh redundancy and periodic resync
-9. **Sustained announcement injection causes repeated HTTP fetches** — no per-prefix or per-peer rate limiting on gossip processing
+9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
 ## Roadmap
 
@@ -276,9 +276,9 @@ Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
 No application-level rate limiting exists on any KELS endpoint. Advisory lock contention under high concurrency has no fairness guarantee. Gossip announcement processing has no per-peer or per-prefix throttling, so sustained injection causes repeated HTTP fetches.
 
-- [ ] Add rate limiting middleware to the KELS HTTP server (per-IP for public endpoints, per-prefix for `submit_events`)
-- [ ] Add per-peer rate limiting on gossip announcement processing — limit how many unique `prefix:said` fetches a single sender can trigger per time window
-- [ ] Add per-prefix submission throttle to `submit_events` — reject excessive concurrent submissions for the same prefix before acquiring the advisory lock
+- [x] Add rate limiting middleware to the KELS HTTP server (per-IP for write endpoints via GovernorLayer: 200 req/s sustained, 1000 burst; per-prefix for `submit_events`: 32/min; max 500 events per submission; 5 MiB body limit)
+- [x] Add per-peer rate limiting on gossip announcement processing (8192 fetches/min per peer)
+- [x] Add per-prefix submission throttle to `submit_events` (32 submissions/min per prefix, in-memory via DashMap)
 
 ### TLS between services (addresses residual risk 2)
 

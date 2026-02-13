@@ -63,7 +63,7 @@ If an attacker gains access to the HSM service:
 
 **Attack:** Flood the gossip network with connections from unknown PeerIds, triggering repeated allowlist refreshes.
 - **Mitigation:** The `refresh_tx` channel has capacity 1 — multiple triggers coalesce into a single refresh. However, there is no rate limiting on inbound connections at the application level.
-- **Residual risk:** Pending verification set is unbounded (no TTL). Could grow under sustained attack.
+- **Residual risk:** Pending verification set is bounded (max 200 peers, 300s TTL) but a sustained flood could still cause legitimate peers to be evicted before verification completes.
 
 ### Denial of Service — KEL Fetch Amplification
 
@@ -132,8 +132,8 @@ These are intentionally public. The security model relies on cryptographic verif
 
 1. **Admin API lacks authentication beyond localhost check** — relies on network isolation
 2. **Proposal/vote endpoints missing localhost check** — relies on KEL anchoring for security
-3. **Allowlist pending set unbounded** — potential memory growth under connection flood
-4. **No rate limiting on any endpoint** — relies on network-level controls
+3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
+4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
 5. **No TLS at application level** — relies on overlay network encryption or external termination
 6. **gossipsub scope filtering is application-level** — protocol layer doesn't enforce boundaries
 
@@ -145,8 +145,8 @@ Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
 No application-level rate limiting exists on any endpoint. The allowlist pending verification set has no TTL or max size, so a connection flood can grow it unboundedly.
 
-- [ ] Add rate limiting middleware to the registry HTTP server (per-IP or per-peer-id)
-- [ ] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` — evict oldest entries when the cap is reached
+- [x] Add rate limiting middleware to the registry HTTP server (per-IP via GovernorLayer on write endpoints: 200 req/s sustained, 1000 burst; 5 MiB body limit)
+- [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
 
 ### Admin API authentication (addresses residual risks 1, 2)
 
