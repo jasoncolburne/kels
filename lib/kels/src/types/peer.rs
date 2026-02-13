@@ -1,5 +1,7 @@
 //! Peer allowlist & federation
 
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
@@ -174,4 +176,188 @@ impl PeerHistory {
 #[serde(rename_all = "camelCase")]
 pub struct PeersResponse {
     pub peers: Vec<PeerHistory>,
+}
+
+/// Status of a core peer proposal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProposalStatus {
+    /// Proposal is waiting for votes.
+    Pending,
+    /// Threshold met, peer was added to core set.
+    Approved,
+    /// Proposal was rejected (majority rejected or expired).
+    Rejected,
+    /// Proposal was withdrawn by proposer.
+    Withdrawn,
+}
+
+impl std::fmt::Display for ProposalStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProposalStatus::Pending => write!(f, "Pending"),
+            ProposalStatus::Approved => write!(f, "Approved"),
+            ProposalStatus::Rejected => write!(f, "Rejected"),
+            ProposalStatus::Withdrawn => write!(f, "Withdrawn"),
+        }
+    }
+}
+
+/// A vote on a proposal with a tamper-evident SAID.
+///
+/// Votes are chained so they can be updated (e.g., to withdraw a proposal).
+/// The proposer withdraws by updating their vote with `withdrawn_at` set.
+///
+/// The `proposal` field binds this vote to a specific proposal.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+pub struct Vote {
+    /// Self-Addressing IDentifier - content hash for tamper evidence.
+    #[said]
+    pub said: String,
+    /// Stable identifier for this vote chain (derived from inception SAID).
+    #[prefix]
+    pub prefix: String,
+    /// SAID of previous version (None for inception).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[previous]
+    pub previous: Option<String>,
+    /// Version number.
+    #[version]
+    pub version: u64,
+    /// The proposal prefix this vote is for (must match proposal.prefix).
+    pub proposal: String,
+    /// The voter's registry prefix.
+    pub voter: String,
+    /// Whether the voter approves (true) or rejects (false).
+    pub approve: bool,
+    /// If set, this vote represents a withdrawal of the proposal (proposer only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withdrawn_at: Option<StorageDatetime>,
+}
+
+/// A proposal to add a core peer, requiring multi-party approval.
+///
+/// Uses chaining for tamper-evident audit trail:
+/// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_id
+/// - `said`: Changes with each update (votes added, status changes)
+/// - `previous`: Links to previous version for full history
+#[allow(clippy::too_many_arguments)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+pub struct PeerProposal {
+    /// Self-Addressing IDentifier - changes with each update.
+    #[said]
+    pub said: String,
+    /// Stable proposal identifier (derived from inception SAID).
+    #[prefix]
+    pub prefix: String,
+    /// SAID of previous version (None for inception).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[previous]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    /// The peer_id being proposed.
+    pub peer_id: String,
+    /// The node_id being proposed.
+    pub node_id: String,
+    /// Registry prefix of the leader (may change each iteration)
+    pub kels_url: String,
+    pub gossip_multiaddr: String,
+    pub authorizing_kel: String,
+    pub proposer: String,
+    /// SAIDs of approval votes. Each vote's proposal_prefix must match this proposal's prefix.
+    pub approvals: Vec<String>,
+    /// SAIDs of rejection votes.
+    pub rejections: Vec<String>,
+    /// When the proposal was created/updated.
+    #[created_at]
+    pub created_at: StorageDatetime,
+    /// When the proposal expires.
+    pub expires_at: StorageDatetime,
+    /// Current status of the proposal.
+    pub status: ProposalStatus,
+}
+
+impl PeerProposal {
+    /// Create a new empty proposal (v0, no votes yet).
+    ///
+    /// The prefix (proposal ID) is derived from content - no UUID needed.
+    /// The proposer must submit their vote separately via VoteCorePeer.
+    pub fn empty(
+        peer_id: &str,
+        node_id: &str,
+        kels_url: &str,
+        gossip_multiaddr: &str,
+        proposer: &str,
+        expires_at: &StorageDatetime,
+    ) -> Result<Self, verifiable_storage::StorageError> {
+        Self::create(
+            peer_id.to_string(),
+            node_id.to_string(),
+            kels_url.to_string(),
+            gossip_multiaddr.to_string(),
+            proposer.to_string(),
+            proposer.to_string(),
+            vec![],
+            vec![],
+            expires_at.clone(),
+            ProposalStatus::Pending,
+        )
+    }
+
+    /// Get the proposal ID (which is the prefix).
+    pub fn proposal_id(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Add a vote and increment the chain (updates SAID, sets previous).
+    /// The leader_prefix is updated to the registry processing this vote.
+    pub fn add_vote(
+        &mut self,
+        vote: Vote,
+        leader_prefix: &str,
+    ) -> Result<(), verifiable_storage::StorageError> {
+        match vote.approve {
+            true => self.approvals.push(vote.said),
+            false => self.rejections.push(vote.said),
+        }
+        self.authorizing_kel = leader_prefix.to_string();
+        self.increment()
+    }
+
+    /// Check if proposal has expired.
+    pub fn is_expired(&self) -> bool {
+        StorageDatetime::now() > self.expires_at
+    }
+
+    /// Count approvals.
+    pub fn approval_count(&self) -> usize {
+        self.approvals.len()
+    }
+
+    /// Count rejections.
+    pub fn rejection_count(&self) -> usize {
+        self.rejections.len()
+    }
+
+    /// Check if a registry has already voted by checking the provided votes.
+    pub fn has_voted(&self, voter: &str, votes: &[Vote]) -> bool {
+        votes.iter().any(|v| v.voter == voter)
+    }
+}
+
+/// A completed proposal bundled with its votes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalWithVotes {
+    pub proposal: PeerProposal,
+    pub votes: Vec<Vote>,
+}
+
+/// Response from the completed proposals endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedProposalsResponse {
+    pub proposals: Vec<ProposalWithVotes>,
+    pub member_prefixes: Vec<String>,
+    pub approval_threshold: usize,
 }

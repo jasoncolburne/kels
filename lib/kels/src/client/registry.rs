@@ -773,6 +773,43 @@ impl MultiRegistryClient {
         }
     }
 
+    /// Fetch completed proposals from any available registry.
+    ///
+    /// Returns proposals with their votes so consumers can independently
+    /// verify that core peers were properly approved.
+    pub async fn fetch_completed_proposals(
+        &self,
+    ) -> Result<crate::CompletedProposalsResponse, KelsError> {
+        for url in &self.urls {
+            let client = self.create_client(url);
+            let response = client
+                .client
+                .get(format!("{}/api/federation/proposals", client.base_url))
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    return resp.json().await.map_err(KelsError::from);
+                }
+                Ok(resp) => {
+                    warn!(
+                        url = %url,
+                        status = %resp.status(),
+                        "Failed to fetch proposals"
+                    );
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to fetch proposals");
+                }
+            }
+        }
+
+        Err(KelsError::RegistryFailure(
+            "Could not fetch proposals from any registry".to_string(),
+        ))
+    }
+
     pub async fn fetch_verified_registry_kels(
         &mut self,
         force_fetch: bool,

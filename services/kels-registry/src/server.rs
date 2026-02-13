@@ -48,6 +48,10 @@ pub fn create_router(
             .route("/api/registry-kels", get(handlers::get_registry_kels))
             .route("/api/federation/rpc", post(handlers::federation_rpc))
             .route("/api/federation/status", get(handlers::federation_status))
+            .route(
+                "/api/federation/proposals",
+                get(handlers::list_completed_proposals),
+            )
             // Admin API (localhost only) for proposal management
             .route("/api/admin/proposals", get(handlers::admin_list_proposals))
             .route("/api/admin/proposals", post(handlers::admin_propose_peer))

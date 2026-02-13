@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use kels::{MultiRegistryClient, retry_once};
+use kels::{MultiRegistryClient, PeerScope, retry_once};
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
@@ -224,6 +224,8 @@ pub async fn get_local_scope(peer_id: &PeerId, allowlist: &SharedAllowlist) -> k
 /// 1. Fetches the registry's KEL and verifies its integrity
 /// 2. Checks that the registry prefix matches the expected trust anchor
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
+/// 4. For core peers: verifies an approved proposal exists with sufficient votes,
+///    where each vote passes SAID integrity (`verify()`) and KEL anchoring checks
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
@@ -248,6 +250,9 @@ pub async fn refresh_allowlist(
         }
     }
     .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+
+    // Fetch completed proposals for core peer vote verification
+    let proposals_response = registry_client.fetch_completed_proposals().await.ok();
 
     let mut authorized_peers = HashMap::new();
 
@@ -280,6 +285,18 @@ pub async fn refresh_allowlist(
                     peer_id = %latest.peer_id,
                     said = %latest.said,
                     "Peer SAID not anchored in registry KEL, skipping"
+                );
+                continue;
+            }
+
+            // For core peers, verify the proposal has sufficient verified votes
+            if latest.scope == PeerScope::Core
+                && !verify_core_peer_votes(registry_client, &latest.peer_id, &proposals_response)
+                    .await
+            {
+                warn!(
+                    peer_id = %latest.peer_id,
+                    "Core peer not backed by sufficient verified votes, skipping"
                 );
                 continue;
             }
@@ -323,6 +340,103 @@ pub async fn refresh_allowlist(
     }
 
     Ok(count)
+}
+
+/// Verify that a core peer has an approved proposal backed by sufficient verified votes.
+///
+/// Each vote must:
+/// 1. Pass SAID integrity check (`verify()`)
+/// 2. Be from a trusted member prefix
+/// 3. Have its SAID anchored in the voter's KEL
+async fn verify_core_peer_votes(
+    registry_client: &mut MultiRegistryClient,
+    peer_id: &str,
+    proposals_response: &Option<kels::CompletedProposalsResponse>,
+) -> bool {
+    let Some(response) = proposals_response else {
+        warn!(peer_id = %peer_id, "No proposals available for core peer vote verification");
+        return false;
+    };
+
+    let member_prefixes: HashSet<&str> = response
+        .member_prefixes
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let threshold = response.approval_threshold;
+
+    // Find the approved proposal for this peer
+    let approved = response.proposals.iter().find(|pw| {
+        pw.proposal.peer_id == peer_id && pw.proposal.status == kels::ProposalStatus::Approved
+    });
+
+    let Some(proposal_with_votes) = approved else {
+        warn!(peer_id = %peer_id, "No approved proposal found for core peer");
+        return false;
+    };
+
+    // Verify each approval vote
+    let mut verified_voters: HashSet<String> = HashSet::new();
+    for vote in &proposal_with_votes.votes {
+        if !vote.approve {
+            continue;
+        }
+
+        if !member_prefixes.contains(vote.voter.as_str()) {
+            debug!(voter = %vote.voter, "Vote from non-member, skipping");
+            continue;
+        }
+
+        // Verify vote SAID integrity
+        if let Err(e) = vote.verify() {
+            warn!(
+                vote_said = %vote.said,
+                voter = %vote.voter,
+                error = %e,
+                "Vote SAID verification failed"
+            );
+            continue;
+        }
+
+        // Verify vote SAID is anchored in the voter's KEL
+        let maybe_kel = retry_once!(
+            registry_client.fetch_registry_kel(&vote.voter, false),
+            |kel: &kels::Kel| kel.contains_anchor(&vote.said),
+            registry_client.fetch_registry_kel(&vote.voter, true),
+        );
+
+        match maybe_kel {
+            Ok(Some(_)) => {
+                verified_voters.insert(vote.voter.clone());
+            }
+            Ok(None) => {
+                warn!(
+                    vote_said = %vote.said,
+                    voter = %vote.voter,
+                    "Vote SAID not anchored in voter's KEL"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    voter = %vote.voter,
+                    error = %e,
+                    "Failed to fetch voter's KEL for vote verification"
+                );
+            }
+        }
+    }
+
+    if verified_voters.len() < threshold {
+        warn!(
+            peer_id = %peer_id,
+            verified = verified_voters.len(),
+            threshold = threshold,
+            "Insufficient verified votes for core peer"
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Run the allowlist refresh loop in the background.

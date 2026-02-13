@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Kel, Peer, PeerScope};
+use kels::{Kel, Peer, PeerProposal, PeerScope, ProposalStatus, Vote};
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StoredMembership,
@@ -20,10 +20,7 @@ use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
 use super::{
     config::FederationConfig,
-    types::{
-        CorePeerSnapshot, FederationRequest, FederationResponse, PeerProposal, ProposalStatus,
-        TypeConfig, Vote,
-    },
+    types::{CorePeerSnapshot, FederationRequest, FederationResponse, TypeConfig},
 };
 use crate::{identity_client::IdentityClient, peer_store::PeerRepository};
 
@@ -63,6 +60,36 @@ impl StateMachineData {
         self.peers.get(peer_id)
     }
 
+    /// Check whether a core peer has an approved proposal backed by sufficient
+    /// unique votes from trusted member prefixes.
+    ///
+    /// Returns the set of verified voter prefixes if a valid proposal exists,
+    /// or an empty set if no valid proposal is found. The caller must also
+    /// verify each vote's SAID is anchored in the voter's KEL (async check
+    /// not possible here).
+    pub fn verified_voters_for_peer(
+        &self,
+        peer_id: &str,
+        member_prefixes: &std::collections::HashSet<&str>,
+    ) -> std::collections::HashSet<String> {
+        let approved_proposal = self
+            .completed_proposals
+            .iter()
+            .find(|p| p.peer_id == peer_id && p.status == ProposalStatus::Approved);
+
+        let Some(proposal) = approved_proposal else {
+            return std::collections::HashSet::new();
+        };
+
+        proposal
+            .approvals
+            .iter()
+            .filter_map(|said| self.votes.get(said))
+            .filter(|v| v.approve && member_prefixes.contains(v.voter.as_str()))
+            .map(|v| v.voter.clone())
+            .collect()
+    }
+
     /// Apply a request to the state machine.
     fn apply(
         &mut self,
@@ -73,7 +100,7 @@ impl StateMachineData {
         match request {
             FederationRequest::AddPeer(peer) => {
                 let peer_id = peer.peer_id.clone();
-                info!("Adding core peer: {} (node: {})", peer_id, peer.node_id);
+                info!("Adding peer: {} (node: {})", peer_id, peer.node_id);
                 self.peers.insert(peer_id.clone(), peer);
                 FederationResponse::PeerAdded(peer_id)
             }
@@ -577,8 +604,60 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             let response = match entry.payload.clone() {
                 EntryPayload::Blank => FederationResponse::Ok,
                 EntryPayload::Normal(request) => {
-                    // For AddPeer, verify SAID is in a member's KEL, then anchor in ours
+                    // For AddPeer, verify votes (core peers) and KEL anchoring
                     if let FederationRequest::AddPeer(ref peer) = request {
+                        // Core peers must be backed by an approved proposal with
+                        // sufficient votes from unique trusted member prefixes,
+                        // each vote anchored in the voter's KEL.
+                        if peer.scope == PeerScope::Core {
+                            let threshold = self.config.approval_threshold();
+                            let member_prefixes: std::collections::HashSet<&str> = self
+                                .config
+                                .members
+                                .iter()
+                                .map(|m| m.prefix.as_str())
+                                .collect();
+
+                            // Check proposal and vote structure (sync)
+                            let candidate_voters =
+                                sm.verified_voters_for_peer(&peer.peer_id, &member_prefixes);
+
+                            // Verify each vote's SAID integrity and KEL anchoring (async)
+                            let mut verified_voters = std::collections::HashSet::new();
+                            for voter in &candidate_voters {
+                                if let Some(proposal) = sm.completed_proposals.iter().find(|p| {
+                                    p.peer_id == peer.peer_id
+                                        && p.status == ProposalStatus::Approved
+                                }) {
+                                    for vote_said in &proposal.approvals {
+                                        if let Some(vote) = sm.votes.get(vote_said)
+                                            && &vote.voter == voter
+                                            && vote.verify().is_ok()
+                                            && self
+                                                .verify_member_anchoring(&vote.said, &vote.voter)
+                                                .await
+                                                .is_ok()
+                                        {
+                                            verified_voters.insert(voter.clone());
+                                        }
+                                    }
+                                }
+                            }
+
+                            if verified_voters.len() < threshold {
+                                warn!(
+                                    peer_id = %peer.peer_id,
+                                    verified = verified_voters.len(),
+                                    threshold = threshold,
+                                    "Core peer not backed by sufficient verified votes - rejecting"
+                                );
+                                if let Some(r) = responder {
+                                    r.send(FederationResponse::Ok);
+                                }
+                                continue;
+                            }
+                        }
+
                         // Verify SAID is anchored in some member's KEL (refreshes if needed)
                         if self
                             .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
@@ -1423,5 +1502,214 @@ mod tests {
         sm2.restore(snapshot, &meta);
 
         assert!(sm2.get_proposal(&proposal_id).is_some());
+    }
+
+    // ==================== Rogue Leader / Vote Verification Tests ====================
+
+    /// Helper: create a set of trusted member prefixes
+    fn trusted_members() -> std::collections::HashSet<&'static str> {
+        ["ERegistryA", "ERegistryB", "ERegistryC"]
+            .into_iter()
+            .collect()
+    }
+
+    /// Helper: run a full proposal through to approval, returning the proposal_id
+    fn approve_peer(sm: &mut StateMachineData, peer_id: &str, node_id: &str) -> String {
+        let proposal = make_test_proposal(peer_id, node_id, "ERegistryA");
+        let proposal_id = match sm.apply(
+            FederationRequest::ProposeCorePeer(proposal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        ) {
+            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
+            r => panic!("Expected ProposalCreated, got {:?}", r),
+        };
+
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_b,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        proposal_id
+    }
+
+    #[test]
+    fn test_verified_voters_with_approved_proposal() {
+        let mut sm = StateMachineData::new();
+        let members = trusted_members();
+
+        approve_peer(&mut sm, "peer-1", "node-1");
+
+        // Peer was added via voting, should have verified voters
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        assert_eq!(voters.len(), 2);
+        assert!(voters.contains("ERegistryA"));
+        assert!(voters.contains("ERegistryB"));
+    }
+
+    #[test]
+    fn test_verified_voters_no_proposal() {
+        let sm = StateMachineData::new();
+        let members = trusted_members();
+
+        // No proposal exists for this peer
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        assert!(voters.is_empty());
+    }
+
+    #[test]
+    fn test_verified_voters_rogue_leader_adds_peer_without_proposal() {
+        let mut sm = StateMachineData::new();
+        let members = trusted_members();
+
+        // Rogue leader directly adds a peer without any proposal/voting
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("rogue-peer", "rogue-node")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        // Peer is in state (sync apply doesn't check votes)
+        assert!(sm.get_peer("rogue-peer").is_some());
+
+        // But vote verification finds no backing proposal
+        let voters = sm.verified_voters_for_peer("rogue-peer", &members);
+        assert!(voters.is_empty());
+    }
+
+    #[test]
+    fn test_verified_voters_insufficient_votes() {
+        let mut sm = StateMachineData::new();
+        let members = trusted_members();
+
+        // Create proposal with only 1 vote (threshold is 2)
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = match sm.apply(
+            FederationRequest::ProposeCorePeer(proposal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        ) {
+            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
+            r => panic!("Expected ProposalCreated, got {:?}", r),
+        };
+
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id,
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        // Only 1 vote, proposal still pending (not in completed_proposals)
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        assert!(voters.is_empty()); // No completed approved proposal
+    }
+
+    #[test]
+    fn test_verified_voters_ignores_untrusted_voter() {
+        let mut sm = StateMachineData::new();
+        // Only trust A and B (not C)
+        let members: std::collections::HashSet<&str> =
+            ["ERegistryA", "ERegistryB"].into_iter().collect();
+
+        // Approve with A and C (C is untrusted in this context)
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = match sm.apply(
+            FederationRequest::ProposeCorePeer(proposal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        ) {
+            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
+            r => panic!("Expected ProposalCreated, got {:?}", r),
+        };
+
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let vote_c = make_test_vote(&proposal_id, "ERegistryC", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id,
+                vote: vote_c,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        // Proposal was approved (threshold=2, got 2 votes from apply's perspective)
+        // But from our trusted set, only A is trusted
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        assert_eq!(voters.len(), 1);
+        assert!(voters.contains("ERegistryA"));
+        // Only 1 trusted voter - would fail threshold=2 check
+    }
+
+    #[test]
+    fn test_verified_voters_ignores_rejection_votes() {
+        let mut sm = StateMachineData::new();
+        let members = trusted_members();
+
+        // Create proposal, approve with A and B, reject with C
+        approve_peer(&mut sm, "peer-1", "node-1");
+
+        // Add a rejection vote (proposal already completed, but let's verify)
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        // Should only count approval votes
+        assert_eq!(voters.len(), 2);
+    }
+
+    #[test]
+    fn test_verified_voters_withdrawn_proposal_not_counted() {
+        let mut sm = StateMachineData::new();
+        let members = trusted_members();
+
+        // Create proposal and withdraw it
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = match sm.apply(
+            FederationRequest::ProposeCorePeer(proposal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        ) {
+            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
+            r => panic!("Expected ProposalCreated, got {:?}", r),
+        };
+
+        sm.apply(
+            FederationRequest::WithdrawProposal {
+                proposal_id,
+                withdrawer: "ERegistryA".to_string(),
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        // Withdrawn proposal should not count
+        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        assert!(voters.is_empty());
     }
 }

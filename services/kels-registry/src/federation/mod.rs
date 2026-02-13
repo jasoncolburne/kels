@@ -23,14 +23,14 @@ pub mod sync;
 mod types;
 
 pub use config::{FederationConfig, FederationMember};
+pub use kels::{PeerProposal, ProposalStatus, Vote};
 pub use network::{
     FederationNetwork, FederationRpc, FederationRpcResponse, SignedFederationRpc, SnapshotTransfer,
 };
 pub use state_machine::{StateMachineData, StateMachineStore};
 pub use storage::LogStore;
 pub use types::{
-    FederationError, FederationNodeId, FederationRequest, FederationResponse, PeerProposal,
-    ProposalStatus, TypeConfig, Vote,
+    FederationError, FederationNodeId, FederationRequest, FederationResponse, TypeConfig,
 };
 
 use std::{
@@ -342,6 +342,32 @@ impl FederationNode {
     /// Get the current core peer set from the state machine.
     pub async fn core_peers(&self) -> Vec<Peer> {
         self.state_machine.inner().lock().await.peers()
+    }
+
+    /// Get all completed proposals (approved, rejected, withdrawn).
+    pub async fn completed_proposals(&self) -> Vec<PeerProposal> {
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .completed_proposals
+            .clone()
+    }
+
+    /// Get votes for a specific proposal by looking up vote SAIDs.
+    pub async fn votes_for_proposal(&self, proposal: &PeerProposal) -> Vec<Vote> {
+        let sm = self.state_machine.inner().lock().await;
+        proposal
+            .approvals
+            .iter()
+            .chain(proposal.rejections.iter())
+            .filter_map(|said| sm.votes.get(said).cloned())
+            .collect()
+    }
+
+    /// Get the trusted member prefixes.
+    pub fn member_prefixes(&self) -> Vec<String> {
+        self.config.member_prefixes()
     }
 
     /// Get access to the underlying Raft instance.

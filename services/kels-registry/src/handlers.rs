@@ -9,8 +9,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{
-    DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration, Peer, PeerHistory,
-    PeerScope, PeersResponse, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration,
+    Peer, PeerHistory, PeerScope, PeersResponse, ProposalWithVotes, RegisterNodeRequest,
+    SignedRequest, StatusUpdateRequest,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::ChainedRepository;
@@ -416,6 +417,33 @@ pub async fn federation_status(
 ) -> Result<Json<FederationStatus>, ApiError> {
     let status = state.node.status().await;
     Ok(Json(status))
+}
+
+// ==================== Public Federation API ====================
+
+/// Public endpoint returning completed proposals with their votes.
+///
+/// Gossip nodes and other consumers use this to independently verify
+/// that core peers were properly approved through multi-party voting.
+pub async fn list_completed_proposals(
+    State(state): State<Arc<FederationState>>,
+) -> Result<Json<CompletedProposalsResponse>, ApiError> {
+    let completed = state.node.completed_proposals().await;
+
+    let mut proposals_with_votes = Vec::with_capacity(completed.len());
+    for proposal in &completed {
+        let votes = state.node.votes_for_proposal(proposal).await;
+        proposals_with_votes.push(ProposalWithVotes {
+            proposal: proposal.clone(),
+            votes,
+        });
+    }
+
+    Ok(Json(CompletedProposalsResponse {
+        proposals: proposals_with_votes,
+        member_prefixes: state.node.member_prefixes(),
+        approval_threshold: state.node.approval_threshold(),
+    }))
 }
 
 // ==================== Admin API ====================
