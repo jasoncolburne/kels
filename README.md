@@ -300,6 +300,7 @@ The provided Garden configuration is a test harness, not a production deployment
 - **Observability**: No metrics collection (Prometheus), no distributed tracing, default log level is DEBUG
 - **Authenticated endpoints**: The `/api/kels/prefixes` endpoint is unauthenticated (or bypassed with `dev-tools`). Public endpoints like `/api/kels/events` and `/api/kels/kel/:prefix` have no access control
 - **Chaos and resilience testing**: Network partition simulation, node failure recovery, split-brain scenarios, and database failover have not been systematically tested
+- **Core peer removal**: No API exists for removing core peers with multi-party approval — only internal sync cleanup is implemented
 - **Security audit**: The cryptographic protocols and implementation need independent review
 
 ## Contributing

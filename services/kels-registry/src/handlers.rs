@@ -755,37 +755,6 @@ pub async fn admin_add_regional_peer(
     })))
 }
 
-/// Remove a core peer (admin, localhost only).
-pub async fn admin_remove_core_peer(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<FederationState>>,
-    Path(peer_id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if !is_localhost(&addr) {
-        return Err(ApiError::forbidden("Admin API is localhost only"));
-    }
-
-    state
-        .node
-        .remove_core_peer(&peer_id)
-        .await
-        .map_err(|e| match e {
-            crate::federation::FederationError::NotLeader {
-                leader_prefix,
-                leader_url,
-            } => ApiError::bad_request(format!(
-                "Not leader. Leader: {:?} at {:?}",
-                leader_prefix, leader_url
-            )),
-            _ => ApiError::internal_error(format!("Failed to remove peer: {}", e)),
-        })?;
-
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "message": format!("Core peer {} removed", peer_id)
-    })))
-}
-
 /// List all peers (core from federation + regional from local database).
 ///
 /// When federation is enabled, core peers come from the Raft state machine

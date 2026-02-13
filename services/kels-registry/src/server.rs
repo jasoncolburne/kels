@@ -63,12 +63,8 @@ pub fn create_router(
                 "/api/admin/proposals/:proposal_id",
                 delete(handlers::admin_withdraw_proposal),
             )
-            // Admin API for regional peer management (core peers must use proposals)
+            // Admin API for regional peer management
             .route("/api/admin/peers", post(handlers::admin_add_regional_peer))
-            .route(
-                "/api/admin/peers/:peer_id",
-                delete(handlers::admin_remove_core_peer),
-            )
             .with_state(fed_state)
     } else {
         // Standalone mode: peers come from local database only

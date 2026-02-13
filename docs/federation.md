@@ -308,7 +308,6 @@ Regional peer management:
 
 ```
 POST   /api/admin/peers              # Add a regional peer
-DELETE /api/admin/peers/:peer_id     # Remove a peer
 ```
 
 ### Federation RPC (Internal)
