@@ -91,6 +91,8 @@ kels/
 
 ## Event Types
 
+Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
+
 | Type | Description | Signatures Required |
 |------|-------------|---------------------|
 | `icp` | Incept - creates the KEL | Signing key |

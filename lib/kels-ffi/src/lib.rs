@@ -24,7 +24,7 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
+    EventKind, FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
     MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -1383,8 +1383,16 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let mut counter = 0u32;
 
         for event_type in types {
-            let result = match event_type {
-                "ixn" => {
+            let kind = match EventKind::from_short_name(event_type) {
+                Ok(k) => k,
+                Err(e) => {
+                    set_last_error(&format!("{}", e));
+                    return -1;
+                }
+            };
+
+            let result = match kind {
+                EventKind::Ixn => {
                     let anchor = format!(
                         "EAdversaryAnchor{}{}_",
                         counter,
@@ -1393,9 +1401,10 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
                     counter += 1;
                     adversary_builder.interact(&anchor).await
                 }
-                "rot" => adversary_builder.rotate().await,
-                "rec" | "ror" => adversary_builder.rotate_recovery().await,
-                "dec" => adversary_builder.decommission().await,
+                EventKind::Rot => adversary_builder.rotate().await,
+                EventKind::Rec => adversary_builder.recover(false).await,
+                EventKind::Ror => adversary_builder.rotate_recovery().await,
+                EventKind::Dec => adversary_builder.decommission().await,
                 other => {
                     set_last_error(&format!(
                         "Unsupported event type: {}. Valid: ixn, rot, rec, ror, dec",

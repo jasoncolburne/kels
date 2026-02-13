@@ -14,29 +14,55 @@ use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum EventKind {
+    #[serde(rename = "kels/v1/icp")]
     Icp, // Inception
+    #[serde(rename = "kels/v1/dip")]
     Dip, // Delegated inception
+    #[serde(rename = "kels/v1/rot")]
     Rot, // Rotation
+    #[serde(rename = "kels/v1/ixn")]
     Ixn, // Interaction (anchor)
+    #[serde(rename = "kels/v1/rec")]
     Rec, // Recovery (dual-signed)
+    #[serde(rename = "kels/v1/ror")]
     Ror, // Recovery rotation (dual-signed)
+    #[serde(rename = "kels/v1/dec")]
     Dec, // Decommission (dual-signed)
+    #[serde(rename = "kels/v1/cnt")]
     Cnt, // Contest (dual-signed, freezes KEL)
 }
 
 impl EventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Icp => "icp",
-            Self::Dip => "dip",
-            Self::Rot => "rot",
-            Self::Ixn => "ixn",
-            Self::Rec => "rec",
-            Self::Ror => "ror",
-            Self::Dec => "dec",
-            Self::Cnt => "cnt",
+            Self::Icp => "kels/v1/icp",
+            Self::Dip => "kels/v1/dip",
+            Self::Rot => "kels/v1/rot",
+            Self::Ixn => "kels/v1/ixn",
+            Self::Rec => "kels/v1/rec",
+            Self::Ror => "kels/v1/ror",
+            Self::Dec => "kels/v1/dec",
+            Self::Cnt => "kels/v1/cnt",
+        }
+    }
+
+    /// Parse a short event kind name (e.g. "ixn", "rot") as used by CLI tools.
+    /// The version is implied — always creates the current version.
+    pub fn from_short_name(s: &str) -> Result<Self, KelsError> {
+        match s {
+            "icp" => Ok(Self::Icp),
+            "dip" => Ok(Self::Dip),
+            "rot" => Ok(Self::Rot),
+            "ixn" => Ok(Self::Ixn),
+            "rec" => Ok(Self::Rec),
+            "ror" => Ok(Self::Ror),
+            "dec" => Ok(Self::Dec),
+            "cnt" => Ok(Self::Cnt),
+            _ => Err(KelsError::InvalidKeyEvent(format!(
+                "Unknown event kind: {}",
+                s
+            ))),
         }
     }
 
@@ -92,15 +118,15 @@ impl FromStr for EventKind {
     type Err = KelsError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "icp" => Ok(Self::Icp),
-            "dip" => Ok(Self::Dip),
-            "rot" => Ok(Self::Rot),
-            "ixn" => Ok(Self::Ixn),
-            "rec" => Ok(Self::Rec),
-            "ror" => Ok(Self::Ror),
-            "dec" => Ok(Self::Dec),
-            "cnt" => Ok(Self::Cnt),
+        match s {
+            "kels/v1/icp" => Ok(Self::Icp),
+            "kels/v1/dip" => Ok(Self::Dip),
+            "kels/v1/rot" => Ok(Self::Rot),
+            "kels/v1/ixn" => Ok(Self::Ixn),
+            "kels/v1/rec" => Ok(Self::Rec),
+            "kels/v1/ror" => Ok(Self::Ror),
+            "kels/v1/dec" => Ok(Self::Dec),
+            "kels/v1/cnt" => Ok(Self::Cnt),
             _ => Err(KelsError::InvalidKeyEvent(format!(
                 "Unknown event kind: {}",
                 s

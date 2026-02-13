@@ -1,5 +1,7 @@
 # KELS Divergence Detection and Recovery
 
+> **Note**: Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`). This document uses short names for brevity.
+
 ## Problem Statement
 
 In a distributed KELS deployment, an adversary who has compromised a signing key can submit conflicting events to different nodes simultaneously. Before nodes synchronize via gossip, both nodes may accept different events at the same generation (position in the chain), creating a fork in the KEL.
@@ -199,7 +201,7 @@ Archived events preserved for forensics:
 CREATE TABLE kels_audit_records (
     said CHAR(44) PRIMARY KEY,
     kel_prefix CHAR(44) NOT NULL,
-    kind VARCHAR(32) NOT NULL,  -- 'rec' or 'cnt'
+    kind VARCHAR(32) NOT NULL,  -- 'kels/v1/rec' or 'kels/v1/cnt'
     data_json TEXT NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL
 );

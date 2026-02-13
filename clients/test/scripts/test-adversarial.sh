@@ -158,7 +158,7 @@ check_server_kel_event_count() {
 }
 
 # Check that the last N events have specific kinds (comma-separated)
-# e.g., check_kel_ends_with "$PREFIX" "rec,rot" checks last 2 events are rec then rot
+# e.g., check_kel_ends_with "$PREFIX" "kels/v1/rec,kels/v1/rot" checks last 2 events
 check_kel_ends_with() {
     local prefix="$1"
     local expected_kinds="$2"  # comma-separated, e.g., "rec,rot"
@@ -253,7 +253,7 @@ run_test "Owner recovers KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX1
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX1" "OK"
 
 # Verify recovery ends with rec
-run_test "KEL ends with rec after ixn-only recovery" check_kel_ends_with "$PREFIX1" "rec"
+run_test "KEL ends with rec after ixn-only recovery" check_kel_ends_with "$PREFIX1" "kels/v1/rec"
 
 # Adversary tries to re-inject using old keys - should be rejected
 swap_to_adversary
@@ -304,7 +304,7 @@ run_test "Owner recovers after adversary rotation" kels-cli -u "$KELS_URL" recov
 run_test "KEL status is OK after rotation recovery" check_kel_status "$PREFIX2" "OK"
 
 # Verify recovery from adversary rotation ends with rec,rot (extra rotation to escape compromised key)
-run_test "KEL ends with rec,rot after adversary rotation recovery" check_kel_ends_with "$PREFIX2" "rec,rot"
+run_test "KEL ends with rec,rot after adversary rotation recovery" check_kel_ends_with "$PREFIX2" "kels/v1/rec,kels/v1/rot"
 
 # Adversary tries to re-inject using old keys - should be rejected
 swap_to_adversary
@@ -350,7 +350,7 @@ run_test "Owner recovers from multiple adversary events" kels-cli -u "$KELS_URL"
 run_test "KEL is clean after multi-event recovery" check_kel_status "$PREFIX3" "OK"
 
 # Verify recovery ends with rec,rot (adversary had rotated)
-run_test "KEL ends with rec,rot after multi-event recovery" check_kel_ends_with "$PREFIX3" "rec,rot"
+run_test "KEL ends with rec,rot after multi-event recovery" check_kel_ends_with "$PREFIX3" "kels/v1/rec,kels/v1/rot"
 
 # Adversary tries to re-inject using old keys - should be rejected
 swap_to_adversary
@@ -577,7 +577,7 @@ run_test "Owner recovers from adversary rot chain" kels-cli -u "$KELS_URL" recov
 run_test "KEL status is OK after rot chain recovery" check_kel_status "$PREFIX8" "OK"
 
 # Verify recovery ends with rec,rot (adversary had rotated)
-run_test "KEL ends with rec,rot after rot chain recovery" check_kel_ends_with "$PREFIX8" "rec,rot"
+run_test "KEL ends with rec,rot after rot chain recovery" check_kel_ends_with "$PREFIX8" "kels/v1/rec,kels/v1/rot"
 
 # Adversary tries to re-inject using old keys - should be rejected
 swap_to_adversary
@@ -626,7 +626,7 @@ run_test "Owner recovers from double rotation" kels-cli -u "$KELS_URL" recover -
 run_test "KEL status is OK after double rotation recovery" check_kel_status "$PREFIX9" "OK"
 
 # Verify recovery ends with rec,rot (adversary had rotated)
-run_test "KEL ends with rec,rot after double rotation recovery" check_kel_ends_with "$PREFIX9" "rec,rot"
+run_test "KEL ends with rec,rot after double rotation recovery" check_kel_ends_with "$PREFIX9" "kels/v1/rec,kels/v1/rot"
 
 # Adversary tries to re-inject using old keys - should be rejected
 swap_to_adversary
@@ -822,7 +822,7 @@ run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX13"
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX13" "OK"
 
 # Recovery should end with just rec (no extra rot needed - owner already escaped)
-run_test "KEL ends with rec (no extra rot - owner already rotated)" check_kel_ends_with "$PREFIX13" "rec"
+run_test "KEL ends with rec (no extra rot - owner already rotated)" check_kel_ends_with "$PREFIX13" "kels/v1/rec"
 
 # Adversary tries to re-inject using old stolen keys - should be rejected
 swap_to_adversary

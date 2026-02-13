@@ -25,6 +25,8 @@ of the kel. if this happens, the owner's only recourse is to contest and permane
 
 ## Event Kinds
 
+Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
+
 - icp - inception, creates the KEL
 - dip - delegated inception, creates a KEL under a delegator's authority
 - ixn - interaction, anchors external data

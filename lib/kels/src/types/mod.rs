@@ -24,22 +24,25 @@ mod tests {
 
     #[test]
     fn test_event_kind_serialization() {
-        assert_eq!(EventKind::Icp.as_str(), "icp");
-        assert_eq!(EventKind::Dip.as_str(), "dip");
-        assert_eq!(EventKind::Rot.as_str(), "rot");
-        assert_eq!(EventKind::Ixn.as_str(), "ixn");
-        assert_eq!(EventKind::Rec.as_str(), "rec");
-        assert_eq!(EventKind::Ror.as_str(), "ror");
-        assert_eq!(EventKind::Dec.as_str(), "dec");
-        assert_eq!(EventKind::Cnt.as_str(), "cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/v1/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/v1/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/v1/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/v1/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/v1/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/v1/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/v1/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_parsing() {
         use std::str::FromStr;
-        assert_eq!(EventKind::from_str("icp").unwrap(), EventKind::Icp);
-        assert_eq!(EventKind::from_str("ICP").unwrap(), EventKind::Icp);
-        assert_eq!(EventKind::from_str("cnt").unwrap(), EventKind::Cnt);
+        assert_eq!(EventKind::from_str("kels/v1/icp").unwrap(), EventKind::Icp);
+        assert_eq!(EventKind::from_str("kels/v1/cnt").unwrap(), EventKind::Cnt);
+        // Rejects uppercase
+        assert!(EventKind::from_str("KELS/V1/ICP").is_err());
+        // Rejects short names
+        assert!(EventKind::from_str("icp").is_err());
         assert!(EventKind::from_str("invalid").is_err());
     }
 
@@ -63,9 +66,11 @@ mod tests {
     #[test]
     fn test_event_kind_json() {
         let json = serde_json::to_string(&EventKind::Icp).unwrap();
-        assert_eq!(json, "\"icp\"");
-        let parsed: EventKind = serde_json::from_str("\"rec\"").unwrap();
+        assert_eq!(json, "\"kels/v1/icp\"");
+        let parsed: EventKind = serde_json::from_str("\"kels/v1/rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
+        // Short form rejected
+        assert!(serde_json::from_str::<EventKind>("\"icp\"").is_err());
     }
 
     #[test]
@@ -590,39 +595,80 @@ mod tests {
 
     #[test]
     fn test_event_kind_as_str() {
-        assert_eq!(EventKind::Icp.as_str(), "icp");
-        assert_eq!(EventKind::Dip.as_str(), "dip");
-        assert_eq!(EventKind::Rot.as_str(), "rot");
-        assert_eq!(EventKind::Ixn.as_str(), "ixn");
-        assert_eq!(EventKind::Rec.as_str(), "rec");
-        assert_eq!(EventKind::Ror.as_str(), "ror");
-        assert_eq!(EventKind::Dec.as_str(), "dec");
-        assert_eq!(EventKind::Cnt.as_str(), "cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/v1/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/v1/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/v1/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/v1/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/v1/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/v1/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/v1/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_display() {
-        assert_eq!(format!("{}", EventKind::Icp), "icp");
-        assert_eq!(format!("{}", EventKind::Cnt), "cnt");
+        assert_eq!(format!("{}", EventKind::Icp), "kels/v1/icp");
+        assert_eq!(format!("{}", EventKind::Cnt), "kels/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_from_str() {
-        assert_eq!("icp".parse::<EventKind>().unwrap(), EventKind::Icp);
-        assert_eq!("ICP".parse::<EventKind>().unwrap(), EventKind::Icp);
-        assert_eq!("dip".parse::<EventKind>().unwrap(), EventKind::Dip);
-        assert_eq!("rot".parse::<EventKind>().unwrap(), EventKind::Rot);
-        assert_eq!("ixn".parse::<EventKind>().unwrap(), EventKind::Ixn);
-        assert_eq!("rec".parse::<EventKind>().unwrap(), EventKind::Rec);
-        assert_eq!("ror".parse::<EventKind>().unwrap(), EventKind::Ror);
-        assert_eq!("dec".parse::<EventKind>().unwrap(), EventKind::Dec);
-        assert_eq!("cnt".parse::<EventKind>().unwrap(), EventKind::Cnt);
+        assert_eq!("kels/v1/icp".parse::<EventKind>().unwrap(), EventKind::Icp);
+        assert_eq!("kels/v1/dip".parse::<EventKind>().unwrap(), EventKind::Dip);
+        assert_eq!("kels/v1/rot".parse::<EventKind>().unwrap(), EventKind::Rot);
+        assert_eq!("kels/v1/ixn".parse::<EventKind>().unwrap(), EventKind::Ixn);
+        assert_eq!("kels/v1/rec".parse::<EventKind>().unwrap(), EventKind::Rec);
+        assert_eq!("kels/v1/ror".parse::<EventKind>().unwrap(), EventKind::Ror);
+        assert_eq!("kels/v1/dec".parse::<EventKind>().unwrap(), EventKind::Dec);
+        assert_eq!("kels/v1/cnt".parse::<EventKind>().unwrap(), EventKind::Cnt);
+    }
+
+    #[test]
+    fn test_event_kind_from_str_rejects_short_names() {
+        assert!("icp".parse::<EventKind>().is_err());
+        assert!("rot".parse::<EventKind>().is_err());
+        assert!("ixn".parse::<EventKind>().is_err());
+        assert!("rec".parse::<EventKind>().is_err());
+    }
+
+    #[test]
+    fn test_event_kind_from_str_rejects_uppercase() {
+        assert!("KELS/V1/ICP".parse::<EventKind>().is_err());
+        assert!("Kels/V1/Icp".parse::<EventKind>().is_err());
     }
 
     #[test]
     fn test_event_kind_from_str_invalid() {
         let result = "invalid".parse::<EventKind>();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_event_kind_from_short_name() {
+        assert_eq!(EventKind::from_short_name("icp").unwrap(), EventKind::Icp);
+        assert_eq!(EventKind::from_short_name("dip").unwrap(), EventKind::Dip);
+        assert_eq!(EventKind::from_short_name("rot").unwrap(), EventKind::Rot);
+        assert_eq!(EventKind::from_short_name("ixn").unwrap(), EventKind::Ixn);
+        assert_eq!(EventKind::from_short_name("rec").unwrap(), EventKind::Rec);
+        assert_eq!(EventKind::from_short_name("ror").unwrap(), EventKind::Ror);
+        assert_eq!(EventKind::from_short_name("dec").unwrap(), EventKind::Dec);
+        assert_eq!(EventKind::from_short_name("cnt").unwrap(), EventKind::Cnt);
+    }
+
+    #[test]
+    fn test_event_kind_from_short_name_rejects_uppercase() {
+        assert!(EventKind::from_short_name("ICP").is_err());
+        assert!(EventKind::from_short_name("ROT").is_err());
+    }
+
+    #[test]
+    fn test_event_kind_from_short_name_rejects_versioned() {
+        assert!(EventKind::from_short_name("kels/v1/icp").is_err());
+    }
+
+    #[test]
+    fn test_event_kind_from_short_name_rejects_invalid() {
+        assert!(EventKind::from_short_name("invalid").is_err());
     }
 
     #[test]

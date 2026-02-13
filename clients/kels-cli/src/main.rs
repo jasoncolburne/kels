@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
-    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    EventKind, FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient,
+    NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -829,9 +829,12 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
 
     // Parse event types
-    let event_types: Vec<&str> = events_str.split(',').map(|s| s.trim()).collect();
+    let event_kinds: Vec<EventKind> = events_str
+        .split(',')
+        .map(|s| EventKind::from_short_name(s.trim()))
+        .collect::<Result<_, _>>()?;
 
-    let has_recovery = event_types.iter().any(|e| matches!(*e, "rec" | "ror"));
+    let has_recovery = event_kinds.iter().any(|k| k.reveals_recovery_key());
 
     if has_recovery {
         println!(
@@ -848,9 +851,9 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     let mut saids = Vec::new();
     let mut counter = 0u32;
 
-    for event_type in &event_types {
-        let signed = match *event_type {
-            "ixn" => {
+    for kind in &event_kinds {
+        let signed = match kind {
+            EventKind::Ixn => {
                 // Generate a realistic 44-char SAID-like anchor
                 let anchor = format!(
                     "EAdversaryAnchor{}{}",
@@ -860,13 +863,10 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
                 counter += 1;
                 builder.interact(&anchor).await?
             }
-            "rot" => builder.rotate().await?,
-            "rec" | "ror" => {
-                // Both rec and ror prove the adversary has both signing and recovery keys.
-                // Use rotate_recovery() which creates a ror event with dual signatures.
-                builder.rotate_recovery().await?
-            }
-            "dec" => builder.decommission().await?,
+            EventKind::Rot => builder.rotate().await?,
+            EventKind::Rec => builder.recover(false).await?,
+            EventKind::Ror => builder.rotate_recovery().await?,
+            EventKind::Dec => builder.decommission().await?,
             other => {
                 bail!(
                     "Unsupported adversary event type: {}. Valid types: ixn, rot, rec, ror, dec",

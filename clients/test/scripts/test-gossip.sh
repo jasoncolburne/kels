@@ -347,7 +347,7 @@ run_test "Decommission propagated to node-b" kels_match "$PREFIX8"
 
 # Verify the last event on node-b is a dec event
 LAST_KIND=$(curl -s "$NODE_B_URL/api/kels/kel/$PREFIX8" | jq -r '.[-1].event.kind')
-run_test "Node-b shows dec event" [ "$LAST_KIND" = "dec" ]
+run_test "Node-b shows dec event" [ "$LAST_KIND" = "kels/v1/dec" ]
 
 echo ""
 
