@@ -42,13 +42,10 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 - **Recovery and contest protocol**: KELS defines explicit `rec` (recover) and `cnt` (contest) event types. Recovery resolves divergence in favor of the legitimate owner. Contest permanently freezes the KEL when both parties hold recovery keys — an outcome KERI doesn't formalize.
 - **Gossip replication model**: KEL synchronization happens via gossip announcements (`prefix:said` pairs) with HTTP-based event fetching, rather than KERI's witness receipt protocol.
 
-## TODO
+## Roadmap
 
-**caveat: this is a work in progress, and needs to be audited by another**
-
-1. Re-implement gossip with kels crypto and remove libp2p.
-2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
-3. Build a complete example with a use case that kels solves
+1. Replace libp2p with gossip based on kels crypto
+2. Build some example applications
 
 ## Project Structure
 
@@ -285,6 +282,24 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
 - [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
 - [Multi-Registry Federation](docs/federation.md) - Federated registries with Raft consensus
+
+## Production Readiness
+
+This project is a work in progress. The following items would need to be addressed before any production deployment:
+
+- **Real HSMs**: The current deployment uses SoftHSM2 with hardcoded PINs. Production requires hardware-backed key storage (CloudHSM, YubiHSM, Thales, etc.)
+- **TLS everywhere**: All inter-service communication (KELS, gossip, registry, HSM, Redis, PostgreSQL) is currently plaintext HTTP. Production requires TLS/mTLS between all services
+- **Secrets management**: Database credentials, HSM PINs, and other secrets are hardcoded or passed as plain environment variables. Use a secrets manager (Vault, AWS Secrets Manager, etc.)
+- **Database hardening**: PostgreSQL runs with default superuser credentials, no replication, no backup strategy, and no encryption at rest. Connection pool sizing is unconfigured
+- **Redis authentication and persistence**: Redis runs with no authentication and no persistence (`--appendonly no`)
+- **Rate limiting**: No rate limiting exists on any endpoint — the service is vulnerable to denial-of-service
+- **Container security**: All containers run as root with no `securityContext`, no read-only filesystem, and no resource quotas beyond memory limits
+- **Network policies**: No Kubernetes NetworkPolicies are defined — all services are reachable from anywhere in the cluster
+- **Audit logging**: No structured audit trail for authentication failures, peer changes, or sensitive operations
+- **Observability**: No metrics collection (Prometheus), no distributed tracing, default log level is DEBUG
+- **Authenticated endpoints**: The `/api/kels/prefixes` endpoint is unauthenticated (or bypassed with `dev-tools`). Public endpoints like `/api/kels/events` and `/api/kels/kel/:prefix` have no access control
+- **Chaos and resilience testing**: Network partition simulation, node failure recovery, split-brain scenarios, and database failover have not been systematically tested
+- **Security audit**: The cryptographic protocols and implementation need independent review
 
 ## Contributing
 
