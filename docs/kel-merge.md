@@ -194,7 +194,7 @@ return result
 
 ## Key Invariants
 
-1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7. This ensures deterministic ordering when multiple events of different kinds exist at the same serial (e.g., divergent forks where the owner and adversary submitted different event types)
+1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7. The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork)
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
 3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at generation N, divergence at generation <= N is rejected
 4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)
