@@ -76,7 +76,7 @@ All services use **compile-time trusted prefixes** for zero-trust security. The 
 
 ### Deployment Impact
 
-Adding a new registry to the federation requires rebuilding and redeploying all existing services with the updated `TRUSTED_REGISTRY_PREFIXES` before the new registry comes online — otherwise existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
+Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, all existing services are rebuilt and redeployed with the updated `TRUSTED_REGISTRY_PREFIXES`. The new registry is then redeployed alongside them with the same full set of prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
 
 ### Registry Configuration
 
@@ -259,15 +259,14 @@ If a federation member is compromised:
 
 5. **Gossip nodes auto-heal**: Next allowlist refresh removes unauthorized peers
 
-### Quorum Requirements
+### Approval Requirements
 
-- 3 registries: Need 2 for quorum (rogue needs 2 to cause damage)
-- 5 registries: Need 3 for quorum (more resilient)
+Core peer changes require the approval threshold described above — unanimous for small federations, converging to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the core peer set.
 
 ### Split-Brain Protection
 
-- Raft requires majority quorum for writes
-- Minority partition cannot modify core peer set
+- Raft requires majority quorum for log replication
+- Minority partition cannot replicate approved changes
 - Regional operations continue in all partitions
 
 ## API Endpoints
