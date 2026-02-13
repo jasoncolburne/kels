@@ -286,7 +286,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 
 ## Production Readiness
 
-This project is a work in progress. The following items would need to be addressed before any production deployment:
+The provided Garden configuration is a test harness, not a production deployment template. This project is a work in progress and the following items would need to be addressed before any production deployment:
 
 - **Real HSMs**: The current deployment uses SoftHSM2 with hardcoded PINs. Production requires hardware-backed key storage (CloudHSM, YubiHSM, Thales, etc.)
 - **TLS everywhere**: All inter-service communication (KELS, gossip, registry, HSM, Redis, PostgreSQL) is currently plaintext HTTP. Production requires TLS/mTLS between all services
