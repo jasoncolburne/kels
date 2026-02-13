@@ -81,8 +81,6 @@ spec:
               value: "${var.gossipAdvertiseAddress}"
             - name: GOSSIP_TOPIC
               value: "${var.gossip.topic}"
-            - name: GOSSIP_TEST_PROPAGATION_DELAY_MS
-              value: "${var.gossip.testPropagationDelayMs}"
           resources:
             requests:
               cpu: 50m

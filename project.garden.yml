@@ -85,9 +85,6 @@ variables:
     httpPort: "80"
     topic: "kels/events/v1"
     listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
-    # Test-only: delay in ms before broadcasting announcements.
-    # Set to "0" for production. Use higher values (e.g., "5000") for adversarial testing.
-    testPropagationDelayMs: "0"
   registry:
     replicas: 1
     port: "80"

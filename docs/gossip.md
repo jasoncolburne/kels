@@ -128,7 +128,6 @@ struct KelResponse {
 | `REGISTRY_URL` | Registry service URL for bootstrap sync | (optional) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
 | `GOSSIP_TOPIC` | Gossipsub topic name | `kels/events/v1` |
-| `GOSSIP_TEST_PROPAGATION_DELAY_MS` | Test-only delay before announcing | `0` |
 
 ## Design Decisions
 
@@ -220,10 +219,6 @@ When a KEL becomes divergent:
 The gossip layer doesn't need special divergence logic - KELS handles all verification and merge semantics.
 
 ## Testing
-
-### Test propagation delay
-
-For adversarial testing scenarios, set `GOSSIP_TEST_PROPAGATION_DELAY_MS` to simulate slow gossip propagation. This allows testing race conditions and divergence scenarios.
 
 ### Integration test script
 
