@@ -7,9 +7,11 @@ use anyhow::bail;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+#[cfg(feature = "dev-tools")]
+use kels::EventKind;
 use kels::{
-    EventKind, FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient,
-    NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
+    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
