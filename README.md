@@ -25,11 +25,28 @@ This shifts the balance of power. Data is owned and controlled by individuals, n
 
 With [federated registries](docs/federation.md), KELS can also serve as a secure identity backbone for multi-cloud, multi-operator applications — independent organizations each run their own registry while sharing a global trust layer, without depending on any single certificate authority or cloud provider.
 
+## Differences from KERI (Key Event Receipt Infrastructure)
+
+KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with globally unique identifiers, and pre-rotation commitment.
+
+I used Base64 CESR to encode data, primarily to make development easier. I may change the encoding in the future.
+
+### Primary difference
+
+If divergence occurs, a single divergent event is accepted into a KEL, rather than rejected. When this happens, appending new events is not permitted until the divergence is resolved.
+
+### Other notable differences
+
+- **No witnesses or receipts**: KERI relies on designated witness pools that sign receipts for events. KELS replaces this with gossip-based replication and registry-anchored peer allowlists — trust comes from KEL verification against compiled-in registry prefixes, not witness receipts.
+- **Divergence is observable, not private**: In KERI, duplicity is detected locally by comparing logs from different sources. In KELS, divergence is stored directly in the KEL and propagated to all nodes via gossip — it's a public, network-wide signal.
+- **Recovery and contest protocol**: KELS defines explicit `rec` (recover) and `cnt` (contest) event types. Recovery resolves divergence in favor of the legitimate owner. Contest permanently freezes the KEL when both parties hold recovery keys — an outcome KERI doesn't formalize.
+- **Gossip replication model**: KEL synchronization happens via gossip announcements (`prefix:said` pairs) with HTTP-based event fetching, rather than KERI's witness receipt protocol.
+
 ## TODO
 
 **caveat: this is a work in progress, and needs to be audited by another**
 
-1. Re-implement gossip with kels crypto to remove dependence on libp2p.
+1. Re-implement gossip with kels crypto and remove libp2p.
 2. Clean up/refactor/optimize (this kind of happens naturally during dev but I like a final pass)
 3. Build a complete example with a use case that kels solves
 
@@ -133,7 +150,7 @@ This allows the CLI and iOS app to connect to the local KELS nodes and registrie
 
 #### Deployment
 
-I won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
+We won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
 deploys 9 independent Kubernetes namespaces.
 
 This is the flow:
@@ -268,6 +285,10 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
 - [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
 - [Multi-Registry Federation](docs/federation.md) - Federated registries with Raft consensus
+
+## Contributing
+
+The core logic lives in `Kel::merge()` and `Kel::verify()` in `lib/kels/src/types/kel.rs`. Correct replication across all scenarios — divergence, recovery, contest, decommission, and their interactions with gossip propagation timing — is the hardest thing to verify. If you can think of interesting scenarios or race conditions not covered by the existing integration test scripts, please submit a pull request or open an issue.
 
 ## License
 
