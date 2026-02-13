@@ -41,7 +41,7 @@ Federation enables:
 
 ### Core Peers
 - Replicated across all federation members via Raft consensus
-- Only the elected leader can add or remove core peers
+- Added or removed through multi-party approval, committed by the leader via Raft
 - All gossip nodes in the federation trust core peers
 
 ### Regional Peers
@@ -57,7 +57,7 @@ Federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distrib
 
 ### Leader Election
 - Leader is automatically elected from federation members
-- Leader handles all core peer modifications
+- Leader commits approved core peer modifications to the Raft log
 - Follower registries reject core peer writes with an error message indicating the current leader
 
 ### State Machine
