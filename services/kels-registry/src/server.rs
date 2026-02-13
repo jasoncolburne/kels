@@ -5,10 +5,14 @@ use tracing::{error, info, warn};
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
 };
 use kels::shutdown_signal;
 use redis::Client as RedisClient;
+use tower_governor::{
+    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+};
 use verifiable_storage::RepositoryConnection;
 
 use crate::{
@@ -28,11 +32,21 @@ pub fn create_router(
     // Base router with health endpoint
     let base_router = Router::new().route("/health", get(handlers::health));
 
-    // Node management routes with AppState
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_second(200)
+        .burst_size(1000)
+        .key_extractor(SmartIpKeyExtractor)
+        .finish()
+        .unwrap_or_else(|| unreachable!("governor config with valid defaults"));
+
+    // Node management routes with AppState — per-IP rate limited (write endpoints)
     let node_router = Router::new()
         .route("/api/nodes/register", post(handlers::register_node))
         .route("/api/nodes/deregister", post(handlers::deregister_node))
         .route("/api/nodes/status", post(handlers::update_status))
+        .layer(GovernorLayer {
+            config: Arc::new(governor_conf),
+        })
         .with_state(state);
 
     // Registry KEL route
@@ -82,6 +96,7 @@ pub fn create_router(
         .merge(node_router)
         .merge(kel_router)
         .merge(peer_router)
+        .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
 }
 
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {

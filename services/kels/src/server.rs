@@ -6,11 +6,15 @@ use tracing::{error, info, warn};
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{get, post},
 };
 use cacheable::create_pubsub_subscriber;
 use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal};
 use redis::Client as RedisClient;
+use tower_governor::{
+    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+};
 use verifiable_storage_postgres::RepositoryConnection;
 
 use crate::{
@@ -19,14 +23,32 @@ use crate::{
 };
 
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_second(200)
+        .burst_size(1000)
+        .key_extractor(SmartIpKeyExtractor)
+        .finish()
+        .unwrap_or_else(|| unreachable!("governor config with valid defaults"));
+
+    // Write endpoints get per-IP rate limiting
+    let write_routes = Router::new()
+        .route("/api/kels/events", post(handlers::submit_events))
+        .route("/api/kels/prefixes", post(handlers::list_prefixes))
+        .layer(GovernorLayer {
+            config: Arc::new(governor_conf),
+        });
+
+    // Read endpoints are idempotent and cache-backed — no per-IP rate limiting
+    let read_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
-        .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
         .route("/api/kels/events/:said/exists", get(handlers::event_exists))
-        .route("/api/kels/kels", post(handlers::get_kels_batch))
-        .route("/api/kels/prefixes", post(handlers::list_prefixes))
+        .route("/api/kels/kels", post(handlers::get_kels_batch));
+
+    read_routes
+        .merge(write_routes)
+        .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
 }
 
@@ -60,12 +82,13 @@ pub async fn run(
         kel_cache,
         redis_conn,
         registry_urls,
+        prefix_rate_limits: dashmap::DashMap::new(),
     });
 
     let local_cache = state.kel_cache.local_cache();
     tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
 
-    let app = create_router(state);
+    let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 
     info!(
         "KELS service listening on {}",

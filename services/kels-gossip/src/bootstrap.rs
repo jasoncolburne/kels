@@ -24,8 +24,8 @@
 //! joining the gossip network would be missed. The resync catches these events.
 
 use kels::{
-    BatchKelsRequest, KelsClient, KelsError, MultiRegistryClient, PrefixListResponse, PrefixState,
-    PrefixesRequest, RegistrySigner, SignedKeyEvent,
+    BatchKelsRequest, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient,
+    PrefixListResponse, PrefixState, PrefixesRequest, RegistrySigner, SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -386,13 +386,16 @@ impl BootstrapSync {
             }
         };
 
-        // Submit each KEL to local KELS
+        // Submit each KEL to local KELS, using chunked submission for large KELs
         let mut results = Vec::with_capacity(prefixes.len());
         for prefix in prefixes {
             let result = match events_map.get(prefix) {
                 Some(events) if !events.is_empty() => {
                     debug!("Fetched {} events for {} from peer", events.len(), prefix);
-                    match local_client.submit_events(events).await {
+                    match local_client
+                        .submit_events_chunked(events, MAX_EVENTS_PER_SUBMISSION)
+                        .await
+                    {
                         Ok(submit_result) => {
                             if submit_result.applied {
                                 info!("Synced KEL for {} ({} events)", prefix, events.len());

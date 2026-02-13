@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
@@ -24,6 +24,12 @@ use libp2p::{
 use thiserror::Error;
 use verifiable_storage::Chained;
 
+/// Maximum number of peers pending verification at any time.
+const MAX_PENDING_PEERS: usize = 200;
+
+/// Time-to-live for pending verification entries.
+const PENDING_PEER_TTL: Duration = Duration::from_secs(300);
+
 /// NetworkBehaviour that disconnects peers not in the allowlist.
 ///
 /// After a connection is established and the peer's identity is verified via Noise,
@@ -33,10 +39,10 @@ use verifiable_storage::Chained;
 pub struct AllowlistBehaviour {
     /// Shared allowlist of authorized PeerIds mapped to their Peer data
     allowlist: SharedAllowlist,
-    /// Peers awaiting verification after allowlist refresh
-    pending_verification: HashSet<PeerId>,
+    /// Peers awaiting verification after allowlist refresh, with insertion time
+    pending_verification: HashMap<PeerId, Instant>,
     /// Pending disconnections to emit
-    pending_disconnects: HashSet<PeerId>,
+    pending_disconnects: HashMap<PeerId, ()>,
     /// Channel to signal that allowlist refresh is needed
     refresh_tx: mpsc::Sender<()>,
 }
@@ -50,8 +56,8 @@ impl AllowlistBehaviour {
         (
             Self {
                 allowlist,
-                pending_verification: HashSet::new(),
-                pending_disconnects: HashSet::new(),
+                pending_verification: HashMap::new(),
+                pending_disconnects: HashMap::new(),
                 refresh_tx: tx,
             },
             rx,
@@ -68,15 +74,22 @@ impl AllowlistBehaviour {
 
     /// Called after allowlist refresh completes.
     /// Checks pending peers and schedules disconnects for those still not allowed.
+    /// Expired entries are silently dropped.
     pub async fn verify_pending_peers(&mut self) {
         let allowlist = self.allowlist.read().await;
-        for peer_id in self.pending_verification.drain() {
+        let drained: Vec<(PeerId, Instant)> = self.pending_verification.drain().collect();
+        for (peer_id, inserted_at) in drained {
+            // Skip expired entries
+            if inserted_at.elapsed() >= PENDING_PEER_TTL {
+                debug!(peer_id = %peer_id, "Pending peer expired, dropping");
+                continue;
+            }
             if !allowlist.contains_key(&peer_id) {
                 warn!(
                     peer_id = %peer_id,
                     "Peer not in allowlist after refresh, disconnecting"
                 );
-                self.pending_disconnects.insert(peer_id);
+                self.pending_disconnects.insert(peer_id, ());
             } else {
                 info!(
                     peer_id = %peer_id,
@@ -124,8 +137,19 @@ impl NetworkBehaviour for AllowlistBehaviour {
                 peer_id = %peer,
                 "Unknown peer connected, triggering allowlist refresh"
             );
-            // Add to pending verification and signal for refresh
-            self.pending_verification.insert(peer);
+            // Evict expired entries before checking capacity
+            self.pending_verification
+                .retain(|_, inserted_at| inserted_at.elapsed() < PENDING_PEER_TTL);
+            // Add to pending verification if not at capacity
+            if self.pending_verification.len() < MAX_PENDING_PEERS {
+                self.pending_verification.insert(peer, Instant::now());
+            } else {
+                warn!(
+                    peer_id = %peer,
+                    "Pending verification set at capacity ({}), skipping",
+                    MAX_PENDING_PEERS
+                );
+            }
             // Try to send refresh signal (ignore if channel full - refresh already pending)
             let _ = self.refresh_tx.try_send(());
         }
@@ -154,13 +178,24 @@ impl NetworkBehaviour for AllowlistBehaviour {
                 // Only check on first connection from this peer
                 if other_established == 0
                     && !self.is_peer_allowed(&peer_id)
-                    && !self.pending_verification.contains(&peer_id)
+                    && !self.pending_verification.contains_key(&peer_id)
                 {
                     debug!(
                         peer_id = %peer_id,
                         "Unknown peer connected (swarm event), triggering allowlist refresh"
                     );
-                    self.pending_verification.insert(peer_id);
+                    // Evict expired entries before checking capacity
+                    self.pending_verification
+                        .retain(|_, inserted_at| inserted_at.elapsed() < PENDING_PEER_TTL);
+                    if self.pending_verification.len() < MAX_PENDING_PEERS {
+                        self.pending_verification.insert(peer_id, Instant::now());
+                    } else {
+                        warn!(
+                            peer_id = %peer_id,
+                            "Pending verification set at capacity ({}), skipping",
+                            MAX_PENDING_PEERS
+                        );
+                    }
                     let _ = self.refresh_tx.try_send(());
                 }
             }
@@ -186,7 +221,7 @@ impl NetworkBehaviour for AllowlistBehaviour {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        if let Some(&peer_id) = self.pending_disconnects.iter().next() {
+        if let Some((&peer_id, _)) = self.pending_disconnects.iter().next() {
             self.pending_disconnects.remove(&peer_id);
             return Poll::Ready(ToSwarm::CloseConnection {
                 peer_id,
@@ -539,12 +574,14 @@ mod tests {
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
         let peer_id = PeerId::random();
-        behaviour.pending_verification.insert(peer_id);
+        behaviour
+            .pending_verification
+            .insert(peer_id, Instant::now());
 
         behaviour.verify_pending_peers().await;
 
         assert!(behaviour.pending_verification.is_empty());
-        assert!(behaviour.pending_disconnects.contains(&peer_id));
+        assert!(behaviour.pending_disconnects.contains_key(&peer_id));
     }
 
     #[tokio::test]
@@ -555,12 +592,43 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(map));
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
-        behaviour.pending_verification.insert(peer_id);
+        behaviour
+            .pending_verification
+            .insert(peer_id, Instant::now());
 
         behaviour.verify_pending_peers().await;
 
         assert!(behaviour.pending_verification.is_empty());
-        assert!(!behaviour.pending_disconnects.contains(&peer_id));
+        assert!(!behaviour.pending_disconnects.contains_key(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn test_verify_pending_peers_drops_expired() {
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
+        let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+
+        let peer_id = PeerId::random();
+        // Insert with a timestamp in the past (expired)
+        behaviour.pending_verification.insert(
+            peer_id,
+            Instant::now() - PENDING_PEER_TTL - Duration::from_secs(1),
+        );
+
+        behaviour.verify_pending_peers().await;
+
+        // Should be dropped, not disconnected
+        assert!(behaviour.pending_verification.is_empty());
+        assert!(!behaviour.pending_disconnects.contains_key(&peer_id));
+    }
+
+    #[test]
+    fn test_max_pending_peers_constant() {
+        assert_eq!(MAX_PENDING_PEERS, 200);
+    }
+
+    #[test]
+    fn test_pending_peer_ttl_constant() {
+        assert_eq!(PENDING_PEER_TTL, Duration::from_secs(300));
     }
 
     // ==================== AllowlistRefreshError Tests ====================

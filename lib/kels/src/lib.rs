@@ -80,3 +80,7 @@ pub use types::{
     SignedRequest, StatusUpdateRequest, Vote,
 };
 pub use types::{Kel, compute_rotation_hash};
+
+/// Maximum number of events allowed in a single submit_events request.
+/// Shared between the server handler and gossip client chunking logic.
+pub const MAX_EVENTS_PER_SUBMISSION: usize = 500;

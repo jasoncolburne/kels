@@ -18,7 +18,7 @@ use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
-use kels::{KelsClient, KelsError, PeerScope, SignedKeyEvent};
+use kels::{KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, PeerScope, SignedKeyEvent};
 use libp2p::PeerId;
 use thiserror::Error;
 
@@ -139,6 +139,9 @@ pub async fn run_redis_subscriber(
     Ok(())
 }
 
+/// Maximum fetches per peer per minute
+const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
+
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
@@ -152,6 +155,8 @@ pub struct SyncHandler {
     local_scope: PeerScope,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
+    /// Per-peer fetch rate limiting: maps peer_id -> (count, window_start)
+    peer_fetch_counts: HashMap<String, (u32, Instant)>,
 }
 
 impl SyncHandler {
@@ -169,6 +174,7 @@ impl SyncHandler {
             local_peer_id,
             local_scope,
             recently_stored,
+            peer_fetch_counts: HashMap::new(),
         }
     }
 
@@ -345,6 +351,28 @@ impl SyncHandler {
             announcement.destination
         );
 
+        // Per-peer rate limiting
+        {
+            let now = Instant::now();
+            let entry = self
+                .peer_fetch_counts
+                .entry(announcement.sender.clone())
+                .or_insert((0, now));
+            if now.duration_since(entry.1) >= Duration::from_secs(60) {
+                entry.0 = 1;
+                entry.1 = now;
+            } else {
+                entry.0 += 1;
+                if entry.0 > MAX_FETCHES_PER_PEER_PER_MINUTE {
+                    debug!(
+                        "Rate limiting peer {}: {} fetches/min exceeded",
+                        announcement.sender, MAX_FETCHES_PER_PEER_PER_MINUTE
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         // Look up the sender's KELS URL from the allowlist
         let kels_url = match self.get_peer_kels_url(&announcement.sender).await {
             Some(url) => url,
@@ -505,18 +533,9 @@ impl SyncHandler {
             kels_url
         );
 
-        // Partition events by content: adversary branch first, recovery branch second.
-        // The adversary branch establishes divergence context; the recovery branch resolves it.
-        let has_recovery = events.iter().any(|e| e.event.is_recover());
-        let (adversary_events, recovery_events) = Self::partition_events(events);
-
         // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
         // KELS publishes to Redis immediately when storing, so we must mark first.
-        let all_events: Vec<_> = adversary_events
-            .iter()
-            .chain(recovery_events.iter())
-            .collect();
-        let said = all_events.last().map(|e| e.event.said.clone());
+        let said = events.last().map(|e| e.event.said.clone());
         if let Some(ref said) = said {
             let key = format!("{}:{}", prefix, said);
             self.recently_stored
@@ -525,39 +544,51 @@ impl SyncHandler {
                 .insert(key, Instant::now());
         }
 
-        // Submit adversary events first (establishes divergence), then recovery events
-        let initially_applied = if recovery_events.is_empty() {
-            // No recovery branch — submit everything as one batch
-            self.submit_events_to_kels(&adversary_events).await?
-        } else if adversary_events.is_empty() {
-            // No adversary branch — submit recovery events directly
-            self.submit_events_to_kels(&recovery_events).await?
+        // For large event sets (e.g. full KEL fetch), use divergence-aware chunked seeding
+        // to respect server-side event count limits.
+        let has_recovery = events.iter().any(|e| e.event.is_recover());
+        let applied = if events.len() > MAX_EVENTS_PER_SUBMISSION {
+            self.submit_events_seeding(events, MAX_EVENTS_PER_SUBMISSION)
+                .await?
         } else {
-            // Both branches: adversary first to establish divergence, then recovery
-            let _ = self.submit_events_to_kels(&adversary_events).await;
-            self.submit_events_to_kels(&recovery_events).await?
-        };
+            // Partition events by content: adversary branch first, recovery branch second.
+            // The adversary branch establishes divergence context; the recovery branch resolves it.
+            let (adversary_events, recovery_events) = Self::partition_events(events);
 
-        // If recovery events were rejected (e.g., frozen KEL missing owner's
-        // predecessor events), retry with the full remote KEL so merge's
-        // look-ahead can process [owner_events..., rec] as one batch.
-        let applied = if !initially_applied && has_recovery {
-            info!(
-                "Recovery not applied for {} — retrying with full KEL from {}",
-                prefix, kels_url
-            );
-            match remote_client.get_kel(prefix).await {
-                Ok(full_kel) => self
-                    .submit_events_to_kels(full_kel.events())
-                    .await
-                    .unwrap_or(false),
-                Err(e) => {
-                    warn!("Failed to fetch full KEL for retry: {}", e);
-                    false
+            // Submit adversary events first (establishes divergence), then recovery events
+            let initially_applied = if recovery_events.is_empty() {
+                // No recovery branch — submit everything as one batch
+                self.submit_events_to_kels(&adversary_events).await?
+            } else if adversary_events.is_empty() {
+                // No adversary branch — submit recovery events directly
+                self.submit_events_to_kels(&recovery_events).await?
+            } else {
+                // Both branches: adversary first to establish divergence, then recovery
+                let _ = self.submit_events_to_kels(&adversary_events).await;
+                self.submit_events_to_kels(&recovery_events).await?
+            };
+
+            // If recovery events were rejected (e.g., frozen KEL missing owner's
+            // predecessor events), retry with the full remote KEL so merge's
+            // look-ahead can process [owner_events..., rec] as one batch.
+            if !initially_applied && has_recovery {
+                info!(
+                    "Recovery not applied for {} — retrying with full KEL from {}",
+                    prefix, kels_url
+                );
+                match remote_client.get_kel(prefix).await {
+                    Ok(full_kel) => self
+                        .submit_events_to_kels(full_kel.events())
+                        .await
+                        .unwrap_or(false),
+                    Err(e) => {
+                        warn!("Failed to fetch full KEL for retry: {}", e);
+                        false
+                    }
                 }
+            } else {
+                initially_applied
             }
-        } else {
-            initially_applied
         };
 
         self.handle_rebroadcast(prefix, said, applied, &announcement, command_tx)
@@ -644,6 +675,175 @@ impl SyncHandler {
         }
     }
 
+    /// Partition events for chunked seeding of a potentially divergent KEL.
+    ///
+    /// Detects fork points (multiple events sharing the same `previous`) and
+    /// separates events into:
+    /// - primary_chain: one complete branch, submitted first to keep the KEL linear
+    /// - deferred_events: the other branch(es) at each fork point, submitted last
+    /// - recovery_events: rec/cnt events and their continuations, submitted after deferred
+    ///
+    /// We pick the longer branch as primary (more data stays accessible during seeding).
+    /// No identity attribution — either branch could belong to either party.
+    fn partition_for_seeding(
+        events: Vec<SignedKeyEvent>,
+    ) -> (
+        Vec<SignedKeyEvent>,
+        Vec<SignedKeyEvent>,
+        Vec<SignedKeyEvent>,
+    ) {
+        if events.is_empty() {
+            return (vec![], vec![], vec![]);
+        }
+
+        // Build previous → children map
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        let said_to_event: HashMap<String, &SignedKeyEvent> =
+            events.iter().map(|e| (e.event.said.clone(), e)).collect();
+
+        for e in &events {
+            if let Some(prev) = &e.event.previous {
+                children
+                    .entry(prev.clone())
+                    .or_default()
+                    .push(e.event.said.clone());
+            }
+        }
+
+        // Find fork points: previous values with >1 child
+        let fork_points: Vec<String> = children
+            .iter()
+            .filter(|(_, kids)| kids.len() > 1)
+            .map(|(prev, _)| prev.clone())
+            .collect();
+
+        // No forks → everything is primary
+        if fork_points.is_empty() {
+            return (events, vec![], vec![]);
+        }
+
+        // For each fork point, walk branches to determine length and detect recovery
+        let mut deferred_saids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut recovery_saids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for fork_prev in &fork_points {
+            let kids = match children.get(fork_prev) {
+                Some(k) => k,
+                None => continue,
+            };
+
+            // Walk each branch from this fork point
+            let mut branches: Vec<(Vec<String>, bool)> = Vec::new(); // (saids, has_recovery)
+            for kid_said in kids {
+                let mut chain = vec![kid_said.clone()];
+                let mut has_recovery = said_to_event
+                    .get(kid_said)
+                    .map(|e| e.event.reveals_recovery_key())
+                    .unwrap_or(false);
+
+                let mut current = kid_said.clone();
+                while let Some(next_kids) = children.get(&current) {
+                    if let Some(next) = next_kids.first() {
+                        chain.push(next.clone());
+                        if let Some(e) = said_to_event.get(next)
+                            && e.event.reveals_recovery_key()
+                        {
+                            has_recovery = true;
+                        }
+                        current = next.clone();
+                    } else {
+                        break;
+                    }
+                }
+                branches.push((chain, has_recovery));
+            }
+
+            // Sort by length descending — longest branch becomes primary
+            branches.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+            // First (longest) branch is primary; rest are deferred or recovery
+            for (i, (chain, has_recovery)) in branches.into_iter().enumerate() {
+                if i == 0 {
+                    // Primary branch — check if it has recovery events
+                    if has_recovery {
+                        // Extract recovery events from the primary chain
+                        for (idx, said) in chain.iter().enumerate() {
+                            if let Some(e) = said_to_event.get(said)
+                                && e.event.reveals_recovery_key()
+                            {
+                                // This and all subsequent events go to recovery
+                                for recovery_said in &chain[idx..] {
+                                    recovery_saids.insert(recovery_said.clone());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Non-primary branches
+                if has_recovery {
+                    for said in chain {
+                        recovery_saids.insert(said);
+                    }
+                } else {
+                    for said in chain {
+                        deferred_saids.insert(said);
+                    }
+                }
+            }
+        }
+
+        // Partition events into three buckets maintaining original order
+        let mut primary = Vec::new();
+        let mut deferred = Vec::new();
+        let mut recovery = Vec::new();
+
+        for event in events {
+            if recovery_saids.contains(&event.event.said) {
+                recovery.push(event);
+            } else if deferred_saids.contains(&event.event.said) {
+                deferred.push(event);
+            } else {
+                primary.push(event);
+            }
+        }
+
+        (primary, deferred, recovery)
+    }
+
+    /// Submit events for seeding using divergence-aware chunking.
+    ///
+    /// Partitions events to ensure the primary chain is submitted linearly first,
+    /// then deferred fork events, then recovery events.
+    async fn submit_events_seeding(
+        &self,
+        events: Vec<SignedKeyEvent>,
+        max_events: usize,
+    ) -> Result<bool, SyncError> {
+        let (primary_chain, deferred, recovery) = Self::partition_for_seeding(events);
+
+        // 1. Submit primary chain in chunks (KEL stays linear)
+        for chunk in primary_chain.chunks(max_events) {
+            self.submit_events_to_kels(chunk).await?;
+        }
+
+        // 2. Submit deferred fork events (causes divergence/freeze)
+        if !deferred.is_empty() {
+            let _ = self.submit_events_to_kels(&deferred).await;
+        }
+
+        // 3. Submit recovery events if present (resolves divergence)
+        if !recovery.is_empty() {
+            return self.submit_events_to_kels(&recovery).await;
+        }
+
+        Ok(true)
+    }
+
     /// Submit events to local KELS using the client library.
     /// Returns true if events were applied (new events stored).
     async fn submit_events_to_kels(&self, events: &[SignedKeyEvent]) -> Result<bool, SyncError> {
@@ -714,6 +914,13 @@ mod tests {
             PeerScope::Regional,
             recently_stored,
         )
+    }
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn test_max_fetches_per_peer_per_minute_constant() {
+        assert_eq!(MAX_FETCHES_PER_PEER_PER_MINUTE, 8192);
     }
 
     /// Create a minimal SignedKeyEvent for testing partition logic.
@@ -1102,5 +1309,135 @@ mod tests {
         // No tip SAID: no rebroadcast, no cache update
         assert!(command_rx.try_recv().is_err());
         assert!(!handler.local_saids.contains_key("test-prefix"));
+    }
+
+    // --- partition_for_seeding tests ---
+
+    #[test]
+    fn test_partition_for_seeding_empty() {
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(vec![]);
+        assert!(primary.is_empty());
+        assert!(deferred.is_empty());
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_for_seeding_linear_kel_no_divergence() {
+        // Linear chain: icp → ixn1 → ixn2 → ixn3
+        let events = vec![
+            make_event("icp", None, EventKind::Icp),
+            make_event("ixn1", Some("icp"), EventKind::Ixn),
+            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
+            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
+        ];
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+        assert_eq!(primary.len(), 4);
+        assert!(deferred.is_empty());
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_for_seeding_divergent_kel_two_chunks() {
+        // Primary chain: icp → ixn1 → ixn2 → ixn3 → ixn4 → ixn5 → ixn6 → ixn7 → ixn8
+        // Fork event:                          fork_ixn3 (previous = ixn2, same gen as ixn3)
+        let events = vec![
+            make_event("icp", None, EventKind::Icp),
+            make_event("ixn1", Some("icp"), EventKind::Ixn),
+            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
+            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
+            make_event("ixn4", Some("ixn3"), EventKind::Ixn),
+            make_event("ixn5", Some("ixn4"), EventKind::Ixn),
+            make_event("ixn6", Some("ixn5"), EventKind::Ixn),
+            make_event("ixn7", Some("ixn6"), EventKind::Ixn),
+            make_event("ixn8", Some("ixn7"), EventKind::Ixn),
+            make_event("fork_ixn3", Some("ixn2"), EventKind::Ixn),
+        ];
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+
+        // Primary should have 9 events (the longer branch)
+        assert_eq!(primary.len(), 9);
+        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(primary_saids.contains(&"icp"));
+        assert!(primary_saids.contains(&"ixn3"));
+        assert!(primary_saids.contains(&"ixn8"));
+
+        // Deferred should have 1 event (the fork)
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].event.said, "fork_ixn3");
+
+        // No recovery
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_for_seeding_divergent_with_recovery() {
+        // Primary chain (10 events):
+        //   icp → ixn1 → ixn2 → ixn3 → ixn4 → ixn5 → ixn6 → ixn7 → ixn8 → ixn9
+        // Fork event: fork_ixn3 (previous = ixn2)
+        // Recovery: rec10 (previous = ixn9) → ixn11 → ixn12
+        let events = vec![
+            make_event("icp", None, EventKind::Icp),
+            make_event("ixn1", Some("icp"), EventKind::Ixn),
+            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
+            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
+            make_event("ixn4", Some("ixn3"), EventKind::Ixn),
+            make_event("ixn5", Some("ixn4"), EventKind::Ixn),
+            make_event("ixn6", Some("ixn5"), EventKind::Ixn),
+            make_event("ixn7", Some("ixn6"), EventKind::Ixn),
+            make_event("ixn8", Some("ixn7"), EventKind::Ixn),
+            make_event("ixn9", Some("ixn8"), EventKind::Ixn),
+            make_event("fork_ixn3", Some("ixn2"), EventKind::Ixn),
+            make_event("rec10", Some("ixn9"), EventKind::Rec),
+            make_event("ixn11", Some("rec10"), EventKind::Ixn),
+            make_event("ixn12", Some("ixn11"), EventKind::Ixn),
+        ];
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+
+        // Primary chain: icp through ixn9 (10 events), minus recovery events
+        // Recovery events branch off from ixn9, so primary should exclude rec10, ixn11, ixn12
+        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
+        assert_eq!(primary.len(), 10);
+        assert!(primary_saids.contains(&"icp"));
+        assert!(primary_saids.contains(&"ixn9"));
+        assert!(!primary_saids.contains(&"rec10"));
+
+        // Deferred: fork event
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].event.said, "fork_ixn3");
+
+        // Recovery: rec10 → ixn11 → ixn12
+        assert_eq!(recovery.len(), 3);
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(recovery_saids.contains(&"rec10"));
+        assert!(recovery_saids.contains(&"ixn11"));
+        assert!(recovery_saids.contains(&"ixn12"));
+    }
+
+    #[test]
+    fn test_partition_for_seeding_deferred_branch_is_longer() {
+        // Primary branch should be the LONGER one regardless of order.
+        // Branch A (3 events): a1 → a2 → a3
+        // Branch B (1 event): b1
+        // Both fork from "shared" (not in batch)
+        let events = vec![
+            make_event("b1", Some("shared"), EventKind::Ixn),
+            make_event("a1", Some("shared"), EventKind::Ixn),
+            make_event("a2", Some("a1"), EventKind::Ixn),
+            make_event("a3", Some("a2"), EventKind::Ixn),
+        ];
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+
+        // The longer branch (a1→a2→a3) should be primary
+        assert_eq!(primary.len(), 3);
+        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(primary_saids.contains(&"a1"));
+        assert!(primary_saids.contains(&"a2"));
+        assert!(primary_saids.contains(&"a3"));
+
+        // The shorter branch (b1) should be deferred
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].event.said, "b1");
+
+        assert!(recovery.is_empty());
     }
 }

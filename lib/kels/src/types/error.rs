@@ -13,6 +13,7 @@ pub enum ErrorCode {
     Unauthorized,
     Gone,
     RecoveryProtected,
+    RateLimited,
     InternalError,
 }
 

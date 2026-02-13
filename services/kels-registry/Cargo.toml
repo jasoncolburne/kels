@@ -85,6 +85,11 @@ byteorder = "1"
 # UUID generation for proposal IDs
 uuid = { version = "1", features = ["v4"] }
 
+# Rate limiting
+governor = "0.8"
+tower_governor = "0.5"
+tower = { version = "0.5", features = ["util"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 

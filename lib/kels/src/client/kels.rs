@@ -393,6 +393,27 @@ impl KelsClient {
         Ok(start.elapsed())
     }
 
+    /// Submit events in chunks, respecting the server's max event count limit.
+    /// For linear KELs, this is a naive chunker that submits sequentially.
+    /// For divergent KELs, use partition_for_seeding in the gossip service.
+    pub async fn submit_events_chunked(
+        &self,
+        events: &[SignedKeyEvent],
+        max_events: usize,
+    ) -> Result<BatchSubmitResponse, KelsError> {
+        if events.len() <= max_events {
+            return self.submit_events(events).await;
+        }
+        let mut last_response = BatchSubmitResponse {
+            diverged_at: None,
+            applied: true,
+        };
+        for chunk in events.chunks(max_events) {
+            last_response = self.submit_events(chunk).await?;
+        }
+        Ok(last_response)
+    }
+
     pub async fn submit_events(
         &self,
         events: &[SignedKeyEvent],
@@ -1031,6 +1052,62 @@ mod tests {
             assert!(result.is_ok());
             // Latency should be positive
             assert!(result.unwrap().as_micros() > 0);
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_chunked_small_batch() {
+            let mock_server = MockServer::start().await;
+
+            let response = BatchSubmitResponse {
+                applied: true,
+                diverged_at: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .expect(1) // Single chunk - single request
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let signed = builder.incept().await.unwrap();
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events_chunked(&[signed], 500).await;
+
+            assert!(result.is_ok());
+            let resp = result.unwrap();
+            assert!(resp.applied);
+        }
+
+        #[tokio::test]
+        async fn test_submit_events_chunked_multiple_chunks() {
+            let mock_server = MockServer::start().await;
+
+            let response = BatchSubmitResponse {
+                applied: true,
+                diverged_at: None,
+            };
+
+            Mock::given(method("POST"))
+                .and(path("/api/kels/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .expect(3) // 3 events with chunk size 1 = 3 requests
+                .mount(&mock_server)
+                .await;
+
+            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let icp = builder.incept().await.unwrap();
+            let ixn1 = builder.interact("anchor1").await.unwrap();
+            let ixn2 = builder.interact("anchor2").await.unwrap();
+
+            let client = KelsClient::new(&mock_server.uri());
+            let result = client.submit_events_chunked(&[icp, ixn1, ixn2], 1).await;
+
+            assert!(result.is_ok());
+            let resp = result.unwrap();
+            assert!(resp.applied);
         }
 
         #[tokio::test]

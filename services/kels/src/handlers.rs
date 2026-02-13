@@ -7,12 +7,15 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use cesr::{Matter, Signature};
+use dashmap::DashMap;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-    KelResponse, KelsAuditRecord, KelsError, PrefixListResponse, ServerKelCache, SignedKeyEvent,
+    KelResponse, KelsAuditRecord, KelsError, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse,
+    ServerKelCache, SignedKeyEvent,
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use verifiable_storage::ChainedRepository;
@@ -32,12 +35,17 @@ impl IntoResponse for PreSerializedJson {
     }
 }
 
+/// Maximum submissions per prefix per minute (sliding window).
+const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
+
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
     pub(crate) redis_conn: redis::aio::ConnectionManager,
     #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) registry_urls: Vec<String>,
+    /// Per-prefix rate limiting: maps prefix -> (count, window_start)
+    pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
 }
 
 // ==================== Error Handling ====================
@@ -103,6 +111,16 @@ impl ApiError {
             Json(ErrorResponse {
                 error: msg.into(),
                 code: ErrorCode::RecoveryProtected,
+            }),
+        )
+    }
+
+    fn rate_limited(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::RateLimited,
             }),
         )
     }
@@ -239,6 +257,13 @@ pub(crate) async fn submit_events(
         }));
     }
 
+    if events.len() > MAX_EVENTS_PER_SUBMISSION {
+        return Err(ApiError::bad_request(format!(
+            "Batch exceeds maximum of {} events",
+            MAX_EVENTS_PER_SUBMISSION
+        )));
+    }
+
     // Validate all signatures upfront
     for signed_event in &events {
         if signed_event.signatures.is_empty() {
@@ -258,6 +283,27 @@ pub(crate) async fn submit_events(
 
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
+
+    // Per-prefix rate limiting
+    {
+        let now = Instant::now();
+        let mut entry = state
+            .prefix_rate_limits
+            .entry(prefix.clone())
+            .or_insert((0, now));
+        if now.duration_since(entry.1) >= Duration::from_secs(60) {
+            // Reset window
+            entry.0 = 1;
+            entry.1 = now;
+        } else {
+            entry.0 += 1;
+            if entry.0 > MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+                return Err(ApiError::rate_limited(
+                    "Too many submissions for this prefix",
+                ));
+            }
+        }
+    }
 
     // Begin transaction with advisory lock - serializes all operations on this prefix
     let mut tx = state
@@ -714,6 +760,14 @@ mod tests {
     }
 
     #[test]
+    fn test_api_error_rate_limited() {
+        let err = ApiError::rate_limited("Too many requests");
+        assert_eq!(err.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.1.code, ErrorCode::RateLimited);
+        assert_eq!(err.1.error, "Too many requests");
+    }
+
+    #[test]
     fn test_api_error_from_kels_error() {
         let kels_err = KelsError::SigningFailed("test".to_string());
         let api_err: ApiError = kels_err.into();
@@ -729,11 +783,21 @@ mod tests {
         assert_eq!(api_err.1.code, ErrorCode::InternalError);
     }
 
-    // ==================== MAX_BATCH_PREFIXES Tests ====================
+    // ==================== Constants Tests ====================
 
     #[test]
     fn test_max_batch_prefixes_constant() {
         assert_eq!(MAX_BATCH_PREFIXES, 50);
+    }
+
+    #[test]
+    fn test_max_events_per_submission_constant() {
+        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 500);
+    }
+
+    #[test]
+    fn test_max_submissions_per_prefix_per_minute_constant() {
+        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 32);
     }
 
     // ==================== health Tests ====================
