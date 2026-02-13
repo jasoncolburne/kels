@@ -128,6 +128,7 @@ test-comprehensive: clean-garden
 	# Deploy nodes and add as core peers via multi-party approval
 	garden deploy --env=node-a
 	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
@@ -136,6 +137,7 @@ test-comprehensive: clean-garden
 	garden deploy --env=node-b
 	garden run propose-node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
@@ -144,6 +146,7 @@ test-comprehensive: clean-garden
 	garden run propose-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 

@@ -128,25 +128,23 @@ impl FederationConfig {
 
     /// Calculate approval threshold for core peer proposals.
     ///
-    /// Formula: max(ceil(n/3), 2) where n is the number of federation members.
+    /// Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), adapted
+    /// with judgement to require unanimity in small federations and a smooth
+    /// transition toward ceil(n/3) at scale.
     ///
-    /// This ensures:
-    /// - At least 2 approvals are always required (prevents single-party control)
-    /// - ~1/3 of members must approve for larger federations
-    ///
-    /// Examples:
-    /// - n=3: ceil(3/3)=1, max(1, 2) = 2 (need 2 of 3)
-    /// - n=4: ceil(4/3)=2, max(2, 2) = 2 (need 2 of 4)
-    /// - n=5: ceil(5/3)=2, max(2, 2) = 2 (need 2 of 5)
-    /// - n=6: ceil(6/3)=2, max(2, 2) = 2 (need 2 of 6)
-    /// - n=7: ceil(7/3)=3, max(3, 2) = 3 (need 3 of 7)
-    /// - n=9: ceil(9/3)=3, max(3, 2) = 3 (need 3 of 9)
+    /// - n in [1,3]:  n (unanimous)
+    /// - n in [4,5]:  3
+    /// - n in [6,9]:  4
+    /// - n >= 10:     ceil(n/3)
     pub fn approval_threshold(&self) -> usize {
         let n = self.members.len();
-        if n == 0 {
-            return 0;
+        match n {
+            0 => 1, // fail-secure: unreachable threshold prevents approval with no members
+            1..=3 => n,
+            4..=5 => 3,
+            6..=9 => 4,
+            _ => n.div_ceil(3),
         }
-        std::cmp::max(n.div_ceil(3), 2)
     }
 
     /// Get all member prefixes.
@@ -385,56 +383,67 @@ mod tests {
     #[test]
     fn test_approval_threshold_empty() {
         let config = FederationConfig::new("ERegistry0".to_string(), vec![]);
-        assert_eq!(config.approval_threshold(), 0);
+        assert_eq!(config.approval_threshold(), 1);
+    }
+
+    #[test]
+    fn test_approval_threshold_1_member() {
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(1));
+        assert_eq!(config.approval_threshold(), 1);
+    }
+
+    #[test]
+    fn test_approval_threshold_2_members() {
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(2));
+        assert_eq!(config.approval_threshold(), 2);
     }
 
     #[test]
     fn test_approval_threshold_3_members() {
-        // n=3: ceil(3/3)=1, max(1, 2) = 2
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(3));
-        assert_eq!(config.approval_threshold(), 2);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_4_members() {
-        // n=4: ceil(4/3)=2, max(2, 2) = 2
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(4));
-        assert_eq!(config.approval_threshold(), 2);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_5_members() {
-        // n=5: ceil(5/3)=2, max(2, 2) = 2
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(5));
-        assert_eq!(config.approval_threshold(), 2);
+        assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_6_members() {
-        // n=6: ceil(6/3)=2, max(2, 2) = 2
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(6));
-        assert_eq!(config.approval_threshold(), 2);
+        assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_7_members() {
-        // n=7: ceil(7/3)=3, max(3, 2) = 3
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(7));
-        assert_eq!(config.approval_threshold(), 3);
+        assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_9_members() {
-        // n=9: ceil(9/3)=3, max(3, 2) = 3
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(9));
-        assert_eq!(config.approval_threshold(), 3);
+        assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_10_members() {
-        // n=10: ceil(10/3)=4, max(4, 2) = 4
         let config = FederationConfig::new("ERegistry0".to_string(), make_members(10));
         assert_eq!(config.approval_threshold(), 4);
+    }
+
+    #[test]
+    fn test_approval_threshold_20_members() {
+        let config = FederationConfig::new("ERegistry0".to_string(), make_members(20));
+        assert_eq!(config.approval_threshold(), 7);
     }
 
     #[test]
