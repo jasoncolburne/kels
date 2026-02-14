@@ -27,7 +27,7 @@ With [federated registries](docs/federation.md), KELS can also serve as a secure
 
 ## Differences from KERI (Key Event Receipt Infrastructure)
 
-KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with globally unique identifiers, and pre-rotation commitment.
+KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with globally unique, self-addressing identifiers, and pre-rotation commitment.
 
 I used Base64 CESR to encode data, primarily to make development easier. I may change the encoding in the future.
 
