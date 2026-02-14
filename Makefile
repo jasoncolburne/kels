@@ -14,7 +14,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-comprehensive
 
 all: fmt-check deny clippy test build
 
@@ -185,10 +185,17 @@ deploy-regional-nodes:
 
 deploy-all-nodes: deploy-core-nodes deploy-regional-nodes
 
+test-resync:
+	scripts/break-node-b-dns.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
+	scripts/repair-node-b-dns.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh verify
+
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registries fetch-prefixes redeploy-registries deploy-all-nodes
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
-	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh 
+	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
+	$(MAKE) test-resync

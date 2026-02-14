@@ -24,7 +24,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 **Attack:** A compromised gossip node selectively drops announcements, preventing propagation to certain peers or regions.
 - **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Announcements propagate through multiple paths. Bootstrap resync catches events missed during the gap. Periodic bootstrap from Ready peers fills gaps.
-- **Residual risk:** No real-time detection of selective dropping. If a core node drops all messages for a specific region, that region may be delayed until the next resync cycle.
+- **Residual risk:** No real-time detection of selective dropping. If a core node drops all messages for a specific region, that region may be delayed until the next resync cycle. Periodic resync partially mitigates this: failed gossip fetches are queued and retried against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers.
 
 ### Scope Confusion
 
@@ -131,7 +131,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 5. ~~**Gossip scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
 6. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
 7. **Redis state flags lack authentication** — relies on pod-level network isolation; impact limited to availability (all data from Redis is cryptographically re-verified)
-8. **No real-time detection of selective message dropping** — relies on mesh redundancy and periodic resync
+8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, periodic resync with retry queue (failed fetches retried against all known peers on configurable interval), but delayed detection remains
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
 ## Roadmap
@@ -156,7 +156,7 @@ Scope filtering is application-level. There is no real-time detection of selecti
 
 - [x] Fix event partitioning for contest propagation — `partition_events` now places contest events (`cnt`) in the second (recovery) batch, ensuring the non-contest fork event establishes divergence first. Previously, `dec + cnt` pairs could be partitioned with `cnt` first, which was rejected by merge ("Contest requires divergence")
 - ~~Evaluate per-scope gossipsub topics~~ — not a security concern: scope filtering is a routing optimization, not a security boundary. All nodes replicate the same data. Scope violations at worst cause redundant fetches, which `event_exists` dedup already handles
-- [ ] Add negative caching for timed-out KEL fetches — if an HTTP fetch for an announced `prefix:said` times out, cache `(prefix, said)` with a 30s TTL (`DashMap<(String, String), Instant>`, lazy eviction on lookup) to avoid hammering a struggling peer with repeated fetches
+- [x] Add periodic resync with retry queue — failed gossip fetches are cached in Redis and retried against all known peers on a configurable interval (default 5 min), using `event_exists` for cheap pre-check before KEL fetch
 
 ### ~~Bootstrap integrity (addresses residual risk 4)~~
 

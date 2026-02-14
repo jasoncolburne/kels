@@ -82,6 +82,9 @@ pub enum KelsError {
     #[error("HTTP request failed: {0}")]
     HttpError(String),
 
+    #[error("Request timed out: {0}")]
+    Timeout(String),
+
     #[error("JSON error: {0}")]
     JsonError(String),
 
@@ -145,7 +148,11 @@ impl From<cesr::CesrError> for KelsError {
 
 impl From<reqwest::Error> for KelsError {
     fn from(e: reqwest::Error) -> Self {
-        KelsError::HttpError(e.to_string())
+        if e.is_timeout() {
+            KelsError::Timeout(e.to_string())
+        } else {
+            KelsError::HttpError(e.to_string())
+        }
     }
 }
 
@@ -219,6 +226,7 @@ mod tests {
             KelsError::SigningFailed("sign failed".to_string()),
             KelsError::KeyGenerationFailed("keygen failed".to_string()),
             KelsError::MissingKeys,
+            KelsError::Timeout("timed out".to_string()),
             KelsError::CryptoError("crypto error".to_string()),
             KelsError::CacheError("cache error".to_string()),
             KelsError::StorageError("storage error".to_string()),

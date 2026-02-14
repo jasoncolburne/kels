@@ -60,6 +60,10 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
+### Failed Fetch Retry
+
+When a gossip fetch fails (timeout, HTTP error, connection refused), the `prefix:said` pair is added to a Redis-backed retry queue (`kels:resync:retry`). A periodic resync loop drains this queue on a configurable interval (default 5 min), attempting each entry against all known peers in shuffled order. Uses `event_exists` as a cheap pre-check before fetching. Entries where all peers return 404 are dropped (SAID was superseded). Entries that fail again are re-queued for the next cycle.
+
 ### Why SAID comparison?
 
 - Simple equality check - if SAIDs match, nodes are in sync
@@ -128,6 +132,7 @@ struct KelResponse {
 | `REGISTRY_URL` | Registry service URL for bootstrap sync | (optional) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
 | `GOSSIP_TOPIC` | Gossipsub topic name | `kels/events/v1` |
+| `RESYNC_INTERVAL_SECS` | Periodic resync interval for retrying failed fetches | `300` (5 min) |
 
 ## Design Decisions
 
@@ -240,3 +245,11 @@ The gossip layer doesn't need special divergence logic - KELS handles all verifi
 - All prefixes have the same event counts
 - MD5 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
 - Behavioral state consistency for any mismatched KELs
+
+`clients/test/scripts/test-resync.sh` verifies the periodic resync / retry queue:
+- Fake retry queue entries are dropped when all peers return 404
+- Real fetch failures (caused by broken DNS) populate the retry queue
+- After DNS repair, the resync loop resolves pending entries
+- Retry queue is empty after resolution
+
+The resync test is orchestrated by `make test-resync` which breaks CoreDNS for node-b (so gossip HTTP fetches fail while gossipsub announcements still flow over existing TCP connections), runs the setup phase, repairs DNS, then runs the verify phase.

@@ -48,7 +48,7 @@ libkels = { path = "../../lib/kels", features = ["server"] }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 # Redis for pub/sub
-redis = { version = "0.27", features = ["tokio-comp"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

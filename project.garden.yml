@@ -20,13 +20,14 @@ environments:
     defaultNamespace: kels-node-a
     variables:
       envType: node
-      devTools: true
+      devTools: true # testing
+      gossipResyncIntervalSecs: "15" # testing
       nodeType: core
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       envType: node
-      devTools: true
+      devTools: true # testing
       nodeType: core
   - name: node-c
     defaultNamespace: kels-node-c
@@ -38,7 +39,7 @@ environments:
     defaultNamespace: kels-node-d
     variables:
       envType: node
-      devTools: true
+      devTools: true # testing
       nodeType: regional
   - name: node-e
     defaultNamespace: kels-node-e
@@ -63,6 +64,7 @@ providers:
     buildMode: local-docker
 
 variables:
+  gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
   rustLogLevel: info
   postgres:
     user: kels_admin
@@ -85,6 +87,7 @@ variables:
     httpPort: "80"
     topic: "kels/events/v1"
     listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
+    resyncIntervalSecs: "300"
   registry:
     replicas: 1
     port: "80"

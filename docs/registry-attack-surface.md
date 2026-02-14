@@ -88,7 +88,7 @@ If an attacker gains access to the HSM service:
 ### Selective Message Dropping
 
 **Attack:** A core node selectively drops announcements, preventing propagation to certain regions.
-- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. No real-time detection mechanism.
+- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. No real-time detection mechanism.
 
 ## Admin API
 

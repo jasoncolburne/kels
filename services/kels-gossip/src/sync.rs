@@ -32,6 +32,12 @@ use crate::{
 /// When gossip stores events, KELS publishes to Redis, which would re-trigger announcement.
 pub type RecentlyStoredFromGossip = Arc<RwLock<HashMap<String, Instant>>>;
 
+/// Shared Redis connection for the retry queue (failed gossip fetches).
+pub type RetryQueue = Arc<redis::aio::ConnectionManager>;
+
+/// Optional retry queue — None in tests where Redis is unavailable.
+pub type OptionalRetryQueue = Option<RetryQueue>;
+
 const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
 
 /// Redis pub/sub channel name (same as libkels uses)
@@ -142,6 +148,9 @@ pub async fn run_redis_subscriber(
 /// Maximum fetches per peer per minute
 const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
 
+/// Redis key for the retry queue set
+const RETRY_QUEUE_KEY: &str = "kels:resync:retry";
+
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
@@ -157,6 +166,8 @@ pub struct SyncHandler {
     recently_stored: RecentlyStoredFromGossip,
     /// Per-peer fetch rate limiting: maps peer_id -> (count, window_start)
     peer_fetch_counts: HashMap<String, (u32, Instant)>,
+    /// Redis-backed retry queue for failed gossip fetches
+    retry_queue: OptionalRetryQueue,
 }
 
 impl SyncHandler {
@@ -166,6 +177,7 @@ impl SyncHandler {
         local_peer_id: PeerId,
         local_scope: PeerScope,
         recently_stored: RecentlyStoredFromGossip,
+        retry_queue: OptionalRetryQueue,
     ) -> Self {
         Self {
             kels_client: KelsClient::new(kels_url),
@@ -175,6 +187,26 @@ impl SyncHandler {
             local_scope,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
+            retry_queue,
+        }
+    }
+
+    /// Queue a failed fetch for later retry via the periodic resync loop.
+    async fn queue_retry(&self, prefix: &str, said: &str) {
+        let Some(ref retry_queue) = self.retry_queue else {
+            return;
+        };
+        let entry = format!("{}:{}", prefix, said);
+        let mut conn = retry_queue.as_ref().clone();
+        if let Err(e) = redis::cmd("SADD")
+            .arg(RETRY_QUEUE_KEY)
+            .arg(&entry)
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            warn!("Failed to queue retry for {}: {}", entry, e);
+        } else {
+            debug!("Queued retry for {}", entry);
         }
     }
 
@@ -491,6 +523,7 @@ impl SyncHandler {
                         }
                         Err(e) => {
                             warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
+                            self.queue_retry(prefix, remote_said).await;
                             return Ok(());
                         }
                     }
@@ -508,6 +541,7 @@ impl SyncHandler {
                         }
                         Err(e) => {
                             warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                            self.queue_retry(prefix, remote_said).await;
                             return Ok(());
                         }
                     }
@@ -523,6 +557,7 @@ impl SyncHandler {
                 }
                 Err(e) => {
                     warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                    self.queue_retry(prefix, remote_said).await;
                     return Ok(());
                 }
             }
@@ -590,6 +625,7 @@ impl SyncHandler {
                         .unwrap_or(false),
                     Err(e) => {
                         warn!("Failed to fetch full KEL for retry: {}", e);
+                        self.queue_retry(prefix, remote_said).await;
                         false
                     }
                 }
@@ -877,6 +913,7 @@ impl SyncHandler {
 }
 
 /// Run the sync event handler
+#[allow(clippy::too_many_arguments)]
 pub async fn run_sync_handler(
     kels_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
@@ -885,6 +922,7 @@ pub async fn run_sync_handler(
     local_peer_id: PeerId,
     local_scope: PeerScope,
     recently_stored: RecentlyStoredFromGossip,
+    retry_queue: OptionalRetryQueue,
 ) -> Result<(), SyncError> {
     let mut handler = SyncHandler::new(
         &kels_url,
@@ -892,6 +930,7 @@ pub async fn run_sync_handler(
         local_peer_id,
         local_scope,
         recently_stored,
+        retry_queue,
     );
 
     while let Some(event) = event_rx.recv().await {
@@ -902,6 +941,200 @@ pub async fn run_sync_handler(
 
     warn!("Event receiver closed");
     Ok(())
+}
+
+/// Periodically retries failed gossip fetches from the Redis retry queue.
+///
+/// Each cycle: reads all pending `prefix:said` entries, clears the queue,
+/// then tries each entry against shuffled peers. Entries that fail again
+/// (non-404) are re-added for the next cycle. Entries where all peers
+/// return 404 are dropped (SAID was likely superseded).
+pub async fn run_resync_loop(
+    retry_queue: RetryQueue,
+    allowlist: SharedAllowlist,
+    local_kels_url: String,
+    interval: Duration,
+) {
+    use rand::seq::SliceRandom;
+
+    let local_client = KelsClient::new(&local_kels_url);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        // Read all pending entries
+        let entries: Vec<String> = {
+            let mut conn = retry_queue.as_ref().clone();
+            match redis::cmd("SMEMBERS")
+                .arg(RETRY_QUEUE_KEY)
+                .query_async::<Vec<String>>(&mut conn)
+                .await
+            {
+                Ok(entries) if entries.is_empty() => continue,
+                Ok(entries) => {
+                    // Clear the set — entries re-added on failure
+                    let _ = redis::cmd("DEL")
+                        .arg(RETRY_QUEUE_KEY)
+                        .query_async::<()>(&mut conn)
+                        .await;
+                    entries
+                }
+                Err(e) => {
+                    warn!("Failed to read retry queue: {}", e);
+                    continue;
+                }
+            }
+        };
+
+        info!("Resync loop: processing {} pending entries", entries.len());
+
+        // Collect all peers with their kels_url
+        let peers: Vec<(String, String)> = {
+            let guard = allowlist.read().await;
+            guard
+                .values()
+                .map(|p| (p.peer_id.clone(), p.kels_url.clone()))
+                .collect()
+        };
+
+        if peers.is_empty() {
+            warn!("Resync loop: no peers available, re-queuing all entries");
+            let mut conn = retry_queue.as_ref().clone();
+            for entry in &entries {
+                let _ = redis::cmd("SADD")
+                    .arg(RETRY_QUEUE_KEY)
+                    .arg(entry)
+                    .query_async::<()>(&mut conn)
+                    .await;
+            }
+            continue;
+        }
+
+        // Shuffle peers for load distribution
+        let mut shuffled_peers = peers.clone();
+        {
+            let mut rng = rand::thread_rng();
+            shuffled_peers.shuffle(&mut rng);
+        }
+
+        for entry in &entries {
+            // Parse prefix:said
+            let Some((prefix, said)) = entry.split_once(':') else {
+                warn!("Resync loop: invalid entry format: {}", entry);
+                continue;
+            };
+
+            let mut all_not_found = true;
+            let mut resolved = false;
+
+            for (_peer_id, kels_url) in &shuffled_peers {
+                let peer_client = KelsClient::new(kels_url);
+
+                // Cheap pre-check: does the peer have this event?
+                match peer_client.event_exists(said).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // Peer doesn't have it — try next
+                        continue;
+                    }
+                    Err(_) => {
+                        // Peer is down — try next
+                        all_not_found = false;
+                        continue;
+                    }
+                }
+
+                all_not_found = false;
+
+                // Peer has the event — fetch the KEL
+                // Check if we have local state for this prefix
+                let local_events = match local_client.get_kel(prefix).await {
+                    Ok(kel) => Some(kel),
+                    Err(KelsError::KeyNotFound(_)) => None,
+                    Err(e) => {
+                        warn!("Resync loop: failed to get local KEL for {}: {}", prefix, e);
+                        break;
+                    }
+                };
+
+                let events = if let Some(ref kel) = local_events
+                    && let Some(last) = kel.events().last()
+                {
+                    // Delta fetch
+                    match peer_client.fetch_kel_since(prefix, &last.event.said).await {
+                        Ok(events) => events,
+                        Err(KelsError::KeyNotFound(_)) => {
+                            // Since SAID not found — try full fetch
+                            match peer_client.get_kel(prefix).await {
+                                Ok(kel) => kel.events().to_vec(),
+                                Err(_) => continue,
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                } else {
+                    // No local state — full fetch
+                    match peer_client.get_kel(prefix).await {
+                        Ok(kel) => kel.events().to_vec(),
+                        Err(KelsError::KeyNotFound(_)) => continue,
+                        Err(_) => continue,
+                    }
+                };
+
+                if events.is_empty() {
+                    continue;
+                }
+
+                // Submit to local KELS
+                match local_client.submit_events(&events).await {
+                    Ok(result) => {
+                        if result.applied {
+                            info!(
+                                "Resync loop: applied {} events for prefix {}",
+                                events.len(),
+                                prefix
+                            );
+                        } else {
+                            debug!(
+                                "Resync loop: events not applied for prefix {} (possibly already synced)",
+                                prefix
+                            );
+                        }
+                        resolved = true;
+                        break;
+                    }
+                    Err(KelsError::ContestedKel(msg)) => {
+                        warn!("Resync loop: KEL contested for {}: {}", prefix, msg);
+                        resolved = true;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("Resync loop: submit failed for {}: {}", prefix, e);
+                        continue;
+                    }
+                }
+            }
+
+            // If all peers returned 404, drop the entry (SAID superseded)
+            if all_not_found {
+                debug!(
+                    "Resync loop: all peers returned 404 for {}, dropping entry",
+                    entry
+                );
+                continue;
+            }
+
+            // If not resolved, re-add to retry queue for next cycle
+            if !resolved {
+                let mut conn = retry_queue.as_ref().clone();
+                let _ = redis::cmd("SADD")
+                    .arg(RETRY_QUEUE_KEY)
+                    .arg(entry)
+                    .query_async::<()>(&mut conn)
+                    .await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -920,6 +1153,7 @@ mod tests {
             local_peer_id,
             PeerScope::Regional,
             recently_stored,
+            None,
         )
     }
 
@@ -1034,6 +1268,7 @@ mod tests {
             local_peer_id,
             PeerScope::Regional,
             recently_stored,
+            None,
         )
         .await;
         assert!(result.is_ok());

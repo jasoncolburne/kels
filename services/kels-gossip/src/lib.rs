@@ -89,6 +89,8 @@ pub struct Config {
     pub allowlist_refresh_interval_secs: u64,
     /// HTTP server port for ready status endpoint
     pub http_port: u16,
+    /// Periodic resync interval in seconds (retries failed gossip fetches)
+    pub resync_interval_secs: u64,
 }
 
 /// Raw environment values before validation
@@ -106,6 +108,7 @@ pub struct EnvValues {
     pub topic: Option<String>,
     pub allowlist_refresh_interval_secs: Option<u64>,
     pub http_port: Option<u16>,
+    pub resync_interval_secs: Option<u64>,
 }
 
 impl Config {
@@ -153,6 +156,7 @@ impl Config {
                 .unwrap_or_else(|| gossip::DEFAULT_TOPIC.to_string()),
             allowlist_refresh_interval_secs: env.allowlist_refresh_interval_secs.unwrap_or(60),
             http_port: env.http_port.unwrap_or(80),
+            resync_interval_secs: env.resync_interval_secs.unwrap_or(300),
         })
     }
 
@@ -173,6 +177,9 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok()),
             http_port: std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()),
+            resync_interval_secs: std::env::var("RESYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
         };
 
         Self::from_values(env)
@@ -509,10 +516,30 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
+    // Create Redis connection manager for retry queue
+    let retry_queue: sync::OptionalRetryQueue = match redis::Client::open(config.redis_url.as_str())
+    {
+        Ok(client) => match redis::aio::ConnectionManager::new(client).await {
+            Ok(conn) => {
+                info!("Created Redis connection for retry queue");
+                Some(std::sync::Arc::new(conn))
+            }
+            Err(e) => {
+                error!("Failed to create Redis connection for retry queue: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            error!("Failed to open Redis client for retry queue: {}", e);
+            None
+        }
+    };
+
     // Spawn sync handler (needs ownership of event_rx)
     let kels_url = config.kels_url.clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
+    let sync_retry_queue = retry_queue.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
@@ -522,12 +549,30 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             peer_id,
             local_scope,
             recently_stored,
+            sync_retry_queue,
         )
         .await
         {
             error!("Sync handler error: {}", e);
         }
     });
+
+    // Spawn periodic resync loop (retries failed gossip fetches)
+    if let Some(ref rq) = retry_queue {
+        let resync_retry_queue = rq.clone();
+        let resync_allowlist = allowlist.clone();
+        let resync_kels_url = config.kels_url.clone();
+        let resync_interval = Duration::from_secs(config.resync_interval_secs);
+        tokio::spawn(async move {
+            sync::run_resync_loop(
+                resync_retry_queue,
+                resync_allowlist,
+                resync_kels_url,
+                resync_interval,
+            )
+            .await;
+        });
+    }
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
