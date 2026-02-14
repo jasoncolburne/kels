@@ -14,7 +14,7 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 | GET | `/api/hsm/keys/:label/public` | None | Get compressed public key (CESR qb64) |
 | POST | `/api/hsm/keys/:label/sign` | None | Sign data with ECDSA P-256; returns signature + public key (CESR qb64) |
 
-**Concerns:**
+**Notes:**
 - Label validation: alphanumeric + `-_.`, max 128 chars
 - All crypto values encoded as CESR qb64
 - Sign endpoint accepts base64url-encoded data
@@ -32,7 +32,7 @@ HSM-backed key management for the registry's cryptographic identity (KEL). No au
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 
-**Concerns:**
+**Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
 - KEL is read fresh from DB on each request (captures externally anchored events)
 - Sign returns qb64-encoded signature + public key
@@ -52,7 +52,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 | POST | `/api/kels/kels` | None | Batch fetch KELs for multiple prefixes (max 50) |
 | POST | `/api/kels/prefixes` | **Signed request** | List prefix states (paginated) for P2P sync |
 
-**Concerns:**
+**Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires ECDSA signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
 - `get_kel` uses Redis cache with pub/sub invalidation; falls back to DB on miss
@@ -94,7 +94,7 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 | DELETE | `/api/admin/proposals/:id` | **Federation member** | Withdraw a proposal (requires `withdrawn_at` in vote) |
 | POST | `/api/admin/peers` | **Localhost only** | Add a regional peer (bypasses Raft) |
 
-**Concerns:**
+**Notes:**
 - Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_id in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
 - Admin API: `is_localhost()` checks `ConnectInfo<SocketAddr>.ip().is_loopback()` — returns 403 otherwise
@@ -126,7 +126,7 @@ libp2p-based gossip network for KEL replication across nodes.
 | POST | `/api/kels/prefixes` | **Signed request** | Fetch paginated prefix list for bootstrap (calls peer's KELS service) |
 | POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
 
-**Concerns:**
+**Notes:**
 - Transport: Noise protocol provides authenticated encryption; PeerId derived from ECDSA P-256 key
 - AllowlistBehaviour: unknown inbound peers trigger allowlist refresh; pending peers held until verified or disconnected
 - gossipsub config: heartbeat 1s, strict validation, mesh min 2 / target 3
