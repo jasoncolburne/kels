@@ -60,7 +60,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 
 ## KELS Registry Service
 
-Peer allowlist management, node registration, federation consensus. Runs in standalone or federated mode.
+Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (core peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
 
 ### Always Available
 
