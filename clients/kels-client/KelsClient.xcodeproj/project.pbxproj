@@ -10,7 +10,6 @@
 		B1000001000000000000001A /* KelsClientApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000A /* KelsClientApp.swift */; };
 		B1000001000000000000001B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000B /* ContentView.swift */; };
 		B1000001000000000000001C /* KelsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000C /* KelsViewModel.swift */; };
-		B1000001000000000000001D /* Generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000D /* Generated.swift */; };
 		B1000001000000000000001E /* KelsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000E /* KelsClient.swift */; };
 		B1000001000000000000001G /* KelsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000G /* KelsTypes.swift */; };
 		B1000001000000000000001F /* libkels_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000F /* libkels_ffi.a */; };
@@ -20,7 +19,6 @@
 		B1000001000000000000000A /* KelsClientApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KelsClientApp.swift; sourceTree = "<group>"; };
 		B1000001000000000000000B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B1000001000000000000000C /* KelsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KelsViewModel.swift; sourceTree = "<group>"; };
-		B1000001000000000000000D /* Generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Generated.swift; sourceTree = "<group>"; };
 		B1000001000000000000000E /* KelsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KelsClient.swift; sourceTree = "<group>"; };
 		B1000001000000000000000G /* KelsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KelsTypes.swift; sourceTree = "<group>"; };
 		B1000001000000000000000F /* libkels_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libkels_ffi.a; path = "../../target/aarch64-apple-ios-sim/release/libkels_ffi.a"; sourceTree = "<group>"; };
@@ -57,7 +55,6 @@
 				B1000001000000000000000A /* KelsClientApp.swift */,
 				B1000001000000000000000B /* ContentView.swift */,
 				B1000001000000000000000C /* KelsViewModel.swift */,
-				B1000001000000000000000D /* Generated.swift */,
 			);
 			path = KelsClientApp;
 			sourceTree = "<group>";
@@ -165,7 +162,6 @@
 				B1000001000000000000001A /* KelsClientApp.swift in Sources */,
 				B1000001000000000000001B /* ContentView.swift in Sources */,
 				B1000001000000000000001C /* KelsViewModel.swift in Sources */,
-				B1000001000000000000001D /* Generated.swift in Sources */,
 				B1000001000000000000001E /* KelsClient.swift in Sources */,
 				B1000001000000000000001G /* KelsTypes.swift in Sources */,
 			);

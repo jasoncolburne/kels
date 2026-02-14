@@ -47,18 +47,6 @@ class KelsViewModel: ObservableObject {
         ("registry-c", "http://kels-registry.kels-registry-c.kels")
     ]
 
-    // Parse TRUSTED_REGISTRY_PREFIXES from Generated.swift (compiled-in for security)
-    static let trustedPrefixes: [String] = {
-        TRUSTED_REGISTRY_PREFIXES
-            .split(separator: ",")
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }()
-
-    /// Verify a registry prefix is in the compiled-in trusted set
-    static func isTrustedPrefix(_ prefix: String) -> Bool {
-        trustedPrefixes.contains(prefix)
-    }
     @Published var selectedRegistry: String = "registry-a" {
         didSet {
             UserDefaults.standard.set(selectedRegistry, forKey: selectedRegistryKey)
@@ -183,14 +171,11 @@ class KelsViewModel: ObservableObject {
         log("Discovering nodes from \(registryUrl)...")
 
         do {
-            // Fetch the registry's prefix from its KEL and verify it's trusted
+            // Fetch the registry's prefix from its KEL (trusted prefix verification
+            // happens in libkels via compiled-in TRUSTED_REGISTRY_PREFIXES)
             log("Fetching registry prefix...")
             let registryPrefix = try await NodeDiscovery.fetchRegistryPrefix(registryUrl: registryUrl)
-
-            guard Self.isTrustedPrefix(registryPrefix) else {
-                throw NSError(domain: "KelsClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "Registry prefix '\(registryPrefix)' is not trusted"])
-            }
-            log("Registry prefix verified: \(registryPrefix)")
+            log("Registry prefix: \(registryPrefix)")
 
             discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
             log("Found \(discoveredNodes.count) nodes")
