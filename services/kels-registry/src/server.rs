@@ -25,7 +25,6 @@ use crate::{
 
 pub fn create_router(
     state: Arc<AppState>,
-    repo: Arc<RegistryRepository>,
     registry_kel_state: Arc<RegistryKelState>,
     federation_state: Option<Arc<FederationState>>,
 ) -> Router {
@@ -85,10 +84,8 @@ pub fn create_router(
             .route("/api/admin/peers", post(handlers::admin_add_regional_peer))
             .with_state(fed_state)
     } else {
-        // Standalone mode: peers come from local database only
+        // Standalone mode: no peer endpoints (identity bootstrap only)
         Router::new()
-            .route("/api/peers", get(handlers::list_peers))
-            .with_state(repo)
     };
 
     // Merge all routers
@@ -201,7 +198,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         }
     };
 
-    let app = create_router(state, repo, registry_kel_state, federation_state)
+    let app = create_router(state, registry_kel_state, federation_state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
     info!(

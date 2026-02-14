@@ -72,13 +72,7 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 | POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Draining) |
 | GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service) |
 
-### Standalone Mode Only
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/api/peers` | None | List all active peers with full version history |
-
-### Federation Mode Only
+### Federation Mode
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
