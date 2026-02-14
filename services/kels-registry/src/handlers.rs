@@ -529,10 +529,9 @@ pub async fn admin_submit_proposal(
         FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
             format!("Proposal already exists: {}", proposal_id),
         )),
-        FederationResponse::SaidMismatch(msg) => Err(ApiError::bad_request(format!(
-            "SAID mismatch: {}",
-            msg
-        ))),
+        FederationResponse::SaidMismatch(msg) => {
+            Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
+        }
         FederationResponse::NotAuthorized(msg) => Err(ApiError::forbidden(msg)),
         FederationResponse::HasVotes(msg) => Err(ApiError::bad_request(msg)),
         FederationResponse::ProposalNotFound(id) => {

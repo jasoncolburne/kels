@@ -67,7 +67,10 @@ pub fn create_router(
             )
             // Admin API (localhost only) for proposal management
             .route("/api/admin/proposals", get(handlers::admin_list_proposals))
-            .route("/api/admin/proposals", post(handlers::admin_submit_proposal))
+            .route(
+                "/api/admin/proposals",
+                post(handlers::admin_submit_proposal),
+            )
             .route(
                 "/api/admin/proposals/:proposal_id",
                 get(handlers::admin_get_proposal),
