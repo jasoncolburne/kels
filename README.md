@@ -6,11 +6,11 @@ KELS is a federated decentralized key management infrastructure (DKMI). It provi
 
 KELS implements a key event log system where:
 
-- **Pre-rotation commitment**: Each event commits to the *next* signing key before it's needed
-- **Recovery keys**: A separate recovery key enables recovery from signing key compromise
-- **Divergence detection**: Conflicting events at the same generation are detected and stored
-- **Recovery protocol**: Legitimate owners can recover from adversarial events using their recovery key
-- **Contest mechanism**: When both parties perform recovery operations, the KEL is permanently frozen
+- Each event commits to the *next* signing key before it's needed (**Pre-rotation commitment**)
+- A separate recovery key enables recovery from signing key compromise (**Recovery keys**)
+- Conflicting events at the same generation are detected and stored (**Divergence detection**)
+- Legitimate owners can recover from adversarial events using their recovery key (**Recovery protocol**)
+- When both parties perform recovery operations, the KEL is permanently frozen (**Contest mechanism**)
 
 All events are self-addressing (content-addressed via SAID) and cryptographically signed, making the entire log tamper-evident and end-verifiable. In the event that a divergent KEL is recovered, the removed events
 can be requested alongside the recovered KEL in the form of an audit query.
