@@ -294,16 +294,16 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 The provided Garden configuration is a test harness, not a production deployment template. This project is a work in progress and the following items would need to be addressed before any production deployment:
 
 - **Real HSMs**: The current deployment uses SoftHSM2 with hardcoded PINs. Production requires hardware-backed key storage (CloudHSM, YubiHSM, Thales, etc.)
-- **TLS everywhere**: All inter-service communication (KELS, gossip, registry, HSM, Redis, PostgreSQL) is currently plaintext HTTP. Production requires TLS/mTLS between all services
+- **TLS**: Inter-service communication is plaintext HTTP. This is acceptable for the data plane — all data is public by design and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC uses `SignedFederationRpc` for integrity, and gossip uses libp2p Noise for authenticated encryption. TLS may still be desirable for defense-in-depth on internal services (HSM, Redis, PostgreSQL) that carry secrets or credentials
 - **Secrets management**: Database credentials, HSM PINs, and other secrets are hardcoded or passed as plain environment variables. Use a secrets manager (Vault, AWS Secrets Manager, etc.)
 - **Database hardening**: PostgreSQL runs with default superuser credentials, no replication, no backup strategy, and no encryption at rest. Connection pool sizing is unconfigured
 - **Redis authentication and persistence**: Redis runs with no authentication and no persistence (`--appendonly no`)
-- **Rate limiting**: No rate limiting exists on any endpoint — the service is vulnerable to denial-of-service
+- **Rate limiting**: Per-IP rate limiting (GovernorLayer, 200 req/s sustained, 1000 burst) and per-prefix rate limiting on event submission are implemented, along with a 5 MiB body size limit. The gossip pending verification set is bounded (max 200 peers, 300s TTL). Further tuning may be needed for production traffic patterns
 - **Container security**: All containers run as root with no `securityContext`, no read-only filesystem, and no resource quotas beyond memory limits
 - **Network policies**: No Kubernetes NetworkPolicies are defined — all services are reachable from anywhere in the cluster
 - **Audit logging**: No structured audit trail for authentication failures, peer changes, or sensitive operations
 - **Observability**: No metrics collection (Prometheus), no distributed tracing, default log level is DEBUG
-- **Authenticated endpoints**: The `/api/kels/prefixes` endpoint is unauthenticated (or bypassed with `dev-tools`). Public endpoints like `/api/kels/events` and `/api/kels/kel/:prefix` have no access control
+- **Authenticated endpoints**: The `/api/kels/prefixes` endpoint uses nonce-based request dedup to prevent replay attacks. Public endpoints like `/api/kels/events` and `/api/kels/kel/:prefix` have no access control — this is by design, as all data is public and events are cryptographically validated
 - **Chaos and resilience testing**: Network partition simulation, node failure recovery, split-brain scenarios, and database failover have not been systematically tested
 - **Core peer removal**: No API exists for removing core peers with multi-party approval — only internal sync cleanup is implemented
 - **Security audit**: The cryptographic protocols and implementation need independent review
