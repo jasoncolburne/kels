@@ -280,11 +280,14 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [KEL Merge Protocol](docs/kel-merge.md) - Event submission and merge logic
 - [KEL Verification](docs/kel-verification.md) - Integrity and authenticity verification
 - [Divergence Detection and Recovery](docs/divergence-detection.md) - Detailed protocol documentation
-- [Attack Surface](docs/attack-surface.md) - Security analysis
 - [Gossip Protocol](docs/gossip.md) - Cross-deployment synchronization
 - [Node Registry](docs/registry.md) - Node registration, discovery, and bootstrap sync
 - [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
 - [Multi-Registry Federation](docs/federation.md) - Federated registries with Raft consensus
+- [Federation State Machine](docs/federation-state-machine.md) - Raft log, proposals, and voting
+- [API Endpoints](docs/endpoints.md) - Full endpoint reference
+- [Node Attack Surface](docs/node-attack-surface.md) - Security analysis of KELS data-plane services
+- [Registry Attack Surface](docs/registry-attack-surface.md) - Security analysis of federation and registry
 
 ## Production Readiness
 
