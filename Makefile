@@ -14,7 +14,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries
 
 all: fmt-check deny clippy test build
 
@@ -107,24 +107,30 @@ coverage:
 kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
 
-test-comprehensive: clean-garden
+configure-dns:
+	# Configure k8s dns
 	garden run coredns-config
 
+reset-federation-json:
+	# Reset federation prefixes
 	echo '{}' > .kels/federated-registries.json
 
-	# Deploy registries and fetch prefixes
-	garden deploy --env=registry-a && garden run fetch-registry-prefix --env=registry-a
-	garden deploy --env=registry-b && garden run fetch-registry-prefix --env=registry-b
-	garden deploy --env=registry-c && garden run fetch-registry-prefix --env=registry-c
-
-	# Redeploy registries with federation config (now that all prefixes are known)
+deploy-registries:
+	# Deploy registries
 	garden deploy --env=registry-a
 	garden deploy --env=registry-b
 	garden deploy --env=registry-c
 
-	# Wait for federation leader election
-	sleep 3
+fetch-prefixes:
+	# Fetch prefixes
+	garden run fetch-registry-prefix --env=registry-a
+	garden run fetch-registry-prefix --env=registry-b
+	garden run fetch-registry-prefix --env=registry-c
 
+redeploy-registries:
+	$(MAKE) deploy-registries
+
+deploy-core-nodes:
 	# Deploy nodes and add as core peers via multi-party approval
 	garden deploy --env=node-a
 	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
@@ -150,6 +156,7 @@ test-comprehensive: clean-garden
 	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
+deploy-regional-nodes:
 	# Deploy node-d as regional to registry-a only (not replicated via federation)
 	garden deploy --env=node-d && garden run add-regional-node-d --env=registry-a
 	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
@@ -165,6 +172,9 @@ test-comprehensive: clean-garden
 	kubectl rollout restart deployment/kels-gossip -n kels-node-f && kubectl rollout status deployment/kels-gossip -n kels-node-f
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
+deploy-all-nodes: deploy-core-nodes deploy-regional-nodes
+
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registries fetch-prefixes redeploy-registries deploy-all-nodes
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh 
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
