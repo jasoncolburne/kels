@@ -134,8 +134,8 @@ These are intentionally public. The security model relies on cryptographic verif
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
-5. **No TLS at application level** — relies on overlay network encryption or external termination
-6. **gossipsub scope filtering is application-level** — protocol layer doesn't enforce boundaries
+5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption
+6. ~~**gossipsub scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
 
 ## Roadmap
 
@@ -154,15 +154,10 @@ The admin API relies solely on `is_localhost()` for access control. Proposal and
 
 - [ ] Evaluate whether non-federation admin endpoints need an additional authentication layer (e.g., bearer token, mTLS) for defense-in-depth beyond localhost — relevant if container networking or reverse proxy misconfiguration could expose loopback
 
-### TLS between services (addresses residual risk 5)
+### ~~TLS between services (addresses residual risk 5)~~
 
-No TLS at the application level. Inter-service HTTP traffic (registry ↔ identity, registry ↔ HSM, gossip ↔ registry) relies on overlay network encryption or external termination.
+~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
 
-- [ ] Add mTLS or service mesh sidecar for inter-service communication within the cluster
-- [ ] Add TLS termination for federation RPC between registries (currently relies on `SignedFederationRpc` for integrity but not confidentiality)
+### ~~Gossip scope enforcement (addresses residual risk 6)~~
 
-### Gossip scope enforcement (addresses residual risk 6)
-
-Scope filtering (Regional vs Core vs All) is application-level. The gossipsub mesh delivers all messages to all subscribers; filtering happens after receipt.
-
-- [ ] Evaluate per-scope gossipsub topics (e.g., `kels/events/v1/regional`, `kels/events/v1/core`) so the protocol layer enforces scope boundaries — trade-off is increased mesh complexity and potential message duplication at bridging nodes
+~~Scope filtering (Regional vs Core vs All) is application-level.~~ Not a security concern — scope is a routing optimization, not a security boundary. All nodes replicate the same data. Scope violations at worst cause redundant fetches, handled by existing dedup.

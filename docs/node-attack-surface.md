@@ -169,8 +169,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Man-in-the-Middle (HTTP)
 
 **Attack:** Intercept HTTP traffic between gossip nodes and KELS services.
-- **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. However, HTTP responses (KEL fetches) are not signed at the transport level.
-- **Residual risk:** No TLS at the application level. Relies on overlay network encryption or external TLS termination. A MITM could observe KEL data (which is public) or inject invalid events (which fail signature validation).
+- **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. All data is public by design (KELs must be accessible for verification) and end-verifiable (SAID chaining + cryptographic signatures). A MITM can observe public data or inject modified events that fail signature validation. TLS is not required because there is no confidential data to protect and integrity is already guaranteed at the application layer.
 
 ### Man-in-the-Middle (libp2p)
 
@@ -258,10 +257,10 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ## Summary of Residual Risks
 
 1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
-2. **No TLS at application level** — relies on overlay network encryption or external termination
+2. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable via signatures and SAID chaining. TLS would add confidentiality for non-confidential data and integrity for data that is already tamper-evident
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. **Bootstrap peer can serve outdated snapshots** — caught by resync but creates a delay window
-5. **Gossip scope filtering is application-level** — protocol layer doesn't enforce boundaries
+5. ~~**Gossip scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
 6. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
 7. **Redis state flags lack authentication** — relies on pod-level network isolation
 8. **No real-time detection of selective message dropping** — relies on mesh redundancy and periodic resync
@@ -279,19 +278,16 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 - [x] Add per-peer rate limiting on gossip announcement processing (8192 fetches/min per peer)
 - [x] Add per-prefix submission throttle to `submit_events` (32 submissions/min per prefix, in-memory via DashMap)
 
-### TLS between services (addresses residual risk 2)
+### ~~TLS between services (addresses residual risk 2)~~
 
-No TLS at the application level. HTTP traffic between gossip nodes and KELS services, and between KELS and Redis, relies on overlay network encryption or external termination.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses libp2p Noise for authenticated encryption on the p2p transport.
 
-- [ ] Add mTLS or service mesh sidecar for inter-service communication within the cluster
-- [ ] Add TLS for gossip node ↔ KELS HTTP fetches (currently events are signed but transport is unencrypted)
-
-### Gossip protocol hardening (addresses residual risks 5, 8, 9)
+### Gossip protocol hardening (addresses residual risks 8, 9)
 
 Scope filtering is application-level. There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
 - [x] Fix event partitioning for contest propagation — `partition_events` now places contest events (`cnt`) in the second (recovery) batch, ensuring the non-contest fork event establishes divergence first. Previously, `dec + cnt` pairs could be partitioned with `cnt` first, which was rejected by merge ("Contest requires divergence")
-- [ ] Evaluate per-scope gossipsub topics (e.g., `kels/events/v1/regional`, `kels/events/v1/core`) to enforce scope at the protocol layer
+- ~~Evaluate per-scope gossipsub topics~~ — not a security concern: scope filtering is a routing optimization, not a security boundary. All nodes replicate the same data. Scope violations at worst cause redundant fetches, which `event_exists` dedup already handles
 - [ ] Add gossip liveness monitoring — periodic heartbeat announcements from core nodes, with alerts when a region stops receiving updates for a configurable interval
 - [ ] Add negative caching for failed KEL fetches — if an HTTP fetch for an announced `prefix:said` fails (404, timeout), cache the failure for a short TTL to avoid repeated fetches of the same non-existent data
 
