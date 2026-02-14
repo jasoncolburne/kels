@@ -6,6 +6,8 @@ Analysis of attack vectors against the KELS data-plane services (KELS, gossip, b
 
 The KELS service has no identity or signing authority. It stores and serves KELs but cannot forge events. All data is tamper-evident, signed, and end-verifiable. The security model relies entirely on cryptographic verification, not access control — any valid signed event is accepted regardless of source.
 
+**Zero-trust storage:** Data read from any store (PostgreSQL, Redis) is treated as untrusted input. All KEL data is cryptographically re-verified (signatures, SAID chains) before use. Peer allowlists are verified via the full proposal DAG with thresholds computed from compiled-in `trusted_prefixes()`. Stores are persistence layers, not trust anchors.
+
 **Assumptions:**
 - HSM and identity services are pod-internal only (not exposed to the overlay network)
 - Clients hold private keys in hardware-backed storage (Secure Enclave, HSM)
@@ -149,13 +151,13 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Malicious Bootstrap Peer
 
 **Attack:** A compromised peer serves corrupted or incomplete KELs during bootstrap sync.
-- **Mitigation:** All fetched events are submitted to the local KELS service, which validates all signatures and enforces merge invariants. Corrupted events fail validation. Incomplete KELs are partially synced; subsequent gossip fills the gaps.
+- **Mitigation:** All fetched events are submitted to the local KELS service, which validates all signatures and enforces merge invariants. Corrupted events fail validation. Incomplete KELs are partially synced; subsequent gossip fills the gaps. The peer itself must be in the verified allowlist (proposal DAG verified, threshold met from compiled-in `trusted_prefixes()`).
 - **Residual risk:** A malicious peer could serve a valid but outdated snapshot, delaying initial sync. The resync phase (step 4 in bootstrap) catches events missed between preload and gossip connection.
 
 ### Bootstrap Prefix Enumeration
 
 **Attack:** Use the `list_prefixes` endpoint to enumerate all prefixes stored on a node.
-- **Mitigation:** `list_prefixes` requires a signed request (ECDSA P-256 signature over the JSON payload). The signer's peer_id must be in the authorized peer allowlist. A 60-second timestamp window prevents replay. Unknown peer_ids trigger an allowlist refresh and recheck.
+- **Mitigation:** `list_prefixes` requires a signed request (ECDSA P-256 signature over the JSON payload). The signer's peer_id must be in the authorized peer allowlist — which is itself verified via the full proposal DAG (structural integrity, KEL anchoring, threshold from compiled-in `trusted_prefixes()`). A 60-second timestamp window prevents replay. Unknown peer_ids trigger an allowlist refresh and recheck.
 - **Residual risk:** Any authorized gossip peer can enumerate all prefixes. KELs are public by design, so this is information disclosure but not a confidentiality breach.
 
 ### Bootstrap Response Size Explosion
@@ -203,19 +205,19 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Pub/Sub Injection
 
 **Attack:** If an attacker can access Redis, inject fake `kel_updates` messages to trigger spurious gossip announcements.
-- **Mitigation:** Redis is assumed to be pod-internal. The gossip node validates events it fetches via HTTP before storing them — injected Redis messages cause HTTP fetches but don't corrupt state.
+- **Mitigation:** Redis is assumed to be pod-internal. The gossip node validates events it fetches via HTTP before storing them — injected Redis messages cause HTTP fetches but don't corrupt state. All fetched KEL data is cryptographically verified (signatures, SAID chains) regardless of source.
 - **Residual risk:** A compromised Redis could trigger many wasted HTTP fetches. No authentication on the Redis pub/sub channel.
 
 ### Cache Poisoning
 
-**Attack:** Modify cached KEL data in Redis to serve stale or incorrect KELs.
-- **Mitigation:** Cache is used for read performance only. KEL writes always go through the database with full validation. Cache invalidation is pub/sub-based. Verified peer records in Redis (`kels:verified-peer:*`) are refreshed from the registry on cache miss.
-- **Residual risk:** A compromised Redis could serve stale KEL data from cache until the next cache refresh. However, all consumers re-verify KELs cryptographically, so stale data is detected.
+**Attack:** Modify cached KEL data in Redis to serve stale or incorrect KELs, or tamper with verified peer records.
+- **Mitigation:** Cache is used for read performance only. KEL writes always go through the database with full validation. Cache invalidation is pub/sub-based. Critically, no consumer trusts cached data — all data read from Redis (KELs, peer records, allowlists) is cryptographically re-verified before use. KELs are verified via signature chains and SAID integrity. Peer records are verified via the full proposal DAG (structural integrity, proposal anchoring in proposer's KEL, vote anchoring in voters' KELs, threshold from compiled-in `trusted_prefixes()`). A compromised Redis cannot influence trust decisions.
+- **Residual risk:** A compromised Redis could serve stale data, causing temporary inconsistency (e.g., a node not seeing a recently added peer until the next refresh). This is an availability concern, not a security one — stale data passes re-verification if it was valid when cached, but the node may miss recent updates.
 
 ### Gossip Ready Flag Manipulation
 
 **Attack:** Set `kels:gossip:ready` to `true` prematurely, causing the node to report ready before bootstrap is complete.
-- **Mitigation:** The `/ready` endpoint reads this flag. A premature `ready` could cause load balancers to route traffic to an incompletely synced node.
+- **Mitigation:** The `/ready` endpoint reads this flag. A premature `ready` could cause load balancers to route traffic to an incompletely synced node. This is an availability concern — the node would serve incomplete data, but all data it does serve is cryptographically verified.
 - **Residual risk:** No authentication on Redis state flags.
 
 ## Client-Side Attacks
@@ -259,10 +261,10 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
 2. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable via signatures and SAID chaining. TLS would add confidentiality for non-confidential data and integrity for data that is already tamper-evident
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
-4. **Bootstrap peer can serve outdated snapshots** — caught by resync but creates a delay window
+4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
 5. ~~**Gossip scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
 6. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
-7. **Redis state flags lack authentication** — relies on pod-level network isolation
+7. **Redis state flags lack authentication** — relies on pod-level network isolation; impact limited to availability (all data from Redis is cryptographically re-verified)
 8. **No real-time detection of selective message dropping** — relies on mesh redundancy and periodic resync
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
@@ -291,15 +293,13 @@ Scope filtering is application-level. There is no real-time detection of selecti
 - [ ] Add gossip liveness monitoring — periodic heartbeat announcements from core nodes, with alerts when a region stops receiving updates for a configurable interval
 - [ ] Add negative caching for failed KEL fetches — if an HTTP fetch for an announced `prefix:said` fails (404, timeout), cache the failure for a short TTL to avoid repeated fetches of the same non-existent data
 
-### Bootstrap integrity (addresses residual risk 4)
+### ~~Bootstrap integrity (addresses residual risk 4)~~
 
-A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.
-
-- [ ] Cross-validate bootstrap data against multiple peers — compare prefix counts and tip SAIDs from at least 2 peers before accepting the snapshot, falling back to the peer with the most recent data
+~~A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.~~ Accepted risk. Cross-validating against multiple peers is expensive at scale (merging prefix sets across all nodes). The resync phase already catches the gap, and all fetched data is cryptographically verified — the worst case is a temporary delay, not state corruption.
 
 ### Redis authentication (addresses residual risk 7)
 
-Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication. A compromised Redis can manipulate node readiness or peer verification cache.
+Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication. A compromised Redis can manipulate node readiness or peer verification cache. Impact is limited to availability — all data read from Redis is cryptographically re-verified before use, so a compromised Redis cannot influence trust decisions. The remaining risk is stale data or premature readiness signals.
 
 - [ ] Enable Redis AUTH (password or ACL) for all Redis connections
 - [ ] Evaluate signing Redis state values with the node's HSM key — allows consumers to verify state integrity even if Redis is compromised

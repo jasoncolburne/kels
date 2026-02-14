@@ -6,6 +6,8 @@ Analysis of attack vectors against the KELS registry federation and gossip netwo
 
 The system's root of trust is **compile-time trusted registry prefixes** (`TRUSTED_REGISTRY_PREFIXES`). Every verification chain terminates at a KEL whose prefix matches one of these values. Changing the trust anchors requires recompiling the binary.
 
+**Zero-trust storage:** Data read from any store (PostgreSQL, Redis, Raft state machine) is treated as untrusted input. Every consumer independently re-verifies structural integrity (SAIDs, chain linkage), proposal DAGs (votes, threshold, withdrawal status), and KEL anchoring before making trust decisions. Stores are persistence layers, not trust anchors.
+
 **Assumptions:**
 - HSM service is not network-accessible outside its pod
 - Identity service is not network-accessible outside its pod
@@ -16,24 +18,25 @@ The system's root of trust is **compile-time trusted registry prefixes** (`TRUST
 
 A compromised leader controls what enters the Raft log.
 
-**Attack:** Leader writes `AddPeer` entries for peers that were never approved through the proposal/voting process.
+**Attack:** Leader writes `AddPeer` entries for peers that were never approved through the proposal/voting process, or strips withdrawal records from proposal chains to make withdrawn proposals appear approved.
 
 **Mitigations:**
-- **State machine verification**: On Raft log replay, `apply()` checks every `AddPeer` with `PeerScope::Core` against completed proposals. Each approval vote must pass `vote.verify()` (SAID integrity) and have its SAID anchored in the voter's KEL. If verified voters < threshold, the entry is silently rejected.
-- **Gossip allowlist**: `refresh_allowlist()` independently fetches completed proposals and re-verifies every core peer's votes (SAID integrity + KEL anchoring). Peers without sufficient verified votes are excluded from the allowlist.
-- **Defense-in-depth**: Even if a rogue leader inserts a peer, followers reject it during apply, and gossip nodes reject it during allowlist refresh.
+- **State machine verification**: On Raft log replay, `apply()` checks every `AddPeer` with `PeerScope::Core` against completed proposals. Each approval vote must pass `vote.verify_said()` (SAID integrity) and have its SAID anchored in the voter's KEL. If verified voters < threshold, the entry is silently rejected.
+- **Registry node authorization**: `verify_and_authorize()` independently verifies core peers on every signed request (register, deregister, status update). Full DAG verification: `ProposalWithVotes::verify()` for structural integrity, explicit withdrawal check, proposal record anchoring in proposer's KEL, and vote anchoring in voters' KELs. Data read from the database is never trusted — it is always re-verified.
+- **Gossip allowlist**: `refresh_allowlist()` independently fetches completed proposals and performs full DAG verification (`ProposalWithVotes::verify()`), verifies proposal anchoring in proposer's KEL, and verifies each approval vote's anchoring in the voter's KEL. Threshold and member set are derived from compiled-in `trusted_prefixes()`, not from registry responses. Peers without sufficient verified votes are excluded from the allowlist.
+- **Defense-in-depth**: Even if a rogue leader inserts a peer into the database, every consumer independently re-verifies the full proposal chain, votes, and anchoring before trusting it.
 
-**Residual risk:** A leader could manipulate `ProposeCorePeer` or `VoteCorePeer` entries in the Raft log. However, votes are verified by SAID (tamper-evident) and anchored in voter KELs (unforgeable without the voter's signing key).
+**Residual risk:** A leader colluding with voters could add fake votes to a proposal that the proposer intended to withdraw, then strip the withdrawal record. The vote anchoring catches fake votes (they must be anchored in each voter's KEL), but if the colluding voters submitted real anchored votes before the proposer could withdraw, the withdrawal cannot be enforced. The system prevents withdrawal once votes have been cast as a design invariant.
 
 ## Rogue Federation Member (Non-Leader)
 
 A compromised follower cannot directly write to the Raft log but could:
 
 **Attack 1 — Vote manipulation:** Submit forged votes through the admin API.
-- **Mitigation:** Votes are `SelfAddressed` records. The state machine verifies `vote.verify()` (SAID matches content). The vote SAID must be anchored in the voter's KEL, which requires the voter's actual signing key.
+- **Mitigation:** Votes are `SelfAddressed` records. The proposal handler verifies `vote.verify_said()` (SAID matches content) and `verify_anchoring()` (SAID anchored in voter's KEL) before submitting to Raft. Even if a vote bypasses the handler (e.g., via a rogue leader inserting it directly), every consumer independently re-verifies vote SAID integrity and KEL anchoring.
 
 **Attack 2 — Serve stale/modified data:** Return outdated or tampered peer lists, KELs, or proposal responses.
-- **Mitigation:** All peer records are `SelfAddressed` (SAID integrity). Peer SAIDs must be anchored in a trusted registry's KEL. Gossip nodes verify this on every allowlist refresh.
+- **Mitigation:** No consumer trusts stored data. `verify_and_authorize()` re-verifies the full proposal DAG on every signed request — data read from the database is treated as untrusted input. Gossip nodes independently fetch completed proposals and perform full verification using compiled-in `trusted_prefixes()` for the member set and threshold. The Raft state machine re-verifies on log replay. A compromised follower serving tampered data cannot influence any consumer's trust decisions.
 
 **Attack 3 — Refuse to participate:** Withhold votes or go offline.
 - **Mitigation:** Raft handles this via leader election and quorum. The approval threshold has a minimum floor of 3 votes regardless of federation size, scaling to ceil(n/3) for 10+ members.
@@ -43,7 +46,7 @@ A compromised follower cannot directly write to the Raft log but could:
 If an attacker gains access to the HSM service:
 
 **Attack:** Sign valid events as the registry — add rogue peers, cast fraudulent votes, anchor malicious data. Because the attacker holds the real signing key, events chain perfectly from the current tail with valid signatures. There is no cryptographic distinction between attacker-signed and operator-signed events.
-- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access. Critically, compromising a single registry's HSM is insufficient to add rogue peers to the federation — core peer approval requires a minimum of 3 votes regardless of federation size, each anchored in the voter's KEL. Adding a rogue peer requires colluding with at least 3 independently operated registries (and compromising their HSMs), which represents a significant operational barrier.
+- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access. Critically, compromising a single registry's HSM is insufficient to add rogue peers to the federation — core peer approval requires a minimum of 3 votes regardless of federation size, each anchored in the voter's KEL. Adding a rogue peer requires colluding with at least 3 independently operated registries (and compromising their HSMs), which represents a significant operational barrier. Even if a rogue peer were somehow inserted into the database, every consumer (`verify_and_authorize`, gossip allowlist, Raft replay) independently re-verifies the full proposal chain and vote anchoring before trusting it.
 - **Detection:** No cryptographic detection — events are indistinguishable from legitimate ones. Detection is necessarily out-of-band: operators noticing unexpected events in their registry's KEL, or other federation members observing unauthorized proposals, votes, or peer additions that nobody initiated. A rational attacker would not create divergence (which freezes the KEL and is immediately visible) but instead silently extend the chain.
 - **Recovery:** Once detected, the operator submits a `rec` event (requires rotation + recovery key). The merge protocol truncates the attacker's events from the active chain (archiving them for audit) and resumes from the pre-compromise state under a new key. If the attacker has also compromised the rotation key, recovery still works as long as they don't hold the recovery key. If both rotation and recovery keys are compromised, `cnt` (contest) permanently freezes the KEL — the correct outcome when key compromise is total.
 
@@ -97,8 +100,8 @@ If an attacker gains access to the HSM service:
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
-`admin_propose_peer` and `admin_vote_proposal` check federation membership but not localhost. They are exposed on the federation-mode router at `/api/admin/proposals` (POST) and `/api/admin/proposals/:id/vote` (POST).
-- **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Security relies on vote SAID anchoring in the voter's KEL — you need the voter's signing key to create a valid vote, which is unforgeable.
+`admin_submit_proposal` and `admin_vote_proposal` are exposed at `/api/admin/proposals` (POST) and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
+- **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Both handlers verify SAID integrity (`verify()` / `verify_said()`) and KEL anchoring (`verify_anchoring()`) before submitting to Raft — you need the proposer's or voter's actual signing key to create a valid record with an anchored SAID, which is unforgeable.
 
 ## Unauthenticated Endpoints
 
