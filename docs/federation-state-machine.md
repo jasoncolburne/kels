@@ -9,7 +9,7 @@ The federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for dis
 - **Core peer set** - peers trusted by all nodes in the federation
 - **Pending proposals** - proposals awaiting multi-party approval
 - **Completed proposals** - approved/rejected/withdrawn proposals (audit trail)
-- **Votes** - stored by SAID for privacy (proposals only reference vote SAIDs)
+- **Votes** - stored by SAID
 
 ## Architecture
 
@@ -19,8 +19,8 @@ Leader                          Follower A                    Follower B
   | client_write(AddPeer)          |                             |
   |----> Raft log append           |                             |
   |          |                     |                             |
-  |          +---- replicate ----->|                              |
-  |          +---- replicate ---------------------------------->|
+  |          +---- replicate ----->|                             |
+  |          +---- replicate ----------------------------------->|
   |          |                     |                             |
   |     apply() locally       apply() locally              apply() locally
   |     - verify anchoring    - verify anchoring           - verify anchoring
