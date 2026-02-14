@@ -1,6 +1,6 @@
 # Registry Attack Surface
 
-Analysis of attack vectors against the KELS registry federation and gossip network.
+Analysis of attack vectors against the KELS registry federation and gossip network. See also [protocol-attack-surface.md](protocol-attack-surface.md) for KEL/event-level attacks and [node-attack-surface.md](node-attack-surface.md) for data-plane deployment attacks.
 
 ## Trust Model
 
