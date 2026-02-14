@@ -204,43 +204,33 @@ impl std::fmt::Display for ProposalStatus {
 
 /// A vote on a proposal with a tamper-evident SAID.
 ///
-/// Votes are chained so they can be updated (e.g., to withdraw a proposal).
-/// The proposer withdraws by updating their vote with `withdrawn_at` set.
-///
-/// The `proposal` field binds this vote to a specific proposal.
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+/// Votes are simple self-addressed structs (not chained). Each vote is immutable
+/// after creation. The `proposal` field binds this vote to a specific proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SelfAddressed)]
 pub struct Vote {
     /// Self-Addressing IDentifier - content hash for tamper evidence.
     #[said]
     pub said: String,
-    /// Stable identifier for this vote chain (derived from inception SAID).
-    #[prefix]
-    pub prefix: String,
-    /// SAID of previous version (None for inception).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[previous]
-    pub previous: Option<String>,
-    /// Version number.
-    #[version]
-    pub version: u64,
     /// The proposal prefix this vote is for (must match proposal.prefix).
     pub proposal: String,
     /// The voter's registry prefix.
     pub voter: String,
     /// Whether the voter approves (true) or rejects (false).
     pub approve: bool,
-    /// If set, this vote represents a withdrawal of the proposal (proposer only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub withdrawn_at: Option<StorageDatetime>,
+    /// When the vote was cast.
+    #[created_at]
+    pub voted_at: StorageDatetime,
 }
 
 /// A proposal to add a core peer, requiring multi-party approval.
 ///
 /// Uses chaining for tamper-evident audit trail:
 /// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_id
-/// - `said`: Changes with each update (votes added, status changes)
+/// - `said`: Changes with each update
 /// - `previous`: Links to previous version for full history
-#[allow(clippy::too_many_arguments)]
+///
+/// Proposals are immutable after creation, except for withdrawal by the proposer.
+/// Proposal chain: v0 (creation) → optionally v1 (withdrawal). No intermediate versions.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 pub struct PeerProposal {
     /// Self-Addressing IDentifier - changes with each update.
@@ -259,22 +249,17 @@ pub struct PeerProposal {
     pub peer_id: String,
     /// The node_id being proposed.
     pub node_id: String,
-    /// Registry prefix of the leader (may change each iteration)
     pub kels_url: String,
     pub gossip_multiaddr: String,
-    pub authorizing_kel: String,
     pub proposer: String,
-    /// SAIDs of approval votes. Each vote's proposal_prefix must match this proposal's prefix.
-    pub approvals: Vec<String>,
-    /// SAIDs of rejection votes.
-    pub rejections: Vec<String>,
     /// When the proposal was created/updated.
     #[created_at]
     pub created_at: StorageDatetime,
     /// When the proposal expires.
     pub expires_at: StorageDatetime,
-    /// Current status of the proposal.
-    pub status: ProposalStatus,
+    /// If set, this proposal has been withdrawn by the proposer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withdrawn_at: Option<StorageDatetime>,
 }
 
 impl PeerProposal {
@@ -296,11 +281,8 @@ impl PeerProposal {
             kels_url.to_string(),
             gossip_multiaddr.to_string(),
             proposer.to_string(),
-            proposer.to_string(),
-            vec![],
-            vec![],
             expires_at.clone(),
-            ProposalStatus::Pending,
+            None,
         )
     }
 
@@ -309,48 +291,207 @@ impl PeerProposal {
         &self.prefix
     }
 
-    /// Add a vote and increment the chain (updates SAID, sets previous).
-    /// The leader_prefix is updated to the registry processing this vote.
-    pub fn add_vote(
-        &mut self,
-        vote: Vote,
-        leader_prefix: &str,
-    ) -> Result<(), verifiable_storage::StorageError> {
-        match vote.approve {
-            true => self.approvals.push(vote.said),
-            false => self.rejections.push(vote.said),
-        }
-        self.authorizing_kel = leader_prefix.to_string();
-        self.increment()
-    }
-
     /// Check if proposal has expired.
     pub fn is_expired(&self) -> bool {
         StorageDatetime::now() > self.expires_at
     }
 
-    /// Count approvals.
-    pub fn approval_count(&self) -> usize {
-        self.approvals.len()
-    }
-
-    /// Count rejections.
-    pub fn rejection_count(&self) -> usize {
-        self.rejections.len()
-    }
-
-    /// Check if a registry has already voted by checking the provided votes.
-    pub fn has_voted(&self, voter: &str, votes: &[Vote]) -> bool {
-        votes.iter().any(|v| v.voter == voter)
+    /// Check if this proposal has been withdrawn.
+    pub fn is_withdrawn(&self) -> bool {
+        self.withdrawn_at.is_some()
     }
 }
 
-/// A completed proposal bundled with its votes.
+/// A proposal chain (1-2 records: v0 creation, optionally v1 withdrawal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalHistory {
+    pub prefix: String,
+    pub records: Vec<PeerProposal>,
+}
+
+impl ProposalHistory {
+    /// Verify structural integrity of the proposal chain.
+    ///
+    /// Checks SAID/prefix on each record, chain linkage (previous pointers),
+    /// version monotonicity, proposer consistency, chain length (1-2 records),
+    /// and withdrawal validity. Does NOT verify anchoring — caller must do that.
+    pub fn verify(&self) -> Result<(), KelsError> {
+        if self.records.is_empty() {
+            return Err(KelsError::RegistryFailure(
+                "Empty proposal chain".to_string(),
+            ));
+        }
+
+        // Only v0 and optionally v1 (withdrawal) are valid
+        if self.records.len() > 2 {
+            return Err(KelsError::RegistryFailure(format!(
+                "Proposal chain has {} records, expected 1 or 2",
+                self.records.len()
+            )));
+        }
+
+        let mut last_said: Option<String> = None;
+        for (i, record) in self.records.iter().enumerate() {
+            // Verify SAID and prefix
+            record.verify()?;
+
+            // Prefix must match the chain prefix
+            if record.prefix != self.prefix {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Proposal record {} prefix {} doesn't match chain prefix {}",
+                    record.said, record.prefix, self.prefix
+                )));
+            }
+
+            // Chain linkage
+            if let Some(said) = &last_said {
+                if record.previous.as_deref() != Some(said) {
+                    return Err(KelsError::RegistryFailure(format!(
+                        "Proposal record {} previous doesn't match {}",
+                        record.said, said
+                    )));
+                }
+            } else if record.previous.is_some() {
+                return Err(KelsError::RegistryFailure(format!(
+                    "First proposal record {} has unexpected previous",
+                    record.said
+                )));
+            }
+
+            // Version monotonicity
+            if i as u64 != record.version {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Proposal record {} has incorrect version {}",
+                    record.said, record.version
+                )));
+            }
+
+            // Proposer must be consistent across the chain
+            if record.proposer != self.records[0].proposer {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Proposal record {} proposer {} doesn't match inception proposer {}",
+                    record.said, record.proposer, self.records[0].proposer
+                )));
+            }
+
+            last_said = Some(record.said.clone());
+        }
+
+        // If v1 exists, it must be a withdrawal
+        if self.records.len() == 2 && !self.records[1].is_withdrawn() {
+            return Err(KelsError::RegistryFailure(
+                "Second proposal record must be a withdrawal".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Whether the latest record is a withdrawal.
+    pub fn is_withdrawn(&self) -> bool {
+        self.records.last().is_some_and(|r| r.is_withdrawn())
+    }
+
+    /// Get the inception record (v0).
+    pub fn inception(&self) -> Option<&PeerProposal> {
+        self.records.first()
+    }
+
+    /// Get the latest record.
+    pub fn latest(&self) -> Option<&PeerProposal> {
+        self.records.last()
+    }
+}
+
+/// A completed proposal bundled with its votes (the full DAG).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposalWithVotes {
-    pub proposal: PeerProposal,
+    pub history: ProposalHistory,
     pub votes: Vec<Vote>,
+}
+
+impl ProposalWithVotes {
+    /// Verify the full DAG: proposal chain integrity + vote SAIDs + vote references.
+    ///
+    /// Also checks invariant: withdrawn proposals must have zero votes.
+    /// Does NOT verify anchoring — caller must do that.
+    pub fn verify(&self) -> Result<(), KelsError> {
+        // Verify proposal chain
+        self.history.verify()?;
+
+        let proposal_prefix = &self.history.prefix;
+
+        // Verify each vote
+        for vote in &self.votes {
+            // Verify vote SAID (Vote is SelfAddressed, not Chained)
+            vote.verify_said()?;
+
+            // Vote must reference this proposal
+            if vote.proposal != *proposal_prefix {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Vote {} references proposal {} but chain prefix is {}",
+                    vote.said, vote.proposal, proposal_prefix
+                )));
+            }
+        }
+
+        // Invariant: withdrawn proposals must have zero votes
+        if self.history.is_withdrawn() && !self.votes.is_empty() {
+            return Err(KelsError::RegistryFailure(format!(
+                "Withdrawn proposal {} has {} votes — tampered data",
+                proposal_prefix,
+                self.votes.len()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Compute the proposal status from the chain state and votes.
+    pub fn status(&self, threshold: usize) -> ProposalStatus {
+        if self.history.is_withdrawn() {
+            return ProposalStatus::Withdrawn;
+        }
+        if self.approval_count() >= threshold {
+            return ProposalStatus::Approved;
+        }
+        if self.is_expired() {
+            return ProposalStatus::Rejected;
+        }
+        ProposalStatus::Pending
+    }
+
+    /// Count of approval votes.
+    pub fn approval_count(&self) -> usize {
+        self.votes.iter().filter(|v| v.approve).count()
+    }
+
+    /// Count of rejection votes.
+    pub fn rejection_count(&self) -> usize {
+        self.votes.iter().filter(|v| !v.approve).count()
+    }
+
+    /// Whether the proposal has expired.
+    pub fn is_expired(&self) -> bool {
+        self.history.inception().is_some_and(|p| p.is_expired())
+    }
+
+    /// The proposal prefix (stable identifier).
+    pub fn proposal_id(&self) -> &str {
+        &self.history.prefix
+    }
+
+    /// The proposer's registry prefix.
+    pub fn proposer(&self) -> Option<&str> {
+        self.history.inception().map(|p| p.proposer.as_str())
+    }
+
+    /// Unique voters who have voted.
+    pub fn voters(&self) -> Vec<&str> {
+        self.votes.iter().map(|v| v.voter.as_str()).collect()
+    }
 }
 
 /// Response from the completed proposals endpoint.

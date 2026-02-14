@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use kels::{MultiRegistryClient, PeerScope, retry_once};
+use kels::{MultiRegistryClient, PeerScope, retry_once, trusted_prefixes};
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
@@ -379,10 +379,11 @@ pub async fn refresh_allowlist(
 
 /// Verify that a core peer has an approved proposal backed by sufficient verified votes.
 ///
-/// Each vote must:
-/// 1. Pass SAID integrity check (`verify()`)
-/// 2. Be from a trusted member prefix
-/// 3. Have its SAID anchored in the voter's KEL
+/// Performs full DAG verification:
+/// 1. Structural: proposal chain integrity, vote SAIDs, vote references, withdrawal invariant
+/// 2. Proposal anchoring: each proposal record's SAID anchored in proposer's KEL
+/// 3. Vote anchoring: each approval vote's SAID anchored in voter's KEL, voter is a member
+/// 4. Status: computed from chain state + votes, must be Approved
 async fn verify_core_peer_votes(
     registry_client: &mut MultiRegistryClient,
     peer_id: &str,
@@ -393,26 +394,83 @@ async fn verify_core_peer_votes(
         return false;
     };
 
-    let member_prefixes: HashSet<&str> = response
-        .member_prefixes
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-    let threshold = response.approval_threshold;
+    // Use compiled-in trusted prefixes as the authoritative member set
+    let member_prefixes = trusted_prefixes();
+    let n = member_prefixes.len();
+    let threshold = match n {
+        0..=5 => 3,
+        6..=9 => 4,
+        _ => n.div_ceil(3),
+    };
 
-    // Find the approved proposal for this peer
+    // Find a proposal for this peer that computes to Approved
     let approved = response.proposals.iter().find(|pw| {
-        pw.proposal.peer_id == peer_id && pw.proposal.status == kels::ProposalStatus::Approved
+        pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
+            && pw.status(threshold) == kels::ProposalStatus::Approved
     });
 
-    let Some(proposal_with_votes) = approved else {
+    let Some(pwv) = approved else {
         warn!(peer_id = %peer_id, "No approved proposal found for core peer");
         return false;
     };
 
-    // Verify each approval vote
+    // 1. Structural verification: chain integrity, vote SAIDs, references, withdrawal invariant
+    if let Err(e) = pwv.verify() {
+        error!(
+            peer_id = %peer_id,
+            error = %e,
+            "Proposal DAG verification failed — rejecting"
+        );
+        return false;
+    }
+
+    // 2. Verify proposal anchoring: each record's SAID anchored in proposer's KEL
+    let proposer = match pwv.proposer() {
+        Some(p) => p.to_string(),
+        None => {
+            error!(peer_id = %peer_id, "Proposal has no proposer");
+            return false;
+        }
+    };
+
+    if !member_prefixes.contains(proposer.as_str()) {
+        warn!(peer_id = %peer_id, proposer = %proposer, "Proposer is not a federation member");
+        return false;
+    }
+
+    for record in &pwv.history.records {
+        let maybe_kel = retry_once!(
+            registry_client.fetch_registry_kel(&proposer, false),
+            |kel: &kels::Kel| kel.contains_anchor(&record.said),
+            registry_client.fetch_registry_kel(&proposer, true),
+        );
+
+        match maybe_kel {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                warn!(
+                    peer_id = %peer_id,
+                    said = %record.said,
+                    proposer = %proposer,
+                    "Proposal record SAID not anchored in proposer's KEL"
+                );
+                return false;
+            }
+            Err(e) => {
+                warn!(
+                    peer_id = %peer_id,
+                    proposer = %proposer,
+                    error = %e,
+                    "Failed to fetch proposer's KEL for proposal anchoring"
+                );
+                return false;
+            }
+        }
+    }
+
+    // 3. Verify vote anchoring: each approval vote's SAID anchored in voter's KEL
     let mut verified_voters: HashSet<String> = HashSet::new();
-    for vote in &proposal_with_votes.votes {
+    for vote in &pwv.votes {
         if !vote.approve {
             continue;
         }
@@ -422,18 +480,6 @@ async fn verify_core_peer_votes(
             continue;
         }
 
-        // Verify vote SAID integrity
-        if let Err(e) = vote.verify() {
-            warn!(
-                vote_said = %vote.said,
-                voter = %vote.voter,
-                error = %e,
-                "Vote SAID verification failed"
-            );
-            continue;
-        }
-
-        // Verify vote SAID is anchored in the voter's KEL
         let maybe_kel = retry_once!(
             registry_client.fetch_registry_kel(&vote.voter, false),
             |kel: &kels::Kel| kel.contains_anchor(&vote.said),

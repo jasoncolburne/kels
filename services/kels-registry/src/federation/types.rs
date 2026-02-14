@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use kels::{Peer, PeerProposal, ProposalStatus, Vote};
+use kels::{Peer, PeerProposal, Vote};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -53,10 +53,9 @@ pub enum FederationRequest {
     /// Remove a peer (by peer_id).
     RemovePeer(String),
 
-    /// Propose a new core peer (requires multi-party approval).
-    /// Creates an empty proposal v0. Proposer must then submit their vote separately.
-    /// The proposal_id is derived from content (returned in response).
-    ProposeCorePeer(PeerProposal),
+    /// Submit a proposal (create or withdraw).
+    /// v0 (no previous) = new proposal. v1 (has previous, withdrawn_at set) = withdrawal.
+    SubmitProposal(PeerProposal),
 
     /// Vote on a core peer proposal.
     VoteCorePeer {
@@ -65,14 +64,6 @@ pub enum FederationRequest {
         /// The signed vote.
         vote: Vote,
     },
-
-    /// Withdraw a pending proposal (proposer only).
-    WithdrawProposal {
-        /// The proposal to withdraw.
-        proposal_id: String,
-        /// Registry prefix of the withdrawer (must match proposer).
-        withdrawer: String,
-    },
 }
 
 impl fmt::Display for FederationRequest {
@@ -80,28 +71,26 @@ impl fmt::Display for FederationRequest {
         match self {
             FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_id),
             FederationRequest::RemovePeer(peer_id) => write!(f, "RemovePeer({})", peer_id),
-            FederationRequest::ProposeCorePeer(proposal) => {
-                write!(
-                    f,
-                    "ProposeCorePeer(peer={}, proposer={})",
-                    proposal.peer_id, proposal.authorizing_kel
-                )
+            FederationRequest::SubmitProposal(proposal) => {
+                if proposal.is_withdrawn() {
+                    write!(
+                        f,
+                        "SubmitProposal(withdraw, peer={}, proposer={})",
+                        proposal.peer_id, proposal.proposer
+                    )
+                } else {
+                    write!(
+                        f,
+                        "SubmitProposal(create, peer={}, proposer={})",
+                        proposal.peer_id, proposal.proposer
+                    )
+                }
             }
             FederationRequest::VoteCorePeer { proposal_id, vote } => {
                 write!(
                     f,
                     "VoteCorePeer({}, voter={}, approve={})",
                     proposal_id, vote.voter, vote.approve
-                )
-            }
-            FederationRequest::WithdrawProposal {
-                proposal_id,
-                withdrawer,
-            } => {
-                write!(
-                    f,
-                    "WithdrawProposal({}, withdrawer={})",
-                    proposal_id, withdrawer
                 )
             }
         }
@@ -132,7 +121,7 @@ pub enum FederationResponse {
         proposal_id: String,
         current_votes: usize,
         votes_needed: usize,
-        status: ProposalStatus,
+        approved: bool,
         peer: Option<Box<Peer>>,
     },
     /// Proposal not found.
@@ -147,6 +136,10 @@ pub enum FederationResponse {
     NotAuthorized(String),
     /// Peer already exists in core set or pending proposal.
     PeerAlreadyExists(String),
+    /// SAID mismatch (retry-able).
+    SaidMismatch(String),
+    /// Votes exist — cannot withdraw.
+    HasVotes(String),
     /// Internal error
     InternalError(String),
 }
@@ -176,16 +169,16 @@ impl fmt::Display for FederationResponse {
                 proposal_id,
                 current_votes,
                 votes_needed,
-                status,
+                approved,
                 peer,
             } => {
                 write!(
                     f,
-                    "VoteRecorded({}, {}/{} votes, {}, peer={:?})",
+                    "VoteRecorded({}, {}/{} votes, approved={}, peer={:?})",
                     proposal_id,
                     current_votes,
                     votes_needed,
-                    status,
+                    approved,
                     peer.clone().map(|p| p.said)
                 )
             }
@@ -195,6 +188,8 @@ impl fmt::Display for FederationResponse {
             FederationResponse::ProposalWithdrawn(id) => write!(f, "ProposalWithdrawn({})", id),
             FederationResponse::NotAuthorized(msg) => write!(f, "NotAuthorized({})", msg),
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
+            FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
+            FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
             FederationResponse::InternalError(msg) => write!(f, "InternalError({})", msg),
         }
     }
@@ -219,10 +214,10 @@ pub struct CorePeerSnapshot {
     /// Pending proposals awaiting votes.
     #[serde(default)]
     pub pending_proposals: Vec<PeerProposal>,
-    /// Completed proposals (approved, rejected, withdrawn) for audit trail.
+    /// Completed proposals (full chain per proposal) for audit trail.
     #[serde(default)]
-    pub completed_proposals: Vec<PeerProposal>,
-    /// Votes stored by SAID (for privacy - proposals only store SAIDs).
+    pub completed_proposals: Vec<Vec<PeerProposal>>,
+    /// Votes stored by SAID.
     #[serde(default)]
     pub votes: Vec<Vote>,
 }

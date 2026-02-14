@@ -133,8 +133,19 @@ redeploy-registries:
 deploy-core-nodes:
 	# Deploy nodes and add as core peers via multi-party approval
 	garden deploy --env=node-a
+
+	# Test 1: propose then withdraw (no votes — should succeed)
 	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+
+	# Re-propose (same node, previous proposal was withdrawn)
+	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+
+	# Test 2: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+	! garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+
+	# Continue voting to approve
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a

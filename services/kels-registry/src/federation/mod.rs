@@ -23,7 +23,7 @@ pub mod sync;
 mod types;
 
 pub use config::{FederationConfig, FederationMember};
-pub use kels::{PeerProposal, ProposalStatus, Vote};
+pub use kels::{PeerProposal, ProposalHistory, ProposalWithVotes, Vote};
 pub use network::{
     FederationNetwork, FederationRpc, FederationRpcResponse, SignedFederationRpc, SnapshotTransfer,
 };
@@ -226,13 +226,11 @@ impl FederationNode {
         Ok(())
     }
 
-    /// Propose adding a core peer with multi-party approval (leader only).
+    /// Submit a proposal (create or withdraw) via Raft consensus (leader only).
     ///
-    /// Creates an empty proposal (v0) that requires approval from multiple federation
-    /// members before the peer is added to the core set. The proposer must then
-    /// submit their vote separately via vote_core_peer(). The proposal ID (prefix) is
-    /// derived from content and returned in the response.
-    pub async fn propose_core_peer(
+    /// For new proposals (v0): creates an empty proposal requiring multi-party approval.
+    /// For withdrawals (v1 with withdrawn_at set): withdraws a pending proposal.
+    pub async fn submit_proposal(
         &self,
         proposal: PeerProposal,
     ) -> Result<FederationResponse, FederationError> {
@@ -243,7 +241,7 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::ProposeCorePeer(proposal);
+        let request = FederationRequest::SubmitProposal(proposal);
 
         let result = self
             .raft
@@ -255,10 +253,6 @@ impl FederationNode {
     }
 
     /// Vote on a core peer proposal (leader only).
-    ///
-    /// # Arguments
-    /// * `proposal_id` - The proposal to vote on
-    /// * `vote` - The signed vote
     pub async fn vote_core_peer(
         &self,
         proposal_id: String,
@@ -282,48 +276,38 @@ impl FederationNode {
         Ok(result.response().clone())
     }
 
-    /// Withdraw a pending proposal (leader only).
-    ///
-    /// Only the original proposer can withdraw their proposal.
-    pub async fn withdraw_proposal(
-        &self,
-        proposal_id: String,
-        withdrawer: String,
-    ) -> Result<FederationResponse, FederationError> {
-        if !self.is_leader().await {
-            return Err(FederationError::NotLeader {
-                leader_prefix: self.leader_prefix().await,
-                leader_url: self.leader_url().await,
-            });
-        }
-
-        let request = FederationRequest::WithdrawProposal {
-            proposal_id,
-            withdrawer,
-        };
-
-        let result = self
-            .raft
-            .client_write(request)
+    /// Verify a SAID is anchored in a federation member's KEL.
+    /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
+    pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
+        self.state_machine
+            .verify_member_anchoring(said, member_prefix)
             .await
-            .map_err(|e| FederationError::RaftError(e.to_string()))?;
-
-        Ok(result.response().clone())
     }
 
-    /// Get all pending proposals from the state machine.
-    pub async fn pending_proposals(&self) -> Vec<PeerProposal> {
-        self.state_machine
-            .inner()
-            .lock()
-            .await
-            .pending_proposals
+    /// Get all pending proposals with their votes from the state machine.
+    pub async fn pending_proposals_with_votes(&self) -> Vec<ProposalWithVotes> {
+        let sm = self.state_machine.inner().lock().await;
+        sm.pending_proposals
             .values()
-            .cloned()
+            .map(|p| {
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == p.prefix)
+                    .cloned()
+                    .collect();
+                ProposalWithVotes {
+                    history: ProposalHistory {
+                        prefix: p.prefix.clone(),
+                        records: vec![p.clone()],
+                    },
+                    votes,
+                }
+            })
             .collect()
     }
 
-    /// Get a specific proposal by ID.
+    /// Get a specific proposal by ID (raw, for chain building).
     pub async fn get_proposal(&self, proposal_id: &str) -> Option<PeerProposal> {
         self.state_machine
             .inner()
@@ -332,6 +316,49 @@ impl FederationNode {
             .pending_proposals
             .get(proposal_id)
             .cloned()
+    }
+
+    /// Get a specific proposal with its votes (searches pending and completed).
+    pub async fn get_proposal_with_votes(&self, proposal_id: &str) -> Option<ProposalWithVotes> {
+        let sm = self.state_machine.inner().lock().await;
+
+        // Check pending first
+        if let Some(p) = sm.pending_proposals.get(proposal_id) {
+            let votes: Vec<Vote> = sm
+                .votes
+                .values()
+                .filter(|v| v.proposal == p.prefix)
+                .cloned()
+                .collect();
+            return Some(ProposalWithVotes {
+                history: ProposalHistory {
+                    prefix: p.prefix.clone(),
+                    records: vec![p.clone()],
+                },
+                votes,
+            });
+        }
+
+        // Check completed
+        sm.completed_proposals
+            .iter()
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .map(|chain| {
+                let prefix = chain[0].prefix.clone();
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == prefix)
+                    .cloned()
+                    .collect();
+                ProposalWithVotes {
+                    history: ProposalHistory {
+                        prefix,
+                        records: chain.clone(),
+                    },
+                    votes,
+                }
+            })
     }
 
     /// Get the approval threshold for proposals.
@@ -344,24 +371,27 @@ impl FederationNode {
         self.state_machine.inner().lock().await.peers()
     }
 
-    /// Get all completed proposals (approved, rejected, withdrawn).
-    pub async fn completed_proposals(&self) -> Vec<PeerProposal> {
-        self.state_machine
-            .inner()
-            .lock()
-            .await
-            .completed_proposals
-            .clone()
-    }
-
-    /// Get votes for a specific proposal by looking up vote SAIDs.
-    pub async fn votes_for_proposal(&self, proposal: &PeerProposal) -> Vec<Vote> {
+    /// Get all completed proposals (full chains) with their votes.
+    pub async fn completed_proposals_with_votes(&self) -> Vec<ProposalWithVotes> {
         let sm = self.state_machine.inner().lock().await;
-        proposal
-            .approvals
+        sm.completed_proposals
             .iter()
-            .chain(proposal.rejections.iter())
-            .filter_map(|said| sm.votes.get(said).cloned())
+            .filter_map(|chain| {
+                let prefix = chain.first()?.prefix.clone();
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == prefix)
+                    .cloned()
+                    .collect();
+                Some(ProposalWithVotes {
+                    history: ProposalHistory {
+                        prefix,
+                        records: chain.clone(),
+                    },
+                    votes,
+                })
+            })
             .collect()
     }
 

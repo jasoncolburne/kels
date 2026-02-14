@@ -179,7 +179,7 @@ fn build_swarm(
             .map_err(|e| GossipError::Gossipsub(e.to_string()))?;
 
             let identify = identify::Behaviour::new(identify::Config::new(
-                "/kels-gossip/1.0.0".to_string(),
+                "/kels/gossip/v1".to_string(),
                 key.public(),
             ));
 

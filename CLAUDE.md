@@ -155,3 +155,10 @@ Events are stored in PostgreSQL via the `verifiable-storage` framework:
 - Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock
 - Pre-serialized JSON cache in Redis avoids re-serialization on reads
 - Redis pub/sub for cache invalidation across instances
+- Patterns:
+    - An identity creates verifiable data (eg for centralized storage/sharing):
+        1. No request type is required, the full record is requried to verify the SAID/chain anyway - so send it (full record, or a vec/map of them etc) AS the payload
+        2. Creator must create()/increment() and anchor the record by SAID in their KEL
+    - An end verifier queries verifiable data (to consume or derive new values from):
+        1. No response type is required, the full record is requried to verify the SAID/chain - so send it (full record, or vec/map of them) AS the payload
+        2. Verifier must verify the structure of the record(s) (verify() - verifies said or said+prefix), versions increment by 1 (if applicable), verify the chain of records (if applicable), and verify anchoring

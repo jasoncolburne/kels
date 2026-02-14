@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Kel, Peer, PeerProposal, PeerScope, ProposalStatus, Vote};
+use kels::{Kel, Peer, PeerProposal, PeerScope, Vote};
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StoredMembership,
@@ -36,11 +36,11 @@ pub struct StateMachineData {
     pub last_membership: StoredMembership<TypeConfig>,
     /// The core peer set (keyed by peer_id for efficient lookup)
     pub peers: HashMap<String, Peer>,
-    /// Pending proposals awaiting votes (keyed by proposal_id)
+    /// Pending proposals awaiting votes (keyed by proposal prefix/proposal_id)
     pub pending_proposals: HashMap<String, PeerProposal>,
-    /// Completed proposals for audit trail
-    pub completed_proposals: Vec<PeerProposal>,
-    /// Votes stored by SAID (for privacy - proposals only store SAIDs)
+    /// Completed proposals (full chain per proposal) for audit trail
+    pub completed_proposals: Vec<Vec<PeerProposal>>,
+    /// Votes stored by SAID
     pub votes: HashMap<String, Vote>,
 }
 
@@ -72,20 +72,33 @@ impl StateMachineData {
         peer_id: &str,
         member_prefixes: &std::collections::HashSet<&str>,
     ) -> std::collections::HashSet<String> {
-        let approved_proposal = self
-            .completed_proposals
-            .iter()
-            .find(|p| p.peer_id == peer_id && p.status == ProposalStatus::Approved);
+        // Find a completed proposal chain for this peer that is not withdrawn
+        let approved_chain = self.completed_proposals.iter().find(|chain| {
+            if let Some(v0) = chain.first() {
+                // Must be for this peer
+                if v0.peer_id != peer_id {
+                    return false;
+                }
+                // Must not be withdrawn (last record has no withdrawn_at)
+                if let Some(last) = chain.last() {
+                    return !last.is_withdrawn();
+                }
+            }
+            false
+        });
 
-        let Some(proposal) = approved_proposal else {
+        let Some(chain) = approved_chain else {
             return std::collections::HashSet::new();
         };
 
-        proposal
-            .approvals
-            .iter()
-            .filter_map(|said| self.votes.get(said))
-            .filter(|v| v.approve && member_prefixes.contains(v.voter.as_str()))
+        let proposal_id = chain.first().map(|p| p.prefix.as_str()).unwrap_or("");
+
+        // Count approval votes from trusted members
+        self.votes
+            .values()
+            .filter(|v| {
+                v.proposal == proposal_id && v.approve && member_prefixes.contains(v.voter.as_str())
+            })
             .map(|v| v.voter.clone())
             .collect()
     }
@@ -113,53 +126,117 @@ impl StateMachineData {
                     FederationResponse::PeerNotFound(peer_id)
                 }
             }
-            FederationRequest::ProposeCorePeer(ref peer_proposal) => {
-                // Check if peer already exists in core set
-                if self.peers.contains_key(&peer_proposal.peer_id) {
-                    return FederationResponse::PeerAlreadyExists(peer_proposal.peer_id.clone());
-                }
-
-                // Check if there's already a pending proposal for this peer
-                for proposal in self.pending_proposals.values() {
-                    if proposal.peer_id == peer_proposal.peer_id {
-                        return FederationResponse::ProposalAlreadyExists(proposal.prefix.clone());
+            FederationRequest::SubmitProposal(ref submitted) => {
+                if submitted.previous.is_none() {
+                    // New proposal (v0)
+                    if self.peers.contains_key(&submitted.peer_id) {
+                        return FederationResponse::PeerAlreadyExists(submitted.peer_id.clone());
                     }
-                }
 
-                let proposal_id = peer_proposal.prefix.clone();
+                    for proposal in self.pending_proposals.values() {
+                        if proposal.peer_id == submitted.peer_id {
+                            return FederationResponse::ProposalAlreadyExists(
+                                proposal.prefix.clone(),
+                            );
+                        }
+                    }
 
-                info!(
-                    proposal_id = %proposal_id,
-                    peer_id = %peer_proposal.peer_id,
-                    proposer = %peer_proposal.authorizing_kel,
-                    "Created empty core peer proposal (v0, awaiting proposer vote)"
-                );
+                    let proposal_id = submitted.prefix.clone();
 
-                self.pending_proposals
-                    .insert(proposal_id.clone(), peer_proposal.clone());
+                    info!(
+                        proposal_id = %proposal_id,
+                        peer_id = %submitted.peer_id,
+                        proposer = %submitted.proposer,
+                        "Created core peer proposal (v0, awaiting votes)"
+                    );
 
-                FederationResponse::ProposalCreated {
-                    proposal_id,
-                    votes_needed: threshold,
-                    current_votes: 0,
+                    self.pending_proposals
+                        .insert(proposal_id.clone(), submitted.clone());
+
+                    FederationResponse::ProposalCreated {
+                        proposal_id,
+                        votes_needed: threshold,
+                        current_votes: 0,
+                    }
+                } else {
+                    // Withdrawal (v1 with previous set)
+                    let proposal_id = submitted.prefix.clone();
+
+                    let current = match self.pending_proposals.get(&proposal_id) {
+                        Some(p) => p,
+                        None => return FederationResponse::ProposalNotFound(proposal_id),
+                    };
+
+                    // Chain integrity
+                    if submitted.previous.as_deref() != Some(&current.said) {
+                        return FederationResponse::SaidMismatch(format!(
+                            "Previous SAID mismatch: expected {}, got {:?}",
+                            current.said, submitted.previous
+                        ));
+                    }
+
+                    // Version monotonicity
+                    if submitted.version != current.version + 1 {
+                        return FederationResponse::NotAuthorized(format!(
+                            "Version must be {} but got {}",
+                            current.version + 1,
+                            submitted.version
+                        ));
+                    }
+
+                    // Proposer never changes
+                    if submitted.proposer != current.proposer {
+                        return FederationResponse::NotAuthorized(format!(
+                            "Only proposer {} can withdraw proposal",
+                            current.proposer
+                        ));
+                    }
+
+                    // Must be a withdrawal
+                    if !submitted.is_withdrawn() {
+                        return FederationResponse::NotAuthorized(
+                            "Subsequent proposal version must have withdrawn_at set".to_string(),
+                        );
+                    }
+
+                    // No votes must exist for this proposal
+                    let has_votes = self.votes.values().any(|v| v.proposal == proposal_id);
+                    if has_votes {
+                        return FederationResponse::HasVotes(format!(
+                            "Cannot withdraw proposal {} — votes have been cast",
+                            proposal_id
+                        ));
+                    }
+
+                    let Some(v0) = self.pending_proposals.remove(&proposal_id) else {
+                        return FederationResponse::InternalError(
+                            "Couldn't find proposal when removing from pending".to_string(),
+                        );
+                    };
+
+                    info!(
+                        proposal_id = %proposal_id,
+                        "Proposal withdrawn by {}",
+                        submitted.proposer
+                    );
+
+                    self.completed_proposals.push(vec![v0, submitted.clone()]);
+                    FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
             FederationRequest::VoteCorePeer { proposal_id, vote } => {
-                // Note: SAID + anchoring verification done in async layer before this is called
-
                 let voter = vote.voter.clone();
                 let approve = vote.approve;
                 let vote_said = vote.said.clone();
 
                 // Find the proposal
-                let proposal = match self.pending_proposals.get_mut(&proposal_id) {
+                let proposal = match self.pending_proposals.get(&proposal_id) {
                     Some(p) => p,
                     None => {
-                        // Check if it's in completed proposals
                         if self
                             .completed_proposals
                             .iter()
-                            .any(|p| p.prefix == proposal_id)
+                            .any(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
                         {
                             return FederationResponse::ProposalNotFound(format!(
                                 "{} (already completed)",
@@ -172,39 +249,30 @@ impl StateMachineData {
 
                 // Check if expired
                 if proposal.is_expired() {
-                    let Some(mut expired) = self.pending_proposals.remove(&proposal_id) else {
-                        return FederationResponse::ProposalNotFound(proposal_id);
-                    };
-                    expired.status = ProposalStatus::Rejected;
-                    // Increment chain to record status change
-                    if let Err(e) = expired.increment() {
-                        warn!("Failed to increment proposal after expiry: {}", e);
+                    if let Some(v0) = self.pending_proposals.remove(&proposal_id) {
+                        self.completed_proposals.push(vec![v0]);
                     }
-                    self.completed_proposals.push(expired);
                     return FederationResponse::ProposalExpired(proposal_id);
                 }
 
-                // Load existing votes for this proposal (privacy: only SAIDs stored in proposal)
-                let existing_votes: Vec<Vote> = proposal
-                    .approvals
-                    .iter()
-                    .chain(proposal.rejections.iter())
-                    .filter_map(|said| self.votes.get(said).cloned())
-                    .collect();
-
                 // Check if already voted
-                if proposal.has_voted(&voter, &existing_votes) {
+                let already_voted = self
+                    .votes
+                    .values()
+                    .any(|v| v.proposal == proposal_id && v.voter == voter);
+                if already_voted {
                     return FederationResponse::AlreadyVoted(proposal_id);
                 }
 
-                // Store vote by SAID
-                self.votes.insert(vote_said, vote.clone());
+                // Store vote
+                self.votes.insert(vote_said, vote);
 
-                // Record vote and increment the chain (updates SAID, sets previous)
-                if let Err(e) = proposal.add_vote(vote, leader_prefix) {
-                    warn!("Failed to add vote to proposal: {}", e);
-                }
-                let current_votes = proposal.approval_count();
+                // Count approval votes
+                let current_votes = self
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == proposal_id && v.approve)
+                    .count();
 
                 info!(
                     proposal_id = %proposal_id,
@@ -217,7 +285,7 @@ impl StateMachineData {
 
                 // Check if threshold met
                 if current_votes >= threshold {
-                    let mut approved = match self.pending_proposals.remove(&proposal_id) {
+                    let v0 = match self.pending_proposals.remove(&proposal_id) {
                         Some(a) => a,
                         None => {
                             return FederationResponse::InternalError(
@@ -225,15 +293,7 @@ impl StateMachineData {
                             );
                         }
                     };
-                    approved.status = ProposalStatus::Approved;
-                    // Increment chain to record status change
-                    if let Err(e) = approved.increment() {
-                        return FederationResponse::InternalError(format!(
-                            "Could not increment approval: {}",
-                            e
-                        ));
-                    }
-                    let peer_id = approved.peer_id.clone();
+                    let peer_id = v0.peer_id.clone();
 
                     info!(
                         proposal_id = %proposal_id,
@@ -243,12 +303,12 @@ impl StateMachineData {
 
                     let peer = match Peer::create(
                         peer_id.clone(),
-                        approved.node_id.clone(),
+                        v0.node_id.clone(),
                         leader_prefix.to_string(),
                         true,
                         PeerScope::Core,
-                        approved.kels_url.clone(),
-                        approved.gossip_multiaddr.clone(),
+                        v0.kels_url.clone(),
+                        v0.gossip_multiaddr.clone(),
                     ) {
                         Ok(p) => p,
                         Err(e) => {
@@ -259,16 +319,15 @@ impl StateMachineData {
                         }
                     };
 
-                    // Add peer to core set
                     self.peers.insert(peer_id.clone(), peer.clone());
-                    self.completed_proposals.push(approved);
+                    self.completed_proposals.push(vec![v0]);
 
                     return FederationResponse::VoteRecorded {
                         proposal_id,
                         current_votes,
                         votes_needed: threshold,
-                        status: ProposalStatus::Approved,
-                        peer: Some(Box::new(peer.clone())),
+                        approved: true,
+                        peer: Some(Box::new(peer)),
                     };
                 }
 
@@ -276,43 +335,9 @@ impl StateMachineData {
                     proposal_id,
                     current_votes,
                     votes_needed: threshold,
-                    status: ProposalStatus::Pending,
+                    approved: false,
                     peer: None,
                 }
-            }
-            FederationRequest::WithdrawProposal {
-                proposal_id,
-                withdrawer,
-            } => {
-                let proposal = match self.pending_proposals.get(&proposal_id) {
-                    Some(p) => p,
-                    None => return FederationResponse::ProposalNotFound(proposal_id),
-                };
-
-                // Only proposer can withdraw
-                if proposal.proposer != withdrawer {
-                    return FederationResponse::NotAuthorized(format!(
-                        "Only proposer {} can withdraw proposal",
-                        proposal.proposer
-                    ));
-                }
-
-                let Some(mut withdrawn) = self.pending_proposals.remove(&proposal_id) else {
-                    return FederationResponse::ProposalNotFound(proposal_id);
-                };
-                withdrawn.status = ProposalStatus::Withdrawn;
-                if let Err(e) = withdrawn.increment() {
-                    warn!("Failed to increment proposal after withdrawal: {}", e);
-                }
-
-                info!(
-                    proposal_id = %proposal_id,
-                    "Proposal withdrawn by {}",
-                    withdrawer
-                );
-
-                self.completed_proposals.push(withdrawn);
-                FederationResponse::ProposalWithdrawn(proposal_id)
             }
         }
     }
@@ -325,6 +350,14 @@ impl StateMachineData {
             completed_proposals: self.completed_proposals.clone(),
             votes: self.votes.values().cloned().collect(),
         }
+    }
+
+    /// Count approval votes for a proposal.
+    pub fn approval_count(&self, proposal_id: &str) -> usize {
+        self.votes
+            .values()
+            .filter(|v| v.proposal == proposal_id && v.approve)
+            .count()
     }
 
     /// Get a pending proposal by ID.
@@ -358,9 +391,10 @@ impl StateMachineData {
             .map(|v| (v.said.clone(), v))
             .collect();
         info!(
-            "Restored {} core peers, {} pending proposals, {} votes from snapshot",
+            "Restored {} core peers, {} pending proposals, {} completed, {} votes from snapshot",
             self.peers.len(),
             self.pending_proposals.len(),
+            self.completed_proposals.len(),
             self.votes.len()
         );
     }
@@ -437,7 +471,11 @@ impl StateMachineStore {
 
     /// Verify a SAID is anchored in a federation member's KEL.
     /// This proves the member signed/authorized the data with the given SAID.
-    async fn verify_member_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
+    pub async fn verify_member_anchoring(
+        &self,
+        said: &str,
+        member_prefix: &str,
+    ) -> Result<(), String> {
         // Check member is a known federation member
         if !self
             .config
@@ -606,9 +644,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 EntryPayload::Normal(request) => {
                     // For AddPeer, verify votes (core peers) and KEL anchoring
                     if let FederationRequest::AddPeer(ref peer) = request {
-                        // Core peers must be backed by an approved proposal with
-                        // sufficient votes from unique trusted member prefixes,
-                        // each vote anchored in the voter's KEL.
                         if peer.scope == PeerScope::Core {
                             let threshold = self.config.approval_threshold();
                             let member_prefixes: std::collections::HashSet<&str> = self
@@ -618,27 +653,34 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 .map(|m| m.prefix.as_str())
                                 .collect();
 
-                            // Check proposal and vote structure (sync)
                             let candidate_voters =
                                 sm.verified_voters_for_peer(&peer.peer_id, &member_prefixes);
 
-                            // Verify each vote's SAID integrity and KEL anchoring (async)
+                            // Verify each vote's SAID integrity and KEL anchoring
                             let mut verified_voters = std::collections::HashSet::new();
                             for voter in &candidate_voters {
-                                if let Some(proposal) = sm.completed_proposals.iter().find(|p| {
-                                    p.peer_id == peer.peer_id
-                                        && p.status == ProposalStatus::Approved
-                                }) {
-                                    for vote_said in &proposal.approvals {
-                                        if let Some(vote) = sm.votes.get(vote_said)
-                                            && &vote.voter == voter
-                                            && vote.verify().is_ok()
-                                            && self
-                                                .verify_member_anchoring(&vote.said, &vote.voter)
-                                                .await
-                                                .is_ok()
-                                        {
-                                            verified_voters.insert(voter.clone());
+                                // Find votes for approved proposals for this peer
+                                for chain in &sm.completed_proposals {
+                                    if let Some(v0) = chain.first()
+                                        && v0.peer_id == peer.peer_id
+                                        && !chain.last().is_some_and(|p| p.is_withdrawn())
+                                    {
+                                        let proposal_id = &v0.prefix;
+                                        for vote in sm.votes.values() {
+                                            if vote.proposal == *proposal_id
+                                                && &vote.voter == voter
+                                                && vote.approve
+                                                && vote.verify_said().is_ok()
+                                                && self
+                                                    .verify_member_anchoring(
+                                                        &vote.said,
+                                                        &vote.voter,
+                                                    )
+                                                    .await
+                                                    .is_ok()
+                                            {
+                                                verified_voters.insert(voter.clone());
+                                            }
                                         }
                                     }
                                 }
@@ -658,7 +700,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             }
                         }
 
-                        // Verify SAID is anchored in some member's KEL (refreshes if needed)
+                        // Verify SAID is anchored in authorizing member's KEL
                         if self
                             .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
                             .await
@@ -669,7 +711,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 said = %peer.said,
                                 "Peer SAID not found in any member KEL - rejecting"
                             );
-                            // Skip this entry - don't apply
                             if let Some(r) = responder {
                                 r.send(FederationResponse::Ok);
                             }
@@ -696,7 +737,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             "Verified and anchored peer SAID in our KEL"
                         );
 
-                        // Write directly to local DB using upsert pattern
                         if let Err(e) = self.upsert_peer_to_db(peer).await {
                             warn!(
                                 peer_id = %peer.peer_id,
@@ -706,18 +746,17 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify vote anchoring for votes (ProposeCorePeer has no vote - proposer votes separately)
+                    // Verify vote anchoring
                     if let FederationRequest::VoteCorePeer {
                         ref proposal_id,
                         ref vote,
                     } = request
                     {
-                        // Verify vote references the correct proposal
                         if vote.proposal != *proposal_id {
                             warn!(
                                 vote_proposal = %vote.proposal,
                                 expected = %proposal_id,
-                                "Vote proposal_prefix mismatch - rejecting"
+                                "Vote proposal mismatch - rejecting"
                             );
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(format!(
@@ -728,21 +767,19 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        // Verify proposal chain integrity before accepting vote
                         if let Some(proposal) = sm.pending_proposals.get(proposal_id)
                             && let Err(e) = proposal.verify()
                         {
-                            warn!(proposal_id = %proposal_id, error = %e, "Proposal chain verification failed - rejecting vote");
+                            warn!(proposal_id = %proposal_id, error = %e, "Proposal verification failed - rejecting vote");
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(format!(
-                                    "Proposal chain invalid: {}",
+                                    "Proposal invalid: {}",
                                     e
                                 )));
                             }
                             continue;
                         }
 
-                        // Verify vote SAID integrity
                         if let Err(e) = vote.verify_said() {
                             warn!(voter = %vote.voter, error = %e, "Vote SAID verification failed - rejecting");
                             if let Some(r) = responder {
@@ -754,7 +791,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        // Verify vote is anchored in voter's KEL
                         if let Err(e) = self.verify_member_anchoring(&vote.said, &vote.voter).await
                         {
                             warn!(voter = %vote.voter, error = %e, "Vote not anchored - rejecting");
@@ -765,66 +801,47 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify proposal request is anchored in proposer's KEL
-                    if let FederationRequest::ProposeCorePeer(ref prop) = request
+                    // Verify proposal anchoring
+                    if let FederationRequest::SubmitProposal(ref prop) = request
                         && let Err(e) = self
-                            .verify_member_anchoring(&prop.said, &prop.authorizing_kel)
+                            .verify_member_anchoring(&prop.said, &prop.proposer)
                             .await
                     {
-                        warn!(proposer = %prop.proposer, error = %e, "Proposal request not anchored - rejecting");
+                        warn!(proposer = %prop.proposer, error = %e, "Proposal not anchored - rejecting");
                         if let Some(r) = responder {
                             r.send(FederationResponse::NotAuthorized(e));
                         }
                         continue;
                     }
 
-                    // For proposals that get approved, we also need to write the peer to DB
                     let threshold = self.config.approval_threshold();
                     let leader_prefix = &self.config.self_prefix;
                     let response = sm.apply(request.clone(), threshold, leader_prefix);
 
-                    // If a proposal was approved, write the peer to DB
+                    // If a proposal was approved, write the peer to DB and anchor
                     if let FederationResponse::VoteRecorded {
-                        status: ProposalStatus::Approved,
-                        peer,
+                        approved: true,
+                        ref peer,
                         ..
-                    } = &response
+                    } = response
+                        && let Some(peer) = peer
                     {
-                        // Get the peer from the request (it was a VoteCorePeer that triggered approval)
-                        if let FederationRequest::VoteCorePeer { proposal_id, .. } = &request {
-                            let Some(peer) = peer else {
-                                if let Some(r) = responder {
-                                    r.send(FederationResponse::InternalError(
-                                        "Failed find peer in response:".to_string(),
-                                    ));
-                                }
-                                continue;
-                            };
-
-                            // The peer should now be in sm.peers - find it by checking completed proposals
-                            if sm
-                                .completed_proposals
-                                .iter()
-                                .any(|p| &p.prefix == proposal_id)
-                            {
-                                if let Err(e) = self.identity_client.anchor(&peer.said).await {
-                                    if let Some(r) = responder {
-                                        r.send(FederationResponse::InternalError(format!(
-                                            "Failed to anchor approved peer SAID in our KEL: {}",
-                                            e
-                                        )));
-                                    }
-                                    continue;
-                                }
-
-                                if let Err(e) = self.upsert_peer_to_db(peer).await {
-                                    warn!(
-                                        peer_id = %peer.peer_id,
-                                        error = %e,
-                                        "Failed to write approved peer to local DB"
-                                    );
-                                }
+                        if let Err(e) = self.identity_client.anchor(&peer.said).await {
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::InternalError(format!(
+                                    "Failed to anchor approved peer SAID in our KEL: {}",
+                                    e
+                                )));
                             }
+                            continue;
+                        }
+
+                        if let Err(e) = self.upsert_peer_to_db(peer).await {
+                            warn!(
+                                peer_id = %peer.peer_id,
+                                error = %e,
+                                "Failed to write approved peer to local DB"
+                            );
                         }
                     }
 
@@ -924,17 +941,13 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use crate::federation::Vote;
     use kels::PeerScope;
     use openraft::{SnapshotMeta, StoredMembership};
-    use verifiable_storage::StorageDatetime;
+    use verifiable_storage::{Chained, StorageDatetime};
 
-    // Default threshold for tests (simulates a 3-member federation)
     const TEST_THRESHOLD: usize = 2;
-    // Test anchoring prefix (the leader's prefix)
     const TEST_ANCHORING_PREFIX: &str = "ETestLeader";
 
-    /// Create a test expiration time 7 days in the future
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
     }
@@ -966,225 +979,9 @@ mod tests {
     }
 
     fn make_test_vote(proposal: &str, voter: &str, approve: bool) -> Vote {
-        // For tests, we use dummy payload/signature - real validation happens at API layer
-        Vote::create(proposal.to_string(), voter.to_string(), approve, None).unwrap()
+        Vote::create(proposal.to_string(), voter.to_string(), approve).unwrap()
     }
 
-    #[test]
-    fn test_add_peer() {
-        let mut sm = StateMachineData::new();
-        let peer = make_test_peer("peer-1", "node-1");
-
-        let response = sm.apply(
-            FederationRequest::AddPeer(peer.clone()),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        assert!(matches!(response, FederationResponse::PeerAdded(_)));
-
-        assert_eq!(sm.peers().len(), 1);
-        assert!(sm.get_peer("peer-1").is_some());
-    }
-
-    #[test]
-    fn test_add_multiple_peers() {
-        let mut sm = StateMachineData::new();
-
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert_eq!(sm.peers().len(), 3);
-        assert!(sm.get_peer("peer-1").is_some());
-        assert!(sm.get_peer("peer-2").is_some());
-        assert!(sm.get_peer("peer-3").is_some());
-    }
-
-    #[test]
-    fn test_add_peer_overwrites_existing() {
-        let mut sm = StateMachineData::new();
-
-        let peer1 = make_test_peer("peer-1", "node-1");
-        let peer1_updated = make_test_peer("peer-1", "node-2");
-
-        sm.apply(
-            FederationRequest::AddPeer(peer1),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-1");
-
-        sm.apply(
-            FederationRequest::AddPeer(peer1_updated),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-2");
-        assert_eq!(sm.peers().len(), 1);
-    }
-
-    #[test]
-    fn test_remove_peer() {
-        let mut sm = StateMachineData::new();
-        let peer = make_test_peer("peer-1", "node-1");
-
-        sm.apply(
-            FederationRequest::AddPeer(peer),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        let response = sm.apply(
-            FederationRequest::RemovePeer("peer-1".to_string()),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::PeerRemoved(_)));
-        assert!(sm.peers().is_empty());
-    }
-
-    #[test]
-    fn test_remove_nonexistent_peer() {
-        let mut sm = StateMachineData::new();
-        let response = sm.apply(
-            FederationRequest::RemovePeer("nonexistent".to_string()),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        assert!(matches!(response, FederationResponse::PeerNotFound(_)));
-    }
-
-    #[test]
-    fn test_remove_one_of_many_peers() {
-        let mut sm = StateMachineData::new();
-
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        sm.apply(
-            FederationRequest::RemovePeer("peer-2".to_string()),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert_eq!(sm.peers().len(), 2);
-        assert!(sm.get_peer("peer-1").is_some());
-        assert!(sm.get_peer("peer-2").is_none());
-        assert!(sm.get_peer("peer-3").is_some());
-    }
-
-    #[test]
-    fn test_get_peer_not_found() {
-        let sm = StateMachineData::new();
-        assert!(sm.get_peer("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_snapshot_empty_state() {
-        let sm = StateMachineData::new();
-        let snapshot = sm.snapshot();
-        assert!(snapshot.peers.is_empty());
-    }
-
-    #[test]
-    fn test_snapshot_restore() {
-        let mut sm1 = StateMachineData::new();
-        sm1.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        sm1.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        let snapshot = sm1.snapshot();
-
-        // Create mock metadata for the snapshot
-        let meta = SnapshotMeta {
-            last_log_id: None,
-            last_membership: StoredMembership::default(),
-            snapshot_id: "test-snapshot".to_string(),
-        };
-
-        let mut sm2 = StateMachineData::new();
-        sm2.restore(snapshot, &meta);
-
-        assert_eq!(sm2.peers().len(), 2);
-        assert!(sm2.get_peer("peer-1").is_some());
-        assert!(sm2.get_peer("peer-2").is_some());
-    }
-
-    #[test]
-    fn test_peers_returns_cloned_values() {
-        let mut sm = StateMachineData::new();
-        sm.apply(
-            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        let peers = sm.peers();
-        assert_eq!(peers.len(), 1);
-
-        // Verify it's a clone by checking we can still access the original
-        assert!(sm.get_peer("peer-1").is_some());
-    }
-
-    #[test]
-    fn test_inactive_peer_can_be_added() {
-        let mut sm = StateMachineData::new();
-        let peer = make_inactive_peer("peer-1", "node-1");
-
-        let response = sm.apply(
-            FederationRequest::AddPeer(peer),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-        assert!(matches!(response, FederationResponse::PeerAdded(_)));
-
-        let stored_peer = sm.get_peer("peer-1").unwrap();
-        assert!(!stored_peer.active);
-    }
-
-    #[test]
-    fn test_state_machine_data_default() {
-        let sm = StateMachineData::default();
-        assert!(sm.peers.is_empty());
-        assert!(sm.pending_proposals.is_empty());
-        assert!(sm.last_applied_log.is_none());
-    }
-
-    // ==================== Proposal Tests ====================
-
-    /// Helper to create a test proposal
     fn make_test_proposal(peer_id: &str, node_id: &str, proposer: &str) -> PeerProposal {
         PeerProposal::empty(
             peer_id,
@@ -1197,333 +994,30 @@ mod tests {
         .expect("Failed to create test proposal")
     }
 
-    #[test]
-    fn test_propose_core_peer() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-
-        // Create empty proposal (proposer must vote separately)
-        let response = sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        let proposal_id = match response {
-            FederationResponse::ProposalCreated {
-                proposal_id,
-                votes_needed,
-                current_votes,
-            } => {
-                assert_eq!(votes_needed, TEST_THRESHOLD);
-                assert_eq!(current_votes, 0); // Empty proposal, no votes yet
-                proposal_id
-            }
-            _ => panic!("Expected ProposalCreated, got {:?}", response),
-        };
-
-        // Peer should NOT be in core set yet
-        assert!(sm.get_peer("peer-1").is_none());
-        // Proposal should be pending
-        assert!(sm.get_proposal(&proposal_id).is_some());
+    /// Helper to create a withdrawal from a pending proposal
+    fn make_withdrawal(current: &PeerProposal) -> PeerProposal {
+        let mut withdrawn = current.clone();
+        withdrawn.withdrawn_at = Some(StorageDatetime::now());
+        withdrawn.increment().expect("Failed to increment");
+        withdrawn
     }
 
-    #[test]
-    fn test_vote_approves_proposal() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-
-        // Create empty proposal
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
+    /// Helper: submit a proposal, returns proposal_id
+    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerProposal) -> String {
+        match sm.apply(
+            FederationRequest::SubmitProposal(proposal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         ) {
             FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
             r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        // First vote from proposer
-        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
-        sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id: proposal_id.clone(),
-                vote: vote_a,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        // Second vote should approve (threshold=2)
-        let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
-        let response = sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id: proposal_id.clone(),
-                vote: vote_b,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        match response {
-            FederationResponse::VoteRecorded {
-                proposal_id: resp_id,
-                current_votes,
-                votes_needed,
-                status,
-                peer,
-            } => {
-                assert_eq!(resp_id, proposal_id);
-                assert_eq!(current_votes, 2);
-                assert_eq!(votes_needed, TEST_THRESHOLD);
-                assert_eq!(status, ProposalStatus::Approved);
-                assert_ne!(peer, None);
-            }
-            _ => panic!("Expected VoteRecorded, got {:?}", response),
         }
-
-        // Peer should now be in core set
-        assert!(sm.get_peer("peer-1").is_some());
-        // Proposal should be completed
-        assert!(sm.get_proposal(&proposal_id).is_none());
-        assert_eq!(sm.completed_proposals.len(), 1);
-    }
-
-    #[test]
-    fn test_duplicate_vote_rejected() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-
-        // Create empty proposal
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        // First vote from proposer
-        let vote = make_test_vote(&proposal_id, "ERegistryA", true);
-        sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id: proposal_id.clone(),
-                vote,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        // Proposer tries to vote again
-        let vote2 = make_test_vote(&proposal_id, "ERegistryA", true);
-        let response = sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id,
-                vote: vote2,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::AlreadyVoted(_)));
-    }
-
-    #[test]
-    fn test_proposal_for_existing_peer_rejected() {
-        let mut sm = StateMachineData::new();
-        let peer = make_test_peer("peer-1", "node-1");
-
-        // Add peer directly
-        sm.apply(
-            FederationRequest::AddPeer(peer),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        // Try to propose the same peer
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let response = sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::PeerAlreadyExists(_)));
-    }
-
-    #[test]
-    fn test_withdraw_proposal() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        let response = sm.apply(
-            FederationRequest::WithdrawProposal {
-                proposal_id: proposal_id.clone(),
-                withdrawer: "ERegistryA".to_string(),
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::ProposalWithdrawn(_)));
-        assert!(sm.get_proposal(&proposal_id).is_none());
-        assert_eq!(sm.completed_proposals.len(), 1);
-        assert_eq!(sm.completed_proposals[0].status, ProposalStatus::Withdrawn);
-    }
-
-    #[test]
-    fn test_only_proposer_can_withdraw() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        // Different registry tries to withdraw
-        let response = sm.apply(
-            FederationRequest::WithdrawProposal {
-                proposal_id: proposal_id.clone(),
-                withdrawer: "ERegistryB".to_string(),
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::NotAuthorized(_)));
-        // Proposal should still exist
-        assert!(sm.get_proposal(&proposal_id).is_some());
-    }
-
-    #[test]
-    fn test_vote_on_nonexistent_proposal() {
-        let mut sm = StateMachineData::new();
-
-        let vote = make_test_vote("nonexistent", "ERegistryA", true);
-        let response = sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id: "nonexistent".to_string(),
-                vote,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
-    }
-
-    #[test]
-    fn test_rejection_vote_recorded() {
-        let mut sm = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        // First vote from proposer (approval)
-        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
-        sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id: proposal_id.clone(),
-                vote: vote_a,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        // Vote to reject from another member
-        let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
-        let response = sm.apply(
-            FederationRequest::VoteCorePeer {
-                proposal_id,
-                vote: vote_b,
-            },
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
-
-        match response {
-            FederationResponse::VoteRecorded {
-                current_votes,
-                status,
-                ..
-            } => {
-                assert_eq!(current_votes, 1); // Still only 1 approval (rejection doesn't count)
-                assert_eq!(status, ProposalStatus::Pending);
-            }
-            _ => panic!("Expected VoteRecorded"),
-        }
-
-        // Peer should NOT be in core set
-        assert!(sm.get_peer("peer-1").is_none());
-    }
-
-    #[test]
-    fn test_proposal_snapshot_restore() {
-        let mut sm1 = StateMachineData::new();
-        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm1.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
-
-        let snapshot = sm1.snapshot();
-        assert_eq!(snapshot.pending_proposals.len(), 1);
-
-        let meta = SnapshotMeta {
-            last_log_id: None,
-            last_membership: StoredMembership::default(),
-            snapshot_id: "test-snapshot".to_string(),
-        };
-
-        let mut sm2 = StateMachineData::new();
-        sm2.restore(snapshot, &meta);
-
-        assert!(sm2.get_proposal(&proposal_id).is_some());
-    }
-
-    // ==================== Rogue Leader / Vote Verification Tests ====================
-
-    /// Helper: create a set of trusted member prefixes
-    fn trusted_members() -> std::collections::HashSet<&'static str> {
-        ["ERegistryA", "ERegistryB", "ERegistryC"]
-            .into_iter()
-            .collect()
     }
 
     /// Helper: run a full proposal through to approval, returning the proposal_id
     fn approve_peer(sm: &mut StateMachineData, peer_id: &str, node_id: &str) -> String {
         let proposal = make_test_proposal(peer_id, node_id, "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
+        let proposal_id = submit_proposal(sm, proposal);
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
@@ -1548,14 +1042,463 @@ mod tests {
         proposal_id
     }
 
+    fn trusted_members() -> std::collections::HashSet<&'static str> {
+        ["ERegistryA", "ERegistryB", "ERegistryC"]
+            .into_iter()
+            .collect()
+    }
+
+    // ==================== AddPeer / RemovePeer Tests ====================
+
+    #[test]
+    fn test_add_peer() {
+        let mut sm = StateMachineData::new();
+        let peer = make_test_peer("peer-1", "node-1");
+        let response = sm.apply(
+            FederationRequest::AddPeer(peer),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::PeerAdded(_)));
+        assert_eq!(sm.peers().len(), 1);
+        assert!(sm.get_peer("peer-1").is_some());
+    }
+
+    #[test]
+    fn test_add_multiple_peers() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert_eq!(sm.peers().len(), 3);
+    }
+
+    #[test]
+    fn test_add_peer_overwrites_existing() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-1");
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-2")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-2");
+        assert_eq!(sm.peers().len(), 1);
+    }
+
+    #[test]
+    fn test_remove_peer() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        let response = sm.apply(
+            FederationRequest::RemovePeer("peer-1".to_string()),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::PeerRemoved(_)));
+        assert!(sm.peers().is_empty());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_peer() {
+        let mut sm = StateMachineData::new();
+        let response = sm.apply(
+            FederationRequest::RemovePeer("nonexistent".to_string()),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::PeerNotFound(_)));
+    }
+
+    #[test]
+    fn test_remove_one_of_many_peers() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm.apply(
+            FederationRequest::RemovePeer("peer-2".to_string()),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert_eq!(sm.peers().len(), 2);
+        assert!(sm.get_peer("peer-1").is_some());
+        assert!(sm.get_peer("peer-2").is_none());
+        assert!(sm.get_peer("peer-3").is_some());
+    }
+
+    #[test]
+    fn test_get_peer_not_found() {
+        let sm = StateMachineData::new();
+        assert!(sm.get_peer("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_inactive_peer_can_be_added() {
+        let mut sm = StateMachineData::new();
+        let response = sm.apply(
+            FederationRequest::AddPeer(make_inactive_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::PeerAdded(_)));
+        assert!(!sm.get_peer("peer-1").unwrap().active);
+    }
+
+    #[test]
+    fn test_state_machine_data_default() {
+        let sm = StateMachineData::default();
+        assert!(sm.peers.is_empty());
+        assert!(sm.pending_proposals.is_empty());
+        assert!(sm.last_applied_log.is_none());
+    }
+
+    // ==================== Snapshot Tests ====================
+
+    #[test]
+    fn test_snapshot_empty_state() {
+        let sm = StateMachineData::new();
+        let snapshot = sm.snapshot();
+        assert!(snapshot.peers.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_restore() {
+        let mut sm1 = StateMachineData::new();
+        sm1.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        sm1.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let snapshot = sm1.snapshot();
+        let meta = SnapshotMeta {
+            last_log_id: None,
+            last_membership: StoredMembership::default(),
+            snapshot_id: "test-snapshot".to_string(),
+        };
+
+        let mut sm2 = StateMachineData::new();
+        sm2.restore(snapshot, &meta);
+        assert_eq!(sm2.peers().len(), 2);
+        assert!(sm2.get_peer("peer-1").is_some());
+        assert!(sm2.get_peer("peer-2").is_some());
+    }
+
+    #[test]
+    fn test_peers_returns_cloned_values() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        let peers = sm.peers();
+        assert_eq!(peers.len(), 1);
+        assert!(sm.get_peer("peer-1").is_some());
+    }
+
+    // ==================== Proposal Tests ====================
+
+    #[test]
+    fn test_submit_proposal() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        assert!(sm.get_peer("peer-1").is_none());
+        assert!(sm.get_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn test_vote_approves_proposal() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_b,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        match response {
+            FederationResponse::VoteRecorded {
+                proposal_id: resp_id,
+                current_votes,
+                votes_needed,
+                approved,
+                peer,
+            } => {
+                assert_eq!(resp_id, proposal_id);
+                assert_eq!(current_votes, 2);
+                assert_eq!(votes_needed, TEST_THRESHOLD);
+                assert!(approved);
+                assert!(peer.is_some());
+            }
+            _ => panic!("Expected VoteRecorded, got {:?}", response),
+        }
+
+        assert!(sm.get_peer("peer-1").is_some());
+        assert!(sm.get_proposal(&proposal_id).is_none());
+        assert_eq!(sm.completed_proposals.len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_vote_rejected() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        let vote = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let vote2 = make_test_vote(&proposal_id, "ERegistryA", true);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id,
+                vote: vote2,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::AlreadyVoted(_)));
+    }
+
+    #[test]
+    fn test_proposal_for_existing_peer_rejected() {
+        let mut sm = StateMachineData::new();
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let response = sm.apply(
+            FederationRequest::SubmitProposal(proposal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::PeerAlreadyExists(_)));
+    }
+
+    #[test]
+    fn test_withdraw_proposal() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        let current = sm.get_proposal(&proposal_id).unwrap().clone();
+        let withdrawal = make_withdrawal(&current);
+
+        let response = sm.apply(
+            FederationRequest::SubmitProposal(withdrawal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        assert!(matches!(response, FederationResponse::ProposalWithdrawn(_)));
+        assert!(sm.get_proposal(&proposal_id).is_none());
+        assert_eq!(sm.completed_proposals.len(), 1);
+        assert_eq!(sm.completed_proposals[0].len(), 2);
+        assert!(sm.completed_proposals[0][1].is_withdrawn());
+    }
+
+    #[test]
+    fn test_only_proposer_can_withdraw() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        let current = sm.get_proposal(&proposal_id).unwrap().clone();
+        let mut withdrawal = current.clone();
+        withdrawal.proposer = "ERegistryB".to_string();
+        withdrawal.withdrawn_at = Some(StorageDatetime::now());
+        let _ = withdrawal.increment();
+
+        let response = sm.apply(
+            FederationRequest::SubmitProposal(withdrawal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::NotAuthorized(_)));
+        assert!(sm.get_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn test_withdraw_with_votes_rejected() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        // Cast a vote first
+        let vote = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        // Now try to withdraw
+        let current = sm.get_proposal(&proposal_id).unwrap().clone();
+        let withdrawal = make_withdrawal(&current);
+
+        let response = sm.apply(
+            FederationRequest::SubmitProposal(withdrawal),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::HasVotes(_)));
+        // Proposal should still be pending
+        assert!(sm.get_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn test_vote_on_nonexistent_proposal() {
+        let mut sm = StateMachineData::new();
+        let vote = make_test_vote("nonexistent", "ERegistryA", true);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: "nonexistent".to_string(),
+                vote,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
+    }
+
+    #[test]
+    fn test_rejection_vote_recorded() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
+        sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id,
+                vote: vote_b,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+
+        match response {
+            FederationResponse::VoteRecorded {
+                current_votes,
+                approved,
+                ..
+            } => {
+                assert_eq!(current_votes, 1);
+                assert!(!approved);
+            }
+            _ => panic!("Expected VoteRecorded"),
+        }
+        assert!(sm.get_peer("peer-1").is_none());
+    }
+
+    #[test]
+    fn test_proposal_snapshot_restore() {
+        let mut sm1 = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm1, proposal);
+
+        let snapshot = sm1.snapshot();
+        assert_eq!(snapshot.pending_proposals.len(), 1);
+
+        let meta = SnapshotMeta {
+            last_log_id: None,
+            last_membership: StoredMembership::default(),
+            snapshot_id: "test-snapshot".to_string(),
+        };
+
+        let mut sm2 = StateMachineData::new();
+        sm2.restore(snapshot, &meta);
+        assert!(sm2.get_proposal(&proposal_id).is_some());
+    }
+
+    // ==================== Rogue Leader / Vote Verification Tests ====================
+
     #[test]
     fn test_verified_voters_with_approved_proposal() {
         let mut sm = StateMachineData::new();
         let members = trusted_members();
-
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        // Peer was added via voting, should have verified voters
         let voters = sm.verified_voters_for_peer("peer-1", &members);
         assert_eq!(voters.len(), 2);
         assert!(voters.contains("ERegistryA"));
@@ -1566,8 +1509,6 @@ mod tests {
     fn test_verified_voters_no_proposal() {
         let sm = StateMachineData::new();
         let members = trusted_members();
-
-        // No proposal exists for this peer
         let voters = sm.verified_voters_for_peer("peer-1", &members);
         assert!(voters.is_empty());
     }
@@ -1576,18 +1517,12 @@ mod tests {
     fn test_verified_voters_rogue_leader_adds_peer_without_proposal() {
         let mut sm = StateMachineData::new();
         let members = trusted_members();
-
-        // Rogue leader directly adds a peer without any proposal/voting
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("rogue-peer", "rogue-node")),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
-
-        // Peer is in state (sync apply doesn't check votes)
         assert!(sm.get_peer("rogue-peer").is_some());
-
-        // But vote verification finds no backing proposal
         let voters = sm.verified_voters_for_peer("rogue-peer", &members);
         assert!(voters.is_empty());
     }
@@ -1596,17 +1531,8 @@ mod tests {
     fn test_verified_voters_insufficient_votes() {
         let mut sm = StateMachineData::new();
         let members = trusted_members();
-
-        // Create proposal with only 1 vote (threshold is 2)
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
+        let proposal_id = submit_proposal(&mut sm, proposal);
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
@@ -1618,28 +1544,18 @@ mod tests {
             TEST_ANCHORING_PREFIX,
         );
 
-        // Only 1 vote, proposal still pending (not in completed_proposals)
         let voters = sm.verified_voters_for_peer("peer-1", &members);
-        assert!(voters.is_empty()); // No completed approved proposal
+        assert!(voters.is_empty());
     }
 
     #[test]
     fn test_verified_voters_ignores_untrusted_voter() {
         let mut sm = StateMachineData::new();
-        // Only trust A and B (not C)
         let members: std::collections::HashSet<&str> =
             ["ERegistryA", "ERegistryB"].into_iter().collect();
 
-        // Approve with A and C (C is untrusted in this context)
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
+        let proposal_id = submit_proposal(&mut sm, proposal);
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
@@ -1661,25 +1577,18 @@ mod tests {
             TEST_ANCHORING_PREFIX,
         );
 
-        // Proposal was approved (threshold=2, got 2 votes from apply's perspective)
-        // But from our trusted set, only A is trusted
         let voters = sm.verified_voters_for_peer("peer-1", &members);
         assert_eq!(voters.len(), 1);
         assert!(voters.contains("ERegistryA"));
-        // Only 1 trusted voter - would fail threshold=2 check
     }
 
     #[test]
     fn test_verified_voters_ignores_rejection_votes() {
         let mut sm = StateMachineData::new();
         let members = trusted_members();
-
-        // Create proposal, approve with A and B, reject with C
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        // Add a rejection vote (proposal already completed, but let's verify)
         let voters = sm.verified_voters_for_peer("peer-1", &members);
-        // Should only count approval votes
         assert_eq!(voters.len(), 2);
     }
 
@@ -1688,27 +1597,17 @@ mod tests {
         let mut sm = StateMachineData::new();
         let members = trusted_members();
 
-        // Create proposal and withdraw it
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
-        let proposal_id = match sm.apply(
-            FederationRequest::ProposeCorePeer(proposal),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        ) {
-            FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
-            r => panic!("Expected ProposalCreated, got {:?}", r),
-        };
+        let proposal_id = submit_proposal(&mut sm, proposal);
 
+        let current = sm.get_proposal(&proposal_id).unwrap().clone();
+        let withdrawal = make_withdrawal(&current);
         sm.apply(
-            FederationRequest::WithdrawProposal {
-                proposal_id,
-                withdrawer: "ERegistryA".to_string(),
-            },
+            FederationRequest::SubmitProposal(withdrawal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
 
-        // Withdrawn proposal should not count
         let voters = sm.verified_voters_for_peer("peer-1", &members);
         assert!(voters.is_empty());
     }

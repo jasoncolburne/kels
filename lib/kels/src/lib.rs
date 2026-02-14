@@ -64,7 +64,7 @@ pub use hardware::HardwareKeyProvider;
 pub use builder::KeyEventBuilder;
 pub use client::{
     KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient, RegistrySigner,
-    SignResult, sign_request,
+    SignResult, sign_request, trusted_prefixes,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
@@ -75,9 +75,9 @@ pub use types::{
     DeregisterRequest, ErrorCode, ErrorResponse, EventKind, EventSignature, KelMergeResult,
     KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration,
     NodeStatus, NodeType, Peer, PeerHistory, PeerProposal, PeerScope, PeersResponse,
-    PrefixListResponse, PrefixState, PrefixesRequest, ProposalStatus, ProposalWithVotes,
-    RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, SignedKeyEvent,
-    SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
+    PrefixListResponse, PrefixState, PrefixesRequest, ProposalHistory, ProposalStatus,
+    ProposalWithVotes, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest,
+    SignedKeyEvent, SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
 };
 pub use types::{Kel, compute_rotation_hash};
 

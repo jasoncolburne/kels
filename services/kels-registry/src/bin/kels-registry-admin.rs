@@ -12,7 +12,7 @@ use std::sync::Arc;
 use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels::{Peer, PeerScope};
+use kels::{Peer, PeerScope, ProposalWithVotes};
 use kels_registry::{
     federation::{FederationStatus, PeerProposal, Vote},
     identity_client::IdentityClient,
@@ -541,8 +541,8 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .context("Failed to get voter prefix")?;
 
     // Create vote (SAID is auto-derived)
-    let vote = Vote::create(proposal_id.to_string(), voter, approve, None)
-        .context("Failed to create vote")?;
+    let vote =
+        Vote::create(proposal_id.to_string(), voter, approve).context("Failed to create vote")?;
 
     // Anchor the vote's SAID in our KEL (this IS the signature)
     ctx.identity_client
@@ -565,7 +565,7 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
                 "Progress: {}/{} approvals",
                 result.current_votes, result.votes_needed
             );
-            if result.status == "Approved" {
+            if result.status == "approved" {
                 println!("Peer has been added to the core set.");
             }
             return Ok(());
@@ -598,22 +598,24 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
-        let proposals: Vec<PeerProposal> = resp.json().await?;
+        let proposals: Vec<ProposalWithVotes> = resp.json().await?;
 
         if proposals.is_empty() {
             println!("No pending proposals");
             return Ok(());
         }
 
-        for p in proposals {
-            let expires = p.expires_at.to_string();
-            let expires = expires.split('T').next().unwrap_or(&expires);
-            println!("Proposal:  {}", p.prefix);
-            println!("Peer ID:   {}", p.peer_id);
-            println!("Proposer:  {}", p.proposer);
-            println!("Approvals: {}", p.approvals.len());
-            println!("Expires:   {}", expires);
-            println!();
+        for pwv in proposals {
+            if let Some(p) = pwv.history.inception() {
+                let expires = p.expires_at.to_string();
+                let expires = expires.split('T').next().unwrap_or(&expires);
+                println!("Proposal:  {}", pwv.proposal_id());
+                println!("Peer ID:   {}", p.peer_id);
+                println!("Proposer:  {}", p.proposer);
+                println!("Approvals: {}", pwv.approval_count());
+                println!("Expires:   {}", expires);
+                println!();
+            }
         }
     } else {
         let error: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -634,18 +636,25 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
-        let p: PeerProposal = resp.json().await?;
-        println!("Proposal: {}", p.prefix);
-        println!("{}", "=".repeat(50));
-        println!("SAID:       {}", p.said);
-        println!("Status:     {:?}", p.status);
-        println!("Peer ID:    {}", p.peer_id);
-        println!("Node ID:    {}", p.node_id);
-        println!("Proposer:   {}", p.proposer);
-        println!("Approvals:  {}", p.approvals.len());
-        println!("Rejections: {}", p.rejections.len());
-        println!("Created:    {}", p.created_at);
-        println!("Expires:    {}", p.expires_at);
+        let pwv: ProposalWithVotes = resp.json().await?;
+        if let Some(p) = pwv.history.inception() {
+            println!("Proposal: {}", pwv.proposal_id());
+            println!("{}", "=".repeat(50));
+            println!("SAID:       {}", p.said);
+            println!("Peer ID:    {}", p.peer_id);
+            println!("Node ID:    {}", p.node_id);
+            println!("Proposer:   {}", p.proposer);
+            println!("Approvals:  {}", pwv.approval_count());
+            println!("Rejections: {}", pwv.rejection_count());
+            println!("Created:    {}", p.created_at);
+            println!("Expires:    {}", p.expires_at);
+            if pwv.history.is_withdrawn()
+                && let Some(latest) = pwv.history.latest()
+                && let Some(ref withdrawn_at) = latest.withdrawn_at
+            {
+                println!("Withdrawn:  {}", withdrawn_at);
+            }
+        }
     } else {
         let error: serde_json::Value = resp.json().await.unwrap_or_default();
         return Err(anyhow!(
@@ -661,13 +670,65 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
 }
 
 async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
-    // Get leader URL from federation status
-    let mut target_url = ctx.get_leader_url().await?;
+    use verifiable_storage::Chained;
 
-    // Retry loop for leader changes
+    // 1. Fetch the current proposal from the registry
+    let mut target_url = ctx.get_leader_url().await?;
+    let fetch_url = format!("{}/api/admin/proposals/{}", target_url, proposal_id);
+    let resp = ctx.http_client.get(&fetch_url).send().await?;
+
+    if !resp.status().is_success() {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to fetch proposal: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    let pwv: ProposalWithVotes = resp
+        .json()
+        .await
+        .context("Failed to parse proposal response")?;
+
+    let current = pwv
+        .history
+        .inception()
+        .ok_or_else(|| anyhow!("Proposal has no inception record"))?;
+
+    // 2. Verify we are the proposer
+    if current.proposer != ctx.self_prefix {
+        return Err(anyhow!(
+            "Only the proposer ({}) can withdraw. You are {}.",
+            current.proposer,
+            ctx.self_prefix
+        ));
+    }
+
+    // 3. Verify not already withdrawn
+    if pwv.history.is_withdrawn() {
+        return Err(anyhow!("Proposal {} is already withdrawn", proposal_id));
+    }
+
+    // 4. Create withdrawal (v1): clone, set withdrawn_at, increment
+    let mut withdrawal = current.clone();
+    withdrawal.withdrawn_at = Some(StorageDatetime::now());
+    withdrawal
+        .increment()
+        .context("Failed to create withdrawal record")?;
+
+    // 4. Anchor the withdrawal's SAID in our KEL
+    ctx.identity_client
+        .anchor(&withdrawal.said)
+        .await
+        .context("Failed to anchor withdrawal in KEL")?;
+
+    // 5. POST to /api/admin/proposals (same endpoint as create)
     for attempt in 0..2 {
-        let url = format!("{}/api/admin/proposals/{}", target_url, proposal_id);
-        let resp = ctx.http_client.delete(&url).send().await?;
+        let url = format!("{}/api/admin/proposals", target_url);
+        let resp = ctx.http_client.post(&url).json(&withdrawal).send().await?;
 
         if resp.status().is_success() {
             let result: ProposalResponse = resp.json().await?;
@@ -681,7 +742,6 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
             .and_then(|e| e.as_str())
             .unwrap_or("unknown error");
 
-        // Check if this is a "not leader" error and extract new leader URL
         if error_msg.contains("Not leader")
             && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
             && attempt == 0

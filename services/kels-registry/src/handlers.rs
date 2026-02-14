@@ -10,17 +10,17 @@ use axum::{
 };
 use kels::{
     CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration,
-    Peer, PeerHistory, PeerScope, PeersResponse, ProposalWithVotes, RegisterNodeRequest,
-    SignedRequest, StatusUpdateRequest,
+    Peer, PeerHistory, PeerScope, PeersResponse, RegisterNodeRequest, SignedRequest,
+    StatusUpdateRequest,
 };
 use serde::{Deserialize, Serialize};
-use verifiable_storage::ChainedRepository;
+use verifiable_storage::{ChainedRepository, SelfAddressed};
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
 use crate::{
     federation::{
         FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
-        PeerProposal, SignedFederationRpc, Vote,
+        PeerProposal, ProposalHistory, SignedFederationRpc, Vote,
     },
     identity_client::IdentityClient,
     repository::RegistryRepository,
@@ -368,19 +368,8 @@ pub async fn federation_status(
 pub async fn list_completed_proposals(
     State(state): State<Arc<FederationState>>,
 ) -> Result<Json<CompletedProposalsResponse>, ApiError> {
-    let completed = state.node.completed_proposals().await;
-
-    let mut proposals_with_votes = Vec::with_capacity(completed.len());
-    for proposal in &completed {
-        let votes = state.node.votes_for_proposal(proposal).await;
-        proposals_with_votes.push(ProposalWithVotes {
-            proposal: proposal.clone(),
-            votes,
-        });
-    }
-
     Ok(Json(CompletedProposalsResponse {
-        proposals: proposals_with_votes,
+        proposals: state.node.completed_proposals_with_votes().await,
         member_prefixes: state.node.member_prefixes(),
         approval_threshold: state.node.approval_threshold(),
     }))
@@ -412,58 +401,96 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// List pending proposals (admin, localhost only).
+/// List pending proposals with their votes (admin, localhost only).
 pub async fn admin_list_proposals(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
-) -> Result<Json<Vec<PeerProposal>>, ApiError> {
+) -> Result<Json<Vec<kels::ProposalWithVotes>>, ApiError> {
     if !is_localhost(&addr) {
         return Err(ApiError::forbidden("Admin API is localhost only"));
     }
 
-    let proposals = state.node.pending_proposals().await;
-    Ok(Json(proposals))
+    Ok(Json(state.node.pending_proposals_with_votes().await))
 }
 
-/// Get a specific proposal (admin, localhost only).
+/// Get a specific proposal with votes (admin, localhost only).
 pub async fn admin_get_proposal(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
-) -> Result<Json<PeerProposal>, ApiError> {
+) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
     if !is_localhost(&addr) {
         return Err(ApiError::forbidden("Admin API is localhost only"));
     }
 
     let proposal = state
         .node
-        .get_proposal(&proposal_id)
+        .get_proposal_with_votes(&proposal_id)
         .await
         .ok_or_else(|| ApiError::not_found(format!("Proposal not found: {}", proposal_id)))?;
 
     Ok(Json(proposal))
 }
 
-/// Propose a new core peer (admin, localhost only).
+/// Submit a proposal (create or withdraw) via Raft consensus.
 ///
-/// Creates an empty proposal (v0). The proposer must then submit their vote
-/// separately via the vote endpoint.
-pub async fn admin_propose_peer(
+/// For new proposals (v0, no previous): creates an empty proposal requiring multi-party approval.
+/// For withdrawals (v1, has previous, withdrawn_at set): withdraws a pending proposal.
+///
+/// Full verification before Raft submission:
+/// 1. Proposer is a federation member
+/// 2. Build and verify the full proposal chain (ProposalHistory)
+/// 3. Verify each record's SAID is anchored in proposer's KEL
+pub async fn admin_submit_proposal(
     State(state): State<Arc<FederationState>>,
-    Json(req): Json<PeerProposal>,
+    Json(proposal): Json<PeerProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    // Verify proposer is a federation member (security via KEL anchoring)
-    if !state.node.config().is_member(&req.proposer) {
+    // 1. Verify proposer is a federation member
+    if !state.node.config().is_member(&proposal.proposer) {
         return Err(ApiError::forbidden(format!(
             "Proposer {} is not a federation member",
-            req.proposer
+            proposal.proposer
         )));
     }
 
-    // Submit proposal (empty, no votes yet)
+    // 2. Build and verify the full proposal chain
+    let records = if proposal.previous.is_some() {
+        // Withdrawal (v1): fetch existing v0 and build full chain
+        let existing = state
+            .node
+            .get_proposal(&proposal.prefix)
+            .await
+            .ok_or_else(|| {
+                ApiError::not_found(format!("Proposal not found: {}", proposal.prefix))
+            })?;
+        vec![existing, proposal.clone()]
+    } else {
+        // New proposal (v0): chain is just this record
+        vec![proposal.clone()]
+    };
+
+    let history = ProposalHistory {
+        prefix: proposal.prefix.clone(),
+        records,
+    };
+
+    history
+        .verify()
+        .map_err(|e| ApiError::bad_request(format!("Proposal chain verification failed: {}", e)))?;
+
+    // 3. Verify each record's SAID is anchored in proposer's KEL
+    for record in &history.records {
+        state
+            .node
+            .verify_anchoring(&record.said, &record.proposer)
+            .await
+            .map_err(|e| ApiError::unauthorized(format!("Anchoring verification failed: {}", e)))?;
+    }
+
+    // 4. Submit to Raft
     let response = state
         .node
-        .propose_core_peer(req)
+        .submit_proposal(proposal)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -473,7 +500,7 @@ pub async fn admin_propose_peer(
                 "Not leader. Leader: {:?} at {:?}",
                 leader_prefix, leader_url
             )),
-            _ => ApiError::internal_error(format!("Failed to create proposal: {}", e)),
+            _ => ApiError::internal_error(format!("Failed to submit proposal: {}", e)),
         })?;
 
     match response {
@@ -486,10 +513,14 @@ pub async fn admin_propose_peer(
             status: "pending".to_string(),
             votes_needed,
             current_votes,
-            message: format!(
-                "Proposal created (v0). Proposer must now submit vote. Need {} approvals.",
-                votes_needed
-            ),
+            message: format!("Proposal created. Need {} approvals.", votes_needed),
+        })),
+        FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
+            proposal_id: id,
+            status: "withdrawn".to_string(),
+            votes_needed: 0,
+            current_votes: 0,
+            message: "Proposal withdrawn.".to_string(),
         })),
         FederationResponse::PeerAlreadyExists(peer_id) => Err(ApiError::bad_request(format!(
             "Peer already exists: {}",
@@ -498,6 +529,15 @@ pub async fn admin_propose_peer(
         FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
             format!("Proposal already exists: {}", proposal_id),
         )),
+        FederationResponse::SaidMismatch(msg) => Err(ApiError::bad_request(format!(
+            "SAID mismatch: {}",
+            msg
+        ))),
+        FederationResponse::NotAuthorized(msg) => Err(ApiError::forbidden(msg)),
+        FederationResponse::HasVotes(msg) => Err(ApiError::bad_request(msg)),
+        FederationResponse::ProposalNotFound(id) => {
+            Err(ApiError::not_found(format!("Proposal not found: {}", id)))
+        }
         _ => Err(ApiError::internal_error(format!(
             "Unexpected response: {:?}",
             response
@@ -507,15 +547,22 @@ pub async fn admin_propose_peer(
 
 /// Vote on a proposal.
 ///
-/// The vote's SAID is verified to be anchored in the voter's KEL by the state machine.
-/// This anchoring IS the signature - no separate signature verification needed here.
-/// To withdraw a proposal, the proposer sends a vote with `withdrawn_at` set.
+/// Full verification before Raft submission:
+/// 1. Vote SAID integrity
+/// 2. Voter is a federation member
+/// 3. Vote references correct proposal
+/// 4. Proposal chain is valid and not withdrawn (ProposalHistory verification)
+/// 5. Vote SAID is anchored in voter's KEL
 pub async fn admin_vote_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    // Verify voter is a federation member (security via KEL anchoring)
+    // 1. Verify vote SAID integrity
+    vote.verify_said()
+        .map_err(|e| ApiError::bad_request(format!("Vote verification failed: {}", e)))?;
+
+    // 2. Verify voter is a federation member
     if !state.node.config().is_member(&vote.voter) {
         return Err(ApiError::forbidden(format!(
             "Voter {} is not a federation member",
@@ -523,13 +570,43 @@ pub async fn admin_vote_proposal(
         )));
     }
 
-    // Verify vote is for this proposal
+    // 3. Verify vote references this proposal
     if vote.proposal != proposal_id {
         return Err(ApiError::bad_request(format!(
             "Vote is for proposal {} but submitted to {}",
             vote.proposal, proposal_id
         )));
     }
+
+    // 4. Verify the proposal chain is valid and not withdrawn
+    let proposal = state
+        .node
+        .get_proposal(&proposal_id)
+        .await
+        .ok_or_else(|| ApiError::not_found(format!("Proposal not found: {}", proposal_id)))?;
+
+    let history = ProposalHistory {
+        prefix: proposal.prefix.clone(),
+        records: vec![proposal],
+    };
+
+    history.verify().map_err(|e| {
+        ApiError::internal_error(format!("Stored proposal failed verification: {}", e))
+    })?;
+
+    if history.is_withdrawn() {
+        return Err(ApiError::bad_request(format!(
+            "Proposal {} has been withdrawn",
+            proposal_id
+        )));
+    }
+
+    // 5. Verify vote SAID is anchored in voter's KEL
+    state
+        .node
+        .verify_anchoring(&vote.said, &vote.voter)
+        .await
+        .map_err(|e| ApiError::unauthorized(format!("Anchoring verification failed: {}", e)))?;
 
     let response = state
         .node
@@ -551,10 +628,10 @@ pub async fn admin_vote_proposal(
             proposal_id,
             current_votes,
             votes_needed,
-            status,
+            approved,
             peer,
         } => {
-            let message = if status == crate::federation::ProposalStatus::Approved {
+            let message = if approved {
                 format!(
                     "Proposal approved! Peer {:?} added to core set.",
                     peer.map(|p| p.said)
@@ -567,7 +644,11 @@ pub async fn admin_vote_proposal(
             };
             Ok(Json(ProposalResponse {
                 proposal_id,
-                status: status.to_string(),
+                status: if approved {
+                    "approved".to_string()
+                } else {
+                    "pending".to_string()
+                },
                 votes_needed,
                 current_votes,
                 message,
@@ -583,65 +664,6 @@ pub async fn admin_vote_proposal(
         FederationResponse::ProposalExpired(id) => {
             Err(ApiError::bad_request(format!("Proposal expired: {}", id)))
         }
-        _ => Err(ApiError::internal_error(format!(
-            "Unexpected response: {:?}",
-            response
-        ))),
-    }
-}
-
-/// Withdraw a proposal.
-///
-/// Note: Withdrawals should be done via the vote endpoint by sending a vote
-/// with `withdrawn_at` set. This endpoint is a convenience for the proposer.
-pub async fn admin_withdraw_proposal(
-    State(state): State<Arc<FederationState>>,
-    Path(proposal_id): Path<String>,
-    Json(vote): Json<Vote>,
-) -> Result<Json<ProposalResponse>, ApiError> {
-    // Verify voter is a federation member
-    if !state.node.config().is_member(&vote.voter) {
-        return Err(ApiError::forbidden(format!(
-            "Voter {} is not a federation member",
-            vote.voter
-        )));
-    }
-
-    // Verify this is a withdrawal vote
-    if vote.withdrawn_at.is_none() {
-        return Err(ApiError::bad_request(
-            "Withdrawal vote must have withdrawn_at set",
-        ));
-    }
-
-    // Use the vote endpoint logic
-    let response = state
-        .node
-        .vote_core_peer(proposal_id.clone(), vote)
-        .await
-        .map_err(|e| match e {
-            crate::federation::FederationError::NotLeader {
-                leader_prefix,
-                leader_url,
-            } => ApiError::bad_request(format!(
-                "Not leader. Leader: {:?} at {:?}",
-                leader_prefix, leader_url
-            )),
-            _ => ApiError::internal_error(format!("Failed to withdraw: {}", e)),
-        })?;
-
-    match response {
-        FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
-            status: "withdrawn".to_string(),
-            votes_needed: 0,
-            current_votes: 0,
-            message: "Proposal withdrawn.".to_string(),
-        })),
-        FederationResponse::ProposalNotFound(id) => {
-            Err(ApiError::not_found(format!("Proposal not found: {}", id)))
-        }
-        FederationResponse::NotAuthorized(msg) => Err(ApiError::forbidden(msg)),
         _ => Err(ApiError::internal_error(format!(
             "Unexpected response: {:?}",
             response

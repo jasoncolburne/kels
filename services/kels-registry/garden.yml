@@ -154,6 +154,29 @@ spec:
 
 ---
 
+# Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: withdraw-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/withdraw-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+
+---
+
 # Regional peer actions (direct add, no proposal needed)
 
 kind: Run

@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use kels::shutdown_signal;
 use redis::Client as RedisClient;
@@ -67,7 +67,7 @@ pub fn create_router(
             )
             // Admin API (localhost only) for proposal management
             .route("/api/admin/proposals", get(handlers::admin_list_proposals))
-            .route("/api/admin/proposals", post(handlers::admin_propose_peer))
+            .route("/api/admin/proposals", post(handlers::admin_submit_proposal))
             .route(
                 "/api/admin/proposals/:proposal_id",
                 get(handlers::admin_get_proposal),
@@ -75,10 +75,6 @@ pub fn create_router(
             .route(
                 "/api/admin/proposals/:proposal_id/vote",
                 post(handlers::admin_vote_proposal),
-            )
-            .route(
-                "/api/admin/proposals/:proposal_id",
-                delete(handlers::admin_withdraw_proposal),
             )
             // Admin API for regional peer management
             .route("/api/admin/peers", post(handlers::admin_add_regional_peer))
