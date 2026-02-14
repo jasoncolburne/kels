@@ -95,7 +95,7 @@ Authorized peers are stored in PostgreSQL using verifiable-storage patterns:
 ```rust
 struct Peer {
     said: String,             // Content hash (CESR Blake3)
-    prefix: String,           // Stable lineage ID (peer-{peer_id})
+    prefix: String,           // Stable lineage ID
     previous: Option<String>, // SAID of previous version
     version: u64,             // Version number
     created_at: DateTime,
