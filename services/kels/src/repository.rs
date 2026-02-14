@@ -4,8 +4,8 @@ use kels::{
     EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState, SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
-use std::collections::HashMap;
-use verifiable_storage::{SelfAddressed, StorageError, TransactionExecutor, Value};
+use std::collections::{HashMap, HashSet};
+use verifiable_storage::{ColumnQuery, SelfAddressed, StorageError, TransactionExecutor, Value};
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
 #[derive(Stored, SignedEvents)]
@@ -109,6 +109,26 @@ impl KeyEventRepository {
             prefixes: prefix_states,
             next_cursor,
         })
+    }
+
+    /// Find the lowest serial where divergence occurs (duplicate serial values).
+    /// Returns `None` if no divergence exists.
+    pub async fn find_divergence_serial(&self, prefix: &str) -> Result<Option<u64>, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "serial")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .order(Order::Asc);
+        let serials: Vec<i64> = self.pool.fetch_column(query).await?;
+
+        let mut seen = HashSet::new();
+        for serial in &serials {
+            if !seen.insert(*serial as u64) {
+                return Ok(Some(*serial as u64));
+            }
+        }
+        Ok(None)
     }
 
     /// Begin transaction with advisory lock on prefix. Serializes all operations on this prefix.

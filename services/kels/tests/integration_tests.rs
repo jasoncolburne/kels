@@ -382,7 +382,9 @@ async fn test_batch_get_kels() {
 
     // Batch fetch
     let request = BatchKelsRequest {
-        prefixes: vec![prefix1.clone(), prefix2.clone()],
+        prefixes: [(prefix1.clone(), None), (prefix2.clone(), None)]
+            .into_iter()
+            .collect(),
     };
 
     let response = harness
@@ -585,7 +587,8 @@ async fn test_batch_kels_exceeds_max_prefixes() {
     };
 
     // Create request with 51 prefixes (max is 50)
-    let prefixes: Vec<String> = (0..51).map(|i| format!("prefix_{}", i)).collect();
+    let prefixes: std::collections::HashMap<String, Option<String>> =
+        (0..51).map(|i| (format!("prefix_{}", i), None)).collect();
     let request = BatchKelsRequest { prefixes };
 
     let response = harness
@@ -640,7 +643,12 @@ async fn test_batch_get_kels_with_missing_prefixes() {
 
     // Request with both existing and non-existing prefixes
     let request = BatchKelsRequest {
-        prefixes: vec![existing_prefix.clone(), "nonexistent_prefix".to_string()],
+        prefixes: [
+            (existing_prefix.clone(), None),
+            ("nonexistent_prefix".to_string(), None),
+        ]
+        .into_iter()
+        .collect(),
     };
 
     let response = harness

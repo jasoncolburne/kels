@@ -587,7 +587,10 @@ impl KelsClient {
             .collect();
 
         let request = BatchKelsRequest {
-            prefixes: batch_prefixes.iter().map(|p| p.to_string()).collect(),
+            prefixes: batch_prefixes
+                .iter()
+                .map(|p| (p.to_string(), None))
+                .collect(),
         };
 
         let resp = self
@@ -701,7 +704,7 @@ impl KelsClient {
         }
 
         let request = BatchKelsRequest {
-            prefixes: prefixes.iter().map(|p| p.to_string()).collect(),
+            prefixes: prefixes.iter().map(|p| (p.to_string(), None)).collect(),
         };
 
         let resp = self

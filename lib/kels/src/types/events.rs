@@ -2,7 +2,7 @@
 
 use std::{
     cmp::{Eq, PartialEq},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     hash::{Hash, Hasher},
     str::FromStr,
@@ -690,7 +690,7 @@ impl KelsAuditRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchKelsRequest {
-    pub prefixes: Vec<String>,
+    pub prefixes: HashMap<String, Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

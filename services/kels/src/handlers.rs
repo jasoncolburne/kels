@@ -8,6 +8,7 @@ use axum::{
 };
 use cesr::{Matter, Signature};
 use dashmap::DashMap;
+use futures_util::future::join_all;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
     KelResponse, KelsAuditRecord, KelsError, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse,
@@ -644,12 +645,12 @@ async fn refresh_verified_peers(
 const MAX_BATCH_PREFIXES: usize = 50;
 
 /// Batch fetch KELs. Returns map of prefix -> events.
+/// Supports delta fetching: if a since SAID is provided for a prefix,
+/// only events after that SAID are returned.
 pub(crate) async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Response, ApiError> {
-    use futures_util::future::join_all;
-
     if request.prefixes.len() > MAX_BATCH_PREFIXES {
         return Err(ApiError::bad_request(format!(
             "Batch request exceeds maximum of {} prefixes",
@@ -660,30 +661,116 @@ pub(crate) async fn get_kels_batch(
     // Fetch all KELs in parallel
     let futures: Vec<_> = request
         .prefixes
-        .iter()
-        .map(|prefix| {
-            let prefix = prefix.clone();
+        .into_iter()
+        .map(|(prefix, since)| {
             let state = Arc::clone(&state);
 
             async move {
-                // Fast path: return cached bytes directly
-                if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
-                    return Ok((prefix, (*bytes).clone()));
+                match since {
+                    // Full fetch path
+                    None => {
+                        // Fast path: return cached bytes directly
+                        if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
+                        {
+                            return Ok((prefix, (*bytes).clone()));
+                        }
+
+                        // Cache miss - fetch from DB
+                        let events = state.repo.key_events.get_signed_history(&prefix).await?;
+
+                        // Store in cache
+                        if !events.is_empty()
+                            && let Err(e) = state.kel_cache.store(&prefix, &events).await
+                        {
+                            warn!("Failed to cache KEL for {}: {}", prefix, e);
+                        }
+
+                        let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                        Ok((prefix, bytes))
+                    }
+                    // Delta fetch path
+                    Some(since_said) => {
+                        // Look up the since event to get its serial
+                        let since_event = match state
+                            .repo
+                            .key_events
+                            .get_by_said(&since_said)
+                            .await?
+                        {
+                            Some(e) => e,
+                            None => {
+                                // SAID not found (archived by recovery) — fall back to full fetch
+                                warn!(
+                                    "Since SAID {} not found for {}, falling back to full fetch",
+                                    since_said, prefix
+                                );
+                                let events =
+                                    state.repo.key_events.get_signed_history(&prefix).await?;
+                                let bytes =
+                                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                                return Ok((prefix, bytes));
+                            }
+                        };
+
+                        // Check for divergence
+                        let div_serial = state
+                            .repo
+                            .key_events
+                            .find_divergence_serial(&prefix)
+                            .await?;
+
+                        let delta = match div_serial {
+                            None => {
+                                // No divergence: simple serial-based delta
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, since_event.serial)
+                                    .await?;
+                                events
+                                    .into_iter()
+                                    .filter(|e| e.event.said != since_said)
+                                    .collect::<Vec<_>>()
+                            }
+                            Some(ds) if ds <= since_event.serial => {
+                                // Divergence at or before since event's serial:
+                                // fetch from divergence point and filter out client's events
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, ds)
+                                    .await?;
+                                let kel = Kel::from_events(events.clone(), true).map_err(|e| {
+                                    ApiError::internal_error(format!(
+                                        "Failed to build KEL for divergence filtering: {}",
+                                        e
+                                    ))
+                                })?;
+                                let client_saids = kel.get_event_saids_from_tail(&since_said);
+                                events
+                                    .into_iter()
+                                    .filter(|e| !client_saids.contains(&e.event.said))
+                                    .collect::<Vec<_>>()
+                            }
+                            Some(_) => {
+                                // Divergence after since event's serial:
+                                // client is before divergence, normal delta works
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, since_event.serial)
+                                    .await?;
+                                events
+                                    .into_iter()
+                                    .filter(|e| e.event.said != since_said)
+                                    .collect::<Vec<_>>()
+                            }
+                        };
+
+                        let bytes = serde_json::to_vec(&delta).unwrap_or_else(|_| b"[]".to_vec());
+                        Ok((prefix, bytes))
+                    }
                 }
-
-                // Cache miss - fetch from DB
-                let events = state.repo.key_events.get_signed_history(&prefix).await?;
-
-                // Store in cache
-                if !events.is_empty()
-                    && let Err(e) = state.kel_cache.store(&prefix, &events).await
-                {
-                    warn!("Failed to cache KEL for {}: {}", prefix, e);
-                }
-
-                let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
-
-                Ok((prefix, bytes))
             }
         })
         .collect();
@@ -874,15 +961,19 @@ mod tests {
 
     #[test]
     fn test_batch_kels_request_deserialization() {
-        let json = r#"{"prefixes": ["prefix1", "prefix2", "prefix3"]}"#;
+        let json = r#"{"prefixes": {"prefix1": null, "prefix2": "someSAID", "prefix3": null}}"#;
         let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.prefixes.len(), 3);
-        assert_eq!(request.prefixes[0], "prefix1");
+        assert_eq!(request.prefixes.get("prefix1"), Some(&None));
+        assert_eq!(
+            request.prefixes.get("prefix2"),
+            Some(&Some("someSAID".to_string()))
+        );
     }
 
     #[test]
     fn test_batch_kels_request_empty_prefixes() {
-        let json = r#"{"prefixes": []}"#;
+        let json = r#"{"prefixes": {}}"#;
         let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
         assert!(request.prefixes.is_empty());
     }

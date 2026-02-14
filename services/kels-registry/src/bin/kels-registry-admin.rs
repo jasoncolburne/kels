@@ -6,15 +6,18 @@
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
-use kels::{Peer, PeerScope};
 use serde::Deserialize;
 use std::sync::Arc;
-use verifiable_storage::{ChainedRepository, StorageDatetime};
+
+use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels_registry::federation::{FederationStatus, PeerProposal, Vote};
-use kels_registry::identity_client::IdentityClient;
-use kels_registry::peer_store::PeerRepository;
+use kels::{Peer, PeerScope};
+use kels_registry::{
+    federation::{FederationStatus, PeerProposal, Vote},
+    identity_client::IdentityClient,
+    peer_store::PeerRepository,
+};
 
 /// CLI representation of PeerScope for clap parsing
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -262,9 +265,6 @@ impl AdminContext {
 
 /// Check if there's at least one active core peer in the registry.
 async fn has_active_core_peer(ctx: &AdminContext) -> anyhow::Result<bool> {
-    use verifiable_storage::ColumnQuery;
-    use verifiable_storage_postgres::QueryExecutor;
-
     // Get all distinct prefixes
     let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
     let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
@@ -698,12 +698,9 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
 }
 
 async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
-    use verifiable_storage::ColumnQuery;
-    use verifiable_storage_postgres::QueryExecutor;
-
     // Get all distinct prefixes
     let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes = ctx.peer_repo.pool.fetch_column(query).await?;
+    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
 
     if prefixes.is_empty() {
         println!("No peers in allowlist");
@@ -730,12 +727,9 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
-    use verifiable_storage::ColumnQuery;
-    use verifiable_storage_postgres::QueryExecutor;
-
     // Get all distinct prefixes
     let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes = ctx.peer_repo.pool.fetch_column(query).await?;
+    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
 
     println!("Current Allowlist:");
     println!("{}", "=".repeat(60));
@@ -756,12 +750,9 @@ async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
-    use verifiable_storage::ColumnQuery;
-    use verifiable_storage_postgres::QueryExecutor;
-
     // Get all distinct prefixes
     let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes = ctx.peer_repo.pool.fetch_column(query).await?;
+    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
 
     if prefixes.is_empty() {
         println!("No peer history");

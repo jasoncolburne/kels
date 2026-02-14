@@ -49,7 +49,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 | POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL) |
 | GET | `/api/kels/kel/:prefix` | None | Get KEL for prefix; `?audit=true` bypasses cache, `?since=SAID` for delta sync |
 | GET | `/api/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
-| POST | `/api/kels/kels` | None | Batch fetch KELs for multiple prefixes (max 50) |
+| POST | `/api/kels/kels` | None | Batch fetch KELs for multiple prefixes (max 50); `prefixes` is a map of prefix → optional since SAID for delta sync |
 | POST | `/api/kels/prefixes` | **Signed request** | List prefix states (paginated) for P2P sync |
 
 **Notes:**
