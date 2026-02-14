@@ -31,6 +31,7 @@ use crate::{
 pub struct AppState {
     pub store: RegistryStore,
     pub repo: Arc<RegistryRepository>,
+    pub federation_node: Option<Arc<FederationNode>>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -119,9 +120,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Verifies signature and checks peer is in allowlist. Returns the authorized Peer.
+/// Verifies signature, checks peer is in allowlist, and for core peers verifies
+/// the backing proposal was properly approved with sufficient anchored votes.
 async fn verify_and_authorize<T: serde::Serialize>(
-    repo: &RegistryRepository,
+    state: &AppState,
     signed_request: &SignedRequest<T>,
 ) -> Result<Peer, ApiError> {
     let payload_json = serde_json::to_vec(&signed_request.payload)
@@ -140,24 +142,108 @@ async fn verify_and_authorize<T: serde::Serialize>(
         .order_by("version", Order::Desc)
         .limit(1);
 
-    let peers: Vec<Peer> = repo
+    let peers: Vec<Peer> = state
+        .repo
         .peers
         .pool
         .fetch(query)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to query allowlist: {}", e)))?;
 
-    match peers.into_iter().next() {
-        Some(peer) if peer.active => Ok(peer),
-        Some(_) => Err(ApiError::forbidden(format!(
-            "Peer {} is not authorized (deactivated)",
-            peer_id_str
-        ))),
-        None => Err(ApiError::forbidden(format!(
-            "Peer {} is not in allowlist",
-            peer_id_str
-        ))),
+    let peer = match peers.into_iter().next() {
+        Some(peer) if peer.active => peer,
+        Some(_) => {
+            return Err(ApiError::forbidden(format!(
+                "Peer {} is not authorized (deactivated)",
+                peer_id_str
+            )));
+        }
+        None => {
+            return Err(ApiError::forbidden(format!(
+                "Peer {} is not in allowlist",
+                peer_id_str
+            )));
+        }
+    };
+
+    // For core peers, verify the backing proposal was properly approved
+    if peer.scope == PeerScope::Core {
+        let node = state.federation_node.as_ref().ok_or_else(|| {
+            ApiError::internal_error("Core peer found but federation not configured")
+        })?;
+
+        let threshold = node.approval_threshold();
+        let prefixes = node.config().member_prefixes();
+        let member_prefixes: std::collections::HashSet<&str> =
+            prefixes.iter().map(|s| s.as_str()).collect();
+
+        // Find an approved, non-withdrawn proposal for this peer
+        let proposals = node.completed_proposals_with_votes().await;
+        let pwv = proposals
+            .iter()
+            .find(|pw| {
+                pw.history
+                    .inception()
+                    .is_some_and(|p| p.peer_id == peer.peer_id)
+                    && !pw.history.is_withdrawn()
+                    && pw.status(threshold) == kels::ProposalStatus::Approved
+            })
+            .ok_or_else(|| {
+                ApiError::forbidden(format!(
+                    "No approved proposal found for core peer {}",
+                    peer.peer_id
+                ))
+            })?;
+
+        // Structural verification: chain, votes, references, withdrawal invariant
+        pwv.verify().map_err(|e| {
+            ApiError::forbidden(format!(
+                "Proposal verification failed for peer {}: {}",
+                peer.peer_id, e
+            ))
+        })?;
+
+        // Verify proposal anchoring: each record in proposer's KEL
+        let proposer = pwv
+            .proposer()
+            .ok_or_else(|| ApiError::internal_error("Approved proposal has no proposer"))?;
+
+        if !member_prefixes.contains(proposer) {
+            return Err(ApiError::forbidden(format!(
+                "Proposer {} is not a federation member",
+                proposer
+            )));
+        }
+
+        for record in &pwv.history.records {
+            node.verify_anchoring(&record.said, &record.proposer)
+                .await
+                .map_err(|e| ApiError::forbidden(format!("Proposal anchoring failed: {}", e)))?;
+        }
+
+        // Verify vote anchoring: each approval vote in voter's KEL
+        let mut verified_voters = std::collections::HashSet::new();
+        for vote in &pwv.votes {
+            if !vote.approve || !member_prefixes.contains(vote.voter.as_str()) {
+                continue;
+            }
+
+            if node.verify_anchoring(&vote.said, &vote.voter).await.is_ok() {
+                verified_voters.insert(vote.voter.clone());
+            }
+        }
+
+        if verified_voters.len() < threshold {
+            return Err(ApiError::forbidden(format!(
+                "Insufficient verified votes for core peer {} ({}/{})",
+                peer.peer_id,
+                verified_voters.len(),
+                threshold
+            )));
+        }
     }
+
+    Ok(peer)
 }
 
 #[derive(Debug, Serialize)]
@@ -174,7 +260,7 @@ pub async fn register_node(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
-    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
     if request.node_id != peer.node_id {
@@ -198,7 +284,7 @@ pub async fn deregister_node(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
 ) -> Result<StatusCode, ApiError> {
-    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
     if request.node_id != peer.node_id {
@@ -216,7 +302,7 @@ pub async fn update_status(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
-    let peer = verify_and_authorize(&state.repo, &signed_request).await?;
+    let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
     if request.node_id != peer.node_id {

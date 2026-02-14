@@ -403,9 +403,10 @@ async fn verify_core_peer_votes(
         _ => n.div_ceil(3),
     };
 
-    // Find a proposal for this peer that computes to Approved
+    // Find an approved, non-withdrawn proposal for this peer
     let approved = response.proposals.iter().find(|pw| {
         pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
+            && !pw.history.is_withdrawn()
             && pw.status(threshold) == kels::ProposalStatus::Approved
     });
 

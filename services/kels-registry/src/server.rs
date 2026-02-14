@@ -121,10 +121,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 
     let repo = Arc::new(repo);
     let store = RegistryStore::new(redis_conn, "kels-registry");
-    let state = Arc::new(AppState {
-        store,
-        repo: repo.clone(),
-    });
 
     // Connect to identity service to get the registry's prefix
     let identity_url =
@@ -145,7 +141,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     });
 
     // Initialize federation if configured
-    let federation_state = match FederationConfig::from_env() {
+    let (federation_node, federation_state) = match FederationConfig::from_env() {
         Ok(Some(config)) => {
             info!(
                 "Federation configured with {} members",
@@ -175,11 +171,14 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         });
                     }
 
-                    Some(Arc::new(FederationState {
-                        node,
-                        repo: repo.clone(),
-                        identity_client: identity_client.clone(),
-                    }))
+                    (
+                        Some(node.clone()),
+                        Some(Arc::new(FederationState {
+                            node,
+                            repo: repo.clone(),
+                            identity_client: identity_client.clone(),
+                        })),
+                    )
                 }
                 Err(e) => {
                     error!("Failed to initialize federation node: {}", e);
@@ -189,13 +188,19 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         }
         Ok(None) => {
             info!("Federation not configured, running in standalone mode");
-            None
+            (None, None)
         }
         Err(e) => {
             error!("Invalid federation configuration: {}", e);
             return Err(format!("Invalid federation configuration: {}", e).into());
         }
     };
+
+    let state = Arc::new(AppState {
+        store,
+        repo: repo.clone(),
+        federation_node,
+    });
 
     let app = create_router(state, registry_kel_state, federation_state)
         .into_make_service_with_connect_info::<SocketAddr>();
