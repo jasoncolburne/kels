@@ -118,6 +118,13 @@ reset-federation-json:
 	# Reset federation prefixes
 	echo '[]' > .kels/federated-registries.json
 
+deploy-registry-identities:
+	# Deploy registry identities
+	garden deploy identity --env=registry-a
+	garden deploy identity --env=registry-b
+	garden deploy identity --env=registry-c
+
+
 deploy-registries:
 	# Deploy registries
 	garden deploy --env=registry-a
@@ -129,9 +136,6 @@ fetch-prefixes:
 	garden run federation-fetch --env=registry-a
 	garden run federation-fetch --env=registry-b
 	garden run federation-fetch --env=registry-c
-
-redeploy-registries:
-	$(MAKE) deploy-registries
 
 deploy-core-nodes:
 	# Deploy nodes and add as core peers via multi-party approval
@@ -228,7 +232,7 @@ test-grow-federation:
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registries fetch-prefixes redeploy-registries deploy-all-nodes
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-all-nodes
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
