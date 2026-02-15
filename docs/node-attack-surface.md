@@ -8,8 +8,8 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 **Zero-trust storage:** Data read from any store (PostgreSQL, Redis) is treated as untrusted input. All KEL data is cryptographically re-verified (signatures, SAID chains) before use. Peer allowlists are verified via the full proposal DAG with thresholds computed from compiled-in `trusted_prefixes()`. Stores are persistence layers, not trust anchors.
 
-**Assumptions:**
-- HSM and identity services are pod-internal only (not exposed to the overlay network) - **THIS IS INSUFFICIENT FOR A PRODUCTION DEPLOYMENT**
+**Assumptions (INSUFFICENT FOR PRODUCTION):**
+- HSM and identity services are pod-internal only (not exposed to the overlay network)
 - Network isolation between pods enforces service boundaries
 
 ## Gossip Protocol Attacks
