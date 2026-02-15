@@ -229,7 +229,7 @@ test-removal:
 
 test-grow-federation:
 	# Deploy 4th registry standalone (generates identity)
-	garden deploy --env=registry-d
+	garden deploy identity --env=registry-d
 	# Fetch its prefix (auto-assigns id=3)
 	garden run federation-fetch --env=registry-d
 	# Recompile and redeploy ALL 4 registries with updated trust anchors
