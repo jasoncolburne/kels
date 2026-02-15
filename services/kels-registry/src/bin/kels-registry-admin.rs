@@ -12,9 +12,9 @@ use std::sync::Arc;
 use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels::{Peer, PeerScope, ProposalWithVotes};
+use kels::{AdditionWithVotes, Peer, PeerRemovalProposal, PeerScope};
 use kels_registry::{
-    federation::{FederationStatus, PeerProposal, Vote},
+    federation::{FederationStatus, PeerAdditionProposal, Vote},
     identity_client::IdentityClient,
     peer_store::PeerRepository,
 };
@@ -109,6 +109,12 @@ enum PeerAction {
         /// libp2p multiaddr for gossip connections
         #[arg(long)]
         gossip_multiaddr: String,
+    },
+    /// Propose removing a core peer (requires multi-party approval)
+    ProposeRemoval {
+        /// Peer ID of the core peer to remove
+        #[arg(long)]
+        peer_id: String,
     },
     /// Vote on a pending proposal
     Vote {
@@ -405,24 +411,13 @@ async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // For core peers, use the admin API endpoint
+    // Core peers must go through the proposal system for multi-party removal
     if existing.scope == PeerScope::Core {
-        let url = format!("{}/api/admin/peers/{}", ctx.registry_url, peer_id);
-        let resp = ctx.http_client.delete(&url).send().await?;
-
-        if resp.status().is_success() {
-            println!("Removed core peer {} (node: {})", peer_id, existing.node_id);
-            return Ok(());
-        } else {
-            let error: serde_json::Value = resp.json().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Failed to remove core peer: {}",
-                error
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("unknown error")
-            ));
-        }
+        return Err(anyhow!(
+            "Core peers must go through the removal proposal system.\n\
+             Use: kels-registry-admin peer propose-removal --peer-id {}",
+            peer_id
+        ));
     }
 
     // For regional peers, use direct DB access
@@ -474,13 +469,22 @@ async fn propose_peer(
         .await
         .context("Failed to get proposer prefix")?;
 
+    // Get the approval threshold from federation status
+    let threshold = match ctx.get_federation_status().await? {
+        Some(status) => kels_registry::federation::FederationConfig::compute_approval_threshold(
+            status.members.len(),
+        ),
+        None => return Err(anyhow!("Federation not configured")),
+    };
+
     // Create payload for signing
-    let peer_proposal = PeerProposal::empty(
+    let peer_proposal = PeerAdditionProposal::empty(
         peer_id,
         node_id,
         kels_url,
         gossip_multiaddr,
         &proposer,
+        threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
     )?;
 
@@ -532,6 +536,77 @@ async fn propose_peer(
     Err(anyhow!("Failed to create proposal after retries"))
 }
 
+async fn propose_removal(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
+    // Get this registry's prefix as proposer
+    let proposer = ctx
+        .identity_client
+        .get_prefix()
+        .await
+        .context("Failed to get proposer prefix")?;
+
+    // Get the approval threshold from federation status
+    let threshold = match ctx.get_federation_status().await? {
+        Some(status) => kels_registry::federation::FederationConfig::compute_approval_threshold(
+            status.members.len(),
+        ),
+        None => return Err(anyhow!("Federation not configured")),
+    };
+
+    // Create removal proposal
+    let removal_proposal = PeerRemovalProposal::empty(
+        peer_id,
+        &proposer,
+        threshold,
+        &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
+    )?;
+
+    // Anchor the proposal's SAID in our KEL
+    ctx.identity_client
+        .anchor(&removal_proposal.said)
+        .await
+        .context("Failed to anchor removal proposal")?;
+
+    // Get leader URL from federation status
+    let mut target_url = ctx.get_leader_url().await?;
+
+    // Retry loop for leader changes
+    for attempt in 0..2 {
+        let url = format!("{}/api/admin/removal-proposals", target_url);
+        let resp = ctx
+            .http_client
+            .post(&url)
+            .json(&removal_proposal)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let result: ProposalResponse = resp.json().await?;
+            println!("Removal proposal created: {}", result.proposal_id);
+            println!("{}", result.message);
+            return Ok(());
+        }
+
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        let error_msg = error
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+
+        if error_msg.contains("Not leader")
+            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
+            && attempt == 0
+        {
+            println!("Redirecting to leader at {}...", new_leader_url);
+            target_url = new_leader_url;
+            continue;
+        }
+
+        return Err(anyhow!("Failed to create removal proposal: {}", error_msg));
+    }
+
+    Err(anyhow!("Failed to create removal proposal after retries"))
+}
+
 async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> anyhow::Result<()> {
     // Get this registry's prefix
     let voter = ctx
@@ -567,6 +642,8 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
             );
             if result.status == "approved" {
                 println!("Peer has been added to the core set.");
+            } else if result.status == "removal_approved" {
+                println!("Peer has been removed from the core set.");
             }
             return Ok(());
         }
@@ -598,7 +675,7 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
-        let proposals: Vec<ProposalWithVotes> = resp.json().await?;
+        let proposals: Vec<AdditionWithVotes> = resp.json().await?;
 
         if proposals.is_empty() {
             println!("No pending proposals");
@@ -636,7 +713,7 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
-        let pwv: ProposalWithVotes = resp.json().await?;
+        let pwv: AdditionWithVotes = resp.json().await?;
         if let Some(p) = pwv.history.inception() {
             println!("Proposal: {}", pwv.proposal_id());
             println!("{}", "=".repeat(50));
@@ -688,7 +765,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
         ));
     }
 
-    let pwv: ProposalWithVotes = resp
+    let pwv: AdditionWithVotes = resp
         .json()
         .await
         .context("Failed to parse proposal response")?;
@@ -965,6 +1042,9 @@ async fn main() -> anyhow::Result<()> {
                 gossip_multiaddr,
             } => {
                 propose_peer(&ctx, &peer_id, &node_id, &kels_url, &gossip_multiaddr).await?;
+            }
+            PeerAction::ProposeRemoval { peer_id } => {
+                propose_removal(&ctx, &peer_id).await?;
             }
             PeerAction::Vote {
                 proposal_id,

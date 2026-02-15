@@ -71,13 +71,14 @@ pub use error::KelsError;
 pub use repository::SignedEventRepository;
 pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
-    BatchKelsRequest, BatchSubmitResponse, CachedKel, CompletedProposalsResponse,
-    DeregisterRequest, ErrorCode, ErrorResponse, EventKind, EventSignature, KelMergeResult,
-    KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration,
-    NodeStatus, NodeType, Peer, PeerHistory, PeerProposal, PeerScope, PeersResponse,
-    PrefixListResponse, PrefixState, PrefixesRequest, ProposalHistory, ProposalStatus,
-    ProposalWithVotes, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest,
-    SignedKeyEvent, SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
+    AdditionHistory, AdditionWithVotes, BatchKelsRequest, BatchSubmitResponse, CachedKel,
+    CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
+    EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
+    NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeerScope, PeersResponse, PrefixListResponse, PrefixState,
+    PrefixesRequest, ProposalStatus, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
+    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
+    StatusUpdateRequest, Vote, generate_nonce,
 };
 pub use types::{Kel, compute_rotation_hash};
 

@@ -12,6 +12,7 @@ use std::{
 use tracing::{info, warn};
 
 use futures::future::join_all;
+use verifiable_storage::StorageDatetime;
 
 use crate::{
     client::KelsClient,
@@ -549,7 +550,10 @@ impl MultiRegistryClient {
     ///
     /// Performs full verification: structural integrity, peer anchoring in registry KEL,
     /// and core peer vote verification. Peers that fail any check are excluded.
-    pub async fn list_nodes_info(&mut self, prefix: &str) -> Result<Vec<NodeInfo>, KelsError> {
+    pub async fn list_verified_nodes_info(
+        &mut self,
+        prefix: &str,
+    ) -> Result<Vec<NodeInfo>, KelsError> {
         self.fetch_verified_registry_kels(false).await?;
 
         let url = self.url_for_prefix(prefix)?;
@@ -724,25 +728,80 @@ impl MultiRegistryClient {
             return false;
         };
 
-        let member_prefixes = trusted_prefixes();
-        let n = member_prefixes.len();
-        let threshold = match n {
-            0..=5 => 3,
-            6..=9 => 4,
-            _ => n.div_ceil(3),
-        };
+        // Determine the most recent approved proposal action for this peer.
+        // For each completed proposal (addition or removal), take the last record.
+        // If it's withdrawn (not v0), skip it. Otherwise keep it with its created_at.
+        // Sort by created_at and check whether the most recent is an addition.
+        let mut recent_actions: Vec<(bool, &StorageDatetime)> = Vec::new(); // (is_addition, created_at)
 
-        // Find an approved, non-withdrawn proposal for this peer
-        let approved = response.proposals.iter().find(|pw| {
-            pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
-                && !pw.history.is_withdrawn()
-                && pw.status(threshold) == ProposalStatus::Approved
-        });
+        for pw in &response.additions {
+            let Some(last) = pw.history.records.last() else {
+                continue;
+            };
+            if last.version != 0 {
+                continue; // withdrawn
+            }
+            if pw.history.inception().is_none_or(|p| p.peer_id != peer_id) {
+                continue;
+            }
+            if pw.status(last.threshold) != ProposalStatus::Approved {
+                continue;
+            }
+            recent_actions.push((true, &last.created_at));
+        }
+
+        for rw in &response.removals {
+            let Some(last) = rw.history.records.last() else {
+                continue;
+            };
+            if last.version != 0 {
+                continue; // withdrawn
+            }
+            if rw.history.inception().is_none_or(|p| p.peer_id != peer_id) {
+                continue;
+            }
+            if rw.status(last.threshold) != ProposalStatus::Approved {
+                continue;
+            }
+            recent_actions.push((false, &last.created_at));
+        }
+
+        recent_actions.sort_by_key(|(_, created_at)| *created_at);
+
+        match recent_actions.last() {
+            Some((true, _)) => {} // most recent is an addition — good
+            Some((false, _)) => {
+                info!(peer_id = %peer_id, "Most recent approved proposal is a removal");
+                return false;
+            }
+            None => {
+                info!(peer_id = %peer_id, "No approved proposal found for core peer");
+                return false;
+            }
+        }
+
+        // Find the most recent approved addition to verify its DAG
+        let approved = response
+            .additions
+            .iter()
+            .filter(|pw| {
+                pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
+                    && pw.history.records.last().is_some_and(|r| r.version == 0)
+            })
+            .max_by_key(|pw| pw.history.records.last().map(|r| &r.created_at));
 
         let Some(pwv) = approved else {
-            warn!(peer_id = %peer_id, "No approved proposal found for core peer");
+            warn!(peer_id = %peer_id, "No approved addition proposal found for core peer");
             return false;
         };
+
+        let threshold = pwv
+            .history
+            .inception()
+            .map(|p| p.threshold)
+            .unwrap_or(usize::MAX);
+
+        let member_prefixes = trusted_prefixes();
 
         // 1. Structural verification
         if let Err(e) = pwv.verify() {
@@ -873,7 +932,7 @@ impl MultiRegistryClient {
         &mut self,
         registry_prefix: &str,
     ) -> Result<Vec<NodeInfo>, KelsError> {
-        let mut nodes = self.list_nodes_info(registry_prefix).await?;
+        let mut nodes = self.list_verified_nodes_info(registry_prefix).await?;
 
         // Test latency to each Ready node concurrently (with short timeout)
         let latency_futures: Vec<_> = nodes

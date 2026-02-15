@@ -309,7 +309,6 @@ The provided Garden configuration is a test harness, not a production deployment
 
 - **Audit logging**: No structured audit trail for authentication failures or sensitive operations (peer changes are tracked via Raft log)
 - **Observability**: No metrics collection (Prometheus), no distributed tracing
-- **Core peer removal**: No API exists for removing core peers with multi-party approval — only internal sync cleanup is implemented
 - **Chaos and resilience testing**: DNS-based fault injection (resync/retry queue) is tested. Network partition simulation, node failure recovery, split-brain scenarios, and database failover have not been systematically tested
 
 ### Audit

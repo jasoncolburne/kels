@@ -137,7 +137,12 @@ impl FederationConfig {
     /// - n in [6,9]:  4
     /// - n >= 10:     ceil(n/3)
     pub fn approval_threshold(&self) -> usize {
-        let n = self.members.len();
+        Self::compute_approval_threshold(self.members.len())
+    }
+
+    /// Compute approval threshold from member count.
+    /// Usable without a full config (e.g., from CLI with federation status).
+    pub fn compute_approval_threshold(n: usize) -> usize {
         match n {
             0..=5 => 3,
             6..=9 => 4,

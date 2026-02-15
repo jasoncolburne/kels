@@ -9,13 +9,13 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Kel, Peer, PeerProposal, PeerScope, Vote};
+use kels::{Kel, Peer, PeerAdditionProposal, PeerRemovalProposal, PeerScope, Vote};
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StoredMembership,
     storage::{EntryResponder, RaftStateMachine},
 };
-use verifiable_storage::{Chained, ChainedRepository, SelfAddressed};
+use verifiable_storage::{Chained, ChainedRepository, SelfAddressed, StorageDatetime};
 use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
 use super::{
@@ -36,10 +36,14 @@ pub struct StateMachineData {
     pub last_membership: StoredMembership<TypeConfig>,
     /// The core peer set (keyed by peer_id for efficient lookup)
     pub peers: HashMap<String, Peer>,
-    /// Pending proposals awaiting votes (keyed by proposal prefix/proposal_id)
-    pub pending_proposals: HashMap<String, PeerProposal>,
-    /// Completed proposals (full chain per proposal) for audit trail
-    pub completed_proposals: Vec<Vec<PeerProposal>>,
+    /// Pending addition proposals awaiting votes (keyed by proposal prefix/proposal_id)
+    pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
+    /// Completed addition proposals (full chain per proposal) for audit trail
+    pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
+    /// Pending removal proposals awaiting votes (keyed by proposal prefix/proposal_id)
+    pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
+    /// Completed removal proposals (full chain per proposal) for audit trail
+    pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID
     pub votes: HashMap<String, Vote>,
 }
@@ -72,20 +76,57 @@ impl StateMachineData {
         peer_id: &str,
         member_prefixes: &std::collections::HashSet<&str>,
     ) -> std::collections::HashSet<String> {
-        // Find a completed proposal chain for this peer that is not withdrawn
-        let approved_chain = self.completed_proposals.iter().find(|chain| {
-            if let Some(v0) = chain.first() {
-                // Must be for this peer
-                if v0.peer_id != peer_id {
-                    return false;
-                }
-                // Must not be withdrawn (last record has no withdrawn_at)
-                if let Some(last) = chain.last() {
-                    return !last.is_withdrawn();
-                }
+        // Determine the most recent approved proposal action for this peer.
+        // For each completed proposal (addition or removal), take the last record.
+        // If it's not v0, it was withdrawn — skip it. Otherwise keep its created_at.
+        // Sort by created_at; the most recent determines if the peer is added or removed.
+        let mut recent_actions: Vec<(bool, &StorageDatetime)> = Vec::new(); // (is_addition, created_at)
+
+        for chain in &self.completed_addition_proposals {
+            let Some(last) = chain.last() else {
+                continue;
+            };
+            if last.version != 0 {
+                continue; // withdrawn
             }
-            false
-        });
+            if chain.first().is_none_or(|v0| v0.peer_id != peer_id) {
+                continue;
+            }
+            recent_actions.push((true, &last.created_at));
+        }
+
+        for chain in &self.completed_removal_proposals {
+            let Some(last) = chain.last() else {
+                continue;
+            };
+            if last.version != 0 {
+                continue; // withdrawn
+            }
+            if chain.first().is_none_or(|v0| v0.peer_id != peer_id) {
+                continue;
+            }
+            recent_actions.push((false, &last.created_at));
+        }
+
+        recent_actions.sort_by_key(|(_, created_at)| *created_at);
+
+        // If the most recent action is not an addition, peer is not approved
+        if !recent_actions
+            .last()
+            .is_some_and(|(is_addition, _)| *is_addition)
+        {
+            return std::collections::HashSet::new();
+        }
+
+        // Find the most recent non-withdrawn addition chain for this peer
+        let approved_chain = self
+            .completed_addition_proposals
+            .iter()
+            .filter(|chain| {
+                chain.first().is_some_and(|v0| v0.peer_id == peer_id)
+                    && chain.last().is_some_and(|r| r.version == 0)
+            })
+            .max_by_key(|chain| chain.last().map(|r| &r.created_at));
 
         let Some(chain) = approved_chain else {
             return std::collections::HashSet::new();
@@ -126,14 +167,14 @@ impl StateMachineData {
                     FederationResponse::PeerNotFound(peer_id)
                 }
             }
-            FederationRequest::SubmitProposal(ref submitted) => {
+            FederationRequest::SubmitAdditionProposal(ref submitted) => {
                 if submitted.previous.is_none() {
                     // New proposal (v0)
                     if self.peers.contains_key(&submitted.peer_id) {
                         return FederationResponse::PeerAlreadyExists(submitted.peer_id.clone());
                     }
 
-                    for proposal in self.pending_proposals.values() {
+                    for proposal in self.pending_addition_proposals.values() {
                         if proposal.peer_id == submitted.peer_id {
                             return FederationResponse::ProposalAlreadyExists(
                                 proposal.prefix.clone(),
@@ -147,10 +188,10 @@ impl StateMachineData {
                         proposal_id = %proposal_id,
                         peer_id = %submitted.peer_id,
                         proposer = %submitted.proposer,
-                        "Created core peer proposal (v0, awaiting votes)"
+                        "Created core peer addition proposal (v0, awaiting votes)"
                     );
 
-                    self.pending_proposals
+                    self.pending_addition_proposals
                         .insert(proposal_id.clone(), submitted.clone());
 
                     FederationResponse::ProposalCreated {
@@ -162,7 +203,7 @@ impl StateMachineData {
                     // Withdrawal (v1 with previous set)
                     let proposal_id = submitted.prefix.clone();
 
-                    let current = match self.pending_proposals.get(&proposal_id) {
+                    let current = match self.pending_addition_proposals.get(&proposal_id) {
                         Some(p) => p,
                         None => return FederationResponse::ProposalNotFound(proposal_id),
                     };
@@ -208,7 +249,7 @@ impl StateMachineData {
                         ));
                     }
 
-                    let Some(v0) = self.pending_proposals.remove(&proposal_id) else {
+                    let Some(v0) = self.pending_addition_proposals.remove(&proposal_id) else {
                         return FederationResponse::InternalError(
                             "Couldn't find proposal when removing from pending".to_string(),
                         );
@@ -216,11 +257,106 @@ impl StateMachineData {
 
                     info!(
                         proposal_id = %proposal_id,
-                        "Proposal withdrawn by {}",
+                        "Addition proposal withdrawn by {}",
                         submitted.proposer
                     );
 
-                    self.completed_proposals.push(vec![v0, submitted.clone()]);
+                    self.completed_addition_proposals
+                        .push(vec![v0, submitted.clone()]);
+                    FederationResponse::ProposalWithdrawn(proposal_id)
+                }
+            }
+            FederationRequest::SubmitRemovalProposal(ref submitted) => {
+                if submitted.previous.is_none() {
+                    // New removal proposal (v0)
+                    if !self.peers.contains_key(&submitted.peer_id) {
+                        return FederationResponse::PeerNotFound(submitted.peer_id.clone());
+                    }
+
+                    for proposal in self.pending_removal_proposals.values() {
+                        if proposal.peer_id == submitted.peer_id {
+                            return FederationResponse::ProposalAlreadyExists(
+                                proposal.prefix.clone(),
+                            );
+                        }
+                    }
+
+                    let proposal_id = submitted.prefix.clone();
+
+                    info!(
+                        proposal_id = %proposal_id,
+                        peer_id = %submitted.peer_id,
+                        proposer = %submitted.proposer,
+                        "Created core peer removal proposal (v0, awaiting votes)"
+                    );
+
+                    self.pending_removal_proposals
+                        .insert(proposal_id.clone(), submitted.clone());
+
+                    FederationResponse::ProposalCreated {
+                        proposal_id,
+                        votes_needed: threshold,
+                        current_votes: 0,
+                    }
+                } else {
+                    // Withdrawal (v1 with previous set)
+                    let proposal_id = submitted.prefix.clone();
+
+                    let current = match self.pending_removal_proposals.get(&proposal_id) {
+                        Some(p) => p,
+                        None => return FederationResponse::ProposalNotFound(proposal_id),
+                    };
+
+                    if submitted.previous.as_deref() != Some(&current.said) {
+                        return FederationResponse::SaidMismatch(format!(
+                            "Previous SAID mismatch: expected {}, got {:?}",
+                            current.said, submitted.previous
+                        ));
+                    }
+
+                    if submitted.version != current.version + 1 {
+                        return FederationResponse::NotAuthorized(format!(
+                            "Version must be {} but got {}",
+                            current.version + 1,
+                            submitted.version
+                        ));
+                    }
+
+                    if submitted.proposer != current.proposer {
+                        return FederationResponse::NotAuthorized(format!(
+                            "Only proposer {} can withdraw proposal",
+                            current.proposer
+                        ));
+                    }
+
+                    if !submitted.is_withdrawn() {
+                        return FederationResponse::NotAuthorized(
+                            "Subsequent proposal version must have withdrawn_at set".to_string(),
+                        );
+                    }
+
+                    let has_votes = self.votes.values().any(|v| v.proposal == proposal_id);
+                    if has_votes {
+                        return FederationResponse::HasVotes(format!(
+                            "Cannot withdraw proposal {} — votes have been cast",
+                            proposal_id
+                        ));
+                    }
+
+                    let Some(v0) = self.pending_removal_proposals.remove(&proposal_id) else {
+                        return FederationResponse::InternalError(
+                            "Couldn't find proposal when removing from pending".to_string(),
+                        );
+                    };
+
+                    info!(
+                        proposal_id = %proposal_id,
+                        "Removal proposal withdrawn by {}",
+                        submitted.proposer
+                    );
+
+                    self.completed_removal_proposals
+                        .push(vec![v0, submitted.clone()]);
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
@@ -229,28 +365,59 @@ impl StateMachineData {
                 let approve = vote.approve;
                 let vote_said = vote.said.clone();
 
-                // Find the proposal
-                let proposal = match self.pending_proposals.get(&proposal_id) {
-                    Some(p) => p,
-                    None => {
-                        if self
-                            .completed_proposals
+                // Determine if this is an addition or removal proposal
+                let is_addition = self.pending_addition_proposals.contains_key(&proposal_id);
+                let is_removal = self.pending_removal_proposals.contains_key(&proposal_id);
+
+                if !is_addition && !is_removal {
+                    if self
+                        .completed_addition_proposals
+                        .iter()
+                        .any(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+                        || self
+                            .completed_removal_proposals
                             .iter()
                             .any(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
-                        {
-                            return FederationResponse::ProposalNotFound(format!(
-                                "{} (already completed)",
-                                proposal_id
-                            ));
-                        }
-                        return FederationResponse::ProposalNotFound(proposal_id);
+                    {
+                        return FederationResponse::ProposalNotFound(format!(
+                            "{} (already completed)",
+                            proposal_id
+                        ));
                     }
+                    return FederationResponse::ProposalNotFound(proposal_id);
+                }
+
+                // Get the proposal's threshold
+                let proposal_threshold = if is_addition {
+                    self.pending_addition_proposals
+                        .get(&proposal_id)
+                        .map(|p| p.threshold)
+                        .unwrap_or(threshold)
+                } else {
+                    self.pending_removal_proposals
+                        .get(&proposal_id)
+                        .map(|p| p.threshold)
+                        .unwrap_or(threshold)
                 };
 
                 // Check if expired
-                if proposal.is_expired() {
-                    if let Some(v0) = self.pending_proposals.remove(&proposal_id) {
-                        self.completed_proposals.push(vec![v0]);
+                let is_expired = if is_addition {
+                    self.pending_addition_proposals
+                        .get(&proposal_id)
+                        .is_some_and(|p| p.is_expired())
+                } else {
+                    self.pending_removal_proposals
+                        .get(&proposal_id)
+                        .is_some_and(|p| p.is_expired())
+                };
+
+                if is_expired {
+                    if is_addition {
+                        if let Some(v0) = self.pending_addition_proposals.remove(&proposal_id) {
+                            self.completed_addition_proposals.push(vec![v0]);
+                        }
+                    } else if let Some(v0) = self.pending_removal_proposals.remove(&proposal_id) {
+                        self.completed_removal_proposals.push(vec![v0]);
                     }
                     return FederationResponse::ProposalExpired(proposal_id);
                 }
@@ -280,61 +447,90 @@ impl StateMachineData {
                     approve = approve,
                     "Vote recorded ({}/{} approvals)",
                     current_votes,
-                    threshold
+                    proposal_threshold
                 );
 
                 // Check if threshold met
-                if current_votes >= threshold {
-                    let v0 = match self.pending_proposals.remove(&proposal_id) {
-                        Some(a) => a,
-                        None => {
-                            return FederationResponse::InternalError(
-                                "Couldn't find proposal when removing from pending".to_string(),
-                            );
-                        }
-                    };
-                    let peer_id = v0.peer_id.clone();
+                if current_votes >= proposal_threshold {
+                    if is_addition {
+                        let v0 = match self.pending_addition_proposals.remove(&proposal_id) {
+                            Some(a) => a,
+                            None => {
+                                return FederationResponse::InternalError(
+                                    "Couldn't find proposal when removing from pending".to_string(),
+                                );
+                            }
+                        };
+                        let peer_id = v0.peer_id.clone();
 
-                    info!(
-                        proposal_id = %proposal_id,
-                        peer_id = %peer_id,
-                        "Proposal approved - adding peer to core set"
-                    );
+                        info!(
+                            proposal_id = %proposal_id,
+                            peer_id = %peer_id,
+                            "Proposal approved - adding peer to core set"
+                        );
 
-                    let peer = match Peer::create(
-                        peer_id.clone(),
-                        v0.node_id.clone(),
-                        leader_prefix.to_string(),
-                        true,
-                        PeerScope::Core,
-                        v0.kels_url.clone(),
-                        v0.gossip_multiaddr.clone(),
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return FederationResponse::InternalError(format!(
-                                "Couldn't create peer: {}",
-                                e
-                            ));
-                        }
-                    };
+                        let peer = match Peer::create(
+                            peer_id.clone(),
+                            v0.node_id.clone(),
+                            leader_prefix.to_string(),
+                            true,
+                            PeerScope::Core,
+                            v0.kels_url.clone(),
+                            v0.gossip_multiaddr.clone(),
+                        ) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return FederationResponse::InternalError(format!(
+                                    "Couldn't create peer: {}",
+                                    e
+                                ));
+                            }
+                        };
 
-                    self.peers.insert(peer_id.clone(), peer.clone());
-                    self.completed_proposals.push(vec![v0]);
+                        self.peers.insert(peer_id.clone(), peer.clone());
+                        self.completed_addition_proposals.push(vec![v0]);
 
-                    return FederationResponse::VoteRecorded {
-                        proposal_id,
-                        current_votes,
-                        votes_needed: threshold,
-                        approved: true,
-                        peer: Some(Box::new(peer)),
-                    };
+                        return FederationResponse::VoteRecorded {
+                            proposal_id,
+                            current_votes,
+                            votes_needed: proposal_threshold,
+                            approved: true,
+                            peer: Some(Box::new(peer)),
+                        };
+                    } else {
+                        let v0 = match self.pending_removal_proposals.remove(&proposal_id) {
+                            Some(a) => a,
+                            None => {
+                                return FederationResponse::InternalError(
+                                    "Couldn't find removal proposal when removing from pending"
+                                        .to_string(),
+                                );
+                            }
+                        };
+                        let peer_id = v0.peer_id.clone();
+
+                        info!(
+                            proposal_id = %proposal_id,
+                            peer_id = %peer_id,
+                            "Removal proposal approved - removing peer from core set"
+                        );
+
+                        self.peers.remove(&peer_id);
+                        self.completed_removal_proposals.push(vec![v0]);
+
+                        return FederationResponse::RemovalApproved {
+                            proposal_id,
+                            peer_id,
+                            current_votes,
+                            votes_needed: proposal_threshold,
+                        };
+                    }
                 }
 
                 FederationResponse::VoteRecorded {
                     proposal_id,
                     current_votes,
-                    votes_needed: threshold,
+                    votes_needed: proposal_threshold,
                     approved: false,
                     peer: None,
                 }
@@ -346,8 +542,10 @@ impl StateMachineData {
     fn snapshot(&self) -> CorePeerSnapshot {
         CorePeerSnapshot {
             peers: self.peers(),
-            pending_proposals: self.pending_proposals.values().cloned().collect(),
-            completed_proposals: self.completed_proposals.clone(),
+            pending_addition_proposals: self.pending_addition_proposals.values().cloned().collect(),
+            completed_addition_proposals: self.completed_addition_proposals.clone(),
+            pending_removal_proposals: self.pending_removal_proposals.values().cloned().collect(),
+            completed_removal_proposals: self.completed_removal_proposals.clone(),
             votes: self.votes.values().cloned().collect(),
         }
     }
@@ -361,13 +559,13 @@ impl StateMachineData {
     }
 
     /// Get a pending proposal by ID.
-    pub fn get_proposal(&self, proposal_id: &str) -> Option<&PeerProposal> {
-        self.pending_proposals.get(proposal_id)
+    pub fn get_proposal(&self, proposal_id: &str) -> Option<&PeerAdditionProposal> {
+        self.pending_addition_proposals.get(proposal_id)
     }
 
     /// Get all pending proposals.
-    pub fn pending_proposals(&self) -> Vec<&PeerProposal> {
-        self.pending_proposals.values().collect()
+    pub fn pending_proposals(&self) -> Vec<&PeerAdditionProposal> {
+        self.pending_addition_proposals.values().collect()
     }
 
     /// Restore state from a snapshot and its metadata.
@@ -379,22 +577,30 @@ impl StateMachineData {
             .into_iter()
             .map(|p| (p.peer_id.clone(), p))
             .collect();
-        self.pending_proposals = snapshot
-            .pending_proposals
+        self.pending_addition_proposals = snapshot
+            .pending_addition_proposals
             .into_iter()
             .map(|p| (p.prefix.clone(), p))
             .collect();
-        self.completed_proposals = snapshot.completed_proposals;
+        self.completed_addition_proposals = snapshot.completed_addition_proposals;
+        self.pending_removal_proposals = snapshot
+            .pending_removal_proposals
+            .into_iter()
+            .map(|p| (p.prefix.clone(), p))
+            .collect();
+        self.completed_removal_proposals = snapshot.completed_removal_proposals;
         self.votes = snapshot
             .votes
             .into_iter()
             .map(|v| (v.said.clone(), v))
             .collect();
         info!(
-            "Restored {} core peers, {} pending proposals, {} completed, {} votes from snapshot",
+            "Restored {} core peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes from snapshot",
             self.peers.len(),
-            self.pending_proposals.len(),
-            self.completed_proposals.len(),
+            self.pending_addition_proposals.len(),
+            self.completed_addition_proposals.len(),
+            self.pending_removal_proposals.len(),
+            self.completed_removal_proposals.len(),
             self.votes.len()
         );
     }
@@ -660,7 +866,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             let mut verified_voters = std::collections::HashSet::new();
                             for voter in &candidate_voters {
                                 // Find votes for approved proposals for this peer
-                                for chain in &sm.completed_proposals {
+                                for chain in &sm.completed_addition_proposals {
                                     if let Some(v0) = chain.first()
                                         && v0.peer_id == peer.peer_id
                                         && !chain.last().is_some_and(|p| p.is_withdrawn())
@@ -767,13 +973,26 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        if let Some(proposal) = sm.pending_proposals.get(proposal_id)
+                        if let Some(proposal) = sm.pending_addition_proposals.get(proposal_id)
                             && let Err(e) = proposal.verify()
                         {
                             warn!(proposal_id = %proposal_id, error = %e, "Proposal verification failed - rejecting vote");
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(format!(
                                     "Proposal invalid: {}",
+                                    e
+                                )));
+                            }
+                            continue;
+                        }
+
+                        if let Some(proposal) = sm.pending_removal_proposals.get(proposal_id)
+                            && let Err(e) = proposal.verify()
+                        {
+                            warn!(proposal_id = %proposal_id, error = %e, "Removal proposal verification failed - rejecting vote");
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::NotAuthorized(format!(
+                                    "Removal proposal invalid: {}",
                                     e
                                 )));
                             }
@@ -801,17 +1020,67 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify proposal anchoring
-                    if let FederationRequest::SubmitProposal(ref prop) = request
-                        && let Err(e) = self
+                    // Verify addition proposal anchoring
+                    if let FederationRequest::SubmitAdditionProposal(ref prop) = request {
+                        if prop.threshold != self.config.approval_threshold() {
+                            warn!(
+                                proposer = %prop.proposer,
+                                proposal_threshold = prop.threshold,
+                                current_threshold = self.config.approval_threshold(),
+                                "Addition proposal threshold mismatch - rejecting"
+                            );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::NotAuthorized(format!(
+                                    "Proposal threshold {} doesn't match current threshold {}",
+                                    prop.threshold,
+                                    self.config.approval_threshold()
+                                )));
+                            }
+                            continue;
+                        }
+
+                        if let Err(e) = self
                             .verify_member_anchoring(&prop.said, &prop.proposer)
                             .await
-                    {
-                        warn!(proposer = %prop.proposer, error = %e, "Proposal not anchored - rejecting");
-                        if let Some(r) = responder {
-                            r.send(FederationResponse::NotAuthorized(e));
+                        {
+                            warn!(proposer = %prop.proposer, error = %e, "Addition proposal not anchored - rejecting");
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::NotAuthorized(e));
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+
+                    // Verify removal proposal anchoring
+                    if let FederationRequest::SubmitRemovalProposal(ref prop) = request {
+                        // Verify threshold matches current
+                        if prop.threshold != self.config.approval_threshold() {
+                            warn!(
+                                proposer = %prop.proposer,
+                                proposal_threshold = prop.threshold,
+                                current_threshold = self.config.approval_threshold(),
+                                "Removal proposal threshold mismatch - rejecting"
+                            );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::NotAuthorized(format!(
+                                    "Proposal threshold {} doesn't match current threshold {}",
+                                    prop.threshold,
+                                    self.config.approval_threshold()
+                                )));
+                            }
+                            continue;
+                        }
+
+                        if let Err(e) = self
+                            .verify_member_anchoring(&prop.said, &prop.proposer)
+                            .await
+                        {
+                            warn!(proposer = %prop.proposer, error = %e, "Removal proposal not anchored - rejecting");
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::NotAuthorized(e));
+                            }
+                            continue;
+                        }
                     }
 
                     let threshold = self.config.approval_threshold();
@@ -842,6 +1111,52 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 error = %e,
                                 "Failed to write approved peer to local DB"
                             );
+                        }
+                    }
+
+                    // If a removal proposal was approved, deactivate peer in DB and anchor
+                    if let FederationResponse::RemovalApproved { ref peer_id, .. } = response {
+                        // Find the peer in DB and deactivate it
+                        let query = Query::<Peer>::new()
+                            .eq("peer_id", peer_id)
+                            .order_by("version", Order::Desc)
+                            .limit(1);
+                        let existing: Vec<Peer> =
+                            self.peer_repo.pool.fetch(query).await.unwrap_or_default();
+
+                        if let Some(latest) = existing.first()
+                            && latest.active
+                        {
+                            match latest.deactivate() {
+                                Ok(deactivated) => {
+                                    if let Err(e) =
+                                        self.identity_client.anchor(&deactivated.said).await
+                                    {
+                                        warn!(
+                                            peer_id = %peer_id,
+                                            error = %e,
+                                            "Failed to anchor deactivated peer SAID in our KEL"
+                                        );
+                                    }
+
+                                    if let Err(e) = self.peer_repo.insert(deactivated).await {
+                                        warn!(
+                                            peer_id = %peer_id,
+                                            error = %e,
+                                            "Failed to deactivate peer in local DB"
+                                        );
+                                    } else {
+                                        info!(peer_id = %peer_id, "Deactivated removed core peer in local DB");
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        peer_id = %peer_id,
+                                        error = %e,
+                                        "Failed to create deactivated peer record"
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -878,29 +1193,53 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         let mut core_snapshot: CorePeerSnapshot = serde_json::from_slice(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Verify all proposal chains before restoring
-        let original_count = core_snapshot.pending_proposals.len();
-        let mut valid_proposals = Vec::new();
-        for proposal in core_snapshot.pending_proposals {
+        // Verify all addition proposal chains before restoring
+        let original_addition_count = core_snapshot.pending_addition_proposals.len();
+        let mut valid_addition_proposals = Vec::new();
+        for proposal in core_snapshot.pending_addition_proposals {
             if let Err(e) = proposal.verify() {
                 warn!(
                     proposal_prefix = %proposal.prefix,
                     error = %e,
-                    "Proposal chain verification failed during snapshot restore - skipping"
+                    "Addition proposal chain verification failed during snapshot restore - skipping"
                 );
                 continue;
             }
-            valid_proposals.push(proposal);
+            valid_addition_proposals.push(proposal);
         }
 
-        let removed_count = original_count - valid_proposals.len();
-        if removed_count > 0 {
+        let removed_addition_count = original_addition_count - valid_addition_proposals.len();
+        if removed_addition_count > 0 {
             warn!(
-                removed = removed_count,
-                "Removed proposals with invalid chains during snapshot restore"
+                removed = removed_addition_count,
+                "Removed addition proposals with invalid chains during snapshot restore"
             );
         }
-        core_snapshot.pending_proposals = valid_proposals;
+        core_snapshot.pending_addition_proposals = valid_addition_proposals;
+
+        // Verify all removal proposal chains before restoring
+        let original_removal_count = core_snapshot.pending_removal_proposals.len();
+        let mut valid_removal_proposals = Vec::new();
+        for proposal in core_snapshot.pending_removal_proposals {
+            if let Err(e) = proposal.verify() {
+                warn!(
+                    proposal_prefix = %proposal.prefix,
+                    error = %e,
+                    "Removal proposal chain verification failed during snapshot restore - skipping"
+                );
+                continue;
+            }
+            valid_removal_proposals.push(proposal);
+        }
+
+        let removed_removal_count = original_removal_count - valid_removal_proposals.len();
+        if removed_removal_count > 0 {
+            warn!(
+                removed = removed_removal_count,
+                "Removed removal proposals with invalid chains during snapshot restore"
+            );
+        }
+        core_snapshot.pending_removal_proposals = valid_removal_proposals;
 
         let mut sm = self.inner.lock().await;
         sm.restore(core_snapshot, meta);
@@ -982,20 +1321,21 @@ mod tests {
         Vote::create(proposal.to_string(), voter.to_string(), approve).unwrap()
     }
 
-    fn make_test_proposal(peer_id: &str, node_id: &str, proposer: &str) -> PeerProposal {
-        PeerProposal::empty(
+    fn make_test_proposal(peer_id: &str, node_id: &str, proposer: &str) -> PeerAdditionProposal {
+        PeerAdditionProposal::empty(
             peer_id,
             node_id,
             &format!("http://{}:8080", node_id),
             &format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
             proposer,
+            TEST_THRESHOLD,
             &test_expires_at(),
         )
         .expect("Failed to create test proposal")
     }
 
     /// Helper to create a withdrawal from a pending proposal
-    fn make_withdrawal(current: &PeerProposal) -> PeerProposal {
+    fn make_withdrawal(current: &PeerAdditionProposal) -> PeerAdditionProposal {
         let mut withdrawn = current.clone();
         withdrawn.withdrawn_at = Some(StorageDatetime::now());
         withdrawn.increment().expect("Failed to increment");
@@ -1003,9 +1343,9 @@ mod tests {
     }
 
     /// Helper: submit a proposal, returns proposal_id
-    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerProposal) -> String {
+    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerAdditionProposal) -> String {
         match sm.apply(
-            FederationRequest::SubmitProposal(proposal),
+            FederationRequest::SubmitAdditionProposal(proposal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         ) {
@@ -1182,7 +1522,7 @@ mod tests {
     fn test_state_machine_data_default() {
         let sm = StateMachineData::default();
         assert!(sm.peers.is_empty());
-        assert!(sm.pending_proposals.is_empty());
+        assert!(sm.pending_addition_proposals.is_empty());
         assert!(sm.last_applied_log.is_none());
     }
 
@@ -1293,7 +1633,7 @@ mod tests {
 
         assert!(sm.get_peer("peer-1").is_some());
         assert!(sm.get_proposal(&proposal_id).is_none());
-        assert_eq!(sm.completed_proposals.len(), 1);
+        assert_eq!(sm.completed_addition_proposals.len(), 1);
     }
 
     #[test]
@@ -1335,7 +1675,7 @@ mod tests {
 
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let response = sm.apply(
-            FederationRequest::SubmitProposal(proposal),
+            FederationRequest::SubmitAdditionProposal(proposal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
@@ -1352,16 +1692,16 @@ mod tests {
         let withdrawal = make_withdrawal(&current);
 
         let response = sm.apply(
-            FederationRequest::SubmitProposal(withdrawal),
+            FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
 
         assert!(matches!(response, FederationResponse::ProposalWithdrawn(_)));
         assert!(sm.get_proposal(&proposal_id).is_none());
-        assert_eq!(sm.completed_proposals.len(), 1);
-        assert_eq!(sm.completed_proposals[0].len(), 2);
-        assert!(sm.completed_proposals[0][1].is_withdrawn());
+        assert_eq!(sm.completed_addition_proposals.len(), 1);
+        assert_eq!(sm.completed_addition_proposals[0].len(), 2);
+        assert!(sm.completed_addition_proposals[0][1].is_withdrawn());
     }
 
     #[test]
@@ -1377,7 +1717,7 @@ mod tests {
         let _ = withdrawal.increment();
 
         let response = sm.apply(
-            FederationRequest::SubmitProposal(withdrawal),
+            FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
@@ -1407,7 +1747,7 @@ mod tests {
         let withdrawal = make_withdrawal(&current);
 
         let response = sm.apply(
-            FederationRequest::SubmitProposal(withdrawal),
+            FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );
@@ -1478,7 +1818,7 @@ mod tests {
         let proposal_id = submit_proposal(&mut sm1, proposal);
 
         let snapshot = sm1.snapshot();
-        assert_eq!(snapshot.pending_proposals.len(), 1);
+        assert_eq!(snapshot.pending_addition_proposals.len(), 1);
 
         let meta = SnapshotMeta {
             last_log_id: None,
@@ -1603,7 +1943,7 @@ mod tests {
         let current = sm.get_proposal(&proposal_id).unwrap().clone();
         let withdrawal = make_withdrawal(&current);
         sm.apply(
-            FederationRequest::SubmitProposal(withdrawal),
+            FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
             TEST_ANCHORING_PREFIX,
         );

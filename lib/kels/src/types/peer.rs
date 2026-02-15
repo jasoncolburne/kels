@@ -183,7 +183,7 @@ pub struct PeersResponse {
 pub enum ProposalStatus {
     /// Proposal is waiting for votes.
     Pending,
-    /// Threshold met, peer was added to core set.
+    /// Threshold met, peer was added/removed from core set.
     Approved,
     /// Proposal was rejected (majority rejected or expired).
     Rejected,
@@ -232,7 +232,7 @@ pub struct Vote {
 /// Proposals are immutable after creation, except for withdrawal by the proposer.
 /// Proposal chain: v0 (creation) → optionally v1 (withdrawal). No intermediate versions.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-pub struct PeerProposal {
+pub struct PeerAdditionProposal {
     /// Self-Addressing IDentifier - changes with each update.
     #[said]
     pub said: String,
@@ -252,6 +252,8 @@ pub struct PeerProposal {
     pub kels_url: String,
     pub gossip_multiaddr: String,
     pub proposer: String,
+    /// Approval threshold at time of proposal creation.
+    pub threshold: usize,
     /// When the proposal was created/updated.
     #[created_at]
     pub created_at: StorageDatetime,
@@ -262,7 +264,7 @@ pub struct PeerProposal {
     pub withdrawn_at: Option<StorageDatetime>,
 }
 
-impl PeerProposal {
+impl PeerAdditionProposal {
     /// Create a new empty proposal (v0, no votes yet).
     ///
     /// The prefix (proposal ID) is derived from content - no UUID needed.
@@ -273,6 +275,7 @@ impl PeerProposal {
         kels_url: &str,
         gossip_multiaddr: &str,
         proposer: &str,
+        threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
         Self::create(
@@ -281,6 +284,7 @@ impl PeerProposal {
             kels_url.to_string(),
             gossip_multiaddr.to_string(),
             proposer.to_string(),
+            threshold,
             expires_at.clone(),
             None,
         )
@@ -305,12 +309,12 @@ impl PeerProposal {
 /// A proposal chain (1-2 records: v0 creation, optionally v1 withdrawal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProposalHistory {
+pub struct AdditionHistory {
     pub prefix: String,
-    pub records: Vec<PeerProposal>,
+    pub records: Vec<PeerAdditionProposal>,
 }
 
-impl ProposalHistory {
+impl AdditionHistory {
     /// Verify structural integrity of the proposal chain.
     ///
     /// Checks SAID/prefix on each record, chain linkage (previous pointers),
@@ -394,25 +398,25 @@ impl ProposalHistory {
     }
 
     /// Get the inception record (v0).
-    pub fn inception(&self) -> Option<&PeerProposal> {
+    pub fn inception(&self) -> Option<&PeerAdditionProposal> {
         self.records.first()
     }
 
     /// Get the latest record.
-    pub fn latest(&self) -> Option<&PeerProposal> {
+    pub fn latest(&self) -> Option<&PeerAdditionProposal> {
         self.records.last()
     }
 }
 
-/// A completed proposal bundled with its votes (the full DAG).
+/// A completed addition proposal bundled with its votes (the full DAG).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProposalWithVotes {
-    pub history: ProposalHistory,
+pub struct AdditionWithVotes {
+    pub history: AdditionHistory,
     pub votes: Vec<Vote>,
 }
 
-impl ProposalWithVotes {
+impl AdditionWithVotes {
     /// Verify the full DAG: proposal chain integrity + vote SAIDs + vote references.
     ///
     /// Also checks invariant: withdrawn proposals must have zero votes.
@@ -494,11 +498,216 @@ impl ProposalWithVotes {
     }
 }
 
+/// A proposal to remove a core peer, requiring multi-party approval.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+pub struct PeerRemovalProposal {
+    #[said]
+    pub said: String,
+    #[prefix]
+    pub prefix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[previous]
+    pub previous: Option<String>,
+    #[version]
+    pub version: u64,
+    pub peer_id: String,
+    pub proposer: String,
+    pub threshold: usize,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    pub expires_at: StorageDatetime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withdrawn_at: Option<StorageDatetime>,
+}
+
+impl PeerRemovalProposal {
+    pub fn empty(
+        peer_id: &str,
+        proposer: &str,
+        threshold: usize,
+        expires_at: &StorageDatetime,
+    ) -> Result<Self, verifiable_storage::StorageError> {
+        Self::create(
+            peer_id.to_string(),
+            proposer.to_string(),
+            threshold,
+            expires_at.clone(),
+            None,
+        )
+    }
+
+    pub fn proposal_id(&self) -> &str {
+        &self.prefix
+    }
+
+    pub fn is_expired(&self) -> bool {
+        StorageDatetime::now() > self.expires_at
+    }
+
+    pub fn is_withdrawn(&self) -> bool {
+        self.withdrawn_at.is_some()
+    }
+}
+
+/// A removal proposal chain (1-2 records: v0 creation, optionally v1 withdrawal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalHistory {
+    pub prefix: String,
+    pub records: Vec<PeerRemovalProposal>,
+}
+
+impl RemovalHistory {
+    pub fn verify(&self) -> Result<(), KelsError> {
+        if self.records.is_empty() {
+            return Err(KelsError::RegistryFailure(
+                "Empty removal proposal chain".to_string(),
+            ));
+        }
+
+        if self.records.len() > 2 {
+            return Err(KelsError::RegistryFailure(format!(
+                "Removal proposal chain has {} records, expected 1 or 2",
+                self.records.len()
+            )));
+        }
+
+        let mut last_said: Option<String> = None;
+        for (i, record) in self.records.iter().enumerate() {
+            record.verify()?;
+
+            if record.prefix != self.prefix {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Removal proposal record {} prefix {} doesn't match chain prefix {}",
+                    record.said, record.prefix, self.prefix
+                )));
+            }
+
+            if let Some(said) = &last_said {
+                if record.previous.as_deref() != Some(said) {
+                    return Err(KelsError::RegistryFailure(format!(
+                        "Removal proposal record {} previous doesn't match {}",
+                        record.said, said
+                    )));
+                }
+            } else if record.previous.is_some() {
+                return Err(KelsError::RegistryFailure(format!(
+                    "First removal proposal record {} has unexpected previous",
+                    record.said
+                )));
+            }
+
+            if i as u64 != record.version {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Removal proposal record {} has incorrect version {}",
+                    record.said, record.version
+                )));
+            }
+
+            if record.proposer != self.records[0].proposer {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Removal proposal record {} proposer {} doesn't match inception proposer {}",
+                    record.said, record.proposer, self.records[0].proposer
+                )));
+            }
+
+            last_said = Some(record.said.clone());
+        }
+
+        if self.records.len() == 2 && !self.records[1].is_withdrawn() {
+            return Err(KelsError::RegistryFailure(
+                "Second removal proposal record must be a withdrawal".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn is_withdrawn(&self) -> bool {
+        self.records.last().is_some_and(|r| r.is_withdrawn())
+    }
+
+    pub fn inception(&self) -> Option<&PeerRemovalProposal> {
+        self.records.first()
+    }
+
+    pub fn latest(&self) -> Option<&PeerRemovalProposal> {
+        self.records.last()
+    }
+}
+
+/// A completed removal proposal bundled with its votes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalWithVotes {
+    pub history: RemovalHistory,
+    pub votes: Vec<Vote>,
+}
+
+impl RemovalWithVotes {
+    pub fn verify(&self) -> Result<(), KelsError> {
+        self.history.verify()?;
+
+        let proposal_prefix = &self.history.prefix;
+
+        for vote in &self.votes {
+            vote.verify_said()?;
+
+            if vote.proposal != *proposal_prefix {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Vote {} references proposal {} but chain prefix is {}",
+                    vote.said, vote.proposal, proposal_prefix
+                )));
+            }
+        }
+
+        if self.history.is_withdrawn() && !self.votes.is_empty() {
+            return Err(KelsError::RegistryFailure(format!(
+                "Withdrawn removal proposal {} has {} votes — tampered data",
+                proposal_prefix,
+                self.votes.len()
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn status(&self, threshold: usize) -> ProposalStatus {
+        if self.history.is_withdrawn() {
+            return ProposalStatus::Withdrawn;
+        }
+        if self.approval_count() >= threshold {
+            return ProposalStatus::Approved;
+        }
+        if self.is_expired() {
+            return ProposalStatus::Rejected;
+        }
+        ProposalStatus::Pending
+    }
+
+    pub fn approval_count(&self) -> usize {
+        self.votes.iter().filter(|v| v.approve).count()
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.history.inception().is_some_and(|p| p.is_expired())
+    }
+
+    pub fn proposal_id(&self) -> &str {
+        &self.history.prefix
+    }
+
+    pub fn proposer(&self) -> Option<&str> {
+        self.history.inception().map(|p| p.proposer.as_str())
+    }
+}
+
 /// Response from the completed proposals endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletedProposalsResponse {
-    pub proposals: Vec<ProposalWithVotes>,
+    pub additions: Vec<AdditionWithVotes>,
+    pub removals: Vec<RemovalWithVotes>,
     pub member_prefixes: Vec<String>,
     pub approval_threshold: usize,
 }

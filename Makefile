@@ -14,7 +14,7 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-comprehensive
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-comprehensive
 
 all: fmt-check deny clippy test build
 
@@ -134,14 +134,14 @@ deploy-core-nodes:
 	# Deploy nodes and add as core peers via multi-party approval
 	garden deploy --env=node-a
 
-	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 	# Test 1: propose and propose again (same node, should fail)
-	! garden run propose-node-a 2>&1
+	! garden run propose-add-node-a 2>&1
 	# Test 2: propose then withdraw (no votes — should succeed)
 	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 
 	# Re-propose (same node, previous proposal was withdrawn)
-	garden run propose-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 3: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -154,7 +154,7 @@ deploy-core-nodes:
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	garden deploy --env=node-b
-	garden run propose-node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
+	garden run propose-add-node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-c
@@ -162,7 +162,7 @@ deploy-core-nodes:
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 	garden deploy --env=node-c
-	garden run propose-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
+	garden run propose-add-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-c
@@ -193,6 +193,23 @@ test-resync:
 	scripts/repair-node-b-dns.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh verify
 
+test-removal:
+	# Propose removal of node-c
+	garden run propose-remove-node-c 2>&1 | grep "proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-c.txt
+	# Vote from all registries
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+	# Re-add node-c via proposal + vote
+	garden run propose-add-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/readd-c.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
+
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registries fetch-prefixes redeploy-registries deploy-all-nodes
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
@@ -201,3 +218,4 @@ test-comprehensive: clean-garden configure-dns reset-federation-json deploy-regi
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	$(MAKE) test-resync
+	$(MAKE) test-removal

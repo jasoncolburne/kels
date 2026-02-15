@@ -4,7 +4,7 @@ set -e
 NODE_NAME="$1"
 
 if [ -z "$NODE_NAME" ]; then
-    echo "Usage: propose-peer.sh <node-name>"
+    echo "Usage: propose-add-peer.sh <node-name>"
     echo "  Proposes a core peer for the given node."
     echo "  Outputs the proposal ID on success."
     exit 1

@@ -343,7 +343,7 @@ garden deploy --env=node-c
 
 # Add core peers (requires multi-party approval)
 # Step 1: Propose from registry-a
-garden run propose-node-a --env=registry-a
+garden run propose-add-node-a --env=registry-a
 # Output includes proposal ID
 
 # Step 2: Vote from registry-b (use proposal ID from above)

@@ -72,7 +72,7 @@ spec:
 # Propose core peer actions (creates proposal, outputs proposal ID)
 
 kind: Run
-name: propose-node-a
+name: propose-add-node-a
 type: exec
 
 source:
@@ -86,13 +86,13 @@ dependencies:
 spec:
   command:
     - bash
-    - scripts/propose-peer.sh
+    - scripts/propose-add-peer.sh
     - node-a
 
 ---
 
 kind: Run
-name: propose-node-b
+name: propose-add-node-b
 type: exec
 
 source:
@@ -106,13 +106,13 @@ dependencies:
 spec:
   command:
     - bash
-    - scripts/propose-peer.sh
+    - scripts/propose-add-peer.sh
     - node-b
 
 ---
 
 kind: Run
-name: propose-node-c
+name: propose-add-node-c
 type: exec
 
 source:
@@ -126,7 +126,69 @@ dependencies:
 spec:
   command:
     - bash
-    - scripts/propose-peer.sh
+    - scripts/propose-add-peer.sh
+    - node-c
+
+---
+
+# Propose core peer removal actions (creates removal proposal, outputs proposal ID)
+
+kind: Run
+name: propose-remove-node-a
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - node-a
+
+---
+
+kind: Run
+name: propose-remove-node-b
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - node-b
+
+---
+
+kind: Run
+name: propose-remove-node-c
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
     - node-c
 
 ---

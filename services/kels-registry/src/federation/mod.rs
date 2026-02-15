@@ -23,7 +23,10 @@ pub mod sync;
 mod types;
 
 pub use config::{FederationConfig, FederationMember};
-pub use kels::{PeerProposal, ProposalHistory, ProposalWithVotes, Vote};
+pub use kels::{
+    AdditionHistory, AdditionWithVotes, PeerAdditionProposal, PeerRemovalProposal, RemovalHistory,
+    RemovalWithVotes, Vote,
+};
 pub use network::{
     FederationNetwork, FederationRpc, FederationRpcResponse, SignedFederationRpc, SnapshotTransfer,
 };
@@ -226,13 +229,13 @@ impl FederationNode {
         Ok(())
     }
 
-    /// Submit a proposal (create or withdraw) via Raft consensus (leader only).
+    /// Submit an addition proposal (create or withdraw) via Raft consensus (leader only).
     ///
     /// For new proposals (v0): creates an empty proposal requiring multi-party approval.
     /// For withdrawals (v1 with withdrawn_at set): withdraws a pending proposal.
-    pub async fn submit_proposal(
+    pub async fn submit_addition_proposal(
         &self,
-        proposal: PeerProposal,
+        proposal: PeerAdditionProposal,
     ) -> Result<FederationResponse, FederationError> {
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
@@ -241,7 +244,30 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::SubmitProposal(proposal);
+        let request = FederationRequest::SubmitAdditionProposal(proposal);
+
+        let result = self
+            .raft
+            .client_write(request)
+            .await
+            .map_err(|e| FederationError::RaftError(e.to_string()))?;
+
+        Ok(result.response().clone())
+    }
+
+    /// Submit a removal proposal (create or withdraw) via Raft consensus (leader only).
+    pub async fn submit_removal_proposal(
+        &self,
+        proposal: PeerRemovalProposal,
+    ) -> Result<FederationResponse, FederationError> {
+        if !self.is_leader().await {
+            return Err(FederationError::NotLeader {
+                leader_prefix: self.leader_prefix().await,
+                leader_url: self.leader_url().await,
+            });
+        }
+
+        let request = FederationRequest::SubmitRemovalProposal(proposal);
 
         let result = self
             .raft
@@ -284,10 +310,10 @@ impl FederationNode {
             .await
     }
 
-    /// Get all pending proposals with their votes from the state machine.
-    pub async fn pending_proposals_with_votes(&self) -> Vec<ProposalWithVotes> {
+    /// Get all pending addition proposals with their votes from the state machine.
+    pub async fn pending_addition_proposals_with_votes(&self) -> Vec<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
-        sm.pending_proposals
+        sm.pending_addition_proposals
             .values()
             .map(|p| {
                 let votes: Vec<Vote> = sm
@@ -296,8 +322,8 @@ impl FederationNode {
                     .filter(|v| v.proposal == p.prefix)
                     .cloned()
                     .collect();
-                ProposalWithVotes {
-                    history: ProposalHistory {
+                AdditionWithVotes {
+                    history: AdditionHistory {
                         prefix: p.prefix.clone(),
                         records: vec![p.clone()],
                     },
@@ -307,31 +333,68 @@ impl FederationNode {
             .collect()
     }
 
-    /// Get a specific proposal by ID (raw, for chain building).
-    pub async fn get_proposal(&self, proposal_id: &str) -> Option<PeerProposal> {
+    /// Get all pending removal proposals with their votes from the state machine.
+    pub async fn pending_removal_proposals_with_votes(&self) -> Vec<RemovalWithVotes> {
+        let sm = self.state_machine.inner().lock().await;
+        sm.pending_removal_proposals
+            .values()
+            .map(|p| {
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == p.prefix)
+                    .cloned()
+                    .collect();
+                RemovalWithVotes {
+                    history: RemovalHistory {
+                        prefix: p.prefix.clone(),
+                        records: vec![p.clone()],
+                    },
+                    votes,
+                }
+            })
+            .collect()
+    }
+
+    /// Get a specific addition proposal by ID (raw, for chain building).
+    pub async fn get_addition_proposal(&self, proposal_id: &str) -> Option<PeerAdditionProposal> {
         self.state_machine
             .inner()
             .lock()
             .await
-            .pending_proposals
+            .pending_addition_proposals
             .get(proposal_id)
             .cloned()
     }
 
-    /// Get a specific proposal with its votes (searches pending and completed).
-    pub async fn get_proposal_with_votes(&self, proposal_id: &str) -> Option<ProposalWithVotes> {
+    /// Get a specific removal proposal by ID (raw, for chain building).
+    pub async fn get_removal_proposal(&self, proposal_id: &str) -> Option<PeerRemovalProposal> {
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .pending_removal_proposals
+            .get(proposal_id)
+            .cloned()
+    }
+
+    /// Get a specific addition proposal with its votes (searches pending and completed).
+    pub async fn get_addition_proposal_with_votes(
+        &self,
+        proposal_id: &str,
+    ) -> Option<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
         // Check pending first
-        if let Some(p) = sm.pending_proposals.get(proposal_id) {
+        if let Some(p) = sm.pending_addition_proposals.get(proposal_id) {
             let votes: Vec<Vote> = sm
                 .votes
                 .values()
                 .filter(|v| v.proposal == p.prefix)
                 .cloned()
                 .collect();
-            return Some(ProposalWithVotes {
-                history: ProposalHistory {
+            return Some(AdditionWithVotes {
+                history: AdditionHistory {
                     prefix: p.prefix.clone(),
                     records: vec![p.clone()],
                 },
@@ -340,7 +403,7 @@ impl FederationNode {
         }
 
         // Check completed
-        sm.completed_proposals
+        sm.completed_addition_proposals
             .iter()
             .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
             .map(|chain| {
@@ -351,8 +414,54 @@ impl FederationNode {
                     .filter(|v| v.proposal == prefix)
                     .cloned()
                     .collect();
-                ProposalWithVotes {
-                    history: ProposalHistory {
+                AdditionWithVotes {
+                    history: AdditionHistory {
+                        prefix,
+                        records: chain.clone(),
+                    },
+                    votes,
+                }
+            })
+    }
+
+    /// Get a specific removal proposal with its votes (searches pending and completed).
+    pub async fn get_removal_proposal_with_votes(
+        &self,
+        proposal_id: &str,
+    ) -> Option<RemovalWithVotes> {
+        let sm = self.state_machine.inner().lock().await;
+
+        // Check pending first
+        if let Some(p) = sm.pending_removal_proposals.get(proposal_id) {
+            let votes: Vec<Vote> = sm
+                .votes
+                .values()
+                .filter(|v| v.proposal == p.prefix)
+                .cloned()
+                .collect();
+            return Some(RemovalWithVotes {
+                history: RemovalHistory {
+                    prefix: p.prefix.clone(),
+                    records: vec![p.clone()],
+                },
+                votes,
+            });
+        }
+
+        // Check completed
+        sm.completed_removal_proposals
+            .iter()
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .map(|chain| {
+                let prefix = chain[0].prefix.clone();
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == prefix)
+                    .cloned()
+                    .collect();
+                RemovalWithVotes {
+                    history: RemovalHistory {
                         prefix,
                         records: chain.clone(),
                     },
@@ -371,10 +480,10 @@ impl FederationNode {
         self.state_machine.inner().lock().await.peers()
     }
 
-    /// Get all completed proposals (full chains) with their votes.
-    pub async fn completed_proposals_with_votes(&self) -> Vec<ProposalWithVotes> {
+    /// Get all completed addition proposals (full chains) with their votes.
+    pub async fn completed_addition_proposals_with_votes(&self) -> Vec<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
-        sm.completed_proposals
+        sm.completed_addition_proposals
             .iter()
             .filter_map(|chain| {
                 let prefix = chain.first()?.prefix.clone();
@@ -384,8 +493,32 @@ impl FederationNode {
                     .filter(|v| v.proposal == prefix)
                     .cloned()
                     .collect();
-                Some(ProposalWithVotes {
-                    history: ProposalHistory {
+                Some(AdditionWithVotes {
+                    history: AdditionHistory {
+                        prefix,
+                        records: chain.clone(),
+                    },
+                    votes,
+                })
+            })
+            .collect()
+    }
+
+    /// Get all completed removal proposals (full chains) with their votes.
+    pub async fn completed_removal_proposals_with_votes(&self) -> Vec<RemovalWithVotes> {
+        let sm = self.state_machine.inner().lock().await;
+        sm.completed_removal_proposals
+            .iter()
+            .filter_map(|chain| {
+                let prefix = chain.first()?.prefix.clone();
+                let votes: Vec<Vote> = sm
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == prefix)
+                    .cloned()
+                    .collect();
+                Some(RemovalWithVotes {
+                    history: RemovalHistory {
                         prefix,
                         records: chain.clone(),
                     },

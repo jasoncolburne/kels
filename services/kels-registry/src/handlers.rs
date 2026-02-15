@@ -19,8 +19,9 @@ use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
 use crate::{
     federation::{
-        FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
-        PeerProposal, ProposalHistory, SignedFederationRpc, Vote,
+        AdditionHistory, FederationNode, FederationResponse, FederationRpc, FederationRpcResponse,
+        FederationStatus, PeerAdditionProposal, PeerRemovalProposal, RemovalHistory,
+        SignedFederationRpc, Vote,
     },
     identity_client::IdentityClient,
     repository::RegistryRepository,
@@ -177,8 +178,8 @@ async fn verify_and_authorize<T: serde::Serialize>(
         let member_prefixes: std::collections::HashSet<&str> =
             prefixes.iter().map(|s| s.as_str()).collect();
 
-        // Find an approved, non-withdrawn proposal for this peer
-        let proposals = node.completed_proposals_with_votes().await;
+        // Find an approved, non-withdrawn addition proposal for this peer
+        let proposals = node.completed_addition_proposals_with_votes().await;
         let pwv = proposals
             .iter()
             .find(|pw| {
@@ -455,7 +456,8 @@ pub async fn list_completed_proposals(
     State(state): State<Arc<FederationState>>,
 ) -> Result<Json<CompletedProposalsResponse>, ApiError> {
     Ok(Json(CompletedProposalsResponse {
-        proposals: state.node.completed_proposals_with_votes().await,
+        additions: state.node.completed_addition_proposals_with_votes().await,
+        removals: state.node.completed_removal_proposals_with_votes().await,
         member_prefixes: state.node.member_prefixes(),
         approval_threshold: state.node.approval_threshold(),
     }))
@@ -487,49 +489,51 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// List pending proposals with their votes (admin, localhost only).
+/// List pending addition proposals with their votes (admin, localhost only).
 pub async fn admin_list_proposals(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
-) -> Result<Json<Vec<kels::ProposalWithVotes>>, ApiError> {
+) -> Result<Json<Vec<kels::AdditionWithVotes>>, ApiError> {
     if !is_localhost(&addr) {
         return Err(ApiError::forbidden("Admin API is localhost only"));
     }
 
-    Ok(Json(state.node.pending_proposals_with_votes().await))
+    Ok(Json(
+        state.node.pending_addition_proposals_with_votes().await,
+    ))
 }
 
-/// Get a specific proposal with votes (admin, localhost only).
+/// Get a specific addition proposal with votes (admin, localhost only).
 pub async fn admin_get_proposal(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
-) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
+) -> Result<Json<kels::AdditionWithVotes>, ApiError> {
     if !is_localhost(&addr) {
         return Err(ApiError::forbidden("Admin API is localhost only"));
     }
 
     let proposal = state
         .node
-        .get_proposal_with_votes(&proposal_id)
+        .get_addition_proposal_with_votes(&proposal_id)
         .await
         .ok_or_else(|| ApiError::not_found(format!("Proposal not found: {}", proposal_id)))?;
 
     Ok(Json(proposal))
 }
 
-/// Submit a proposal (create or withdraw) via Raft consensus.
+/// Submit an addition proposal (create or withdraw) via Raft consensus.
 ///
 /// For new proposals (v0, no previous): creates an empty proposal requiring multi-party approval.
 /// For withdrawals (v1, has previous, withdrawn_at set): withdraws a pending proposal.
 ///
 /// Full verification before Raft submission:
 /// 1. Proposer is a federation member
-/// 2. Build and verify the full proposal chain (ProposalHistory)
+/// 2. Build and verify the full proposal chain (AdditionHistory)
 /// 3. Verify each record's SAID is anchored in proposer's KEL
-pub async fn admin_submit_proposal(
+pub async fn admin_submit_addition_proposal(
     State(state): State<Arc<FederationState>>,
-    Json(proposal): Json<PeerProposal>,
+    Json(proposal): Json<PeerAdditionProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
     // 1. Verify proposer is a federation member
     if !state.node.config().is_member(&proposal.proposer) {
@@ -544,7 +548,7 @@ pub async fn admin_submit_proposal(
         // Withdrawal (v1): fetch existing v0 and build full chain
         let existing = state
             .node
-            .get_proposal(&proposal.prefix)
+            .get_addition_proposal(&proposal.prefix)
             .await
             .ok_or_else(|| {
                 ApiError::not_found(format!("Proposal not found: {}", proposal.prefix))
@@ -555,7 +559,7 @@ pub async fn admin_submit_proposal(
         vec![proposal.clone()]
     };
 
-    let history = ProposalHistory {
+    let history = AdditionHistory {
         prefix: proposal.prefix.clone(),
         records,
     };
@@ -576,7 +580,7 @@ pub async fn admin_submit_proposal(
     // 4. Submit to Raft
     let response = state
         .node
-        .submit_proposal(proposal)
+        .submit_addition_proposal(proposal)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -630,6 +634,111 @@ pub async fn admin_submit_proposal(
     }
 }
 
+/// Submit a removal proposal (create or withdraw) via Raft consensus.
+///
+/// For new proposals (v0, no previous): creates a removal proposal requiring multi-party approval.
+/// For withdrawals (v1, has previous, withdrawn_at set): withdraws a pending removal proposal.
+pub async fn admin_submit_removal_proposal(
+    State(state): State<Arc<FederationState>>,
+    Json(proposal): Json<PeerRemovalProposal>,
+) -> Result<Json<ProposalResponse>, ApiError> {
+    // 1. Verify proposer is a federation member
+    if !state.node.config().is_member(&proposal.proposer) {
+        return Err(ApiError::forbidden(format!(
+            "Proposer {} is not a federation member",
+            proposal.proposer
+        )));
+    }
+
+    // 2. Build and verify the full proposal chain
+    let records = if proposal.previous.is_some() {
+        let existing = state
+            .node
+            .get_removal_proposal(&proposal.prefix)
+            .await
+            .ok_or_else(|| {
+                ApiError::not_found(format!("Removal proposal not found: {}", proposal.prefix))
+            })?;
+        vec![existing, proposal.clone()]
+    } else {
+        vec![proposal.clone()]
+    };
+
+    let history = RemovalHistory {
+        prefix: proposal.prefix.clone(),
+        records,
+    };
+
+    history.verify().map_err(|e| {
+        ApiError::bad_request(format!("Removal proposal chain verification failed: {}", e))
+    })?;
+
+    // 3. Verify each record's SAID is anchored in proposer's KEL
+    for record in &history.records {
+        state
+            .node
+            .verify_anchoring(&record.said, &record.proposer)
+            .await
+            .map_err(|e| ApiError::unauthorized(format!("Anchoring verification failed: {}", e)))?;
+    }
+
+    // 4. Submit to Raft
+    let response = state
+        .node
+        .submit_removal_proposal(proposal)
+        .await
+        .map_err(|e| match e {
+            crate::federation::FederationError::NotLeader {
+                leader_prefix,
+                leader_url,
+            } => ApiError::bad_request(format!(
+                "Not leader. Leader: {:?} at {:?}",
+                leader_prefix, leader_url
+            )),
+            _ => ApiError::internal_error(format!("Failed to submit removal proposal: {}", e)),
+        })?;
+
+    match response {
+        FederationResponse::ProposalCreated {
+            proposal_id,
+            votes_needed,
+            current_votes,
+        } => Ok(Json(ProposalResponse {
+            proposal_id,
+            status: "pending".to_string(),
+            votes_needed,
+            current_votes,
+            message: format!("Removal proposal created. Need {} approvals.", votes_needed),
+        })),
+        FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
+            proposal_id: id,
+            status: "withdrawn".to_string(),
+            votes_needed: 0,
+            current_votes: 0,
+            message: "Removal proposal withdrawn.".to_string(),
+        })),
+        FederationResponse::PeerNotFound(peer_id) => {
+            Err(ApiError::not_found(format!("Peer not found: {}", peer_id)))
+        }
+        FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
+            format!("Removal proposal already exists: {}", proposal_id),
+        )),
+        FederationResponse::SaidMismatch(msg) => {
+            Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
+        }
+        FederationResponse::NotAuthorized(msg) => Err(ApiError::forbidden(msg)),
+        FederationResponse::HasVotes(msg) => Err(ApiError::bad_request(msg)),
+        FederationResponse::ProposalNotFound(id) => Err(ApiError::not_found(format!(
+            "Removal proposal not found: {}",
+            id
+        ))),
+        _ => Err(ApiError::internal_error(format!(
+            "Unexpected response: {:?}",
+            response
+        ))),
+    }
+}
+
 /// Vote on a proposal.
 ///
 /// Full verification before Raft submission:
@@ -664,24 +773,41 @@ pub async fn admin_vote_proposal(
     }
 
     // 4. Verify the proposal chain is valid and not withdrawn
-    let proposal = state
-        .node
-        .get_proposal(&proposal_id)
-        .await
-        .ok_or_else(|| ApiError::not_found(format!("Proposal not found: {}", proposal_id)))?;
-
-    let history = ProposalHistory {
-        prefix: proposal.prefix.clone(),
-        records: vec![proposal],
-    };
-
-    history.verify().map_err(|e| {
-        ApiError::internal_error(format!("Stored proposal failed verification: {}", e))
-    })?;
-
-    if history.is_withdrawn() {
-        return Err(ApiError::bad_request(format!(
-            "Proposal {} has been withdrawn",
+    //    Check both addition and removal proposals
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await {
+        let history = AdditionHistory {
+            prefix: addition.prefix.clone(),
+            records: vec![addition],
+        };
+        history.verify().map_err(|e| {
+            ApiError::internal_error(format!("Stored proposal failed verification: {}", e))
+        })?;
+        if history.is_withdrawn() {
+            return Err(ApiError::bad_request(format!(
+                "Proposal {} has been withdrawn",
+                proposal_id
+            )));
+        }
+    } else if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await {
+        let history = RemovalHistory {
+            prefix: removal.prefix.clone(),
+            records: vec![removal],
+        };
+        history.verify().map_err(|e| {
+            ApiError::internal_error(format!(
+                "Stored removal proposal failed verification: {}",
+                e
+            ))
+        })?;
+        if history.is_withdrawn() {
+            return Err(ApiError::bad_request(format!(
+                "Removal proposal {} has been withdrawn",
+                proposal_id
+            )));
+        }
+    } else {
+        return Err(ApiError::not_found(format!(
+            "Proposal not found: {}",
             proposal_id
         )));
     }
@@ -739,6 +865,18 @@ pub async fn admin_vote_proposal(
                 message,
             }))
         }
+        FederationResponse::RemovalApproved {
+            proposal_id,
+            peer_id,
+            current_votes,
+            votes_needed,
+        } => Ok(Json(ProposalResponse {
+            proposal_id,
+            status: "removal_approved".to_string(),
+            votes_needed,
+            current_votes,
+            message: format!("Removal approved! Peer {} removed from core set.", peer_id),
+        })),
         FederationResponse::ProposalNotFound(id) => {
             Err(ApiError::not_found(format!("Proposal not found: {}", id)))
         }

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use kels::{Peer, PeerProposal, Vote};
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Vote};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -53,9 +53,11 @@ pub enum FederationRequest {
     /// Remove a peer (by peer_id).
     RemovePeer(String),
 
-    /// Submit a proposal (create or withdraw).
-    /// v0 (no previous) = new proposal. v1 (has previous, withdrawn_at set) = withdrawal.
-    SubmitProposal(PeerProposal),
+    /// Submit an addition proposal (create or withdraw).
+    SubmitAdditionProposal(PeerAdditionProposal),
+
+    /// Submit a removal proposal (create or withdraw).
+    SubmitRemovalProposal(PeerRemovalProposal),
 
     /// Vote on a core peer proposal.
     VoteCorePeer {
@@ -71,17 +73,32 @@ impl fmt::Display for FederationRequest {
         match self {
             FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_id),
             FederationRequest::RemovePeer(peer_id) => write!(f, "RemovePeer({})", peer_id),
-            FederationRequest::SubmitProposal(proposal) => {
+            FederationRequest::SubmitAdditionProposal(proposal) => {
                 if proposal.is_withdrawn() {
                     write!(
                         f,
-                        "SubmitProposal(withdraw, peer={}, proposer={})",
+                        "SubmitAdditionProposal(withdraw, peer={}, proposer={})",
                         proposal.peer_id, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
-                        "SubmitProposal(create, peer={}, proposer={})",
+                        "SubmitAdditionProposal(create, peer={}, proposer={})",
+                        proposal.peer_id, proposal.proposer
+                    )
+                }
+            }
+            FederationRequest::SubmitRemovalProposal(proposal) => {
+                if proposal.is_withdrawn() {
+                    write!(
+                        f,
+                        "SubmitRemovalProposal(withdraw, peer={}, proposer={})",
+                        proposal.peer_id, proposal.proposer
+                    )
+                } else {
+                    write!(
+                        f,
+                        "SubmitRemovalProposal(create, peer={}, proposer={})",
                         proposal.peer_id, proposal.proposer
                     )
                 }
@@ -136,6 +153,13 @@ pub enum FederationResponse {
     NotAuthorized(String),
     /// Peer already exists in core set or pending proposal.
     PeerAlreadyExists(String),
+    /// Removal proposal approved — peer should be removed from core set.
+    RemovalApproved {
+        proposal_id: String,
+        peer_id: String,
+        current_votes: usize,
+        votes_needed: usize,
+    },
     /// SAID mismatch (retry-able).
     SaidMismatch(String),
     /// Votes exist — cannot withdraw.
@@ -188,6 +212,13 @@ impl fmt::Display for FederationResponse {
             FederationResponse::ProposalWithdrawn(id) => write!(f, "ProposalWithdrawn({})", id),
             FederationResponse::NotAuthorized(msg) => write!(f, "NotAuthorized({})", msg),
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
+            FederationResponse::RemovalApproved {
+                proposal_id,
+                peer_id,
+                ..
+            } => {
+                write!(f, "RemovalApproved({}, peer={})", proposal_id, peer_id)
+            }
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
             FederationResponse::InternalError(msg) => write!(f, "InternalError({})", msg),
@@ -211,12 +242,16 @@ openraft::declare_raft_types!(
 pub struct CorePeerSnapshot {
     /// The core peer set data.
     pub peers: Vec<Peer>,
-    /// Pending proposals awaiting votes.
+    /// Pending addition proposals awaiting votes.
     #[serde(default)]
-    pub pending_proposals: Vec<PeerProposal>,
-    /// Completed proposals (full chain per proposal) for audit trail.
+    pub pending_addition_proposals: Vec<PeerAdditionProposal>,
+    /// Completed addition proposals (full chain per proposal) for audit trail.
     #[serde(default)]
-    pub completed_proposals: Vec<Vec<PeerProposal>>,
+    pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
+    #[serde(default)]
+    pub pending_removal_proposals: Vec<PeerRemovalProposal>,
+    #[serde(default)]
+    pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID.
     #[serde(default)]
     pub votes: Vec<Vote>,
@@ -400,8 +435,10 @@ mod tests {
         .unwrap();
         let snapshot = CorePeerSnapshot {
             peers: vec![peer.clone()],
-            pending_proposals: vec![],
-            completed_proposals: vec![],
+            pending_addition_proposals: vec![],
+            completed_addition_proposals: vec![],
+            pending_removal_proposals: vec![],
+            completed_removal_proposals: vec![],
             votes: vec![],
         };
 
@@ -410,7 +447,7 @@ mod tests {
 
         assert_eq!(parsed.peers.len(), 1);
         assert_eq!(parsed.peers[0].peer_id, "peer-1");
-        assert!(parsed.pending_proposals.is_empty());
-        assert!(parsed.completed_proposals.is_empty());
+        assert!(parsed.pending_addition_proposals.is_empty());
+        assert!(parsed.completed_addition_proposals.is_empty());
     }
 }

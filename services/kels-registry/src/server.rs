@@ -69,7 +69,11 @@ pub fn create_router(
             .route("/api/admin/proposals", get(handlers::admin_list_proposals))
             .route(
                 "/api/admin/proposals",
-                post(handlers::admin_submit_proposal),
+                post(handlers::admin_submit_addition_proposal),
+            )
+            .route(
+                "/api/admin/removal-proposals",
+                post(handlers::admin_submit_removal_proposal),
             )
             .route(
                 "/api/admin/proposals/:proposal_id",

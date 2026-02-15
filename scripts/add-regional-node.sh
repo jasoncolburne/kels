@@ -7,7 +7,7 @@ ENV_NAMESPACE="$2"
 if [ -z "$NODE_NAME" ] || [ -z "$ENV_NAMESPACE" ]; then
     echo "Usage: add-regional-node.sh <node-name> <env-namespace>"
     echo "  Adds a regional peer to the specified registry."
-    echo "  For core peers, use propose-peer.sh and vote-peer.sh instead."
+    echo "  For core peers, use propose-add-peer.sh and vote-peer.sh instead."
     exit 1
 fi
 
