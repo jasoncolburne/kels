@@ -38,34 +38,40 @@ pub fn create_router(
         .finish()
         .unwrap_or_else(|| unreachable!("governor config with valid defaults"));
 
-    // Node management routes with AppState — per-IP rate limited (write endpoints)
-    let node_router = Router::new()
-        .route("/api/nodes/register", post(handlers::register_node))
-        .route("/api/nodes/deregister", post(handlers::deregister_node))
-        .route("/api/nodes/status", post(handlers::update_status))
-        .layer(GovernorLayer {
-            config: Arc::new(governor_conf),
-        })
-        .with_state(state);
-
     // Registry KEL route
     let kel_router = Router::new()
         .route("/api/registry-kel", get(handlers::get_registry_kel))
         .with_state(registry_kel_state);
 
-    // Peer routes - different handlers based on federation mode
-    let peer_router = if let Some(fed_state) = federation_state {
-        // Federation mode: peers come from Raft state machine + regional DB
-        Router::new()
+    // Federation mode routes (node management + peer management + admin)
+    let federation_router = if let Some(fed_state) = federation_state {
+        // Node management routes — per-IP rate limited (write endpoints)
+        // Only available in federation mode (requires peer allowlist)
+        let node_router = Router::new()
+            .route("/api/nodes/register", post(handlers::register_node))
+            .route("/api/nodes/deregister", post(handlers::deregister_node))
+            .route("/api/nodes/status", post(handlers::update_status))
+            .layer(GovernorLayer {
+                config: Arc::new(governor_conf),
+            })
+            .with_state(state);
+
+        // Peer discovery
+        let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
-            .route("/api/registry-kels", get(handlers::get_registry_kels))
+            .route("/api/registry-kels", get(handlers::get_registry_kels));
+
+        // Federation protocol
+        let federation_router = Router::new()
             .route("/api/federation/rpc", post(handlers::federation_rpc))
             .route("/api/federation/status", get(handlers::federation_status))
             .route(
                 "/api/federation/proposals",
                 get(handlers::list_completed_proposals),
-            )
-            // Admin API (localhost only) for proposal management
+            );
+
+        // Admin API (localhost only) for proposal and peer management
+        let admin_router = Router::new()
             .route("/api/admin/proposals", get(handlers::admin_list_proposals))
             .route(
                 "/api/admin/proposals",
@@ -83,19 +89,23 @@ pub fn create_router(
                 "/api/admin/proposals/:proposal_id/vote",
                 post(handlers::admin_vote_proposal),
             )
-            // Admin API for regional peer management
-            .route("/api/admin/peers", post(handlers::admin_add_regional_peer))
-            .with_state(fed_state)
+            .route("/api/admin/peers", post(handlers::admin_add_regional_peer));
+
+        let fed_router = discovery_router
+            .merge(federation_router)
+            .merge(admin_router)
+            .with_state(fed_state);
+
+        fed_router.merge(node_router)
     } else {
-        // Standalone mode: no peer endpoints (identity bootstrap only)
+        // Standalone mode: health + registry KEL only
         Router::new()
     };
 
     // Merge all routers
     base_router
-        .merge(node_router)
         .merge(kel_router)
-        .merge(peer_router)
+        .merge(federation_router)
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
 }
 
