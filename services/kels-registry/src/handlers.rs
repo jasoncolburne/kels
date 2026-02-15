@@ -489,23 +489,35 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// Get a specific addition proposal with votes (admin, localhost only).
+/// Get a specific proposal with votes (admin, localhost only).
+/// Returns either an addition or removal proposal.
 pub async fn admin_get_proposal(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
-) -> Result<Json<kels::AdditionWithVotes>, ApiError> {
+) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
     if !is_localhost(&addr) {
         return Err(ApiError::forbidden("Admin API is localhost only"));
     }
 
-    let proposal = state
+    if let Some(addition) = state
         .node
         .get_addition_proposal_with_votes(&proposal_id)
         .await
-        .ok_or_else(|| ApiError::not_found(format!("Proposal not found: {}", proposal_id)))?;
-
-    Ok(Json(proposal))
+    {
+        Ok(Json(kels::ProposalWithVotes::Addition(addition)))
+    } else if let Some(removal) = state
+        .node
+        .get_removal_proposal_with_votes(&proposal_id)
+        .await
+    {
+        Ok(Json(kels::ProposalWithVotes::Removal(removal)))
+    } else {
+        Err(ApiError::not_found(format!(
+            "Proposal not found: {}",
+            proposal_id
+        )))
+    }
 }
 
 /// Submit an addition proposal (create or withdraw) via Raft consensus.
@@ -873,6 +885,13 @@ pub async fn admin_vote_proposal(
         FederationResponse::ProposalExpired(id) => {
             Err(ApiError::bad_request(format!("Proposal expired: {}", id)))
         }
+        FederationResponse::ProposalRejected(id) => Ok(Json(ProposalResponse {
+            proposal_id: id,
+            status: "rejected".to_string(),
+            votes_needed: 0,
+            current_votes: 0,
+            message: "Proposal rejected — rejection threshold met.".to_string(),
+        })),
         _ => Err(ApiError::internal_error(format!(
             "Unexpected response: {:?}",
             response

@@ -10,6 +10,13 @@ use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 use super::Kel;
 use crate::KelsError;
 
+/// Minimum number of rejection votes required to kill a proposal.
+///
+/// Two rejections prevents a lone actor from blocking proposals, while keeping
+/// the coordination bar low enough to stop collusion quickly once detected.
+/// See `docs/rejection-threshold.md` for full rationale.
+pub const REJECTION_THRESHOLD: usize = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedRequest<T> {
@@ -458,6 +465,9 @@ impl AdditionWithVotes {
         if self.history.is_withdrawn() {
             return ProposalStatus::Withdrawn;
         }
+        if self.rejection_count() >= REJECTION_THRESHOLD {
+            return ProposalStatus::Rejected;
+        }
         if self.approval_count() >= threshold {
             return ProposalStatus::Approved;
         }
@@ -496,6 +506,13 @@ impl AdditionWithVotes {
     pub fn voters(&self) -> Vec<&str> {
         self.votes.iter().map(|v| v.voter.as_str()).collect()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProposalWithVotes {
+    Addition(AdditionWithVotes),
+    Removal(RemovalWithVotes),
 }
 
 /// A proposal to remove a core peer, requiring multi-party approval.
@@ -676,6 +693,9 @@ impl RemovalWithVotes {
         if self.history.is_withdrawn() {
             return ProposalStatus::Withdrawn;
         }
+        if self.rejection_count() >= REJECTION_THRESHOLD {
+            return ProposalStatus::Rejected;
+        }
         if self.approval_count() >= threshold {
             return ProposalStatus::Approved;
         }
@@ -699,6 +719,16 @@ impl RemovalWithVotes {
 
     pub fn proposer(&self) -> Option<&str> {
         self.history.inception().map(|p| p.proposer.as_str())
+    }
+
+    /// Count of rejection votes.
+    pub fn rejection_count(&self) -> usize {
+        self.votes.iter().filter(|v| !v.approve).count()
+    }
+
+    /// Unique voters who have voted.
+    pub fn voters(&self) -> Vec<&str> {
+        self.votes.iter().map(|v| v.voter.as_str()).collect()
     }
 }
 

@@ -150,7 +150,15 @@ deploy-core-nodes:
 	# Re-propose (same node, previous proposal was withdrawn)
 	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
-	# Test 3: vote then try to withdraw (has votes — should fail)
+	# Test 3: two rejections kill the proposal, further votes fail
+	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
+	! garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
+
+	# Re-propose (same node, previous proposal was rejected)
+	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+
+	# Test 4: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 	! garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 

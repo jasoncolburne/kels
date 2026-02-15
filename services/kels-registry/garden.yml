@@ -195,7 +195,7 @@ spec:
 
 ---
 
-# Vote on a peer proposal (pass proposal ID via --var proposal=<id>)
+# Vote to approve a peer proposal (pass proposal ID via --var proposal=<id>)
 
 kind: Run
 name: vote-peer
@@ -215,6 +215,31 @@ spec:
     - scripts/vote-peer.sh
     - ${var.proposal}
     - ${environment.namespace}
+    - "true"
+
+---
+
+# Vote to reject a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: reject-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+    - "false"
 
 ---
 

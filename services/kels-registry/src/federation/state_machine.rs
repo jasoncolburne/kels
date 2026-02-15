@@ -434,23 +434,46 @@ impl StateMachineData {
                 // Store vote
                 self.votes.insert(vote_said, vote);
 
-                // Count approval votes
+                // Count votes
                 let current_votes = self
                     .votes
                     .values()
                     .filter(|v| v.proposal == proposal_id && v.approve)
+                    .count();
+                let rejection_count = self
+                    .votes
+                    .values()
+                    .filter(|v| v.proposal == proposal_id && !v.approve)
                     .count();
 
                 info!(
                     proposal_id = %proposal_id,
                     voter = %voter,
                     approve = approve,
-                    "Vote recorded ({}/{} approvals)",
+                    "Vote recorded ({}/{} approvals, {} rejections)",
                     current_votes,
-                    proposal_threshold
+                    proposal_threshold,
+                    rejection_count
                 );
 
-                // Check if threshold met
+                // Check if rejection threshold met — reject before checking approval
+                if rejection_count >= kels::REJECTION_THRESHOLD {
+                    info!(
+                        proposal_id = %proposal_id,
+                        rejection_count = rejection_count,
+                        "Proposal rejected — rejection threshold met"
+                    );
+                    if is_addition {
+                        if let Some(v0) = self.pending_addition_proposals.remove(&proposal_id) {
+                            self.completed_addition_proposals.push(vec![v0]);
+                        }
+                    } else if let Some(v0) = self.pending_removal_proposals.remove(&proposal_id) {
+                        self.completed_removal_proposals.push(vec![v0]);
+                    }
+                    return FederationResponse::ProposalRejected(proposal_id);
+                }
+
+                // Check if approval threshold met
                 if current_votes >= proposal_threshold {
                     if is_addition {
                         let v0 = match self.pending_addition_proposals.remove(&proposal_id) {
@@ -1809,6 +1832,72 @@ mod tests {
             _ => panic!("Expected VoteRecorded"),
         }
         assert!(sm.get_peer("peer-1").is_none());
+    }
+
+    #[test]
+    fn test_two_rejections_kill_proposal() {
+        let mut sm = StateMachineData::new();
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let proposal_id = submit_proposal(&mut sm, proposal);
+
+        // First rejection — still pending
+        let vote_a = make_test_vote(&proposal_id, "ERegistryA", false);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_a,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::VoteRecorded { .. }));
+
+        // Second rejection — proposal rejected
+        let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_b,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(
+            matches!(response, FederationResponse::ProposalRejected(_)),
+            "Expected ProposalRejected, got {:?}",
+            response
+        );
+
+        // Peer was NOT added
+        assert!(sm.get_peer("peer-1").is_none());
+
+        // Proposal moved to completed, no longer pending
+        assert!(sm.pending_addition_proposals.is_empty());
+        assert_eq!(sm.completed_addition_proposals.len(), 1);
+
+        // Further votes fail (proposal not found)
+        let vote_c = make_test_vote(&proposal_id, "ERegistryC", true);
+        let response = sm.apply(
+            FederationRequest::VoteCorePeer {
+                proposal_id: proposal_id.clone(),
+                vote: vote_c,
+            },
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
+
+        // Can re-propose the same peer
+        let proposal2 = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let response = sm.apply(
+            FederationRequest::SubmitAdditionProposal(proposal2.clone()),
+            TEST_THRESHOLD,
+            TEST_ANCHORING_PREFIX,
+        );
+        assert!(matches!(
+            response,
+            FederationResponse::ProposalCreated { .. }
+        ));
     }
 
     #[test]

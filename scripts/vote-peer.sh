@@ -3,11 +3,13 @@ set -e
 
 PROPOSAL_ID="$1"
 REGISTRY_NS="${2:-}"  # Optional: specific registry to vote from
+APPROVE="${3:-true}"  # Optional: true to approve, false to reject
 
 if [ -z "$PROPOSAL_ID" ]; then
-    echo "Usage: vote-peer.sh <proposal-id> [registry-namespace]"
+    echo "Usage: vote-peer.sh <proposal-id> [registry-namespace] [true|false]"
     echo "  Votes on a peer proposal."
     echo "  If registry-namespace is not specified, finds a non-leader registry to vote from."
+    echo "  Third argument: true (default) to approve, false to reject."
     exit 1
 fi
 
@@ -42,13 +44,22 @@ if [ -z "$REGISTRY_NS" ]; then
     exit 1
 fi
 
-echo "Voting from $REGISTRY_NS on proposal $PROPOSAL_ID..." >&2
+if [ "$APPROVE" = "true" ]; then
+    echo "Voting APPROVE from $REGISTRY_NS on proposal $PROPOSAL_ID..." >&2
+else
+    echo "Voting REJECT from $REGISTRY_NS on proposal $PROPOSAL_ID..." >&2
+fi
 
 # Vote on the proposal
+APPROVE_FLAG=""
+if [ "$APPROVE" = "true" ]; then
+    APPROVE_FLAG="--approve"
+fi
+
 VOTE_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/kels-registry -c kels-registry -- \
     /app/kels-registry-admin peer vote \
     --proposal-id "$PROPOSAL_ID" \
-    --approve 2>&1)
+    $APPROVE_FLAG 2>&1)
 
 echo "$VOTE_OUTPUT"
 

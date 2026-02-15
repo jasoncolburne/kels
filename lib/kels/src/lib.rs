@@ -76,9 +76,9 @@ pub use types::{
     EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
     NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeerScope, PeersResponse, PrefixListResponse, PrefixState,
-    PrefixesRequest, ProposalStatus, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
-    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest, Vote, generate_nonce,
+    PrefixesRequest, ProposalStatus, ProposalWithVotes, REJECTION_THRESHOLD, RaftLogAuditRecord,
+    RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes,
+    SignedKeyEvent, SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
 };
 pub use types::{Kel, compute_rotation_hash};
 

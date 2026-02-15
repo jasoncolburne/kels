@@ -102,7 +102,7 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | POST | `/api/admin/addition-proposals` | **Federation member + KEL anchoring** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | POST | `/api/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific addition proposal (returns `AdditionWithVotes`, searches pending + completed) |
+| GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 | POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 | POST | `/api/admin/peers` | **Localhost only** | Add a regional peer (bypasses Raft) |
 

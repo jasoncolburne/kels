@@ -147,6 +147,8 @@ pub enum FederationResponse {
     AlreadyVoted(String),
     /// Proposal expired.
     ProposalExpired(String),
+    /// Proposal rejected (rejection threshold met).
+    ProposalRejected(String),
     /// Proposal withdrawn.
     ProposalWithdrawn(String),
     /// Not authorized (e.g., only proposer can withdraw).
@@ -209,6 +211,7 @@ impl fmt::Display for FederationResponse {
             FederationResponse::ProposalNotFound(id) => write!(f, "ProposalNotFound({})", id),
             FederationResponse::AlreadyVoted(id) => write!(f, "AlreadyVoted({})", id),
             FederationResponse::ProposalExpired(id) => write!(f, "ProposalExpired({})", id),
+            FederationResponse::ProposalRejected(id) => write!(f, "ProposalRejected({})", id),
             FederationResponse::ProposalWithdrawn(id) => write!(f, "ProposalWithdrawn({})", id),
             FederationResponse::NotAuthorized(msg) => write!(f, "NotAuthorized({})", msg),
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
