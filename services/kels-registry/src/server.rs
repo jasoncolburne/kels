@@ -72,9 +72,8 @@ pub fn create_router(
 
         // Admin API (localhost only) for proposal and peer management
         let admin_router = Router::new()
-            .route("/api/admin/proposals", get(handlers::admin_list_proposals))
             .route(
-                "/api/admin/proposals",
+                "/api/admin/addition-proposals",
                 post(handlers::admin_submit_addition_proposal),
             )
             .route(

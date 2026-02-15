@@ -12,7 +12,7 @@ use std::sync::Arc;
 use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels::{AdditionWithVotes, Peer, PeerRemovalProposal, PeerScope};
+use kels::{AdditionWithVotes, CompletedProposalsResponse, Peer, PeerRemovalProposal, PeerScope};
 use kels_registry::{
     federation::{FederationStatus, PeerAdditionProposal, Vote},
     identity_client::IdentityClient,
@@ -499,7 +499,7 @@ async fn propose_peer(
 
     // Retry loop for leader changes
     for attempt in 0..2 {
-        let url = format!("{}/api/admin/proposals", target_url);
+        let url = format!("{}/api/admin/addition-proposals", target_url);
         let resp = ctx
             .http_client
             .post(&url)
@@ -671,27 +671,52 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
 }
 
 async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/admin/proposals", ctx.registry_url);
+    let url = format!("{}/api/federation/proposals", ctx.registry_url);
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
-        let proposals: Vec<AdditionWithVotes> = resp.json().await?;
+        let response: CompletedProposalsResponse = resp.json().await?;
 
-        if proposals.is_empty() {
-            println!("No pending proposals");
+        if response.additions.is_empty() && response.removals.is_empty() {
+            println!("No proposals");
             return Ok(());
         }
 
-        for pwv in proposals {
-            if let Some(p) = pwv.history.inception() {
-                let expires = p.expires_at.to_string();
-                let expires = expires.split('T').next().unwrap_or(&expires);
-                println!("Proposal:  {}", pwv.proposal_id());
-                println!("Peer ID:   {}", p.peer_id);
-                println!("Proposer:  {}", p.proposer);
-                println!("Approvals: {}", pwv.approval_count());
-                println!("Expires:   {}", expires);
-                println!();
+        if !response.additions.is_empty() {
+            println!("Addition Proposals");
+            println!("{}", "=".repeat(50));
+            for pwv in &response.additions {
+                if let Some(p) = pwv.history.inception() {
+                    let status = pwv.status(p.threshold);
+                    let expires = p.expires_at.to_string();
+                    let expires = expires.split('T').next().unwrap_or(&expires);
+                    println!("Proposal:  {}", pwv.proposal_id());
+                    println!("Peer ID:   {}", p.peer_id);
+                    println!("Proposer:  {}", p.proposer);
+                    println!("Status:    {:?}", status);
+                    println!("Approvals: {}", pwv.approval_count());
+                    println!("Expires:   {}", expires);
+                    println!();
+                }
+            }
+        }
+
+        if !response.removals.is_empty() {
+            println!("Removal Proposals");
+            println!("{}", "=".repeat(50));
+            for rwv in &response.removals {
+                if let Some(p) = rwv.history.inception() {
+                    let status = rwv.status(p.threshold);
+                    let expires = p.expires_at.to_string();
+                    let expires = expires.split('T').next().unwrap_or(&expires);
+                    println!("Proposal:  {}", rwv.proposal_id());
+                    println!("Peer ID:   {}", p.peer_id);
+                    println!("Proposer:  {}", p.proposer);
+                    println!("Status:    {:?}", status);
+                    println!("Approvals: {}", rwv.approval_count());
+                    println!("Expires:   {}", expires);
+                    println!();
+                }
             }
         }
     } else {
@@ -802,9 +827,9 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
         .await
         .context("Failed to anchor withdrawal in KEL")?;
 
-    // 5. POST to /api/admin/proposals (same endpoint as create)
+    // 5. POST to /api/admin/addition-proposals (same endpoint as create)
     for attempt in 0..2 {
-        let url = format!("{}/api/admin/proposals", target_url);
+        let url = format!("{}/api/admin/addition-proposals", target_url);
         let resp = ctx.http_client.post(&url).json(&withdrawal).send().await?;
 
         if resp.status().is_success() {

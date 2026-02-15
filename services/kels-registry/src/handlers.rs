@@ -489,20 +489,6 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// List pending addition proposals with their votes (admin, localhost only).
-pub async fn admin_list_proposals(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<FederationState>>,
-) -> Result<Json<Vec<kels::AdditionWithVotes>>, ApiError> {
-    if !is_localhost(&addr) {
-        return Err(ApiError::forbidden("Admin API is localhost only"));
-    }
-
-    Ok(Json(
-        state.node.pending_addition_proposals_with_votes().await,
-    ))
-}
-
 /// Get a specific addition proposal with votes (admin, localhost only).
 pub async fn admin_get_proposal(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

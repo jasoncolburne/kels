@@ -100,7 +100,7 @@ If an attacker gains access to the HSM service:
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
-`admin_submit_addition_proposal`, `admin_submit_removal_proposal`, and `admin_vote_proposal` are exposed at `/api/admin/proposals` (POST), `/api/admin/removal-proposals` (POST), and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
+`admin_submit_addition_proposal`, `admin_submit_removal_proposal`, and `admin_vote_proposal` are exposed at `/api/admin/addition-proposals` (POST), `/api/admin/removal-proposals` (POST), and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
 - **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Both handlers verify SAID integrity (`verify()` / `verify_said()`) and KEL anchoring (`verify_anchoring()`) before submitting to Raft — you need the proposer's or voter's actual signing key to create a valid record with an anchored SAID, which is unforgeable.
 
 ## Unauthenticated Endpoints
