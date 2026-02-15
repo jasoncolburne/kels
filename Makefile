@@ -142,8 +142,10 @@ deploy-core-nodes:
 	garden deploy --env=node-a
 
 	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+
 	# Test 1: propose and propose again (same node, should fail)
 	! garden run propose-add-node-a 2>&1
+
 	# Test 2: propose then withdraw (no votes — should succeed)
 	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 
