@@ -21,7 +21,7 @@ if [ -z "$PEER_ID" ]; then
 fi
 
 # Find all available registries
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c)
+REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
 LEADER_NS=""
 
 # Find the federation leader

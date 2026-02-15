@@ -3,7 +3,7 @@ name: test-client
 type: container
 
 dependencies:
-  - run.read-federation-prefixes
+  - run.federation-read-prefixes
 
 source:
   path: ../..  # Set build context to repository root
@@ -19,7 +19,7 @@ include:
 spec:
   dockerfile: clients/test/Dockerfile
   buildArgs:
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.read-federation-prefixes.outputs.log}
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
 
 ---
 

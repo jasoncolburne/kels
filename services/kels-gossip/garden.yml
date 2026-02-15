@@ -6,7 +6,7 @@ type: container
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.read-federation-prefixes
+  - run.federation-read-prefixes
 
 source:
   path: ../..  # Set build context to repository root
@@ -22,7 +22,7 @@ spec:
   dockerfile: services/kels-gossip/Dockerfile
   buildArgs:
     # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.read-federation-prefixes.outputs.log}
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
 
 ---
 
@@ -34,8 +34,8 @@ type: kubernetes
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.read-registry-url
-  - run.read-federation-registry-urls
+  - run.federation-read-url
+  - run.federation-read-urls
   - build.kels-gossip
   - deploy.kels
   - deploy.redis
@@ -44,8 +44,8 @@ dependencies:
 variables:
   kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
   gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.kels/tcp/${var.gossip.port}"
-  registryUrl: ${actions.run.read-registry-url.outputs.log}
-  federationRegistryUrls: ${actions.run.read-federation-registry-urls.outputs.log}
+  registryUrl: ${actions.run.federation-read-url.outputs.log}
+  federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
 
 spec:
   manifestTemplates:

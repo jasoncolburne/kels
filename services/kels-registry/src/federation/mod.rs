@@ -37,7 +37,7 @@ pub use types::{
 };
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 use tokio::sync::RwLock;
@@ -135,8 +135,7 @@ impl FederationNode {
             .config
             .members
             .iter()
-            .enumerate()
-            .map(|(i, m)| (i as u64, openraft::BasicNode::new(m.url.clone())))
+            .map(|m| (m.id, openraft::BasicNode::new(m.url.clone())))
             .collect();
 
         info!("Initializing federation with {} members", members.len());
@@ -146,6 +145,65 @@ impl FederationNode {
             .await
             .map_err(|e| FederationError::RaftError(e.to_string()))?;
 
+        Ok(())
+    }
+
+    /// Grow-only sync of Raft voter set to match compiled-in federation members.
+    ///
+    /// Compares the current Raft voter set against the compiled-in config. If new
+    /// members exist in config that are not yet voters, adds them as learners first
+    /// (blocking until they catch up), then promotes them to voters.
+    ///
+    /// This is grow-only: if the config has fewer members than the current voter set,
+    /// no voters are removed. This prevents a node compiled without a new prefix from
+    /// undoing an expansion made by an updated node.
+    pub async fn sync_membership(&self) -> Result<(), FederationError> {
+        let current_voters: BTreeSet<FederationNodeId> = self.raft.voter_ids().collect();
+        let expected_voters: BTreeSet<FederationNodeId> =
+            self.config.members.iter().map(|m| m.id).collect();
+
+        let new_members: Vec<&FederationMember> = self
+            .config
+            .members
+            .iter()
+            .filter(|m| !current_voters.contains(&m.id))
+            .collect();
+
+        if new_members.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Syncing federation membership: adding {} new member(s)",
+            new_members.len()
+        );
+
+        // Add each new member as a learner (blocking — waits for log catch-up)
+        for member in &new_members {
+            info!(
+                "Adding learner: node_id={}, prefix={}",
+                member.id, member.prefix
+            );
+            self.raft
+                .add_learner(
+                    member.id,
+                    openraft::BasicNode::new(member.url.clone()),
+                    true,
+                )
+                .await
+                .map_err(|e| FederationError::RaftError(e.to_string()))?;
+        }
+
+        // Promote all new learners to voters
+        info!("Promoting {} learner(s) to voters", new_members.len());
+
+        // Use the full expected voter set to ensure all members are voters
+        self.raft
+            .change_membership(expected_voters, true)
+            .await
+            .map_err(|e| FederationError::RaftError(e.to_string()))?;
+
+        info!("Federation membership synced successfully");
         Ok(())
     }
 
@@ -165,19 +223,16 @@ impl FederationNode {
 
     /// Get the current leader's prefix, if known.
     pub async fn leader_prefix(&self) -> Option<String> {
-        self.leader().await.and_then(|id| {
-            self.config
-                .members
-                .get(id as usize)
-                .map(|m| m.prefix.clone())
-        })
+        self.leader()
+            .await
+            .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix.clone()))
     }
 
     /// Get the current leader's URL, if known.
     pub async fn leader_url(&self) -> Option<String> {
         self.leader()
             .await
-            .and_then(|id| self.config.members.get(id as usize).map(|m| m.url.clone()))
+            .and_then(|id| self.config.member_by_id(id).map(|m| m.url.clone()))
     }
 
     /// Get the federation configuration.

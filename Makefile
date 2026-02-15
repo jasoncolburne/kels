@@ -11,10 +11,13 @@ CLIENTS_DIR := clients
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
 # Read federated registries - just the prefixes (for compile-time trust anchor)
-TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[] | values] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[].prefix] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-comprehensive
+TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]')
+export TRUSTED_REGISTRY_MEMBERS
+
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-comprehensive
 
 all: fmt-check deny clippy test build
 
@@ -34,7 +37,7 @@ clean:
 
 clean-garden:
 	# Cleanup all environments
-	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c
+	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c && garden cleanup deploy --env=registry-d
 	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
 
 clean-docker:
@@ -113,7 +116,7 @@ configure-dns:
 
 reset-federation-json:
 	# Reset federation prefixes
-	echo '{}' > .kels/federated-registries.json
+	echo '[]' > .kels/federated-registries.json
 
 deploy-registries:
 	# Deploy registries
@@ -123,9 +126,9 @@ deploy-registries:
 
 fetch-prefixes:
 	# Fetch prefixes
-	garden run fetch-registry-prefix --env=registry-a
-	garden run fetch-registry-prefix --env=registry-b
-	garden run fetch-registry-prefix --env=registry-c
+	garden run federation-fetch --env=registry-a
+	garden run federation-fetch --env=registry-b
+	garden run federation-fetch --env=registry-c
 
 redeploy-registries:
 	$(MAKE) deploy-registries
@@ -210,12 +213,28 @@ test-removal:
 	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
 	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
+test-grow-federation:
+	# Deploy 4th registry standalone (generates identity)
+	garden deploy --env=registry-d
+	# Fetch its prefix (auto-assigns id=3)
+	garden run federation-fetch --env=registry-d
+	# Recompile and redeploy ALL 4 registries with updated trust anchors
+	garden deploy --env=registry-a
+	garden deploy --env=registry-b
+	garden deploy --env=registry-c
+	garden deploy --env=registry-d
+	# Wait for Raft init + sync_membership on node 0
+	sleep 15
+	# Verify 4-member federation from test-client pod
+	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
+
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registries fetch-prefixes redeploy-registries deploy-all-nodes
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
-	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	$(MAKE) test-resync
 	$(MAKE) test-removal
+	$(MAKE) test-grow-federation
+	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh

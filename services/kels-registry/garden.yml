@@ -5,7 +5,8 @@ type: container
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - run.read-federation-prefixes
+  - run.federation-read-prefixes
+  - run.federation-read-members
 
 source:
   path: ../..  # Set build context to repository root
@@ -20,7 +21,8 @@ include:
 spec:
   dockerfile: services/kels-registry/Dockerfile
   buildArgs:
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.read-federation-prefixes.outputs.log}
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
+    TRUSTED_REGISTRY_MEMBERS: ${actions.run.federation-read-members.outputs.log}
 
 ---
 
@@ -35,14 +37,14 @@ dependencies:
   - deploy.redis
   - deploy.postgres
   - deploy.identity
-  - run.read-federation-self-prefix
-  - run.read-federation-members
+  - run.federation-read-prefix
+  - run.federation-read-member-urls
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
   identityUrl: ${var.identity.url}
-  federationSelfPrefix: ${actions.run.read-federation-self-prefix.outputs.log}
-  federationUrls: ${actions.run.read-federation-members.outputs.log}
+  federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
+  federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
 
 spec:
   manifestTemplates:
@@ -51,7 +53,7 @@ spec:
 ---
 
 kind: Run
-name: fetch-registry-prefix
+name: federation-fetch
 type: exec
 
 disabled: ${var.envType != "registry"}
@@ -62,7 +64,7 @@ dependencies:
 spec:
   command:
     - bash
-    - ../../scripts/fetch-registry-prefix.sh
+    - ../../scripts/federation-fetch.sh
     - ${environment.name}
     - ${environment.namespace}
     - ../..

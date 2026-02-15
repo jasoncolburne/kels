@@ -12,7 +12,7 @@ if [ -z "$PROPOSAL_ID" ]; then
 fi
 
 # Find all available registries
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c)
+REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
 
 if [ -z "$REGISTRY_NS" ]; then
     # Find a follower registry to vote from

@@ -181,6 +181,12 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                             } else {
                                 info!("Federation cluster initialized successfully");
                             }
+
+                            if let Err(e) = init_node.sync_membership().await {
+                                warn!("Federation membership sync: {}", e);
+                            } else {
+                                info!("Federation membership synced");
+                            }
                         });
                     }
 

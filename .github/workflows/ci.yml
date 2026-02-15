@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   # Compile-time trusted registry prefixes (for CLI and gossip service)
   TRUSTED_REGISTRY_PREFIXES: EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  TRUSTED_REGISTRY_MEMBERS: '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}

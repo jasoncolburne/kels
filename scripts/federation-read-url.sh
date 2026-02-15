@@ -4,8 +4,15 @@ set -e
 ENV_NAME="$1"
 
 if [ -z "$ENV_NAME" ]; then
-    echo "Usage: read-registry-url.sh <env-name>" >&2
+    echo "Usage: federation-read-url.sh <env-name>" >&2
     exit 1
+fi
+
+REGISTRIES_FILE=".kels/federated-registries.json"
+
+if [ ! -f "$REGISTRIES_FILE" ]; then
+    echo ""
+    exit 0
 fi
 
 # Map node environments to their registry
@@ -16,5 +23,4 @@ case "$ENV_NAME" in
     *) REGISTRY_ENV="$ENV_NAME" ;;
 esac
 
-# Output the internal cluster URL for the registry
-echo "http://kels-registry.kels-${REGISTRY_ENV}.kels"
+jq -r --arg name "$REGISTRY_ENV" '.[] | select(.name == $name) | .url' "$REGISTRIES_FILE"

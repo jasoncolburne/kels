@@ -1,17 +1,27 @@
 //! Federation configuration types.
 
 use serde::{Deserialize, Serialize};
+use serde_json;
 
 use super::types::{FederationError, FederationNodeId};
 
-/// Trusted registry prefixes - MUST be set at compile time.
-/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
-/// Used for both federation membership and registry verification.
-const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
+/// Trusted registry members - MUST be set at compile time.
+/// Format: JSON array of objects with `id` and `prefix` fields.
+/// Used for federation membership with explicit Raft node IDs.
+const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
+
+/// A trusted registry member parsed from compile-time JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrustedMember {
+    id: FederationNodeId,
+    prefix: String,
+}
 
 /// A federation member (registry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationMember {
+    /// Explicit Raft node ID.
+    pub id: FederationNodeId,
     /// Registry identity prefix (KEL prefix).
     pub prefix: String,
     /// Registry HTTP URL.
@@ -40,21 +50,23 @@ impl FederationConfig {
     /// Load federation configuration from environment and compile-time constants.
     ///
     /// Compile-time (security - who to trust):
-    /// - `TRUSTED_FEDERATION_PREFIXES`: Comma-separated list of trusted registry prefixes
+    /// - `TRUSTED_REGISTRY_MEMBERS`: JSON array of `{id, prefix}` objects
     ///
     /// Runtime (operational - connectivity):
     /// - `FEDERATION_SELF_PREFIX`: This registry's prefix
     /// - `FEDERATION_URLS`: Comma-separated list of "prefix=url" pairs
     pub fn from_env() -> Result<Option<Self>, FederationError> {
-        // Parse compile-time trusted prefixes
-        let trusted_prefixes: Vec<String> = TRUSTED_REGISTRY_PREFIXES
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        // Parse compile-time trusted members (JSON)
+        let trusted_members: Vec<TrustedMember> = serde_json::from_str(TRUSTED_REGISTRY_MEMBERS)
+            .map_err(|e| {
+                FederationError::ConfigError(format!(
+                    "Failed to parse TRUSTED_REGISTRY_MEMBERS: {}",
+                    e
+                ))
+            })?;
 
-        // If no trusted prefixes compiled in, federation is not configured
-        if trusted_prefixes.is_empty() {
+        // If no trusted members compiled in, federation is not configured
+        if trusted_members.is_empty() {
             return Ok(None);
         }
 
@@ -63,12 +75,9 @@ impl FederationConfig {
             _ => return Ok(None), // Federation not configured
         };
 
-        // Verify self_prefix is in the compiled-in trusted set
-        if !trusted_prefixes.contains(&self_prefix) {
-            return Err(FederationError::ConfigError(format!(
-                "FEDERATION_SELF_PREFIX '{}' not in compiled TRUSTED_FEDERATION_PREFIXES",
-                self_prefix
-            )));
+        // If our prefix isn't in the trusted set, we're in standalone mode
+        if !trusted_members.iter().any(|m| m.prefix == self_prefix) {
+            return Ok(None);
         }
 
         // Parse runtime URLs
@@ -79,17 +88,18 @@ impl FederationConfig {
 
         let url_map = parse_urls(&urls_str)?;
 
-        // Build members list from trusted prefixes + runtime URLs
+        // Build members list from trusted members + runtime URLs
         let mut members = Vec::new();
-        for prefix in &trusted_prefixes {
-            let url = url_map.get(prefix).ok_or_else(|| {
+        for tm in &trusted_members {
+            let url = url_map.get(&tm.prefix).ok_or_else(|| {
                 FederationError::ConfigError(format!(
                     "No URL provided for trusted prefix '{}' in FEDERATION_URLS",
-                    prefix
+                    tm.prefix
                 ))
             })?;
             members.push(FederationMember {
-                prefix: prefix.clone(),
+                id: tm.id,
+                prefix: tm.prefix.clone(),
                 url: url.clone(),
             });
         }
@@ -101,8 +111,8 @@ impl FederationConfig {
     pub fn self_node_id(&self) -> Result<FederationNodeId, FederationError> {
         self.members
             .iter()
-            .position(|m| m.prefix == self.self_prefix)
-            .map(|i| i as FederationNodeId)
+            .find(|m| m.prefix == self.self_prefix)
+            .map(|m| m.id)
             .ok_or_else(|| {
                 FederationError::ConfigError(format!(
                     "Self prefix '{}' not found in members",
@@ -113,7 +123,7 @@ impl FederationConfig {
 
     /// Get member by node ID.
     pub fn member_by_id(&self, node_id: FederationNodeId) -> Option<&FederationMember> {
-        self.members.get(node_id as usize)
+        self.members.iter().find(|m| m.id == node_id)
     }
 
     /// Get member by prefix.
@@ -219,14 +229,17 @@ mod tests {
             "ERegistryB".to_string(),
             vec![
                 FederationMember {
+                    id: 0,
                     prefix: "ERegistryA".to_string(),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
+                    id: 1,
                     prefix: "ERegistryB".to_string(),
                     url: "https://b.example.com".to_string(),
                 },
                 FederationMember {
+                    id: 2,
                     prefix: "ERegistryC".to_string(),
                     url: "https://c.example.com".to_string(),
                 },
@@ -242,10 +255,12 @@ mod tests {
             "ERegistryA".to_string(),
             vec![
                 FederationMember {
+                    id: 0,
                     prefix: "ERegistryA".to_string(),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
+                    id: 1,
                     prefix: "ERegistryB".to_string(),
                     url: "https://b.example.com".to_string(),
                 },
@@ -261,6 +276,7 @@ mod tests {
         let config = FederationConfig::new(
             "ERegistryA".to_string(),
             vec![FederationMember {
+                id: 0,
                 prefix: "ERegistryA".to_string(),
                 url: "https://a.example.com".to_string(),
             }],
@@ -287,6 +303,7 @@ mod tests {
         let config = FederationConfig::new(
             "ERegistryA".to_string(),
             vec![FederationMember {
+                id: 0,
                 prefix: "ERegistryA".to_string(),
                 url: "https://a.example.com".to_string(),
             }],
@@ -300,6 +317,7 @@ mod tests {
         let config = FederationConfig::new(
             "ERegistryA".to_string(),
             vec![FederationMember {
+                id: 0,
                 prefix: "ERegistryA".to_string(),
                 url: "https://a.example.com".to_string(),
             }],
@@ -314,10 +332,12 @@ mod tests {
             "ERegistryA".to_string(),
             vec![
                 FederationMember {
+                    id: 0,
                     prefix: "ERegistryA".to_string(),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
+                    id: 1,
                     prefix: "ERegistryB".to_string(),
                     url: "https://b.example.com".to_string(),
                 },
@@ -333,11 +353,13 @@ mod tests {
         let config = FederationConfig::new(
             "ERegistryNotInList".to_string(),
             vec![FederationMember {
+                id: 0,
                 prefix: "ERegistryA".to_string(),
                 url: "https://a.example.com".to_string(),
             }],
         );
 
+        // self_node_id() still errors — standalone detection happens in from_env()
         let result = config.self_node_id();
         assert!(result.is_err());
     }
@@ -352,10 +374,12 @@ mod tests {
     #[test]
     fn test_federation_member_clone() {
         let member = FederationMember {
+            id: 0,
             prefix: "ERegistryA".to_string(),
             url: "https://a.example.com".to_string(),
         };
         let cloned = member.clone();
+        assert_eq!(cloned.id, member.id);
         assert_eq!(cloned.prefix, member.prefix);
         assert_eq!(cloned.url, member.url);
     }
@@ -365,6 +389,7 @@ mod tests {
         let config = FederationConfig::new(
             "ERegistryA".to_string(),
             vec![FederationMember {
+                id: 0,
                 prefix: "ERegistryA".to_string(),
                 url: "https://a.example.com".to_string(),
             }],
@@ -377,6 +402,7 @@ mod tests {
     fn make_members(count: usize) -> Vec<FederationMember> {
         (0..count)
             .map(|i| FederationMember {
+                id: i as u64,
                 prefix: format!("ERegistry{}", i),
                 url: format!("https://registry{}.example.com", i),
             })

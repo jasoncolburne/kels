@@ -21,10 +21,12 @@ COPY services/kels-registry /app/services/kels-registry
 # Build with BuildKit cache mounts
 # TRUSTED_REGISTRY_PREFIXES must be provided at build time for zero-trust federation
 ARG TRUSTED_REGISTRY_PREFIXES
+ARG TRUSTED_REGISTRY_MEMBERS
 WORKDIR /app/services/kels-registry
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-registry-target,target=/app/services/kels-registry/target \
     TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" \
+    TRUSTED_REGISTRY_MEMBERS="${TRUSTED_REGISTRY_MEMBERS}" \
     cargo build --release --bin kels-registry --bin kels-registry-admin && \
     cp /app/services/kels-registry/target/release/kels-registry /app/kels-registry && \
     cp /app/services/kels-registry/target/release/kels-registry-admin /app/kels-registry-admin
