@@ -222,6 +222,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         http::run_http_server(http_addr, http_ready_state).await;
     });
 
+    // Clear stale ready state in Redis immediately on startup
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str())
+        && let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
+        && let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "sync").await
+    {
+        error!("Failed to clear ready state in Redis: {}", e);
+    }
+
     // Step 1: Create HSM-backed identity keypair
     info!("Creating HSM-backed identity...");
     let keypair = hsm_signer::create_hsm_keypair(&config.hsm_url, &config.node_id).await?;
