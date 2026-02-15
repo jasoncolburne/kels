@@ -116,9 +116,18 @@ Each registry needs two categories of configuration:
 
 If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or the registry's own prefix is not in the trusted members list, the registry runs in standalone mode (no federation, no peer management). This last case enables deploying a new registry before it has been added to the trust anchor.
 
-## Gossip Node Configuration
+## Node Configuration
 
-Key environment variables for gossip nodes:
+### KELS Service (`kels`)
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection URL |
+| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated for core nodes, single URL for regional) |
+| `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
+| `RUST_LOG` | Logging level |
+
+### Gossip Service (`kels-gossip`)
 
 | Variable | Description |
 |----------|-------------|
@@ -126,12 +135,15 @@ Key environment variables for gossip nodes:
 | `KELS_URL` | Local KELS service URL |
 | `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
 | `REGISTRY_URL` | Primary registry URL for this node |
-| `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for HA) |
+| `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen multiaddr (e.g., `/ip4/0.0.0.0/tcp/4001`) |
 | `GOSSIP_ADVERTISE_ADDR` | libp2p advertised multiaddr |
+| `GOSSIP_TOPIC` | Gossip pubsub topic name |
 | `HSM_URL` | HSM service URL for gossip peer identity |
-| `REDIS_URL` | Redis for KEL caching |
+| `HTTP_PORT` | HTTP server port for ready endpoint |
+| `REDIS_URL` | Redis for ready state and caching |
 | `RESYNC_INTERVAL_SECS` | Periodic resync interval (default: 300) |
+| `RUST_LOG` | Logging level |
 
 ## Core Peer Lifecycle
 

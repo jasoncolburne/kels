@@ -43,7 +43,7 @@ dependencies:
 
 variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
-  registryUrls: "${var.nodeType == 'core' ? actions.run.federation-read-urls.outputs.log : actions.run.federation-read-url.outputs.log}"
+  federationRegistryUrls: "${var.nodeType == 'core' ? actions.run.federation-read-urls.outputs.log : actions.run.federation-read-url.outputs.log}"
 
 spec:
   manifestTemplates:

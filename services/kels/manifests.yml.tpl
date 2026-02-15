@@ -50,8 +50,8 @@ spec:
               value: "${var.kelsDatabaseUrl}"
             - name: REDIS_URL
               value: "${var.redis.url}"
-            - name: REGISTRY_URLS
-              value: "${var.registryUrls}"
+            - name: FEDERATION_REGISTRY_URLS
+              value: "${var.federationRegistryUrls}"
           livenessProbe:
             httpGet:
               path: /health
