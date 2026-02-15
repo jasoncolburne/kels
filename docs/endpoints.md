@@ -81,19 +81,20 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
-| GET | `/api/admin/proposals` | **Localhost only** | List pending proposals (returns `ProposalWithVotes`) |
-| POST | `/api/admin/proposals` | **Federation member** | Submit a proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific proposal (returns `ProposalWithVotes`, searches pending + completed) |
-| POST | `/api/admin/proposals/:id/vote` | **Federation member** | Vote on a proposal; verifies vote SAID and KEL anchoring |
+| GET | `/api/admin/proposals` | **Localhost only** | List pending addition proposals (returns `AdditionWithVotes`) |
+| POST | `/api/admin/proposals` | **Federation member** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
+| POST | `/api/admin/removal-proposals` | **Federation member** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
+| GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific addition proposal (returns `AdditionWithVotes`, searches pending + completed) |
+| POST | `/api/admin/proposals/:id/vote` | **Federation member** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 | POST | `/api/admin/peers` | **Localhost only** | Add a regional peer (bypasses Raft) |
 
 **Notes:**
 - Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_id in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
 - Admin API: `is_localhost()` checks `ConnectInfo<SocketAddr>.ip().is_loopback()` — returns 403 otherwise
-- Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`ProposalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
+- Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
-- Withdrawals: POST a v1 `PeerProposal` with `withdrawn_at` set; only allowed before any votes are cast
+- Withdrawals: POST a v1 `PeerAdditionProposal` with `withdrawn_at` set; only allowed before any votes are cast
 
 ## KELS Gossip Service
 
@@ -125,7 +126,7 @@ libp2p-based gossip network for KEL replication across nodes.
 - AllowlistBehaviour: unknown inbound peers trigger allowlist refresh; pending peers held until verified or disconnected
 - gossipsub config: heartbeat 1s, strict validation, mesh min 2 / target 3
 - Scope-based routing: Regional announcements bridged to Core, Core rebroadcasts to All
-- Allowlist refresh verifies: peer record SAID (`verify()`), peer SAID anchored in registry KEL, and for core peers — full DAG verification (`ProposalWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
+- Allowlist refresh verifies: peer record SAID (`verify()`), peer SAID anchored in registry KEL, and for core peers — full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
 
 ## Authentication Methods Summary
 

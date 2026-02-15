@@ -22,8 +22,8 @@ A compromised leader controls what enters the Raft log.
 
 **Mitigations:**
 - **State machine verification**: On Raft log replay, `apply()` checks every `AddPeer` with `PeerScope::Core` against completed proposals. Each approval vote must pass `vote.verify_said()` (SAID integrity) and have its SAID anchored in the voter's KEL. If verified voters < threshold, the entry is silently rejected.
-- **Registry node authorization**: `verify_and_authorize()` independently verifies core peers on every signed request (register, deregister, status update). Full DAG verification: `ProposalWithVotes::verify()` for structural integrity, explicit withdrawal check, proposal record anchoring in proposer's KEL, and vote anchoring in voters' KELs. Data read from the database is never trusted — it is always re-verified.
-- **Gossip allowlist**: `refresh_allowlist()` independently fetches completed proposals and performs full DAG verification (`ProposalWithVotes::verify()`), verifies proposal anchoring in proposer's KEL, and verifies each approval vote's anchoring in the voter's KEL. Threshold and member set are derived from compiled-in `trusted_prefixes()`, not from registry responses. Peers without sufficient verified votes are excluded from the allowlist.
+- **Registry node authorization**: `verify_and_authorize()` independently verifies core peers on every signed request (register, deregister, status update). Full DAG verification: `AdditionWithVotes::verify()` for structural integrity, explicit withdrawal check, proposal record anchoring in proposer's KEL, and vote anchoring in voters' KELs. Data read from the database is never trusted — it is always re-verified.
+- **Gossip allowlist**: `refresh_allowlist()` independently fetches completed proposals and performs full DAG verification (`AdditionWithVotes::verify()`), verifies proposal anchoring in proposer's KEL, and verifies each approval vote's anchoring in the voter's KEL. Threshold and member set are derived from compiled-in `trusted_prefixes()`, not from registry responses. Peers without sufficient verified votes are excluded from the allowlist.
 - **Defense-in-depth**: Even if a rogue leader inserts a peer into the database, every consumer independently re-verifies the full proposal chain, votes, and anchoring before trusting it.
 
 **Residual risk:** A leader colluding with voters could add fake votes to a proposal that the proposer intended to withdraw, then strip the withdrawal record. The vote anchoring catches fake votes (they must be anchored in each voter's KEL), but if the colluding voters submitted real anchored votes before the proposer could withdraw, the withdrawal cannot be enforced. The system prevents withdrawal once votes have been cast as a design invariant.
@@ -100,7 +100,7 @@ If an attacker gains access to the HSM service:
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
-`admin_submit_proposal` and `admin_vote_proposal` are exposed at `/api/admin/proposals` (POST) and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
+`admin_submit_addition_proposal`, `admin_submit_removal_proposal`, and `admin_vote_proposal` are exposed at `/api/admin/proposals` (POST), `/api/admin/removal-proposals` (POST), and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
 - **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Both handlers verify SAID integrity (`verify()` / `verify_said()`) and KEL anchoring (`verify_anchoring()`) before submitting to Raft — you need the proposer's or voter's actual signing key to create a valid record with an anchored SAID, which is unforgeable.
 
 ## Unauthenticated Endpoints

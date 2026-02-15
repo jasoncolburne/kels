@@ -7,8 +7,8 @@ This document describes the Raft state machine used by the registry federation t
 The federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distributed consensus. The Raft state machine is the replicated state that all federation members maintain identical copies of. It stores:
 
 - **Core peer set** - peers trusted by all nodes in the federation
-- **Pending proposals** - proposals awaiting multi-party approval
-- **Completed proposals** - approved/rejected/withdrawn proposals (audit trail)
+- **Pending proposals** - addition and removal proposals awaiting multi-party approval
+- **Completed proposals** - approved/withdrawn proposals (audit trail)
 - **Votes** - stored by SAID
 
 ## Architecture
@@ -35,8 +35,10 @@ pub struct StateMachineData {
     pub last_applied_log: Option<LogId<TypeConfig>>,
     pub last_membership: StoredMembership<TypeConfig>,
     pub peers: HashMap<String, Peer>,
-    pub pending_proposals: HashMap<String, PeerProposal>,
-    pub completed_proposals: Vec<PeerProposal>,
+    pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
+    pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
+    pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
+    pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     pub votes: HashMap<String, Vote>,
 }
 ```
@@ -47,14 +49,14 @@ The `peers` HashMap is the core peer set, keyed by `peer_id`. These are the peer
 
 ### Proposals and Votes
 
-Core peer additions go through a multi-party approval process:
+Core peer additions and removals go through a multi-party approval process:
 
-1. A federation member **proposes** a peer (`ProposeCorePeer`)
+1. A federation member **proposes** a peer addition or removal (`SubmitAdditionProposal` / `SubmitRemovalProposal`)
 2. Other members **vote** on the proposal (`VoteCorePeer`)
-3. When the approval threshold is met, the peer is automatically added to the core set
-4. The proposal moves to `completed_proposals` for auditing
+3. When the approval threshold is met, the peer is automatically added to or removed from the core set
+4. The proposal moves to the completed proposals list for auditing
 
-Votes are stored separately in a `votes` HashMap keyed by SAID. Proposals only store vote SAIDs (not the full vote data) for privacy. This allows verification of vote integrity without exposing voter details in the proposal chain.
+Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in proposals.
 
 ## Request Types
 
@@ -62,9 +64,9 @@ Votes are stored separately in a `votes` HashMap keyed by SAID. Proposals only s
 |---------|-------------|----------------|
 | `AddPeer` | Directly add a peer to the core set | Leader (via DB sync or approved proposal) |
 | `RemovePeer` | Remove a peer from the core set | Leader |
-| `ProposeCorePeer` | Create a proposal for a new core peer | Any member |
-| `VoteCorePeer` | Vote on a pending proposal | Any member |
-| `WithdrawProposal` | Cancel a pending proposal | Original proposer only |
+| `SubmitAdditionProposal` | Create or withdraw a proposal for a new core peer | Any member |
+| `SubmitRemovalProposal` | Create or withdraw a proposal to remove a core peer | Any member |
+| `VoteCorePeer` | Vote on a pending proposal (addition or removal) | Any member |
 
 ## Synchronous Apply (Pure State Machine)
 
@@ -72,9 +74,9 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
 
 - **AddPeer**: Inserts peer into `peers` HashMap
 - **RemovePeer**: Removes peer from `peers` HashMap
-- **ProposeCorePeer**: Creates an empty proposal (v0, no votes yet), checking for duplicate peers and proposals
-- **VoteCorePeer**: Records vote, checks threshold, auto-approves if threshold met (adding peer to core set and moving proposal to completed)
-- **WithdrawProposal**: Only the original proposer can withdraw; moves to completed with `Withdrawn` status
+- **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
+- **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
+- **VoteCorePeer**: Records vote, checks threshold. For additions: auto-adds peer to core set on approval. For removals: auto-removes peer from core set on approval. Moves proposal to completed.
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -99,18 +101,24 @@ Before applying a vote:
 3. **Vote SAID integrity**: Verify the vote's own SAID is correct
 4. **Vote anchoring**: Verify the vote is anchored in the voter's KEL
 
-### ProposeCorePeer Verification
+### SubmitAdditionProposal / SubmitRemovalProposal Verification
 
 Before applying a proposal:
 
-1. **Proposal anchoring**: Verify the proposal's SAID is anchored in the proposer's KEL
+1. **Threshold check**: Verify the proposal's `threshold` field matches the current `approval_threshold()` — ensures proposer and federation agree on membership size
+2. **Proposal anchoring**: Verify the proposal's SAID is anchored in the proposer's KEL
 
 ### Approved Proposal Side Effects
 
-When a `VoteCorePeer` triggers approval (threshold met), the async layer also:
+When a `VoteCorePeer` triggers addition approval (threshold met), the async layer also:
 
 1. Anchors the approved peer's SAID in our KEL
 2. Writes the peer to the local database
+
+When a `VoteCorePeer` triggers removal approval, the async layer:
+
+1. Deactivates the peer in the local database
+2. Anchors the deactivated peer's SAID in our KEL
 
 ## Defense in Depth
 
@@ -130,7 +138,7 @@ Each follower independently verifies every Raft log entry before applying it. Th
 
 ### Layer 4: Multi-Party Voting
 
-Core peer additions require a minimum of 3 votes from federation members (scaling to ceil(n/3) for larger federations). A single compromised registry cannot unilaterally add peers.
+Core peer additions and removals require a minimum of 3 votes from federation members (scaling to ceil(n/3) for larger federations). A single compromised registry cannot unilaterally modify the peer set.
 
 ### Layer 5: Tamper-Evident Chaining
 
@@ -152,7 +160,7 @@ The core peer set flows to multiple consumers:
 
 The state machine supports snapshotting for efficient Raft log compaction:
 
-- **Snapshot**: Serializes `peers`, `pending_proposals`, `completed_proposals`, and `votes` to JSON
+- **Snapshot**: Serializes `peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, and `votes` to JSON
 - **Restore**: Deserializes and verifies all proposal chains before accepting. Proposals with invalid chains are dropped during restore.
 
 ## DB Sync Loop

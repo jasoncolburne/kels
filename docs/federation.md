@@ -197,6 +197,36 @@ kels-registry-admin peer proposal-status --proposal-id EProposal123...
 
 **Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
 
+### Removing Core Peers (Multi-Party Approval)
+
+Core peer removal follows the same multi-party approval process as additions.
+
+**Step 1: Propose removal of a core peer**
+
+```bash
+# From any registry in the federation
+kels-registry-admin peer propose-removal \
+  --peer-id Qm...
+
+# Output:
+# Removal proposal created: EProposal456...
+# Removal proposal created. Need 3 approvals.
+```
+
+**Step 2: Vote on the removal proposal**
+
+```bash
+# On another registry
+kels-registry-admin peer vote --proposal-id EProposal456... --approve
+
+# Output:
+# Removal approved! Peer Qm... removed from core set.
+# Progress: 3/3 approvals
+# Peer has been removed from the core set.
+```
+
+After approval, the peer is removed from the Raft state machine and deactivated in the database. The peer can be re-added later via a new addition proposal.
+
 ### Adding Regional Peers
 
 Regional peers can be added on any registry, but require at least one active core peer to exist first:
@@ -296,11 +326,11 @@ Returns KELs for all federation members (for cross-registry verification).
 Core peer proposal management:
 
 ```
-GET    /api/admin/proposals                      # List pending proposals
-POST   /api/admin/proposals                      # Propose a new core peer
+GET    /api/admin/proposals                      # List pending addition proposals
+POST   /api/admin/proposals                      # Propose a new core peer (addition)
+POST   /api/admin/removal-proposals              # Propose removal of a core peer
 GET    /api/admin/proposals/:proposal_id         # Get proposal details
-POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal
-DELETE /api/admin/proposals/:proposal_id         # Withdraw a proposal
+POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
 ```
 
 Regional peer management:
