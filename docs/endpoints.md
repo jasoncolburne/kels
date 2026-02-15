@@ -62,25 +62,44 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 
 Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (core peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
 
-### Always Available
+### Standalone Mode
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
-| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_id must match allowlist entry) |
-| POST | `/api/nodes/deregister` | **Signed + allowlisted** | Deregister a node |
-| POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Draining) |
 | GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service) |
 
 ### Federation Mode
+
+All standalone endpoints plus:
+
+#### Node Management (rate-limited)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_id must match allowlist entry) |
+| POST | `/api/nodes/deregister` | **Signed + allowlisted** | Deregister a node |
+| POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Draining) |
+
+#### Peer Discovery
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (core from Raft + regional from local DB) |
 | GET | `/api/registry-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
+
+#### Federation Protocol
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
+
+#### Admin API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
 | GET | `/api/admin/proposals` | **Localhost only** | List pending addition proposals (returns `AdditionWithVotes`) |
 | POST | `/api/admin/proposals` | **Federation member** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | POST | `/api/admin/removal-proposals` | **Federation member** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |

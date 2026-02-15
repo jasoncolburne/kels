@@ -108,38 +108,50 @@ services/kels-registry/
 
 ### API Endpoints
 
-#### Core Endpoints (always available)
+#### Standalone Endpoints (always available)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
-| `POST` | `/api/nodes/register` | Register or update a node (requires signed request) |
-| `POST` | `/api/nodes/deregister` | Deregister a node (requires signed request) |
-| `POST` | `/api/nodes/status` | Update node status (requires signed request) |
-| `GET` | `/api/peers` | Get peer allowlist (standalone: local DB; federated: core + regional) |
 | `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
 
 #### Federation-Only Endpoints
 
+Node management (rate-limited):
+
 | Method | Path | Description |
 |--------|------|-------------|
+| `POST` | `/api/nodes/register` | Register or update a node (requires signed request) |
+| `POST` | `/api/nodes/deregister` | Deregister a node (requires signed request) |
+| `POST` | `/api/nodes/status` | Update node status (requires signed request) |
+
+Peer discovery:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/peers` | Get peer allowlist (core from Raft + regional from local DB) |
 | `GET` | `/api/registry-kels` | Get KELs for all federation members |
+
+Federation protocol:
+
+| Method | Path | Description |
+|--------|------|-------------|
 | `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
+| `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
 | `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
 
-#### Admin API (federation mode, localhost only)
+Admin API (localhost only):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/admin/proposals` | List pending core peer proposals |
-| `POST` | `/api/admin/proposals` | Propose a new core peer |
+| `GET` | `/api/admin/proposals` | List pending addition proposals |
+| `POST` | `/api/admin/proposals` | Propose a new core peer (addition) |
+| `POST` | `/api/admin/removal-proposals` | Propose removal of a core peer |
 | `GET` | `/api/admin/proposals/:proposal_id` | Get proposal details |
-| `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal |
-| `DELETE` | `/api/admin/proposals/:proposal_id` | Withdraw a proposal |
+| `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
 | `POST` | `/api/admin/peers` | Add a regional peer |
-| `DELETE` | `/api/admin/peers/:peer_id` | Remove a peer |
 
-> **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details. Federation and admin endpoints are only available when federation is configured.
+> **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
 
 ### Data Model
 
