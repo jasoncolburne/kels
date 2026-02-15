@@ -272,27 +272,10 @@ pub(crate) async fn submit_events(
         )));
     }
 
-    // Validate all signatures upfront
-    for signed_event in &events {
-        if signed_event.signatures.is_empty() {
-            return Err(ApiError::bad_request("Event missing signature"));
-        }
-        for sig in &signed_event.signatures {
-            Signature::from_qb64(&sig.signature)
-                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
-        }
-        // Validate dual signature requirement
-        if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
-            return Err(ApiError::bad_request(
-                "Dual signatures required for recovery event",
-            ));
-        }
-    }
-
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
 
-    // Per-prefix rate limiting
+    // Per-prefix rate limiting (before expensive signature validation)
     {
         let now = Instant::now();
         let mut entry = state
@@ -310,6 +293,23 @@ pub(crate) async fn submit_events(
                     "Too many submissions for this prefix",
                 ));
             }
+        }
+    }
+
+    // Validate all signatures upfront
+    for signed_event in &events {
+        if signed_event.signatures.is_empty() {
+            return Err(ApiError::bad_request("Event missing signature"));
+        }
+        for sig in &signed_event.signatures {
+            Signature::from_qb64(&sig.signature)
+                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
+        }
+        // Validate dual signature requirement
+        if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
+            return Err(ApiError::bad_request(
+                "Dual signatures required for recovery event",
+            ));
         }
     }
 
@@ -448,6 +448,12 @@ pub(crate) async fn get_kel(
             .get_by_said(since_said)
             .await?
             .ok_or_else(|| ApiError::not_found(format!("Since SAID {} not found", since_said)))?;
+
+        if since_event.prefix != prefix {
+            return Err(ApiError::bad_request(
+                "Since SAID does not belong to this prefix",
+            ));
+        }
 
         let events = state
             .repo
@@ -711,6 +717,12 @@ pub(crate) async fn get_kels_batch(
                                 return Ok((prefix, bytes));
                             }
                         };
+
+                        if since_event.prefix != prefix {
+                            return Err(ApiError::bad_request(
+                                "Since SAID does not belong to this prefix",
+                            ));
+                        }
 
                         // Check for divergence
                         let div_serial = state
