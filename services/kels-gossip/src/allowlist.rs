@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use kels::{MultiRegistryClient, PeerScope, retry_once, trusted_prefixes};
+use kels::{MultiRegistryClient, PeerScope};
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
@@ -305,28 +305,31 @@ pub async fn refresh_allowlist(
                 continue;
             }
 
-            // Fetch and verify the registry's KEL, retrying with a forced refresh if
-            // the anchor isn't found in the cached version
-            debug!("Verifying registry KEL");
-            let maybe_kel = retry_once!(
-                registry_client.fetch_registry_kel(&latest.authorizing_kel, false),
-                |kel: &kels::Kel| kel.contains_anchor(&latest.said),
-                registry_client.fetch_registry_kel(&latest.authorizing_kel, true),
-            )
-            .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
-
-            if maybe_kel.is_none() {
-                warn!(
-                    peer_id = %latest.peer_id,
-                    said = %latest.said,
-                    "Peer SAID not anchored in registry KEL, skipping"
-                );
-                continue;
+            // Verify peer record anchoring in authorizing registry KEL
+            match registry_client.verify_peer_anchoring(latest).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(
+                        peer_id = %latest.peer_id,
+                        said = %latest.said,
+                        "Peer SAID not anchored in registry KEL, skipping"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        peer_id = %latest.peer_id,
+                        error = %e,
+                        "Failed to verify peer anchoring, skipping"
+                    );
+                    continue;
+                }
             }
 
             // For core peers, verify the proposal has sufficient verified votes
             if latest.scope == PeerScope::Core
-                && !verify_core_peer_votes(registry_client, &latest.peer_id, &proposals_response)
+                && !registry_client
+                    .verify_core_peer_votes(&latest.peer_id, &proposals_response)
                     .await
             {
                 warn!(
@@ -375,150 +378,6 @@ pub async fn refresh_allowlist(
     }
 
     Ok(count)
-}
-
-/// Verify that a core peer has an approved proposal backed by sufficient verified votes.
-///
-/// Performs full DAG verification:
-/// 1. Structural: proposal chain integrity, vote SAIDs, vote references, withdrawal invariant
-/// 2. Proposal anchoring: each proposal record's SAID anchored in proposer's KEL
-/// 3. Vote anchoring: each approval vote's SAID anchored in voter's KEL, voter is a member
-/// 4. Status: computed from chain state + votes, must be Approved
-async fn verify_core_peer_votes(
-    registry_client: &mut MultiRegistryClient,
-    peer_id: &str,
-    proposals_response: &Option<kels::CompletedProposalsResponse>,
-) -> bool {
-    let Some(response) = proposals_response else {
-        warn!(peer_id = %peer_id, "No proposals available for core peer vote verification");
-        return false;
-    };
-
-    // Use compiled-in trusted prefixes as the authoritative member set
-    let member_prefixes = trusted_prefixes();
-    let n = member_prefixes.len();
-    let threshold = match n {
-        0..=5 => 3,
-        6..=9 => 4,
-        _ => n.div_ceil(3),
-    };
-
-    // Find an approved, non-withdrawn proposal for this peer
-    let approved = response.proposals.iter().find(|pw| {
-        pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
-            && !pw.history.is_withdrawn()
-            && pw.status(threshold) == kels::ProposalStatus::Approved
-    });
-
-    let Some(pwv) = approved else {
-        warn!(peer_id = %peer_id, "No approved proposal found for core peer");
-        return false;
-    };
-
-    // 1. Structural verification: chain integrity, vote SAIDs, references, withdrawal invariant
-    if let Err(e) = pwv.verify() {
-        error!(
-            peer_id = %peer_id,
-            error = %e,
-            "Proposal DAG verification failed — rejecting"
-        );
-        return false;
-    }
-
-    // 2. Verify proposal anchoring: each record's SAID anchored in proposer's KEL
-    let proposer = match pwv.proposer() {
-        Some(p) => p.to_string(),
-        None => {
-            error!(peer_id = %peer_id, "Proposal has no proposer");
-            return false;
-        }
-    };
-
-    if !member_prefixes.contains(proposer.as_str()) {
-        warn!(peer_id = %peer_id, proposer = %proposer, "Proposer is not a federation member");
-        return false;
-    }
-
-    for record in &pwv.history.records {
-        let maybe_kel = retry_once!(
-            registry_client.fetch_registry_kel(&proposer, false),
-            |kel: &kels::Kel| kel.contains_anchor(&record.said),
-            registry_client.fetch_registry_kel(&proposer, true),
-        );
-
-        match maybe_kel {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                warn!(
-                    peer_id = %peer_id,
-                    said = %record.said,
-                    proposer = %proposer,
-                    "Proposal record SAID not anchored in proposer's KEL"
-                );
-                return false;
-            }
-            Err(e) => {
-                warn!(
-                    peer_id = %peer_id,
-                    proposer = %proposer,
-                    error = %e,
-                    "Failed to fetch proposer's KEL for proposal anchoring"
-                );
-                return false;
-            }
-        }
-    }
-
-    // 3. Verify vote anchoring: each approval vote's SAID anchored in voter's KEL
-    let mut verified_voters: HashSet<String> = HashSet::new();
-    for vote in &pwv.votes {
-        if !vote.approve {
-            continue;
-        }
-
-        if !member_prefixes.contains(vote.voter.as_str()) {
-            debug!(voter = %vote.voter, "Vote from non-member, skipping");
-            continue;
-        }
-
-        let maybe_kel = retry_once!(
-            registry_client.fetch_registry_kel(&vote.voter, false),
-            |kel: &kels::Kel| kel.contains_anchor(&vote.said),
-            registry_client.fetch_registry_kel(&vote.voter, true),
-        );
-
-        match maybe_kel {
-            Ok(Some(_)) => {
-                verified_voters.insert(vote.voter.clone());
-            }
-            Ok(None) => {
-                warn!(
-                    vote_said = %vote.said,
-                    voter = %vote.voter,
-                    "Vote SAID not anchored in voter's KEL"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    voter = %vote.voter,
-                    error = %e,
-                    "Failed to fetch voter's KEL for vote verification"
-                );
-            }
-        }
-    }
-
-    if verified_voters.len() < threshold {
-        warn!(
-            peer_id = %peer_id,
-            verified = verified_voters.len(),
-            threshold = threshold,
-            "Insufficient verified votes for core peer"
-        );
-        return false;
-    }
-
-    true
 }
 
 /// Run the allowlist refresh loop in the background.

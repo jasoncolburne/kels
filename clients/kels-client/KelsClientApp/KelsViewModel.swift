@@ -177,7 +177,8 @@ class KelsViewModel: ObservableObject {
             let registryPrefix = try await NodeDiscovery.fetchRegistryPrefix(registryUrl: registryUrl)
             log("Registry prefix: \(registryPrefix)")
 
-            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
+            let allRegistryUrls = Self.registryUrls.map(\.1).joined(separator: ",")
+            discoveredNodes = try await NodeDiscovery.discoverNodes(registryUrl: allRegistryUrls, registryPrefix: registryPrefix)
             log("Found \(discoveredNodes.count) nodes")
 
             // Cache nodes for fallback

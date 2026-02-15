@@ -1658,7 +1658,7 @@ struct NodeInfoJson {
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
 ///
 /// # Arguments
-/// * `registry_url` - URL of the kels-registry service
+/// * `registry_url` - Comma-separated URLs of kels-registry services
 /// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
 ///
 /// # Safety
@@ -1680,11 +1680,23 @@ pub unsafe extern "C" fn kels_discover_nodes(
     let result = unsafe { &mut *result };
     *result = KelsNodesResult::default();
 
-    let Some(url) = from_c_string(registry_url) else {
+    let Some(urls_str) = from_c_string(registry_url) else {
         result.status = KelsStatus::Error;
         result.error = to_c_string("Invalid registry URL");
         return;
     };
+
+    let urls: Vec<String> = urls_str
+        .split(',')
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+
+    if urls.is_empty() {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("No registry URLs provided");
+        return;
+    }
 
     let Some(ref expected_prefix) = from_c_string(registry_prefix) else {
         result.status = KelsStatus::Error;
@@ -1700,7 +1712,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let discover_result = runtime.block_on(async {
-        let mut registry = MultiRegistryClient::new(vec![url.clone()]);
+        let mut registry = MultiRegistryClient::new(urls);
 
         // Discover nodes with proper status checking and latency testing
         let nodes = registry.nodes_sorted_by_latency(expected_prefix).await?;
