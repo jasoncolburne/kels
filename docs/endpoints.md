@@ -100,10 +100,10 @@ All standalone endpoints plus:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/addition-proposals` | **Federation member** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| POST | `/api/admin/removal-proposals` | **Federation member** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
+| POST | `/api/admin/addition-proposals` | **Federation member + KEL anchoring** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
+| POST | `/api/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific addition proposal (returns `AdditionWithVotes`, searches pending + completed) |
-| POST | `/api/admin/proposals/:id/vote` | **Federation member** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
+| POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 | POST | `/api/admin/peers` | **Localhost only** | Add a regional peer (bypasses Raft) |
 
 **Notes:**
