@@ -20,7 +20,7 @@ use crate::{
     types::{
         CompletedProposalsResponse, DeregisterRequest, ErrorResponse, Kel, NodeInfo,
         NodeRegistration, NodeStatus, Peer, PeerHistory, PeerScope, PeersResponse, ProposalStatus,
-        RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+        RegisterNodeRequest, SignedRequest, StatusUpdateRequest, Vote,
     },
 };
 
@@ -459,6 +459,11 @@ pub struct MultiRegistryClient {
     trusted_prefixes: HashSet<&'static str>,
 }
 
+enum ProposalCandidate<'a> {
+    Addition(&'a crate::AdditionWithVotes),
+    Removal(&'a crate::RemovalWithVotes),
+}
+
 impl MultiRegistryClient {
     /// Create a new multi-registry client with default timeout (no signing capability).
     ///
@@ -728,105 +733,148 @@ impl MultiRegistryClient {
             return false;
         };
 
-        // Determine the most recent approved proposal action for this peer.
-        // For each completed proposal (addition or removal), take the last record.
-        // If it's withdrawn (not v0), skip it. Otherwise keep it with its created_at.
-        // Sort by created_at and check whether the most recent is an addition.
-        let mut recent_actions: Vec<(bool, &StorageDatetime)> = Vec::new(); // (is_addition, created_at)
+        // Collect all approved, non-withdrawn proposals for this peer (additions and removals).
+        // Each candidate holds a reference to the proposal and whether it's an addition.
+        let mut candidates: Vec<(bool, &StorageDatetime, ProposalCandidate<'_>)> = Vec::new();
 
-        for pw in &response.additions {
-            let Some(last) = pw.history.records.last() else {
+        for awv in &response.additions {
+            let Some(last) = awv.history.records.last() else {
                 continue;
             };
-            if last.version != 0 {
-                continue; // withdrawn
-            }
-            if pw.history.inception().is_none_or(|p| p.peer_id != peer_id) {
+            if last.is_withdrawn()
+                || awv.history.inception().is_none_or(|p| p.peer_id != peer_id)
+                || awv.status(last.threshold) != ProposalStatus::Approved
+            {
                 continue;
             }
-            if pw.status(last.threshold) != ProposalStatus::Approved {
-                continue;
-            }
-            recent_actions.push((true, &last.created_at));
+            candidates.push((true, &last.created_at, ProposalCandidate::Addition(awv)));
         }
 
-        for rw in &response.removals {
-            let Some(last) = rw.history.records.last() else {
+        for rwv in &response.removals {
+            let Some(last) = rwv.history.records.last() else {
                 continue;
             };
-            if last.version != 0 {
-                continue; // withdrawn
-            }
-            if rw.history.inception().is_none_or(|p| p.peer_id != peer_id) {
+            if last.is_withdrawn()
+                || rwv.history.inception().is_none_or(|p| p.peer_id != peer_id)
+                || rwv.status(last.threshold) != ProposalStatus::Approved
+            {
                 continue;
             }
-            if rw.status(last.threshold) != ProposalStatus::Approved {
-                continue;
-            }
-            recent_actions.push((false, &last.created_at));
+            candidates.push((false, &last.created_at, ProposalCandidate::Removal(rwv)));
         }
 
-        recent_actions.sort_by_key(|(_, created_at)| *created_at);
-
-        match recent_actions.last() {
-            Some((true, _)) => {} // most recent is an addition — good
-            Some((false, _)) => {
-                info!(peer_id = %peer_id, "Most recent approved proposal is a removal");
-                return false;
-            }
-            None => {
-                info!(peer_id = %peer_id, "No approved proposal found for core peer");
-                return false;
-            }
-        }
-
-        // Find the most recent approved addition to verify its DAG
-        let approved = response
-            .additions
-            .iter()
-            .filter(|pw| {
-                pw.history.inception().is_some_and(|p| p.peer_id == peer_id)
-                    && pw.history.records.last().is_some_and(|r| r.version == 0)
-            })
-            .max_by_key(|pw| pw.history.records.last().map(|r| &r.created_at));
-
-        let Some(pwv) = approved else {
-            warn!(peer_id = %peer_id, "No approved addition proposal found for core peer");
+        if candidates.is_empty() {
+            info!(peer_id = %peer_id, "No approved proposal found for core peer");
             return false;
-        };
+        }
 
-        let threshold = pwv
-            .history
-            .inception()
-            .map(|p| p.threshold)
-            .unwrap_or(usize::MAX);
+        // Sort most recent first, then iterate until we find one that verifies.
+        candidates.sort_by(|a, b| b.1.cmp(a.1));
 
         let member_prefixes = trusted_prefixes();
 
+        for (is_addition, _, candidate) in &candidates {
+            let (kind, verify_result, proposer, record_saids, votes, threshold) = match candidate {
+                ProposalCandidate::Addition(awv) => (
+                    "addition",
+                    awv.verify(),
+                    awv.proposer(),
+                    awv.history
+                        .records
+                        .iter()
+                        .map(|r| &r.said)
+                        .collect::<Vec<_>>(),
+                    &awv.votes,
+                    awv.history
+                        .inception()
+                        .map(|p| p.threshold)
+                        .unwrap_or(usize::MAX),
+                ),
+                ProposalCandidate::Removal(rwv) => (
+                    "removal",
+                    rwv.verify(),
+                    rwv.proposer(),
+                    rwv.history
+                        .records
+                        .iter()
+                        .map(|r| &r.said)
+                        .collect::<Vec<_>>(),
+                    &rwv.votes,
+                    rwv.history
+                        .inception()
+                        .map(|p| p.threshold)
+                        .unwrap_or(usize::MAX),
+                ),
+            };
+
+            if self
+                .verify_proposal_dag(
+                    peer_id,
+                    kind,
+                    verify_result,
+                    proposer,
+                    record_saids.into_iter(),
+                    votes,
+                    threshold,
+                    &member_prefixes,
+                )
+                .await
+            {
+                if *is_addition {
+                    return true;
+                } else {
+                    info!(peer_id = %peer_id, "Verified removal — peer excluded");
+                    return false;
+                }
+            }
+
+            warn!(peer_id = %peer_id, kind = kind, "Proposal failed verification, trying next");
+        }
+
+        warn!(peer_id = %peer_id, "No proposal passed verification for core peer");
+        false
+    }
+
+    /// Verify a proposal's structural integrity, record anchoring, and vote anchoring.
+    ///
+    /// Shared verification logic for both addition and removal proposals.
+    /// Returns true if the proposal passes all checks.
+    #[allow(clippy::too_many_arguments)]
+    async fn verify_proposal_dag<'a>(
+        &mut self,
+        peer_id: &str,
+        kind: &str,
+        structural_result: Result<(), KelsError>,
+        proposer: Option<&str>,
+        record_saids: impl Iterator<Item = &'a String>,
+        votes: &[Vote],
+        threshold: usize,
+        member_prefixes: &HashSet<&str>,
+    ) -> bool {
         // 1. Structural verification
-        if let Err(e) = pwv.verify() {
-            warn!(peer_id = %peer_id, error = %e, "Proposal DAG verification failed");
+        if let Err(e) = structural_result {
+            warn!(peer_id = %peer_id, error = %e, "{} proposal DAG verification failed", kind);
             return false;
         }
 
         // 2. Verify proposal anchoring: each record's SAID anchored in proposer's KEL
-        let proposer = match pwv.proposer() {
+        let proposer = match proposer {
             Some(p) => p.to_string(),
             None => {
-                warn!(peer_id = %peer_id, "Proposal has no proposer");
+                warn!(peer_id = %peer_id, "{} proposal has no proposer", kind);
                 return false;
             }
         };
 
         if !member_prefixes.contains(proposer.as_str()) {
-            warn!(peer_id = %peer_id, proposer = %proposer, "Proposer is not a federation member");
+            warn!(peer_id = %peer_id, proposer = %proposer, "{} proposer is not a federation member", kind);
             return false;
         }
 
-        for record in &pwv.history.records {
+        for said in record_saids {
             let maybe_kel = retry_once!(
                 self.fetch_registry_kel(&proposer, false),
-                |kel: &Kel| kel.contains_anchor(&record.said),
+                |kel: &Kel| kel.contains_anchor(said),
                 self.fetch_registry_kel(&proposer, true),
             );
 
@@ -835,8 +883,8 @@ impl MultiRegistryClient {
                 Ok(None) => {
                     warn!(
                         peer_id = %peer_id,
-                        said = %record.said,
-                        "Proposal record SAID not anchored in proposer's KEL"
+                        said = %said,
+                        "{} proposal record SAID not anchored in proposer's KEL", kind
                     );
                     return false;
                 }
@@ -844,7 +892,7 @@ impl MultiRegistryClient {
                     warn!(
                         peer_id = %peer_id,
                         error = %e,
-                        "Failed to fetch proposer's KEL for proposal anchoring"
+                        "Failed to fetch proposer's KEL for {} proposal anchoring", kind
                     );
                     return false;
                 }
@@ -853,7 +901,7 @@ impl MultiRegistryClient {
 
         // 3. Verify vote anchoring: each approval vote's SAID anchored in voter's KEL
         let mut verified_voters: HashSet<String> = HashSet::new();
-        for vote in &pwv.votes {
+        for vote in votes {
             if !vote.approve {
                 continue;
             }
@@ -876,14 +924,14 @@ impl MultiRegistryClient {
                     warn!(
                         vote_said = %vote.said,
                         voter = %vote.voter,
-                        "Vote SAID not anchored in voter's KEL"
+                        "{} vote SAID not anchored in voter's KEL", kind
                     );
                 }
                 Err(e) => {
                     warn!(
                         voter = %vote.voter,
                         error = %e,
-                        "Failed to fetch voter's KEL for vote verification"
+                        "Failed to fetch voter's KEL for {} vote verification", kind
                     );
                 }
             }
@@ -894,7 +942,7 @@ impl MultiRegistryClient {
                 peer_id = %peer_id,
                 verified = verified_voters.len(),
                 threshold = threshold,
-                "Insufficient verified votes for core peer"
+                "Insufficient verified votes for {} of core peer", kind
             );
             return false;
         }
