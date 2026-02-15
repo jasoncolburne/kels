@@ -114,7 +114,7 @@ Each registry needs two categories of configuration:
 - `FEDERATION_SELF_PREFIX` — this registry's own prefix
 - `FEDERATION_URLS` — comma-separated `prefix=url` pairs for all federation members
 
-If `TRUSTED_REGISTRY_MEMBERS` is empty or `FEDERATION_SELF_PREFIX` is unset, the registry runs in standalone mode (no federation, no peer management).
+If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or the registry's own prefix is not in the trusted members list, the registry runs in standalone mode (no federation, no peer management). This last case enables deploying a new registry before it has been added to the trust anchor.
 
 ## Gossip Node Configuration
 
