@@ -19,8 +19,9 @@ use crate::{
     error::KelsError,
     types::{
         CompletedProposalsResponse, DeregisterRequest, ErrorResponse, Kel, NodeInfo,
-        NodeRegistration, NodeStatus, Peer, PeerHistory, PeerScope, PeersResponse, ProposalStatus,
-        RegisterNodeRequest, SignedRequest, StatusUpdateRequest, Vote,
+        NodeRegistration, NodeStatus, Peer, PeerHistory, PeerScope, PeersResponse, Proposal,
+        ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest,
+        SignedRequest, StatusUpdateRequest, Vote,
     },
 };
 

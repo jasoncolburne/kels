@@ -38,7 +38,7 @@ Never import inline within function bodies.
 ### General
 
 - Fail **secure**, not safe. Default to restrictive behavior when state is unknown.
-- No unnecessary abstractions or over-engineering.
+- No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
 - This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
 

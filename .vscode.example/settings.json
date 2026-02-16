@@ -1,5 +1,5 @@
 {
   "rust-analyzer.cargo.extraEnv": {
-    "TRUSTED_REGISTRY_PREFIXES": "ELINT_PLACEHOLDER_PREFIX______________________"
+    "TRUSTED_REGISTRY_MEMBERS": "ELINT_PLACEHOLDER_PREFIX______________________"
   }
 }

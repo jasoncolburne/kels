@@ -12,7 +12,10 @@ use std::sync::Arc;
 use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
-use kels::{CompletedProposalsResponse, Peer, PeerRemovalProposal, PeerScope, ProposalWithVotes};
+use kels::{
+    CompletedProposalsResponse, Peer, PeerRemovalProposal, PeerScope, ProposalHistory,
+    ProposalWithVotes, ProposalWithVotesMethods,
+};
 use kels_registry::{
     federation::{FederationStatus, PeerAdditionProposal, Vote},
     identity_client::IdentityClient,

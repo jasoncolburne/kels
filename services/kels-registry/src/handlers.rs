@@ -10,8 +10,8 @@ use axum::{
 };
 use kels::{
     CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration,
-    Peer, PeerHistory, PeerScope, PeersResponse, RegisterNodeRequest, SignedRequest,
-    StatusUpdateRequest,
+    Peer, PeerHistory, PeerScope, PeersResponse, Proposal, ProposalHistory,
+    ProposalWithVotesMethods, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{ChainedRepository, SelfAddressed};

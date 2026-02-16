@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Vote};
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

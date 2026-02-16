@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Kel, Peer, PeerAdditionProposal, PeerRemovalProposal, PeerScope, Vote};
+use kels::{Kel, Peer, PeerAdditionProposal, PeerRemovalProposal, PeerScope, Proposal, Vote};
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StoredMembership,
@@ -649,29 +649,38 @@ impl StateMachineStore {
             .build()
             .map_err(|e| e.to_string())?;
 
-        let mut kels = self.member_kels.write().await;
-        for member in &self.config.members {
+        let fetches = self.config.members.iter().map(|member| {
+            let client = client.clone();
             let url = format!("{}/api/registry-kel", member.url.trim_end_matches('/'));
-            match client.get(&url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<Kel>().await {
-                        Ok(kel) => {
-                            if kel.verify().is_ok() {
-                                kels.insert(member.prefix.clone(), kel);
+            let prefix = member.prefix.clone();
+            async move {
+                match client.get(&url).send().await {
+                    Ok(response) if response.status().is_success() => {
+                        match response.json::<Kel>().await {
+                            Ok(kel) if kel.verify().is_ok() => Some((prefix, kel)),
+                            Ok(_) => None,
+                            Err(e) => {
+                                warn!(member = %prefix, error = %e, "Failed to parse member KEL");
+                                None
                             }
                         }
-                        Err(e) => {
-                            warn!(member = %member.prefix, error = %e, "Failed to parse member KEL");
-                        }
+                    }
+                    Ok(response) => {
+                        warn!(member = %prefix, status = %response.status(), "Failed to fetch member KEL");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(member = %prefix, error = %e, "Failed to fetch member KEL");
+                        None
                     }
                 }
-                Ok(response) => {
-                    warn!(member = %member.prefix, status = %response.status(), "Failed to fetch member KEL");
-                }
-                Err(e) => {
-                    warn!(member = %member.prefix, error = %e, "Failed to fetch member KEL");
-                }
             }
+        });
+
+        let results = futures::future::join_all(fetches).await;
+        let mut kels = self.member_kels.write().await;
+        for result in results.into_iter().flatten() {
+            kels.insert(result.0, result.1);
         }
         Ok(())
     }
