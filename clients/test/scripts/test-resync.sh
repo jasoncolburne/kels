@@ -169,7 +169,8 @@ if [ "$MODE" = "setup" ]; then
     echo ""
 
     # Wait for DNS caches to expire so .kels lookups for node-b actually fail.
-    # CoreDNS has cache 30s; pods may also cache briefly.
+    # When run via test-comprehensive, DNS_CACHE_TTL=2 is set on CoreDNS before
+    # tests start, so node-level caches expire within seconds of CoreDNS restart.
     echo "Waiting for DNS caches to expire (kels.kels-node-b.kels must fail)..."
     for i in {1..60}; do
         if ! nslookup kels.kels-node-b.kels > /dev/null 2>&1; then
@@ -182,6 +183,11 @@ if [ "$MODE" = "setup" ]; then
         fi
         sleep 1
     done
+
+    # Brief additional wait for node-level DNS caches (NodeLocal DNSCache, etc.)
+    # on other K8s nodes where gossip pods may run. With DNS_CACHE_TTL=2 set at
+    # the start of test-comprehensive, stale entries expire within 2s.
+    sleep 3
     echo ""
 
     # Create KEL on node-a

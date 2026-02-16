@@ -7,12 +7,13 @@ source:
   path: ../..
 
 include:
-  - scripts/configure-coredns.sh
+  - scripts/coredns.sh
 
 spec:
   command:
     - bash
-    - scripts/configure-coredns.sh
+    - scripts/coredns.sh
+    - configure
 
 ---
 kind: Run
@@ -24,10 +25,10 @@ source:
   path: ../..
 
 include:
-  - scripts/unconfigure-coredns.sh
+  - scripts/coredns.sh
 
 spec:
   command:
     - bash
-    - scripts/unconfigure-coredns.sh
-
+    - scripts/coredns.sh
+    - unconfigure

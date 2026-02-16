@@ -205,9 +205,9 @@ deploy-regional-nodes:
 deploy-all-nodes: deploy-core-nodes deploy-regional-nodes
 
 test-resync:
-	scripts/break-node-b-dns.sh
+	scripts/coredns.sh break-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
-	scripts/repair-node-b-dns.sh
+	scripts/coredns.sh repair-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh verify
 
 test-removal:
@@ -243,12 +243,14 @@ test-grow-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-all-nodes
+	DNS_CACHE_TTL=2 scripts/coredns.sh repair-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
-	$(MAKE) test-resync
+	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-removal
 	$(MAKE) test-grow-federation
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
+	scripts/coredns.sh repair-node-b
