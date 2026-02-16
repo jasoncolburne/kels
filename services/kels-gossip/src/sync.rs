@@ -256,13 +256,17 @@ impl SyncHandler {
         let mut recovery_root_said: Option<String> = None;
         let mut contest_root_said: Option<String> = None;
         for root in &roots {
-            let mut current = root.event.said.as_str();
             let mut has_recovery = root.event.reveals_recovery_key();
-            while let Some(next) = children.get(current).and_then(|v| v.first()) {
-                if next.event.reveals_recovery_key() {
-                    has_recovery = true;
+            let mut stack: Vec<&str> = vec![root.event.said.as_str()];
+            while let Some(current) = stack.pop() {
+                if let Some(kids) = children.get(current) {
+                    for next in kids {
+                        if next.event.reveals_recovery_key() {
+                            has_recovery = true;
+                        }
+                        stack.push(&next.event.said);
+                    }
                 }
-                current = &next.event.said;
             }
             if has_recovery {
                 if root.event.is_contest() && contest_root_said.is_none() {
@@ -279,14 +283,18 @@ impl SyncHandler {
             return (events, vec![]);
         };
 
-        // Collect the recovery chain's SAIDs
+        // Collect the recovery chain's SAIDs (DFS to follow all sub-branches)
         let mut recovery_saids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         recovery_saids.insert(recovery_root.clone());
-        let mut current = recovery_root.as_str();
-        while let Some(next) = children.get(current).and_then(|v| v.first()) {
-            recovery_saids.insert(next.event.said.clone());
-            current = &next.event.said;
+        let mut stack: Vec<&str> = vec![recovery_root.as_str()];
+        while let Some(current) = stack.pop() {
+            if let Some(kids) = children.get(current) {
+                for next in kids {
+                    recovery_saids.insert(next.event.said.clone());
+                    stack.push(&next.event.said);
+                }
+            }
         }
 
         // Adversary events first, recovery events second
@@ -786,18 +794,18 @@ impl SyncHandler {
                     .map(|e| e.event.reveals_recovery_key())
                     .unwrap_or(false);
 
-                let mut current = kid_said.clone();
-                while let Some(next_kids) = children.get(&current) {
-                    if let Some(next) = next_kids.first() {
-                        chain.push(next.clone());
-                        if let Some(e) = said_to_event.get(next)
-                            && e.event.reveals_recovery_key()
-                        {
-                            has_recovery = true;
+                let mut dfs_stack: Vec<String> = vec![kid_said.clone()];
+                while let Some(current) = dfs_stack.pop() {
+                    if let Some(next_kids) = children.get(&current) {
+                        for next in next_kids {
+                            chain.push(next.clone());
+                            if let Some(e) = said_to_event.get(next)
+                                && e.event.reveals_recovery_key()
+                            {
+                                has_recovery = true;
+                            }
+                            dfs_stack.push(next.clone());
                         }
-                        current = next.clone();
-                    } else {
-                        break;
                     }
                 }
                 branches.push((chain, has_recovery));
@@ -1681,5 +1689,119 @@ mod tests {
         assert_eq!(deferred[0].event.said, "b1");
 
         assert!(recovery.is_empty());
+    }
+
+    // --- DFS traversal tests ---
+
+    #[test]
+    fn test_partition_events_detects_recovery_on_non_first_sub_branch() {
+        // Root chain forks internally: root → a → {b, c}
+        // Recovery event is on the non-first branch (c).
+        // Without DFS, only the first child (b) is walked.
+        //
+        // Branch 1 (adversary): adv1 → adv2
+        // Branch 2 (recovery root): rec_root → fork_a → fork_b (no recovery)
+        //                                             → fork_c (rec event)
+        // Both branch from "shared" (not in batch)
+        let events = vec![
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("adv2", Some("adv1"), EventKind::Ixn),
+            make_event("rec_root", Some("shared"), EventKind::Ixn),
+            make_event("fork_a", Some("rec_root"), EventKind::Ixn),
+            make_event("fork_b", Some("fork_a"), EventKind::Ixn),
+            make_event("fork_c", Some("fork_a"), EventKind::Rec),
+        ];
+        let (_adversary, recovery) = SyncHandler::partition_events(events);
+        // The recovery chain (rec_root and descendants) should be detected
+        assert!(
+            !recovery.is_empty(),
+            "recovery on non-first sub-branch must be detected"
+        );
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(recovery_saids.contains(&"rec_root"));
+        assert!(recovery_saids.contains(&"fork_c"));
+    }
+
+    #[test]
+    fn test_partition_events_collects_all_sub_branches_of_recovery_root() {
+        // Recovery root's chain forks: both sub-branches should be collected.
+        //
+        // Adversary: adv1
+        // Recovery root: rec1 (rec event) → sub_a
+        //                                 → sub_b
+        // Both branch from "shared" (not in batch)
+        let events = vec![
+            make_event("adv1", Some("shared"), EventKind::Ixn),
+            make_event("rec1", Some("shared"), EventKind::Rec),
+            make_event("sub_a", Some("rec1"), EventKind::Ixn),
+            make_event("sub_b", Some("rec1"), EventKind::Ixn),
+        ];
+        let (adversary, recovery) = SyncHandler::partition_events(events);
+        assert_eq!(adversary.len(), 1);
+        assert_eq!(adversary[0].event.said, "adv1");
+        assert_eq!(recovery.len(), 3);
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(recovery_saids.contains(&"rec1"));
+        assert!(recovery_saids.contains(&"sub_a"));
+        assert!(recovery_saids.contains(&"sub_b"));
+    }
+
+    #[test]
+    fn test_partition_for_seeding_counts_all_sub_branch_descendants() {
+        // Fork from "shared" where branch A sub-forks, making it appear shorter
+        // without DFS but actually longer with DFS.
+        //
+        // Branch A: a1 → {a2, a3, a4}  (4 total descendants with DFS; 2 with first-only)
+        // Branch B: b1 → b2 → b3       (3 linear descendants)
+        //
+        // Without DFS (.first() only): a1 → a2 = 2. B = 3. B would be primary.
+        // With DFS: A = 4. B = 3. A is primary (correct).
+        let events = vec![
+            make_event("a1", Some("shared"), EventKind::Ixn),
+            make_event("a2", Some("a1"), EventKind::Ixn),
+            make_event("a3", Some("a1"), EventKind::Ixn),
+            make_event("a4", Some("a1"), EventKind::Ixn),
+            make_event("b1", Some("shared"), EventKind::Ixn),
+            make_event("b2", Some("b1"), EventKind::Ixn),
+            make_event("b3", Some("b2"), EventKind::Ixn),
+        ];
+        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
+        // Branch A recognized as longer → a1 is primary (not deferred)
+        assert!(
+            primary_saids.contains(&"a1"),
+            "branch with more total descendants should be primary"
+        );
+        let deferred_saids: Vec<_> = deferred.iter().map(|e| e.event.said.as_str()).collect();
+        // Branch B should be deferred since it's shorter
+        assert!(deferred_saids.contains(&"b1"));
+        assert!(deferred_saids.contains(&"b2"));
+        assert!(deferred_saids.contains(&"b3"));
+        assert!(recovery.is_empty());
+    }
+
+    #[test]
+    fn test_partition_for_seeding_recovery_on_non_first_sub_branch() {
+        // Fork from "shared", one branch sub-forks and has recovery on a non-first child.
+        // Branch A (longer, 4 total): a1 → a2 → {a3 (ixn), a4 (rec)}
+        // Branch B (shorter, 1):      b1
+        // Recovery event a4 should be detected even though it's not the first child of a2.
+        let events = vec![
+            make_event("a1", Some("shared"), EventKind::Ixn),
+            make_event("a2", Some("a1"), EventKind::Ixn),
+            make_event("a3", Some("a2"), EventKind::Ixn),
+            make_event("a4", Some("a2"), EventKind::Rec),
+            make_event("b1", Some("shared"), EventKind::Ixn),
+        ];
+        let (_primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
+        // a4 is a recovery event on the primary branch's sub-fork
+        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
+        assert!(
+            recovery_saids.contains(&"a4"),
+            "recovery on non-first sub-branch must be detected"
+        );
+        // b1 should be deferred
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].event.said, "b1");
     }
 }
