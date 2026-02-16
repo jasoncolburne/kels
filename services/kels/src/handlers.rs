@@ -406,6 +406,9 @@ pub(crate) async fn submit_events(
     if applied {
         if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
             warn!("Failed to update cache: {}", e);
+            if let Err(e2) = state.kel_cache.invalidate(&prefix).await {
+                warn!("Failed to invalidate stale cache: {}", e2);
+            }
         }
 
         // Publish the SAID of the last submitted event (not events.last() from the

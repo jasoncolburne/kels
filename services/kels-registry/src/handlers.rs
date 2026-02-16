@@ -810,6 +810,25 @@ pub async fn admin_vote_proposal(
         )));
     }
 
+    // 4b. Check proposal expiration (checked here, not in Raft state machine,
+    //     to avoid non-determinism from wall clock skew between nodes)
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await
+        && addition.is_expired()
+    {
+        return Err(ApiError::bad_request(format!(
+            "Proposal {} has expired",
+            proposal_id
+        )));
+    }
+    if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await
+        && removal.is_expired()
+    {
+        return Err(ApiError::bad_request(format!(
+            "Proposal {} has expired",
+            proposal_id
+        )));
+    }
+
     // 5. Verify vote SAID is anchored in voter's KEL
     state
         .node

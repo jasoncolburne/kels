@@ -13,7 +13,7 @@ use cacheable::create_pubsub_subscriber;
 use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal};
 use redis::Client as RedisClient;
 use tower_governor::{
-    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::PeerIpKeyExtractor,
 };
 use verifiable_storage_postgres::RepositoryConnection;
 
@@ -26,7 +26,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     let governor_conf = GovernorConfigBuilder::default()
         .per_second(200)
         .burst_size(1000)
-        .key_extractor(SmartIpKeyExtractor)
+        .key_extractor(PeerIpKeyExtractor)
         .finish()
         .unwrap_or_else(|| unreachable!("governor config with valid defaults"));
 

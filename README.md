@@ -46,6 +46,7 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Replace libp2p with gossip based on kels crypto
+  a. Fix gossip port 80 hard-coding (break down all environment variables?)
 2. Cleanup & self-audit
 3. Build some example applications
 4. Third party audit

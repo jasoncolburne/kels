@@ -413,6 +413,21 @@ impl ServerKelCache {
         }
     }
 
+    /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
+    ///
+    /// Called when `store()` fails to prevent stale data from persisting until TTL.
+    pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
+        let mut conn = self.conn.clone();
+        let redis_key = self.redis_key(prefix);
+        let _: () = conn
+            .del(&redis_key)
+            .await
+            .map_err(|e| KelsError::CacheError(format!("Redis DEL failed: {}", e)))?;
+        let mut local = self.local_cache.write().await;
+        local.clear(prefix);
+        Ok(())
+    }
+
     /// Get full KEL deserialized (for processing)
     pub async fn get_full(&self, prefix: &str) -> Result<Vec<SignedKeyEvent>, KelsError> {
         match self.get_full_serialized(prefix).await? {

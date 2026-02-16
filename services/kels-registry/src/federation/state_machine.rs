@@ -400,28 +400,6 @@ impl StateMachineData {
                         .unwrap_or(threshold)
                 };
 
-                // Check if expired
-                let is_expired = if is_addition {
-                    self.pending_addition_proposals
-                        .get(&proposal_id)
-                        .is_some_and(|p| p.is_expired())
-                } else {
-                    self.pending_removal_proposals
-                        .get(&proposal_id)
-                        .is_some_and(|p| p.is_expired())
-                };
-
-                if is_expired {
-                    if is_addition {
-                        if let Some(v0) = self.pending_addition_proposals.remove(&proposal_id) {
-                            self.completed_addition_proposals.push(vec![v0]);
-                        }
-                    } else if let Some(v0) = self.pending_removal_proposals.remove(&proposal_id) {
-                        self.completed_removal_proposals.push(vec![v0]);
-                    }
-                    return FederationResponse::ProposalExpired(proposal_id);
-                }
-
                 // Check if already voted
                 let already_voted = self
                     .votes

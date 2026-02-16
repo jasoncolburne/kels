@@ -90,9 +90,64 @@ pub fn verify_signature(
 
 /// Validate that a timestamp is within the acceptable window.
 ///
-/// Returns true if the absolute difference between the timestamp and
-/// the current time is within `max_age_secs`.
+/// Uses asymmetric bounds: allows up to 5 seconds of clock skew into the future,
+/// but the full `max_age_secs` into the past. This prevents attackers from
+/// pre-signing requests with far-future timestamps for delayed replay.
 pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
     let now = chrono::Utc::now().timestamp();
-    (now - timestamp).abs() <= max_age_secs
+    let max_future_skew = 5;
+    timestamp <= now + max_future_skew && timestamp >= now - max_age_secs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timestamp_current_is_valid() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_within_window() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now - 30, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_outside_window() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now - 61, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_within_skew() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now + 3, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_at_skew_boundary() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now + 5, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_beyond_skew() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now + 6, 60));
+    }
+
+    #[test]
+    fn test_timestamp_far_future_rejected() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now + 60, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_at_boundary() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now - 60, 60));
+    }
 }

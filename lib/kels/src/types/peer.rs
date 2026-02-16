@@ -386,6 +386,14 @@ impl AdditionHistory {
                 )));
             }
 
+            // Timestamp monotonicity
+            if i > 0 && record.created_at <= self.records[i - 1].created_at {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Proposal record {} created_at is not after previous record",
+                    record.said
+                )));
+            }
+
             last_said = Some(record.said.clone());
         }
 
@@ -628,6 +636,14 @@ impl RemovalHistory {
                 )));
             }
 
+            // Timestamp monotonicity
+            if i > 0 && record.created_at <= self.records[i - 1].created_at {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Removal proposal record {} created_at is not after previous record",
+                    record.said
+                )));
+            }
+
             last_said = Some(record.said.clone());
         }
 
@@ -740,4 +756,113 @@ pub struct CompletedProposalsResponse {
     pub removals: Vec<RemovalWithVotes>,
     pub member_prefixes: Vec<String>,
     pub approval_threshold: usize,
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use verifiable_storage::{Chained, SelfAddressed};
+
+    fn test_expires_at() -> StorageDatetime {
+        (chrono::Utc::now() + chrono::Duration::days(7)).into()
+    }
+
+    // ==================== AdditionHistory created_at monotonicity ====================
+
+    #[test]
+    fn test_addition_history_valid_timestamps() {
+        let v0 = PeerAdditionProposal::empty(
+            "peer-1",
+            "node-1",
+            "http://node-1:8080",
+            "/ip4/127.0.0.1/tcp/4001/p2p/peer-1",
+            "ERegistryA",
+            2,
+            &test_expires_at(),
+        )
+        .unwrap();
+
+        let mut v1 = v0.clone();
+        v1.withdrawn_at = Some(StorageDatetime::now());
+        v1.increment().unwrap();
+
+        let history = AdditionHistory {
+            prefix: v0.prefix.clone(),
+            records: vec![v0, v1],
+        };
+        assert!(history.verify().is_ok());
+    }
+
+    #[test]
+    fn test_addition_history_non_monotonic_timestamp_fails() {
+        let v0 = PeerAdditionProposal::empty(
+            "peer-1",
+            "node-1",
+            "http://node-1:8080",
+            "/ip4/127.0.0.1/tcp/4001/p2p/peer-1",
+            "ERegistryA",
+            2,
+            &test_expires_at(),
+        )
+        .unwrap();
+
+        let mut v1 = v0.clone();
+        v1.withdrawn_at = Some(StorageDatetime::now());
+        v1.increment().unwrap();
+        // Set created_at to before v0 AFTER increment, then re-derive SAID
+        v1.created_at = (chrono::Utc::now() - chrono::Duration::hours(1)).into();
+        v1.derive_said().unwrap();
+
+        let history = AdditionHistory {
+            prefix: v0.prefix.clone(),
+            records: vec![v0, v1],
+        };
+        let err = history.verify().unwrap_err();
+        assert!(
+            err.to_string().contains("created_at is not after"),
+            "Expected created_at monotonicity error, got: {}",
+            err
+        );
+    }
+
+    // ==================== RemovalHistory created_at monotonicity ====================
+
+    #[test]
+    fn test_removal_history_valid_timestamps() {
+        let v0 = PeerRemovalProposal::empty("peer-1", "ERegistryA", 2, &test_expires_at()).unwrap();
+
+        let mut v1 = v0.clone();
+        v1.withdrawn_at = Some(StorageDatetime::now());
+        v1.increment().unwrap();
+
+        let history = RemovalHistory {
+            prefix: v0.prefix.clone(),
+            records: vec![v0, v1],
+        };
+        assert!(history.verify().is_ok());
+    }
+
+    #[test]
+    fn test_removal_history_non_monotonic_timestamp_fails() {
+        let v0 = PeerRemovalProposal::empty("peer-1", "ERegistryA", 2, &test_expires_at()).unwrap();
+
+        let mut v1 = v0.clone();
+        v1.withdrawn_at = Some(StorageDatetime::now());
+        v1.increment().unwrap();
+        // Set created_at to before v0 AFTER increment, then re-derive SAID
+        v1.created_at = (chrono::Utc::now() - chrono::Duration::hours(1)).into();
+        v1.derive_said().unwrap();
+
+        let history = RemovalHistory {
+            prefix: v0.prefix.clone(),
+            records: vec![v0, v1],
+        };
+        let err = history.verify().unwrap_err();
+        assert!(
+            err.to_string().contains("created_at is not after"),
+            "Expected created_at monotonicity error, got: {}",
+            err
+        );
+    }
 }
