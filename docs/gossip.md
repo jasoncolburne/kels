@@ -190,7 +190,7 @@ Nodes advertise URLs using `.kels` domains (e.g., `http://kels.kels-node-a.kels`
 To enable internal resolution, CoreDNS must be configured with rewrite rules:
 
 ```bash
-garden run coredns-config
+scripts/coredns.sh apply
 ```
 
 This applies rewrite rules that translate `.kels` domains to `.svc.cluster.kels`:

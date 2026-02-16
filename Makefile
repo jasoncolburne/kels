@@ -22,7 +22,7 @@ export TRUSTED_REGISTRY_MEMBERS
 all: fmt-check deny clippy test build
 
 benchmark: clean-garden
-	garden run coredns-unconfig
+	scripts/coredns.sh reset
 	garden deploy test-client --env=node-a
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 5
 
@@ -111,8 +111,7 @@ kels-client-simulator:
 	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
 
 configure-dns:
-	# Configure k8s dns
-	garden run coredns-config
+	scripts/coredns.sh apply
 
 reset-federation-json:
 	# Reset federation prefixes
@@ -207,7 +206,7 @@ deploy-all-nodes: deploy-core-nodes deploy-regional-nodes
 test-resync:
 	scripts/coredns.sh break-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
-	scripts/coredns.sh repair-node-b
+	scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh verify
 
 test-removal:
@@ -243,7 +242,7 @@ test-grow-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-all-nodes
-	DNS_CACHE_TTL=2 scripts/coredns.sh repair-node-b
+	DNS_CACHE_TTL=2 scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
@@ -253,4 +252,4 @@ test-comprehensive: clean-garden configure-dns reset-federation-json deploy-regi
 	$(MAKE) test-removal
 	$(MAKE) test-grow-federation
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
-	scripts/coredns.sh repair-node-b
+	scripts/coredns.sh apply
