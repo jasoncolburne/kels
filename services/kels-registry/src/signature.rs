@@ -1,13 +1,9 @@
-//! Signature verification for authenticated registry requests.
-//!
-//! Re-exports verification from the shared libkels p2p_signature module.
-
-pub use kels::p2p_signature::{SignatureError, verify_signature};
+//! Signature verification tests for the shared libkels p2p_signature module.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use cesr::Matter;
+    use kels::p2p_signature::{SignatureError, verify_signature};
 
     // ==================== SignatureError Display Tests ====================
 

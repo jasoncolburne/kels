@@ -9,6 +9,5 @@ mod handlers;
 pub mod repository;
 mod server;
 
-pub use kels::KelsError;
 pub use repository::{AuditRecordRepository, KelsRepository, KeyEventRepository};
 pub use server::run;

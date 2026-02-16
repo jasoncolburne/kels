@@ -13,13 +13,11 @@ use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
 use kels::{
-    CompletedProposalsResponse, Peer, PeerRemovalProposal, PeerScope, ProposalHistory,
-    ProposalWithVotes, ProposalWithVotesMethods,
+    CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal, PeerScope,
+    ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
 };
 use kels_registry::{
-    federation::{FederationStatus, PeerAdditionProposal, Vote},
-    identity_client::IdentityClient,
-    peer_store::PeerRepository,
+    federation::FederationStatus, identity_client::IdentityClient, peer_store::PeerRepository,
 };
 
 /// CLI representation of PeerScope for clap parsing

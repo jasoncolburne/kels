@@ -23,9 +23,9 @@ pub mod sync;
 mod types;
 
 pub use config::{FederationConfig, FederationMember};
-pub use kels::{
-    AdditionHistory, AdditionWithVotes, PeerAdditionProposal, PeerRemovalProposal, Proposal,
-    ProposalHistory, ProposalWithVotes, RemovalHistory, RemovalWithVotes, Vote,
+use kels::{
+    AdditionHistory, AdditionWithVotes, PeerAdditionProposal, PeerRemovalProposal, RemovalHistory,
+    RemovalWithVotes, Vote,
 };
 pub use network::{
     FederationNetwork, FederationRpc, FederationRpcResponse, SignedFederationRpc, SnapshotTransfer,

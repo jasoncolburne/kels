@@ -30,7 +30,6 @@ pub use federation::{
     FederationConfig, FederationError, FederationMember, FederationNetwork, FederationNode,
     FederationStatus,
 };
-pub use kels::{NodeRegistration, NodeStatus, Peer, PeerHistory, PeerScope};
 pub use peer_store::PeerRepository;
 pub use server::run;
 pub use store::RegistryStore;

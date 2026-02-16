@@ -8,10 +8,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use kels::p2p_signature::{SignatureError, verify_signature};
 use kels::{
-    CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel, NodeRegistration,
-    Peer, PeerHistory, PeerScope, PeersResponse, Proposal, ProposalHistory,
-    ProposalWithVotesMethods, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+    AdditionHistory, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel,
+    NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeerScope,
+    PeersResponse, Proposal, ProposalHistory, ProposalWithVotesMethods, RegisterNodeRequest,
+    RemovalHistory, SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{ChainedRepository, SelfAddressed};
@@ -19,13 +21,11 @@ use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
 use crate::{
     federation::{
-        AdditionHistory, FederationNode, FederationResponse, FederationRpc, FederationRpcResponse,
-        FederationStatus, PeerAdditionProposal, PeerRemovalProposal, RemovalHistory,
-        SignedFederationRpc, Vote,
+        FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
+        SignedFederationRpc,
     },
     identity_client::IdentityClient,
     repository::RegistryRepository,
-    signature::{self, SignatureError},
     store::{RegistryStore, StoreError},
 };
 
@@ -130,7 +130,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
     let payload_json = serde_json::to_vec(&signed_request.payload)
         .map_err(|e| ApiError::internal_error(format!("Failed to serialize payload: {}", e)))?;
 
-    let peer_id = signature::verify_signature(
+    let peer_id = verify_signature(
         &payload_json,
         &signed_request.peer_id,
         &signed_request.public_key,
