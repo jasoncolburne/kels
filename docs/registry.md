@@ -4,7 +4,11 @@
 
 The `kels-registry` service provides node registration and discovery for KELS gossip deployments. When new nodes come online, they query the registry to find peers, bootstrap sync missing KELs, then register as ready for queries. Clients discover nodes via the registry and test latency to select optimal nodes.
 
+For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](./federation.md) for details.
+
 ## Architecture
+
+### Single Registry
 
 ```
                     ┌─────────────────────┐
@@ -26,11 +30,28 @@ The `kels-registry` service provides node registration and discovery for KELS go
     └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
+### Federated Registries
+
+For high availability and multi-party operation, multiple registries can form a federation:
+
+```
+        REGISTRY FEDERATION (Raft Consensus)
+    ┌─────────────────────────────────────────┐
+    │  Registry A ◄──► Registry B ◄──► Registry C  │
+    │  (Leader)       (Follower)      (Follower)   │
+    └─────────────────────────────────────────┘
+         │                │                │
+         ▼                ▼                ▼
+    [nodes a,d]      [node b]         [node c]
+```
+
+See [Multi-Registry Federation](./federation.md) for detailed documentation.
+
 ## Data Flow
 
 ### Node Startup (Bootstrap Sync)
 
-1. Node starts, queries registry for bootstrap peers: `GET /api/nodes/bootstrap`
+1. Node starts, queries registry for peers: `GET /api/peers`
 2. If no peers exist:
    - Register immediately as Ready
    - Start normal gossip operation
@@ -38,19 +59,21 @@ The `kels-registry` service provides node registration and discovery for KELS go
    - Register as Bootstrapping
    - Start listening for gossip updates
    - For each bootstrap peer (in parallel):
-     - Fetch prefix list: `GET /api/kels/prefixes?since=&limit=100`
+     - Fetch prefix list: `POST /api/kels/prefixes` (signed request)
      - For each prefix not in local DB:
        - Fetch KEL via gossip request-response
        - Submit to local KELS
    - Update registration to Ready
-4. Continue normal gossip operation with heartbeats
+4. Continue normal gossip operation
 
 ### Client Node Discovery
 
-1. Client queries registry: `GET /api/nodes`
-2. Client tests latency to each Ready node via `/health` endpoint
-3. Client selects node with lowest latency
-4. Client caches node list with short TTL for retry resilience
+1. Client queries registry for peers: `GET /api/peers`
+2. Client extracts active peers with their `kels_url` endpoints
+3. Client tests readiness of each node via `/ready` endpoint
+4. Client tests latency to each Ready node via `/health` endpoint
+5. Client selects node with lowest latency
+6. Client caches node list with short TTL for retry resilience
 
 ## Components
 
@@ -66,32 +89,68 @@ services/kels-registry/
     ├── main.rs           # Entry point, tracing setup
     ├── lib.rs            # Module definitions
     ├── server.rs         # HTTP router and startup
-    ├── handlers.rs       # All handlers (nodes, peers, registry KEL)
+    ├── handlers.rs       # All handlers (nodes, peers, registry KEL, federation)
     ├── store.rs          # Redis-backed node storage
     ├── signature.rs      # Signature verification
     ├── identity_client.rs # Client for identity service
     ├── peer_store.rs     # PostgreSQL peer repository
     ├── repository.rs     # Combined repository
+    ├── federation/       # Multi-registry federation (Raft consensus)
+    │   ├── mod.rs        # FederationNode entry point
+    │   ├── config.rs     # Federation configuration
+    │   ├── network.rs    # HTTP transport for Raft RPCs
+    │   ├── state_machine.rs # Raft state machine (core peer set)
+    │   ├── storage.rs    # Raft log/vote storage (PostgreSQL)
+    │   └── types.rs      # Federation message types
     └── bin/
         └── kels-registry-admin.rs # Admin CLI for peer management
 ```
 
 ### API Endpoints
 
+#### Standalone Endpoints (always available)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
+
+#### Federation-Only Endpoints
+
+Node management (rate-limited):
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/nodes/register` | Register or update a node (requires signed request) |
 | `POST` | `/api/nodes/deregister` | Deregister a node (requires signed request) |
-| `GET` | `/api/nodes` | List all registered nodes |
-| `GET` | `/api/nodes/:node_id` | Get a specific node |
-| `GET` | `/api/nodes/bootstrap` | Get bootstrap peers (excludes caller via `?exclude=node_id`) |
-| `POST` | `/api/nodes/:node_id/heartbeat` | Keep-alive heartbeat |
 | `POST` | `/api/nodes/status` | Update node status (requires signed request) |
-| `GET` | `/api/peers` | Get peer allowlist |
-| `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
-| `GET` | `/health` | Health check |
 
-> **Note:** Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
+Peer discovery:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/peers` | Get peer allowlist (core from Raft + regional from local DB) |
+| `GET` | `/api/registry-kels` | Get KELs for all federation members |
+
+Federation protocol:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
+| `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
+| `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
+
+Admin API (localhost only):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/admin/addition-proposals` | Propose a new core peer (addition) |
+| `POST` | `/api/admin/removal-proposals` | Propose removal of a core peer |
+| `GET` | `/api/admin/proposals/:proposal_id` | Get proposal details |
+| `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
+| `POST` | `/api/admin/peers` | Add a regional peer |
+
+> **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
 
 ### Data Model
 
@@ -122,11 +181,14 @@ enum NodeStatus {
 
 Added to the KELS service for bootstrap sync:
 
-`GET /api/kels/prefixes?since=<cursor>&limit=<n>`
+`POST /api/kels/prefixes`
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `since` | Cursor (prefix) to start after | (beginning) |
+Accepts a `SignedRequest<PrefixesRequest>` body. Signature and peer verification is enforced unless the `dev-tools` feature is enabled.
+
+| Payload Field | Description | Default |
+|---------------|-------------|---------|
+| `timestamp` | Unix timestamp (replay protection, 60s window) | (required) |
+| `since` | Cursor (prefix) to start after | `null` (beginning) |
 | `limit` | Max prefixes to return | 100 (max: 1000) |
 
 Response includes prefix:SAID pairs for efficient sync comparison:
@@ -150,7 +212,8 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 |----------|-------------|---------|
 | `PORT` | HTTP listen port | `8092` |
 | `REDIS_URL` | Redis connection URL | `redis://redis:6379` |
-| `HEARTBEAT_TIMEOUT_SECS` | Seconds before node marked unhealthy | `30` |
+| `DATABASE_URL` | PostgreSQL connection URL | `postgres://postgres:postgres@postgres:5432/kels` |
+| `IDENTITY_URL` | Identity service URL | `http://identity:80` |
 | `RUST_LOG` | Log level | `kels_registry=info` |
 
 ### Gossip Service
@@ -161,8 +224,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `NODE_ID` | Unique node identifier | (required) |
 | `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
-| `KELS_ADVERTISE_URL` | Advertised KELS URL for external clients | (required) |
-| `KELS_ADVERTISE_URL_INTERNAL` | Advertised KELS URL for node-to-node sync | (optional, defaults to external) |
+| `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
 | `GOSSIP_ADVERTISE_ADDR` | libp2p advertised address | (required) |
 
@@ -172,8 +234,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 
 - Enables multiple registry replicas for HA
 - Stateless service - any replica handles any request
-- Heartbeat TTL via Redis EXPIRE for automatic cleanup
-- Simple key-value storage with SCAN for listing
+- Simple key-value storage for node registrations
 
 ### Separate namespace deployment
 
@@ -189,11 +250,10 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 - Paginated prefix listing handles large deployments
 - Parallel fetching from multiple peers for speed
 
-### Heartbeat-based health (not active probing)
+### Status-based health
 
-- Nodes push heartbeats to registry
+- Nodes update their status via `POST /api/nodes/status`
 - Simpler than registry polling all nodes
-- Redis TTL handles cleanup of dead nodes
 - Nodes continue operating if registry temporarily unavailable
 
 ### Status states
@@ -258,7 +318,6 @@ garden deploy --env=node-b      # Bootstrap syncs from node-a
 - If registry unavailable at startup, fallback to cached peers from previous connections
 - Peer cache stored in PostgreSQL (`kels_gossip` database) for persistence across restarts
 - Once bootstrapped, node operates via gossip mesh independently
-- If heartbeat fails, node periodically re-registers
 - Node continues normal gossip during re-registration attempts
 - Gossip mesh handles discovery of stale/unavailable cached peers
 
@@ -266,12 +325,12 @@ garden deploy --env=node-b      # Bootstrap syncs from node-a
 
 1. Try to connect to registry
 2. If registry available:
-   - Fetch bootstrap peers
+   - Fetch peers
    - Sync peer cache to database
 3. If registry unavailable:
    - Load cached peers from database
    - Use cached peers for bootstrap sync
-4. Continue attempting registry connection for heartbeats and discovery
+4. Continue attempting registry connection for discovery
 
 ### Client resilience
 
@@ -333,17 +392,17 @@ garden deploy --env=registry
 garden deploy --env=node-a
 
 # Create KELs on node-a
-kels-cli -u http://kels.kels-node-a.local incept
-kels-cli -u http://kels.kels-node-a.local incept
+kels-cli -u http://kels.kels-node-a.kels incept
+kels-cli -u http://kels.kels-node-a.kels incept
 
 # Deploy second node (bootstrap syncs from node-a)
 garden deploy --env=node-b
 
 # Verify node-b has the KELs
-kels-cli -u http://kels.kels-node-b.local list
+kels-cli -u http://kels.kels-node-b.kels list
 
 # Test client discovery
-kels-cli --registry http://kels-registry.kels-registry.local list-nodes
+kels-cli --registry http://kels-registry.kels-registry.kels list-nodes
 ```
 
 ### Integration tests

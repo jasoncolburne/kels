@@ -14,13 +14,16 @@
 //! - **Count-Min Sketch**: Estimates access frequency with minimal memory
 //! - **Admission**: Items evicted from window compete with main's victim on frequency
 
-use crate::{KelsError, SignedKeyEvent};
-use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
-use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, VecDeque},
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 use tokio::sync::RwLock;
+
+use redis::{AsyncCommands, aio::ConnectionManager};
+
+use crate::{KelsError, SignedKeyEvent};
 
 const LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
 const PUBSUB_CHANNEL: &str = "kel_updates";
@@ -340,7 +343,7 @@ impl ServerKelCache {
         format!("{}:{}", self.key_prefix, prefix)
     }
 
-    async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
+    pub async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let message = format!("{}:{}", prefix, said);
         let _: () = conn
@@ -350,16 +353,11 @@ impl ServerKelCache {
         Ok(())
     }
 
-    /// Store a complete KEL as pre-serialized JSON
+    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement)
     pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         if events.is_empty() {
             return Ok(());
         }
-
-        let latest_said = match events.last() {
-            Some(e) => &e.event.said,
-            None => return Ok(()),
-        };
 
         let json = serde_json::to_vec(events)?;
 
@@ -376,9 +374,6 @@ impl ServerKelCache {
             let mut local = self.local_cache.write().await;
             local.set(prefix.to_string(), json);
         }
-
-        // Publish for other replicas
-        self.publish_update(prefix, latest_said).await?;
 
         Ok(())
     }
@@ -416,6 +411,21 @@ impl ServerKelCache {
             }
             None => Ok(None),
         }
+    }
+
+    /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
+    ///
+    /// Called when `store()` fails to prevent stale data from persisting until TTL.
+    pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
+        let mut conn = self.conn.clone();
+        let redis_key = self.redis_key(prefix);
+        let _: () = conn
+            .del(&redis_key)
+            .await
+            .map_err(|e| KelsError::CacheError(format!("Redis DEL failed: {}", e)))?;
+        let mut local = self.local_cache.write().await;
+        local.clear(prefix);
+        Ok(())
     }
 
     /// Get full KEL deserialized (for processing)

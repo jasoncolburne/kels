@@ -7,12 +7,19 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use cesr::{Matter, Signature};
+use dashmap::DashMap;
+use futures_util::future::join_all;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-    KelResponse, KelsAuditRecord, KelsError, PrefixListResponse, ServerKelCache, SignedKeyEvent,
+    KelResponse, KelsAuditRecord, KelsError, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse,
+    ServerKelCache, SignedKeyEvent,
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tracing::{debug, warn};
+
+use verifiable_storage::ChainedRepository;
 
 use crate::repository::KelsRepository;
 
@@ -29,9 +36,24 @@ impl IntoResponse for PreSerializedJson {
     }
 }
 
+/// Maximum submissions per prefix per minute (sliding window).
+const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
+
+/// Nonce expiry window in seconds (matches the timestamp validation window).
+#[cfg(not(feature = "dev-tools"))]
+const NONCE_WINDOW_SECS: u64 = 60;
+
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_cache: ServerKelCache,
+    pub(crate) redis_conn: redis::aio::ConnectionManager,
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    pub(crate) registry_urls: Vec<String>,
+    /// Per-prefix rate limiting: maps prefix -> (count, window_start)
+    pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    pub(crate) nonce_cache: DashMap<String, Instant>,
 }
 
 // ==================== Error Handling ====================
@@ -69,12 +91,44 @@ impl ApiError {
         )
     }
 
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    fn forbidden(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::Unauthorized,
+            }),
+        )
+    }
+
+    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    fn internal_error(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::InternalError,
+            }),
+        )
+    }
+
     fn recovery_protected(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::CONFLICT,
             Json(ErrorResponse {
                 error: msg.into(),
                 code: ErrorCode::RecoveryProtected,
+            }),
+        )
+    }
+
+    fn rate_limited(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::RateLimited,
             }),
         )
     }
@@ -129,6 +183,58 @@ pub(crate) async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+/// Ready response
+#[derive(serde::Serialize)]
+pub(crate) struct ReadyResponse {
+    ready: bool,
+    status: String,
+}
+
+/// Check if the node is ready by reading gossip service state from Redis.
+pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ReadyResponse>) {
+    use redis::AsyncCommands;
+
+    let mut conn = state.redis_conn.clone();
+
+    match conn.get::<_, Option<String>>("kels:gossip:ready").await {
+        Ok(Some(status)) if status == "true" => (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                ready: true,
+                status: "ready".to_string(),
+            }),
+        ),
+        Ok(Some(status)) if status == "bootstrapping" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "bootstrapping".to_string(),
+            }),
+        ),
+        Ok(Some(status)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status,
+            }),
+        ),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                ready: false,
+                status: "unknown".to_string(),
+            }),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ReadyResponse {
+                ready: false,
+                status: "error".to_string(),
+            }),
+        ),
+    }
+}
+
 // ==================== Event Handlers ====================
 
 /// Submit key events with signatures.
@@ -138,12 +244,12 @@ pub(crate) async fn health() -> StatusCode {
 ///
 /// # Response Interpretation
 ///
-/// - `{ diverged_at: None, accepted: true }` = success, all events stored
-/// - `{ diverged_at: Some(said), accepted: true }` = divergence detected and recovered
-/// - `{ diverged_at: Some(said), accepted: false }` = divergence, not recovered
+/// - `{ diverged_at: None, applied: true }` = success, all events stored
+/// - `{ diverged_at: Some(said), applied: true }` = divergence detected and recovered
+/// - `{ diverged_at: Some(said), applied: false }` = divergence, not recovered
 ///   - If adversary revealed recovery key (rec/ror) → contested KEL (unrecoverable)
 ///   - If submitted events have no recovery event → recovery not attempted, needs rec event
-/// - `{ diverged_at: None, accepted: false }` = validation error
+/// - `{ diverged_at: None, applied: false }` = validation error
 ///
 /// Note: Delegation verification is NOT performed here. KELS accepts any valid KEL
 /// starting with `icp` or `dip`. Delegation trust is verified by consumers when they need to
@@ -155,8 +261,39 @@ pub(crate) async fn submit_events(
     if events.is_empty() {
         return Ok(Json(BatchSubmitResponse {
             diverged_at: None,
-            accepted: true,
+            applied: true,
         }));
+    }
+
+    if events.len() > MAX_EVENTS_PER_SUBMISSION {
+        return Err(ApiError::bad_request(format!(
+            "Batch exceeds maximum of {} events",
+            MAX_EVENTS_PER_SUBMISSION
+        )));
+    }
+
+    // Get prefix from first event
+    let prefix = events[0].event.prefix.clone();
+
+    // Per-prefix rate limiting (before expensive signature validation)
+    {
+        let now = Instant::now();
+        let mut entry = state
+            .prefix_rate_limits
+            .entry(prefix.clone())
+            .or_insert((0, now));
+        if now.duration_since(entry.1) >= Duration::from_secs(60) {
+            // Reset window
+            entry.0 = 1;
+            entry.1 = now;
+        } else {
+            entry.0 += 1;
+            if entry.0 > MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+                return Err(ApiError::rate_limited(
+                    "Too many submissions for this prefix",
+                ));
+            }
+        }
     }
 
     // Validate all signatures upfront
@@ -176,9 +313,6 @@ pub(crate) async fn submit_events(
         }
     }
 
-    // Get prefix from first event
-    let prefix = events[0].event.prefix.clone();
-
     // Begin transaction with advisory lock - serializes all operations on this prefix
     let mut tx = state
         .repo
@@ -189,9 +323,8 @@ pub(crate) async fn submit_events(
     // Load existing KEL within transaction (sees latest committed state)
     let existing_events = tx.load_signed_events().await?;
     let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
-    kel.sort();
 
-    tracing::debug!(
+    debug!(
         "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
         prefix,
         events.len(),
@@ -213,7 +346,7 @@ pub(crate) async fn submit_events(
         .cloned()
         .collect();
 
-    tracing::debug!(
+    debug!(
         "submit_events: new_events={} (kinds: {:?})",
         new_events.len(),
         new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
@@ -224,7 +357,7 @@ pub(crate) async fn submit_events(
         tx.commit().await?;
         return Ok(Json(BatchSubmitResponse {
             diverged_at: kel.find_divergence().map(|d| d.diverged_at_generation),
-            accepted: true,
+            applied: true,
         }));
     }
 
@@ -233,7 +366,7 @@ pub(crate) async fn submit_events(
         .merge(new_events.clone())
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
-    tracing::debug!("submit_events: merge result={:?}", result);
+    debug!("submit_events: merge result={:?}", result);
 
     for event in &events_to_add {
         tx.insert_signed_event(event).await?;
@@ -250,13 +383,13 @@ pub(crate) async fn submit_events(
     }
 
     // Handle merge result within transaction
-    let accepted = match result {
-        KelMergeResult::Verified
+    let applied = match result {
+        KelMergeResult::Accepted
         | KelMergeResult::Recovered
         | KelMergeResult::Contested
-        | KelMergeResult::Recoverable => true,
-        KelMergeResult::Frozen => false,
-        KelMergeResult::RecoveryProtected => {
+        | KelMergeResult::Diverged => true,
+        KelMergeResult::Rejected => false,
+        KelMergeResult::Protected => {
             // Adversary used recovery key - owner should contest
             return Err(ApiError::recovery_protected(
                 "Cannot submit event - adversary used recovery key. Use contest to freeze the KEL.",
@@ -270,17 +403,31 @@ pub(crate) async fn submit_events(
     let diverged_at = kel.find_divergence().map(|d| d.diverged_at_generation);
 
     // Update cache outside transaction
-    if accepted {
-        // Always fetch and store the updated KEL (including after recovery/contest)
-        // This publishes the correct SAID for gossip synchronization
+    if applied {
         if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
-            tracing::warn!("Failed to update cache: {}", e);
+            warn!("Failed to update cache: {}", e);
+            if let Err(e2) = state.kel_cache.invalidate(&prefix).await {
+                warn!("Failed to invalidate stale cache: {}", e2);
+            }
+        }
+
+        // Publish the SAID of the last submitted event (not events.last() from the
+        // sorted KEL). For same-kind forks (e.g., two ixn at the same serial), the
+        // sorted KEL's last event may be one the other nodes already have, which would
+        // cause them to skip the fetch and miss the newly added event.
+        if let Some(last_new) = new_events.last()
+            && let Err(e) = state
+                .kel_cache
+                .publish_update(&prefix, &last_new.event.said)
+                .await
+        {
+            warn!("Failed to publish cache update: {}", e);
         }
     }
 
     Ok(Json(BatchSubmitResponse {
         diverged_at,
-        accepted,
+        applied,
     }))
 }
 
@@ -288,6 +435,7 @@ pub(crate) async fn submit_events(
 pub(crate) struct GetKelParams {
     #[serde(default)]
     pub audit: bool,
+    pub since: Option<String>,
 }
 
 pub(crate) async fn get_kel(
@@ -295,6 +443,36 @@ pub(crate) async fn get_kel(
     Path(prefix): Path<String>,
     Query(params): Query<GetKelParams>,
 ) -> Result<Response, ApiError> {
+    // If since parameter provided, return delta events after the given SAID
+    if let Some(ref since_said) = params.since {
+        let since_event = state
+            .repo
+            .key_events
+            .get_by_said(since_said)
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("Since SAID {} not found", since_said)))?;
+
+        if since_event.prefix != prefix {
+            return Err(ApiError::bad_request(
+                "Since SAID does not belong to this prefix",
+            ));
+        }
+
+        let events = state
+            .repo
+            .key_events
+            .get_signed_history_since(&prefix, since_event.serial)
+            .await?;
+
+        // Filter out the since event itself — caller already has it
+        let delta: Vec<SignedKeyEvent> = events
+            .into_iter()
+            .filter(|e| e.event.said != *since_said)
+            .collect();
+
+        return Ok(Json(delta).into_response());
+    }
+
     // If audit requested, skip cache and return full KelResponse
     if params.audit {
         let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
@@ -327,7 +505,7 @@ pub(crate) async fn get_kel(
         }
         Ok(None) => {}
         Err(e) => {
-            tracing::warn!("Cache error for prefix {}: {}", prefix, e);
+            warn!("Cache error for prefix {}: {}", prefix, e);
         }
     }
 
@@ -343,42 +521,131 @@ pub(crate) async fn get_kel(
 
     // Store in cache
     if let Err(e) = state.kel_cache.store(&prefix, &signed_events).await {
-        tracing::warn!("Failed to cache KEL: {}", e);
+        warn!("Failed to cache KEL: {}", e);
     }
 
     Ok(Json(signed_events).into_response())
 }
 
+// ==================== Event Exists ====================
+
+pub(crate) async fn event_exists(
+    State(state): State<Arc<AppState>>,
+    Path(said): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if state.repo.key_events.event_exists_by_said(&said).await? {
+        Ok(StatusCode::OK)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
+}
+
 // ==================== Prefix Listing ====================
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ListPrefixesParams {
-    /// Cursor to start after (prefix string)
-    pub since: Option<String>,
-    /// Maximum prefixes to return (default: 100, max: 1000)
-    #[serde(default = "default_prefix_limit")]
-    pub limit: usize,
-}
-
-fn default_prefix_limit() -> usize {
-    100
-}
-
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
+///
+/// Accepts a `SignedRequest<PrefixesRequest>` via POST.
+/// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<ListPrefixesParams>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
-    // Validate and clamp limit
-    let limit = params.limit.clamp(1, 1000);
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        let payload_json = serde_json::to_vec(&signed_request.payload)
+            .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
+        kels::p2p_signature::verify_signature(
+            &payload_json,
+            &signed_request.peer_id,
+            &signed_request.public_key,
+            &signed_request.signature,
+        )
+        .map_err(|e| ApiError::forbidden(format!("Signature verification failed: {}", e)))?;
 
+        if !kels::p2p_signature::validate_timestamp(signed_request.payload.timestamp, 60) {
+            return Err(ApiError::forbidden("Request timestamp expired"));
+        }
+
+        // Nonce deduplication: evict expired entries, then reject duplicates
+        {
+            let now = Instant::now();
+            state.nonce_cache.retain(|_, seen| {
+                now.duration_since(*seen) < Duration::from_secs(NONCE_WINDOW_SECS)
+            });
+            if state
+                .nonce_cache
+                .insert(signed_request.payload.nonce.clone(), now)
+                .is_some()
+            {
+                return Err(ApiError::forbidden("Duplicate nonce"));
+            }
+        }
+
+        // Verify peer is in the authorized peer list (cached in Redis)
+        if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
+            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+
+            if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
+                return Err(ApiError::forbidden("Peer not authorized"));
+            }
+        }
+    }
+
+    let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
     let result = state
         .repo
         .key_events
-        .list_prefixes(params.since.as_deref(), limit)
+        .list_prefixes(signed_request.payload.since.as_deref(), limit)
         .await?;
-
     Ok(Json(result))
+}
+
+/// Check if a peer_id exists in the Redis verified peers cache.
+#[cfg(not(feature = "dev-tools"))]
+async fn is_peer_verified(
+    redis_conn: &redis::aio::ConnectionManager,
+    peer_id: &str,
+) -> Result<bool, ApiError> {
+    use redis::AsyncCommands;
+    let mut conn = redis_conn.clone();
+    conn.exists::<_, bool>(format!("kels:verified-peer:{}", peer_id))
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))
+}
+
+/// Fetch verified peers from the registry and store records in Redis.
+#[cfg(not(feature = "dev-tools"))]
+async fn refresh_verified_peers(
+    redis_conn: &redis::aio::ConnectionManager,
+    registry_urls: &[String],
+) -> Result<(), ApiError> {
+    use redis::AsyncCommands;
+
+    if registry_urls.is_empty() {
+        warn!("No registry URLs configured, skipping peer verification refresh");
+        return Ok(());
+    }
+
+    let mut registry = kels::MultiRegistryClient::new(registry_urls.to_vec());
+    let peers_response = registry
+        .fetch_all_verified_peers()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to fetch peers: {}", e)))?;
+
+    let mut conn = redis_conn.clone();
+    for history in &peers_response.peers {
+        if let Some(peer) = history.records.last()
+            && peer.active
+        {
+            let peer_json = serde_json::to_string(peer)
+                .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
+            conn.set::<_, _, ()>(format!("kels:verified-peer:{}", peer.peer_id), peer_json)
+                .await
+                .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+        }
+    }
+
+    Ok(())
 }
 
 // ==================== Batch Handlers ====================
@@ -387,12 +654,12 @@ pub(crate) async fn list_prefixes(
 const MAX_BATCH_PREFIXES: usize = 50;
 
 /// Batch fetch KELs. Returns map of prefix -> events.
+/// Supports delta fetching: if a since SAID is provided for a prefix,
+/// only events after that SAID are returned.
 pub(crate) async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Response, ApiError> {
-    use futures_util::future::join_all;
-
     if request.prefixes.len() > MAX_BATCH_PREFIXES {
         return Err(ApiError::bad_request(format!(
             "Batch request exceeds maximum of {} prefixes",
@@ -403,30 +670,122 @@ pub(crate) async fn get_kels_batch(
     // Fetch all KELs in parallel
     let futures: Vec<_> = request
         .prefixes
-        .iter()
-        .map(|prefix| {
-            let prefix = prefix.clone();
+        .into_iter()
+        .map(|(prefix, since)| {
             let state = Arc::clone(&state);
 
             async move {
-                // Fast path: return cached bytes directly
-                if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await {
-                    return Ok((prefix, (*bytes).clone()));
+                match since {
+                    // Full fetch path
+                    None => {
+                        // Fast path: return cached bytes directly
+                        if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
+                        {
+                            return Ok((prefix, (*bytes).clone()));
+                        }
+
+                        // Cache miss - fetch from DB
+                        let events = state.repo.key_events.get_signed_history(&prefix).await?;
+
+                        // Store in cache
+                        if !events.is_empty()
+                            && let Err(e) = state.kel_cache.store(&prefix, &events).await
+                        {
+                            warn!("Failed to cache KEL for {}: {}", prefix, e);
+                        }
+
+                        let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                        Ok((prefix, bytes))
+                    }
+                    // Delta fetch path
+                    Some(since_said) => {
+                        // Look up the since event to get its serial
+                        let since_event = match state
+                            .repo
+                            .key_events
+                            .get_by_said(&since_said)
+                            .await?
+                        {
+                            Some(e) => e,
+                            None => {
+                                // SAID not found (archived by recovery) — fall back to full fetch
+                                warn!(
+                                    "Since SAID {} not found for {}, falling back to full fetch",
+                                    since_said, prefix
+                                );
+                                let events =
+                                    state.repo.key_events.get_signed_history(&prefix).await?;
+                                let bytes =
+                                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                                return Ok((prefix, bytes));
+                            }
+                        };
+
+                        if since_event.prefix != prefix {
+                            return Err(ApiError::bad_request(
+                                "Since SAID does not belong to this prefix",
+                            ));
+                        }
+
+                        // Check for divergence
+                        let div_serial = state
+                            .repo
+                            .key_events
+                            .find_divergence_serial(&prefix)
+                            .await?;
+
+                        let delta = match div_serial {
+                            None => {
+                                // No divergence: simple serial-based delta
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, since_event.serial)
+                                    .await?;
+                                events
+                                    .into_iter()
+                                    .filter(|e| e.event.said != since_said)
+                                    .collect::<Vec<_>>()
+                            }
+                            Some(ds) if ds <= since_event.serial => {
+                                // Divergence at or before since event's serial:
+                                // fetch from divergence point and filter out client's events
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, ds)
+                                    .await?;
+                                let kel = Kel::from_events(events.clone(), true).map_err(|e| {
+                                    ApiError::internal_error(format!(
+                                        "Failed to build KEL for divergence filtering: {}",
+                                        e
+                                    ))
+                                })?;
+                                let client_saids = kel.get_event_saids_from_tail(&since_said);
+                                events
+                                    .into_iter()
+                                    .filter(|e| !client_saids.contains(&e.event.said))
+                                    .collect::<Vec<_>>()
+                            }
+                            Some(_) => {
+                                // Divergence after since event's serial:
+                                // client is before divergence, normal delta works
+                                let events = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history_since(&prefix, since_event.serial)
+                                    .await?;
+                                events
+                                    .into_iter()
+                                    .filter(|e| e.event.said != since_said)
+                                    .collect::<Vec<_>>()
+                            }
+                        };
+
+                        let bytes = serde_json::to_vec(&delta).unwrap_or_else(|_| b"[]".to_vec());
+                        Ok((prefix, bytes))
+                    }
                 }
-
-                // Cache miss - fetch from DB
-                let events = state.repo.key_events.get_signed_history(&prefix).await?;
-
-                // Store in cache
-                if !events.is_empty()
-                    && let Err(e) = state.kel_cache.store(&prefix, &events).await
-                {
-                    tracing::warn!("Failed to cache KEL for {}: {}", prefix, e);
-                }
-
-                let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
-
-                Ok((prefix, bytes))
             }
         })
         .collect();
@@ -475,31 +834,6 @@ pub(crate) async fn get_kels_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== default_prefix_limit Tests ====================
-
-    #[test]
-    fn test_default_prefix_limit() {
-        assert_eq!(default_prefix_limit(), 100);
-    }
-
-    // ==================== ListPrefixesParams Tests ====================
-
-    #[test]
-    fn test_list_prefixes_params_defaults() {
-        let json = "{}";
-        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
-        assert!(params.since.is_none());
-        assert_eq!(params.limit, 100);
-    }
-
-    #[test]
-    fn test_list_prefixes_params_with_values() {
-        let json = r#"{"since": "prefix123", "limit": 50}"#;
-        let params: ListPrefixesParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.since, Some("prefix123".to_string()));
-        assert_eq!(params.limit, 50);
-    }
 
     // ==================== GetKelParams Tests ====================
 
@@ -550,6 +884,14 @@ mod tests {
     }
 
     #[test]
+    fn test_api_error_rate_limited() {
+        let err = ApiError::rate_limited("Too many requests");
+        assert_eq!(err.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.1.code, ErrorCode::RateLimited);
+        assert_eq!(err.1.error, "Too many requests");
+    }
+
+    #[test]
     fn test_api_error_from_kels_error() {
         let kels_err = KelsError::SigningFailed("test".to_string());
         let api_err: ApiError = kels_err.into();
@@ -565,11 +907,21 @@ mod tests {
         assert_eq!(api_err.1.code, ErrorCode::InternalError);
     }
 
-    // ==================== MAX_BATCH_PREFIXES Tests ====================
+    // ==================== Constants Tests ====================
 
     #[test]
     fn test_max_batch_prefixes_constant() {
         assert_eq!(MAX_BATCH_PREFIXES, 50);
+    }
+
+    #[test]
+    fn test_max_events_per_submission_constant() {
+        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 500);
+    }
+
+    #[test]
+    fn test_max_submissions_per_prefix_per_minute_constant() {
+        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 32);
     }
 
     // ==================== health Tests ====================
@@ -624,15 +976,19 @@ mod tests {
 
     #[test]
     fn test_batch_kels_request_deserialization() {
-        let json = r#"{"prefixes": ["prefix1", "prefix2", "prefix3"]}"#;
+        let json = r#"{"prefixes": {"prefix1": null, "prefix2": "someSAID", "prefix3": null}}"#;
         let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.prefixes.len(), 3);
-        assert_eq!(request.prefixes[0], "prefix1");
+        assert_eq!(request.prefixes.get("prefix1"), Some(&None));
+        assert_eq!(
+            request.prefixes.get("prefix2"),
+            Some(&Some("someSAID".to_string()))
+        );
     }
 
     #[test]
     fn test_batch_kels_request_empty_prefixes() {
-        let json = r#"{"prefixes": []}"#;
+        let json = r#"{"prefixes": {}}"#;
         let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
         assert!(request.prefixes.is_empty());
     }

@@ -1,5 +1,8 @@
 //! Identity Service REST API Handlers
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 use axum::{
     Json,
     extract::State,
@@ -7,13 +10,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{Kel, KelsError, KeyEventBuilder};
-
-use crate::hsm::HsmKeyProvider;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
-use crate::repository::{IdentityRepository, KeyEventRepository};
+use crate::{
+    hsm::HsmKeyProvider,
+    repository::{IdentityRepository, KeyEventRepository},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +27,19 @@ pub struct AnchorRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AnchorResponse {
     pub event_said: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRequest {
+    pub data: String, // JSON string to sign
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignResponse {
+    pub signature: String,  // QB64-encoded signature
+    pub public_key: String, // QB64-encoded public key used for signing
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +147,36 @@ pub async fn anchor(
 
     Ok(Json(AnchorResponse {
         event_said: ixn.event.said,
+    }))
+}
+
+/// Sign arbitrary data with the registry's current signing key.
+///
+/// Used by federation to sign Raft RPC messages.
+/// Data is a JSON string, signature and public_key are returned as QB64 (CESR).
+pub async fn sign(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SignRequest>,
+) -> Result<Json<SignResponse>, ApiError> {
+    use cesr::Matter;
+    use kels::KeyProvider;
+
+    let builder = state.builder.read().await;
+    let key_provider = builder.key_provider();
+
+    let signature = key_provider
+        .sign(request.data.as_bytes())
+        .await
+        .map_err(|e| ApiError::internal(format!("Signing failed: {}", e)))?;
+
+    let public_key = key_provider
+        .current_public_key()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get public key: {}", e)))?;
+
+    Ok(Json(SignResponse {
+        signature: signature.qb64(),
+        public_key: public_key.qb64(),
     }))
 }
 

@@ -134,6 +134,28 @@ private struct FFINode: Codable {
 
 /// Node discovery from registry using FFI
 public struct NodeDiscovery {
+    /// Fetch and verify the registry's prefix from its KEL
+    /// - Parameter registryUrl: URL of the registry service
+    /// - Returns: The verified registry prefix
+    public static func fetchRegistryPrefix(registryUrl: String) async throws -> String {
+        return try await Task.detached {
+            var result = KelsPrefixResult()
+            kels_fetch_registry_prefix(registryUrl, &result)
+            defer { kels_prefix_result_free(&result) }
+
+            if result.status != KELS_STATUS_OK {
+                let errorMsg = result.error.map { String(cString: $0) }
+                throw KelsClientError.networkError(errorMsg)
+            }
+
+            guard let prefixPtr = result.prefix else {
+                throw KelsClientError.unknown("Registry returned no prefix")
+            }
+
+            return String(cString: prefixPtr)
+        }.value
+    }
+
     /// Discover nodes from registry and test latency
     /// - Parameters:
     ///   - registryUrl: URL of the registry service

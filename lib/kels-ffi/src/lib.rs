@@ -5,6 +5,16 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, RwLock},
+};
+use tokio::runtime::Runtime;
+
+#[cfg(feature = "dev-tools")]
+use kels::EventKind;
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -16,16 +26,10 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KelsRegistryClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, PeersResponse,
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
+    MultiRegistryClient, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
-use tokio::runtime::Runtime;
-use verifiable_storage::Chained;
 
 // ==================== Key State Persistence ====================
 
@@ -1381,8 +1385,16 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let mut counter = 0u32;
 
         for event_type in types {
-            let result = match event_type {
-                "ixn" => {
+            let kind = match EventKind::from_short_name(event_type) {
+                Ok(k) => k,
+                Err(e) => {
+                    set_last_error(&format!("{}", e));
+                    return -1;
+                }
+            };
+
+            let result = match kind {
+                EventKind::Ixn => {
                     let anchor = format!(
                         "EAdversaryAnchor{}{}_",
                         counter,
@@ -1391,9 +1403,10 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
                     counter += 1;
                     adversary_builder.interact(&anchor).await
                 }
-                "rot" => adversary_builder.rotate().await,
-                "rec" | "ror" => adversary_builder.rotate_recovery().await,
-                "dec" => adversary_builder.decommission().await,
+                EventKind::Rot => adversary_builder.rotate().await,
+                EventKind::Rec => adversary_builder.recover(false).await,
+                EventKind::Ror => adversary_builder.rotate_recovery().await,
+                EventKind::Dec => adversary_builder.decommission().await,
                 other => {
                     set_last_error(&format!(
                         "Unsupported event type: {}. Valid: ixn, rot, rec, ror, dec",
@@ -1645,7 +1658,7 @@ struct NodeInfoJson {
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
 ///
 /// # Arguments
-/// * `registry_url` - URL of the kels-registry service
+/// * `registry_url` - Comma-separated URLs of kels-registry services
 /// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
 ///
 /// # Safety
@@ -1667,14 +1680,29 @@ pub unsafe extern "C" fn kels_discover_nodes(
     let result = unsafe { &mut *result };
     *result = KelsNodesResult::default();
 
-    let Some(url) = from_c_string(registry_url) else {
+    let Some(urls_str) = from_c_string(registry_url) else {
         result.status = KelsStatus::Error;
         result.error = to_c_string("Invalid registry URL");
         return;
     };
 
-    // registry_prefix is optional - if provided, we verify against it
-    let expected_prefix = from_c_string(registry_prefix);
+    let urls: Vec<String> = urls_str
+        .split(',')
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+
+    if urls.is_empty() {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("No registry URLs provided");
+        return;
+    }
+
+    let Some(ref expected_prefix) = from_c_string(registry_prefix) else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Invalid registry prefix");
+        return;
+    };
 
     // Create runtime for async operations
     let Ok(runtime) = Runtime::new() else {
@@ -1684,67 +1712,15 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let discover_result = runtime.block_on(async {
-        let client = KelsRegistryClient::new(&url);
+        let mut registry = MultiRegistryClient::new(urls);
 
-        // Build set of verified node_ids from peer records
-        let verified_node_ids: std::collections::HashSet<String> =
-            if let Some(ref expected) = expected_prefix {
-                // Verify registry and get the KEL for peer anchoring checks
-                let registry_kel = client.verify_registry(expected).await?;
+        // Discover nodes with proper status checking and latency testing
+        let nodes = registry.nodes_sorted_by_latency(expected_prefix).await?;
 
-                // Fetch and verify peers, collecting verified node_ids
-                let peers_response: PeersResponse = client.fetch_peers().await?;
-
-                let mut verified = std::collections::HashSet::new();
-                for history in &peers_response.peers {
-                    if let Some(latest) = history.records.last() {
-                        // Skip peers with invalid SAID
-                        if latest.verify().is_err() {
-                            continue;
-                        }
-
-                        // Skip peers not anchored in registry's KEL
-                        if !registry_kel.contains_anchor(&latest.said) {
-                            continue;
-                        }
-
-                        // This peer is verified - trust its node_id
-                        if latest.active {
-                            verified.insert(latest.node_id.clone());
-                        }
-                    }
-                }
-                verified
-            } else {
-                // No verification - empty set means accept all nodes
-                std::collections::HashSet::new()
-            };
-
-        // Fetch all nodes (paginated)
-        let nodes = client.list_all_nodes().await?;
-
-        // Test latency to each Ready node, filtering to verified nodes if verification was performed
-        let mut node_infos: Vec<NodeInfoJson> = Vec::with_capacity(nodes.len());
-
-        for node in nodes {
-            // If we have verified node_ids, only include nodes that passed verification
-            if !verified_node_ids.is_empty() && !verified_node_ids.contains(&node.node_id) {
-                continue;
-            }
-            let latency_ms = if node.status == NodeStatus::Ready {
-                // Test latency with short timeout
-                let kels_client =
-                    KelsClient::with_timeout(&node.kels_url, std::time::Duration::from_millis(500));
-                kels_client
-                    .test_latency()
-                    .await
-                    .ok()
-                    .map(|d| d.as_millis() as u64)
-            } else {
-                None
-            };
-
-            node_infos.push(NodeInfoJson {
+        // Filter to verified nodes and convert to JSON format
+        let node_infos: Vec<NodeInfoJson> = nodes
+            .into_iter()
+            .map(|node| NodeInfoJson {
                 node_id: node.node_id,
                 kels_url: node.kels_url,
                 status: match node.status {
@@ -1752,29 +1728,11 @@ pub unsafe extern "C" fn kels_discover_nodes(
                     NodeStatus::Ready => "ready".to_string(),
                     NodeStatus::Unhealthy => "unhealthy".to_string(),
                 },
-                latency_ms,
-            });
-        }
+                latency_ms: node.latency_ms,
+            })
+            .collect();
 
-        // Sort: Ready nodes with latency first (by latency), then Ready without latency, then others
-        node_infos.sort_by(|a, b| {
-            let a_ready = a.status == "ready";
-            let b_ready = b.status == "ready";
-
-            match (a_ready, b_ready) {
-                (true, true) => match (&a.latency_ms, &b.latency_ms) {
-                    (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                },
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (false, false) => std::cmp::Ordering::Equal,
-            }
-        });
-
-        Ok::<Vec<NodeInfoJson>, KelsError>(node_infos)
+        Ok(node_infos)
     });
 
     match discover_result {
@@ -1816,6 +1774,114 @@ pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
             drop(CString::from_raw(result.nodes_json));
         }
         result.nodes_json = std::ptr::null_mut();
+    }
+
+    if !result.error.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.error));
+        }
+        result.error = std::ptr::null_mut();
+    }
+}
+
+/// Result of fetching registry prefix
+#[repr(C)]
+pub struct KelsPrefixResult {
+    pub status: KelsStatus,
+    pub prefix: *mut c_char,
+    pub error: *mut c_char,
+}
+
+impl Default for KelsPrefixResult {
+    fn default() -> Self {
+        Self {
+            status: KelsStatus::Error,
+            prefix: std::ptr::null_mut(),
+            error: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Fetch and verify the registry's KEL, returning its prefix.
+///
+/// This function:
+/// 1. Fetches the registry's KEL from the given URL
+/// 2. Verifies the KEL's cryptographic integrity
+/// 3. Returns the registry's prefix
+///
+/// The caller should verify the returned prefix is in their trusted set.
+///
+/// # Arguments
+/// * `registry_url` - URL of the kels-registry service
+///
+/// # Safety
+/// - `registry_url` must be a valid C string
+/// - `result` must be a valid pointer to a KelsPrefixResult
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_fetch_registry_prefix(
+    registry_url: *const c_char,
+    result: *mut KelsPrefixResult,
+) {
+    clear_last_error();
+
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+    *result = KelsPrefixResult::default();
+
+    let Some(url) = from_c_string(registry_url) else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Invalid registry URL");
+        return;
+    };
+
+    // Create runtime for async operations
+    let Ok(runtime) = Runtime::new() else {
+        result.status = KelsStatus::Error;
+        result.error = to_c_string("Failed to create async runtime");
+        return;
+    };
+
+    let fetch_result = runtime.block_on(async {
+        let mut registry = MultiRegistryClient::new(vec![url.clone()]);
+        registry.fetch_verified_registry_kels(true).await?;
+        let prefix = registry.prefix_for_url(&url).await?;
+
+        Ok(prefix)
+    });
+
+    match fetch_result {
+        Ok(prefix) => {
+            result.status = KelsStatus::Ok;
+            result.prefix = to_c_string(&prefix);
+        }
+        Err(e) => {
+            result.status = map_error_to_status(&e);
+            result.error = to_c_string(&e.to_string());
+            set_last_error(&e.to_string());
+        }
+    }
+}
+
+/// Free a KelsPrefixResult's allocated strings
+///
+/// # Safety
+/// The result must have been populated by kels_fetch_registry_prefix.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_prefix_result_free(result: *mut KelsPrefixResult) {
+    if result.is_null() {
+        return;
+    }
+
+    let result = unsafe { &mut *result };
+
+    if !result.prefix.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.prefix));
+        }
+        result.prefix = std::ptr::null_mut();
     }
 
     if !result.error.is_null() {
@@ -2110,10 +2176,7 @@ mod tests {
 
     #[test]
     fn test_key_state_save_and_load() {
-        use std::fs;
-
-        let temp_dir = std::env::temp_dir().join("kels_ffi_test");
-        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
         let state = KeyState {
             signing_generation: 100,
@@ -2121,18 +2184,16 @@ mod tests {
         };
 
         // Save
-        state.save(&temp_dir, "test_prefix").expect("save failed");
+        state
+            .save(temp_dir.path(), "test_prefix")
+            .expect("save failed");
 
         // Load
-        let loaded = KeyState::load(&temp_dir, "test_prefix");
+        let loaded = KeyState::load(temp_dir.path(), "test_prefix");
         assert!(loaded.is_some());
         let loaded = loaded.expect("should load");
         assert_eq!(loaded.signing_generation, 100);
         assert_eq!(loaded.recovery_generation, 50);
-
-        // Clean up
-        KeyState::delete(&temp_dir, "test_prefix");
-        let _ = fs::remove_dir(&temp_dir);
     }
 
     #[test]

@@ -229,6 +229,8 @@ Verification does NOT fail on divergence. Instead:
 
 ## Event Types and Their Signatures
 
+Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
+
 | Event Type | Primary Signature | Recovery Signature |
 |------------|-------------------|-------------------|
 | `icp` (incept) | Signing key | - |

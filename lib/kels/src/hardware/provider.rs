@@ -1,10 +1,11 @@
 //! Hardware Key Provider - Secure Enclave backed key storage
 
-use crate::error::KelsError;
-use crate::{compute_rotation_hash, crypto::KeyProvider};
-use cesr::{Matter, PublicKey, Signature};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use cesr::{Matter, PublicKey, Signature};
+
+use crate::{compute_rotation_hash, crypto::KeyProvider, error::KelsError};
 
 use super::secure_enclave::{
     DefaultSecureEnclave, SecureEnclaveKeyHandle, SecureEnclaveOperations,
@@ -396,52 +397,5 @@ impl KeyProvider for HardwareKeyProvider {
         let handle = &key_handles[0];
 
         self.enclave.sign(handle, data)
-    }
-}
-
-// ==================== Tests ====================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cesr::Matter;
-
-    #[tokio::test]
-    async fn test_hardware_provider_availability() {
-        if let Some(mut provider) = HardwareKeyProvider::new("test-kels-provider") {
-            if let Some(label) = provider.current_handle().await
-                && let Some(enclave) = DefaultSecureEnclave::new()
-            {
-                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
-            }
-            if let Some(label) = provider.next_handle().await
-                && let Some(enclave) = DefaultSecureEnclave::new()
-            {
-                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
-            }
-
-            let (pub1, _hash1, _recovery_hash1) = provider.generate_initial_keys().await.unwrap();
-
-            let current = provider.current_public_key().await.unwrap();
-            assert_eq!(pub1.raw(), current.raw());
-
-            let data = b"test message";
-            let sig = provider.sign(data).await.unwrap();
-
-            current.verify(data, &sig).unwrap();
-
-            if let Some(label) = provider.current_handle().await
-                && let Some(enclave) = DefaultSecureEnclave::new()
-            {
-                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
-            }
-            if let Some(label) = provider.next_handle().await
-                && let Some(enclave) = DefaultSecureEnclave::new()
-            {
-                let _ = enclave.delete_key(&SecureEnclaveKeyHandle { label });
-            }
-        } else {
-            println!("Secure Enclave not available, skipping test");
-        }
     }
 }

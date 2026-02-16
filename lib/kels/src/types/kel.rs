@@ -1,12 +1,16 @@
 //! Key Event Log (KEL) - cryptographically linked chain of key events
 
-use crate::error::KelsError;
-use crate::types::{KelMergeResult, KeyEvent, SignedKeyEvent};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::{Deref, DerefMut},
+};
+
 use cesr::{Digest, Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
 use verifiable_storage::Chained;
+
+use super::{KelMergeResult, KeyEvent, SignedKeyEvent};
+use crate::error::KelsError;
 
 pub fn compute_rotation_hash(public_key: &str) -> String {
     let digest = Digest::blake3_256(public_key.as_bytes());
@@ -71,6 +75,13 @@ impl Kel {
 
     pub fn prefix(&self) -> Option<&str> {
         self.0.first().map(|e| e.event.prefix.as_str())
+    }
+
+    pub fn verify_prefix(&self, trusted_prefixes: &HashSet<&str>) -> bool {
+        match self.prefix() {
+            Some(p) => trusted_prefixes.contains(&p),
+            None => false,
+        }
     }
 
     // ==================== State Queries ====================
@@ -158,6 +169,54 @@ impl Kel {
             .any(|e| e.event.reveals_recovery_key() && divergent_saids.contains(&e.event.said))
     }
 
+    /// Check if any recovery-revealing event in the divergent SAIDs was created by
+    /// an adversary (i.e., is NOT on the owner's chain). Used to distinguish the owner's
+    /// own ror from an adversary's recovery event when deciding rec vs contest.
+    fn adversary_revealed_recovery(
+        &self,
+        divergent_saids: &HashSet<String>,
+        owner_kel_saids: &HashSet<String>,
+    ) -> bool {
+        self.iter().any(|e| {
+            e.event.reveals_recovery_key()
+                && divergent_saids.contains(&e.event.said)
+                && !owner_kel_saids.contains(&e.event.said)
+        })
+    }
+
+    /// Check that the owner chain trace reaches the inception event.
+    /// Returns false if predecessor events are missing from the KEL,
+    /// which would cause filter_events_by_said to incorrectly archive legitimate events.
+    fn owner_chain_reaches_inception(&self, owner_kel_saids: &HashSet<String>) -> bool {
+        self.iter()
+            .any(|e| owner_kel_saids.contains(&e.event.said) && e.event.previous.is_none())
+    }
+
+    /// Try to recover a frozen KEL given the rec event's previous SAID and divergence info.
+    /// Traces the owner's chain, verifies it reaches inception, checks for adversary recovery,
+    /// archives adversary events, and appends remaining events.
+    fn try_recover(
+        &mut self,
+        rec_previous: &str,
+        divergent_saids: &HashSet<String>,
+        post_rec_events: &[SignedKeyEvent],
+    ) -> Result<Option<Vec<SignedKeyEvent>>, KelsError> {
+        let owner_kel_saids = self.get_event_saids_from_tail(rec_previous);
+
+        if !self.owner_chain_reaches_inception(&owner_kel_saids) {
+            return Ok(None);
+        }
+
+        if self.adversary_revealed_recovery(divergent_saids, &owner_kel_saids) {
+            return Err(KelsError::ContestRequired);
+        }
+
+        let adversary_events = self.filter_events_by_said(&owner_kel_saids)?;
+        self.extend(post_rec_events.iter().cloned());
+        self.verify()?;
+        Ok(Some(adversary_events))
+    }
+
     // ==================== Mutation ====================
 
     pub fn extend(&mut self, events: impl IntoIterator<Item = SignedKeyEvent>) {
@@ -221,18 +280,10 @@ impl Kel {
         // Safe due to empty check above
         let first = &events[0];
 
-        // Check if KEL is already divergent (frozen)
-        // Only recovery-revealing events (rec/ror/dec/cnt) can unfreeze
+        // Handle already-divergent (frozen) KEL
         let divergence = self.find_divergence();
-        if divergence.is_some() && !first.event.reveals_recovery_key() {
-            return Ok((vec![], vec![], KelMergeResult::Frozen));
-        }
-
-        // If KEL is divergent and we're receiving a recovery event, use special handling.
-        // The normal overlap logic uses array indices as versions, which breaks for divergent KELs.
-        if let Some(divergence_info) = divergence
-            && first.event.reveals_recovery_key()
-        {
+        if let Some(ref divergence_info) = divergence {
+            // Contest — only valid when adversary has also revealed recovery
             if first.event.is_contest() {
                 if self.reveals_recovery_after_divergence(&divergence_info.divergent_saids) {
                     if events.len() > 1 {
@@ -240,37 +291,42 @@ impl Kel {
                             "Cannot append events after contest".to_string(),
                         ));
                     }
-
-                    // Contest: Just append cnt event, don't truncate. KEL stays divergent but frozen.
-                    // This gives visibility to the contested state while preserving all events.
                     self.extend(events.iter().cloned());
                     self.verify()?;
-                    return Ok((vec![], events, KelMergeResult::Contested)); // Empty vec = nothing to archive
+                    return Ok((vec![], events, KelMergeResult::Contested));
                 } else {
                     return Err(KelsError::Frozen);
                 }
-            } else if first.event.is_recover() {
-                if !self.reveals_recovery_after_divergence(&divergence_info.divergent_saids) {
-                    // Recovery: Keep owner's chain, archive adversary events.
-                    // Owner's chain is identified by tracing back from rec's previous field.
-                    let Some(owner_tail_said) = &first.event.previous else {
-                        return Err(KelsError::InvalidKel(
-                            "Recovery event has no previous".into(),
-                        ));
-                    };
-
-                    let owner_kel_saids = self.get_event_saids_from_tail(owner_tail_said);
-                    let adversary_events = self.filter_events_by_said(&owner_kel_saids)?;
-
-                    self.extend(events.iter().cloned());
-                    self.verify()?;
-                    return Ok((adversary_events, events, KelMergeResult::Recovered));
-                } else {
-                    return Err(KelsError::ContestRequired);
-                }
-            } else {
-                return Err(KelsError::Frozen);
             }
+
+            // Look for rec anywhere in the batch (handles [rec], [rec, rot],
+            // [owner_ixn, rec], etc.)
+            if let Some(rec_idx) = events.iter().position(|e| e.event.is_recover()) {
+                if rec_idx > 0 {
+                    self.extend(events[..rec_idx].iter().cloned());
+                }
+                let divergence_info = self
+                    .find_divergence()
+                    .unwrap_or_else(|| divergence_info.clone());
+                let Some(rec_previous) = &events[rec_idx].event.previous else {
+                    return Err(KelsError::InvalidKel(
+                        "Recovery event has no previous".into(),
+                    ));
+                };
+                match self.try_recover(
+                    rec_previous,
+                    &divergence_info.divergent_saids,
+                    &events[rec_idx..],
+                ) {
+                    Ok(Some(adversary_events)) => {
+                        return Ok((adversary_events, events, KelMergeResult::Recovered));
+                    }
+                    Ok(None) => return Ok((vec![], vec![], KelMergeResult::Rejected)),
+                    Err(e) => return Err(e),
+                }
+            }
+
+            return Ok((vec![], vec![], KelMergeResult::Rejected));
         }
 
         let Some(first_previous) = events.first().map(|e| e.event.previous.clone()) else {
@@ -295,7 +351,7 @@ impl Kel {
             }
 
             self.extend(events.iter().cloned());
-            (vec![], events, KelMergeResult::Verified)
+            (vec![], events, KelMergeResult::Accepted)
         } else if let Some(previous) = first_previous
             && self.iter().any(|e| e.event.said == previous)
         {
@@ -306,7 +362,7 @@ impl Kel {
                 .all(|e| events_by_said.contains_key(e.event.said.as_str()));
 
             if all_saids_present {
-                (vec![], vec![], KelMergeResult::Verified)
+                (vec![], vec![], KelMergeResult::Accepted)
             } else {
                 let divergent_new_events: Vec<_> = events
                     .iter()
@@ -375,31 +431,38 @@ impl Kel {
                         self.push(divergent_new_event.clone());
                         (vec![], vec![divergent_new_event], KelMergeResult::Contested)
                     } else {
-                        return Ok((vec![], vec![], KelMergeResult::RecoveryProtected));
+                        return Ok((vec![], vec![], KelMergeResult::Protected));
                     }
-                } else if divergent_new_event.event.is_recover() {
-                    self.extend(divergent_new_events.iter().cloned());
-                    let Some(new_tail_said) =
-                        divergent_new_events.last().map(|e| e.event.said.clone())
-                    else {
+                } else if let Some(rec_idx) = divergent_new_events
+                    .iter()
+                    .position(|e| e.event.is_recover())
+                {
+                    if rec_idx > 0 {
+                        self.extend(divergent_new_events[..rec_idx].iter().cloned());
+                    }
+                    let Some(rec_previous) = &divergent_new_events[rec_idx].event.previous else {
                         return Err(KelsError::InvalidKel(
-                            "Divergence detected but no new divergent events".to_string(),
+                            "Recovery event has no previous".into(),
                         ));
                     };
-                    let owner_saids = self.get_event_saids_from_tail(&new_tail_said);
-                    let removed_events = self.filter_events_by_said(&owner_saids)?;
-                    (
-                        removed_events,
-                        divergent_new_events,
-                        KelMergeResult::Recovered,
-                    )
+                    match self.try_recover(
+                        rec_previous,
+                        &divergent_old_saids,
+                        &divergent_new_events[rec_idx..],
+                    ) {
+                        Ok(Some(adversary_events)) => {
+                            return Ok((adversary_events, events, KelMergeResult::Recovered));
+                        }
+                        Ok(None) => {
+                            return Err(KelsError::InvalidKel(
+                                "Recovery event chain does not reach inception".into(),
+                            ));
+                        }
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     self.push(divergent_new_event.clone());
-                    (
-                        vec![],
-                        vec![divergent_new_event],
-                        KelMergeResult::Recoverable,
-                    )
+                    (vec![], vec![divergent_new_event], KelMergeResult::Diverged)
                 }
             }
         } else {
@@ -480,11 +543,18 @@ impl Kel {
     }
 
     pub fn sort(&mut self) {
-        let sorted: Vec<SignedKeyEvent> = self
-            .walk_generations()
-            .flat_map(|(_, events)| events.into_iter().cloned())
-            .collect();
-        self.0 = sorted;
+        self.0.sort_by(|a, b| {
+            a.event
+                .serial
+                .cmp(&b.event.serial)
+                .then(
+                    a.event
+                        .kind
+                        .sort_priority()
+                        .cmp(&b.event.kind.sort_priority()),
+                )
+                .then(a.event.said.cmp(&b.event.said))
+        });
     }
 
     /// Walk the KEL generation by generation, yielding events at each generation.
@@ -595,8 +665,31 @@ impl Kel {
             }
 
             match event.previous.as_deref() {
-                Some(prev) => current_said = prev,
-                None => break, // Reached inception
+                Some(prev) => {
+                    // Verify serial monotonicity: previous event must have serial - 1
+                    if let Some(prev_event) = events_by_said.get(prev)
+                        && event.serial != prev_event.event.serial + 1
+                    {
+                        return Err(KelsError::InvalidSerial(format!(
+                            "Event {} has serial {} but previous event {} has serial {}",
+                            event.said,
+                            event.serial,
+                            prev_event.event.said,
+                            prev_event.event.serial
+                        )));
+                    }
+                    current_said = prev;
+                }
+                None => {
+                    // Inception event must have serial 0
+                    if event.serial != 0 {
+                        return Err(KelsError::InvalidSerial(format!(
+                            "Inception event {} has serial {} but expected 0",
+                            event.said, event.serial
+                        )));
+                    }
+                    break;
+                }
             }
         }
 
@@ -1567,7 +1660,7 @@ mod tests {
         let (archived, added, merge_result) = result.unwrap();
         assert!(archived.is_empty());
         assert_eq!(added.len(), 1);
-        assert_eq!(merge_result, KelMergeResult::Verified);
+        assert_eq!(merge_result, KelMergeResult::Accepted);
         assert_eq!(kel.len(), 2);
     }
 
@@ -1671,7 +1764,7 @@ mod tests {
         let (archived, added, merge_result) = result.unwrap();
         assert!(archived.is_empty());
         assert!(added.is_empty()); // No new events added
-        assert_eq!(merge_result, KelMergeResult::Verified);
+        assert_eq!(merge_result, KelMergeResult::Accepted);
     }
 
     #[tokio::test]
@@ -1784,7 +1877,7 @@ mod tests {
     #[tokio::test]
     async fn test_merge_non_recovery_on_frozen_kel_returns_frozen() {
         // When KEL is divergent (frozen) and new event doesn't reveal recovery key,
-        // merge should return Frozen result
+        // merge should return Rejected result
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
         let anchor1 = Digest::blake3_256(b"anchor1").qb64();
@@ -1811,14 +1904,14 @@ mod tests {
 
         assert!(kel.find_divergence().is_some());
 
-        // Try to merge another ixn (non-recovery event) - should return Frozen
+        // Try to merge another ixn (non-recovery event) - should return Rejected
         let anchor3 = Digest::blake3_256(b"anchor3").qb64();
         let ixn3 = builder1.interact(&anchor3).await.unwrap();
         let result = kel.merge(vec![ixn3]);
 
         assert!(result.is_ok());
         let (_, _, merge_result) = result.unwrap();
-        assert_eq!(merge_result, KelMergeResult::Frozen);
+        assert_eq!(merge_result, KelMergeResult::Rejected);
     }
 
     #[tokio::test]
@@ -1862,7 +1955,7 @@ mod tests {
     #[tokio::test]
     async fn test_merge_recoverable_divergence() {
         // When divergent events arrive but neither side has used recovery key,
-        // merge should return Recoverable
+        // merge should return Diverged
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
         let anchor1 = Digest::blake3_256(b"anchor1").qb64();
@@ -1894,7 +1987,7 @@ mod tests {
 
         assert!(result.is_ok());
         let (archived, added, merge_result) = result.unwrap();
-        assert_eq!(merge_result, KelMergeResult::Recoverable);
+        assert_eq!(merge_result, KelMergeResult::Diverged);
         assert!(archived.is_empty()); // Nothing archived yet
         assert_eq!(added.len(), 1); // Divergent event was added
     }
@@ -1936,7 +2029,7 @@ mod tests {
     #[tokio::test]
     async fn test_merge_recovery_protected_scenario() {
         // When old (existing) events have revealed recovery key and new event is not contest,
-        // merge should return RecoveryProtected
+        // merge should return Protected
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
 
@@ -1967,7 +2060,7 @@ mod tests {
 
         assert!(result.is_ok());
         let (_, _, merge_result) = result.unwrap();
-        assert_eq!(merge_result, KelMergeResult::RecoveryProtected);
+        assert_eq!(merge_result, KelMergeResult::Protected);
     }
 
     #[tokio::test]
@@ -2391,5 +2484,501 @@ mod tests {
             result,
             Err(KelsError::InvalidKel(ref msg)) if msg.contains("not contiguous")
         ));
+    }
+
+    // ==================== 3-Way Fork Recovery Tests ====================
+    // These tests cover recovery through a frozen KEL that has only adversary events,
+    // where the owner's pre-recovery events must be added before the rec event.
+
+    #[tokio::test]
+    async fn test_merge_batch_with_recovery_on_frozen_kel() {
+        // 3-way fork: KEL frozen with two adversary events, owner submits [owner_ixn, rec]
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Clone for two adversaries (both start from icp)
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner creates ixn
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+
+        // Adversaries create independent divergent events (both from icp)
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with only adversary events (simulates node that received adv1 then adv2)
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv1.clone(), adv2.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates recovery event (previous = owner_ixn)
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [owner_ixn, rec] batch — this is the 3-way fork fix
+        let result = kel.merge(vec![owner_ixn.clone(), rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Both adversary events should be archived
+        assert_eq!(archived.len(), 2);
+        let archived_saids: HashSet<String> =
+            archived.iter().map(|e| e.event.said.clone()).collect();
+        assert!(archived_saids.contains(&adv1.event.said));
+        assert!(archived_saids.contains(&adv2.event.said));
+        // Both owner_ixn and rec should be added
+        assert_eq!(added.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_merge_batch_with_recovery_on_frozen_kel_three_way() {
+        // KEL already has all three branches (owner_ixn + adv1 + adv2), merge [rec] alone
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build KEL with all three branches visible
+        let mut kel = Kel::from_events(
+            vec![icp.clone(), owner_ixn.clone(), adv1.clone(), adv2.clone()],
+            true,
+        )
+        .unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates recovery event
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge rec alone — first event IS rec on frozen KEL with owner event already in it
+        let result = kel.merge(vec![rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Both adversary events should be archived
+        assert_eq!(archived.len(), 2);
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_recover());
+    }
+
+    #[tokio::test]
+    async fn test_merge_frozen_kel_batch_no_recovery_still_frozen() {
+        // Non-recovery batch on frozen KEL should still return Rejected
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        let owner_ixn1 = owner
+            .interact("EOwnerAnchor1_______________________________")
+            .await
+            .unwrap();
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Divergent KEL with only adversary events
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv1.clone(), adv2.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates more ixn events (no recovery)
+        let owner_ixn2 = owner
+            .interact("EOwnerAnchor2_______________________________")
+            .await
+            .unwrap();
+
+        // Merge [owner_ixn1, owner_ixn2] — no rec in batch, should be Rejected
+        let result = kel.merge(vec![owner_ixn1, owner_ixn2]);
+
+        assert!(result.is_ok());
+        let (_, _, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Rejected);
+    }
+
+    #[tokio::test]
+    async fn test_merge_batch_owner_ixn_then_recovery_on_frozen_kel_with_owner_event() {
+        // KEL has owner_ixn + adv1 (frozen), owner submits [owner_ixn2, rec]
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary = owner.clone();
+
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let adv1 = adversary
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with owner_ixn and adversary event
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), owner_ixn.clone(), adv1.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates more events after owner_ixn
+        let owner_ixn2 = owner
+            .interact("EOwnerAnchor2_______________________________")
+            .await
+            .unwrap();
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [owner_ixn2, rec]
+        let result = kel.merge(vec![owner_ixn2.clone(), rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Adversary event should be archived
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].event.said, adv1.event.said);
+        // Both owner_ixn2 and rec should be added
+        assert_eq!(added.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_merge_batch_ror_then_recovery_on_frozen_kel() {
+        // KEL frozen with two adversary events, owner submits [ror, rec]
+        // ror reveals recovery key (so first.event.reveals_recovery_key() is true)
+        // but ror is not rec or cnt, so it falls through the existing handler.
+        // The look-ahead fix in the else branch should find rec and recover.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner does ror (rotate recovery key)
+        let ror = owner.rotate_recovery().await.unwrap();
+
+        // Adversaries create independent divergent events (both from icp)
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with only adversary events
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv1.clone(), adv2.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates recovery event (previous = ror)
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [ror, rec] batch
+        let result = kel.merge(vec![ror.clone(), rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Both adversary events should be archived
+        assert_eq!(archived.len(), 2);
+        let archived_saids: HashSet<String> =
+            archived.iter().map(|e| e.event.said.clone()).collect();
+        assert!(archived_saids.contains(&adv1.event.said));
+        assert!(archived_saids.contains(&adv2.event.said));
+        // Both ror and rec should be added
+        assert_eq!(added.len(), 2);
+    }
+
+    // ==================== ROR Propagation + Same-Chain Recovery Tests ====================
+    // These tests cover the scenario where an adversary times an attack with the owner's
+    // scheduled ror, freezing other nodes. The ror must propagate to frozen nodes,
+    // and rec must work when ror is on the owner's own chain.
+
+    #[tokio::test]
+    async fn test_merge_ror_on_frozen_kel_returns_frozen() {
+        // Divergent KEL [icp, adv1, adv2] receives [ixn, ror] — no rec, returns Rejected
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner creates ixn then ror
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let ror = owner.rotate_recovery().await.unwrap();
+
+        // Adversaries create independent divergent events
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with only adversary events
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv1.clone(), adv2.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Merge [ixn, ror] — no rec in batch, KEL stays frozen
+        let result = kel.merge(vec![owner_ixn.clone(), ror.clone()]);
+
+        assert!(result.is_ok());
+        let (_, _, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Rejected);
+        assert_eq!(kel.len(), 3); // Unchanged
+    }
+
+    #[tokio::test]
+    async fn test_merge_rec_on_frozen_kel_with_owner_ror() {
+        // KEL [icp, adv1, adv2, ixn, ror] receives [rec] — owner's ror is same-chain, recover
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner creates ixn then ror
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let ror = owner.rotate_recovery().await.unwrap();
+
+        // Adversaries create independent divergent events
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with owner's chain (ixn + ror) and adversary events
+        let mut kel = Kel::from_events(
+            vec![
+                icp.clone(),
+                adv1.clone(),
+                adv2.clone(),
+                owner_ixn.clone(),
+                ror.clone(),
+            ],
+            true,
+        )
+        .unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates rec (previous = ror)
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [rec] — ror is on owner's chain, should recover (not ContestRequired)
+        let result = kel.merge(vec![rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Both adversary events should be archived
+        assert_eq!(archived.len(), 2);
+        let archived_saids: HashSet<String> =
+            archived.iter().map(|e| e.event.said.clone()).collect();
+        assert!(archived_saids.contains(&adv1.event.said));
+        assert!(archived_saids.contains(&adv2.event.said));
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_recover());
+    }
+
+    #[tokio::test]
+    async fn test_merge_rec_on_frozen_kel_with_adversary_ror() {
+        // KEL has adversary's ror and owner's ixn — rec should require contest
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        // Save keys for adversary before any divergence
+        let (pre_current, pre_next, pre_recovery) = clone_keys(&owner);
+
+        // Owner creates ixn
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+
+        // Adversary does ror (reveals recovery key) from icp
+        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
+        let mut adversary = KeyEventBuilder::with_kel(
+            SoftwareKeyProvider::with_all_keys(pre_current, pre_next, pre_recovery),
+            None,
+            None,
+            adversary_kel,
+        )
+        .unwrap();
+        let adv_ror = adversary.rotate_recovery().await.unwrap();
+
+        // Build frozen KEL with adversary's ror and owner's ixn
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv_ror.clone(), owner_ixn.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Owner creates rec (previous = owner_ixn)
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [rec] — adversary's ror is NOT on owner's chain → ContestRequired
+        let result = kel.merge(vec![rec]);
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(KelsError::ContestRequired)));
+    }
+
+    #[tokio::test]
+    async fn test_merge_rec_on_non_divergent_kel() {
+        // Owner's node has clean [icp, ixn, ror], rec appends normally as Accepted
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        owner.incept().await.unwrap();
+        owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        owner.rotate_recovery().await.unwrap();
+
+        let mut kel = Kel::from_events(owner.events().to_vec(), false).unwrap();
+        assert!(kel.find_divergence().is_none()); // Not divergent
+
+        // Owner creates rec (previous = ror)
+        let rec = owner.recover(false).await.unwrap();
+
+        // Merge [rec] on non-divergent KEL — normal append
+        let result = kel.merge(vec![rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Accepted but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Accepted);
+        assert!(archived.is_empty());
+        assert_eq!(added.len(), 1);
+        assert!(added[0].event.is_recover());
+        assert_eq!(kel.len(), 4); // icp + ixn + ror + rec
+    }
+
+    #[tokio::test]
+    async fn test_merge_full_flow_ixn_ror_rec_on_frozen_kel() {
+        // Full batch [ixn, ror, rec] arrives at frozen KEL [icp, adv1, adv2] → Recovered
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner creates ixn, ror, rec
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let ror = owner.rotate_recovery().await.unwrap();
+        let rec = owner.recover(false).await.unwrap();
+
+        // Adversaries create independent divergent events
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with only adversary events
+        let mut kel =
+            Kel::from_events(vec![icp.clone(), adv1.clone(), adv2.clone()], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Merge full batch [ixn, ror, rec]
+        let result = kel.merge(vec![owner_ixn.clone(), ror.clone(), rec.clone()]);
+
+        assert!(result.is_ok(), "Expected Recovered but got: {:?}", result);
+        let (archived, added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Recovered);
+        // Both adversary events should be archived
+        assert_eq!(archived.len(), 2);
+        let archived_saids: HashSet<String> =
+            archived.iter().map(|e| e.event.said.clone()).collect();
+        assert!(archived_saids.contains(&adv1.event.said));
+        assert!(archived_saids.contains(&adv2.event.said));
+        // All three owner events should be added
+        assert_eq!(added.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_merge_ror_alone_on_frozen_kel_returns_frozen() {
+        // Divergent KEL already has owner's ixn: [icp, adv1, adv2, ixn]
+        // Just [ror] arrives — should return Rejected (no rec in batch)
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary1 = owner.clone();
+        let mut adversary2 = owner.clone();
+
+        // Owner creates ixn then ror
+        let owner_ixn = owner
+            .interact("EOwnerAnchor________________________________")
+            .await
+            .unwrap();
+        let ror = owner.rotate_recovery().await.unwrap();
+
+        // Adversaries create independent divergent events
+        let adv1 = adversary1
+            .interact("EAdversary1_________________________________")
+            .await
+            .unwrap();
+        let adv2 = adversary2
+            .interact("EAdversary2_________________________________")
+            .await
+            .unwrap();
+
+        // Build frozen KEL with owner's ixn already present (3-way fork)
+        let mut kel = Kel::from_events(
+            vec![icp.clone(), adv1.clone(), adv2.clone(), owner_ixn.clone()],
+            true,
+        )
+        .unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        // Merge just [ror] — ror is not rec, so frozen KEL rejects it
+        let result = kel.merge(vec![ror.clone()]);
+
+        assert!(result.is_ok(), "Expected Rejected but got: {:?}", result);
+        let (_archived, _added, merge_result) = result.unwrap();
+        assert_eq!(merge_result, KelMergeResult::Rejected);
     }
 }

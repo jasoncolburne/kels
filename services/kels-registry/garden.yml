@@ -2,7 +2,11 @@ kind: Build
 name: kels-registry
 type: container
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - run.federation-read-prefixes
+  - run.federation-read-members
 
 source:
   path: ../..  # Set build context to repository root
@@ -12,9 +16,13 @@ include:
   - lib/kels-derive/**/*
   - services/kels-registry/**/*
   - project.garden.yml
+  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/kels-registry/Dockerfile
+  buildArgs:
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
+    TRUSTED_REGISTRY_MEMBERS: ${actions.run.federation-read-members.outputs.log}
 
 ---
 
@@ -22,17 +30,21 @@ kind: Deploy
 name: kels-registry
 type: kubernetes
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - build.kels-registry
   - deploy.redis
   - deploy.postgres
   - deploy.identity
+  - run.federation-read-prefix
+  - run.federation-read-member-urls
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
   identityUrl: ${var.identity.url}
+  federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
+  federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
 
 spec:
   manifestTemplates:
@@ -41,10 +53,10 @@ spec:
 ---
 
 kind: Run
-name: fetch-registry-prefix
+name: federation-fetch
 type: exec
 
-disabled: ${environment.name != 'registry'}
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.identity
@@ -52,27 +64,23 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      mkdir -p ../../.kels
-      RESPONSE=$(kubectl exec -n ${environment.namespace} deploy/identity -c identity -- \
-        /app/identity-admin -j status 2>/dev/null)
-      PREFIX=$(echo "$RESPONSE" | jq -r '.prefix // empty')
-      if [ -z "$PREFIX" ]; then
-        echo "Error: Could not fetch registry prefix. Is identity service initialized?"
-        echo "Response: $RESPONSE"
-        exit 1
-      fi
-      echo -n "$PREFIX" > "../../.kels/registry_prefix"
-      echo "Registry prefix saved: $PREFIX"
+    - ../../scripts/federation-fetch.sh
+    - ${environment.name}
+    - ${environment.namespace}
+    - ../..
 
 ---
 
+# Propose core peer actions (creates proposal, outputs proposal ID)
+
 kind: Run
-name: add-node-a
+name: propose-add-node-a
 type: exec
 
-disabled: ${environment.name != 'registry'}
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -80,23 +88,19 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-a"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-a
+    - scripts/propose-add-peer.sh
+    - node-a
 
 ---
 
 kind: Run
-name: add-node-b
+name: propose-add-node-b
 type: exec
 
-disabled: ${environment.name != 'registry'}
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -104,23 +108,19 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-b 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-b"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-b
+    - scripts/propose-add-peer.sh
+    - node-b
 
 ---
 
 kind: Run
-name: add-node-c
+name: propose-add-node-c
 type: exec
 
-disabled: ${environment.name != 'registry'}
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
 
 dependencies:
   - deploy.kels-registry
@@ -128,13 +128,201 @@ dependencies:
 spec:
   command:
     - bash
-    - -c
-    - |
-      PEER_ID=$(garden run fetch-gossip-identity --env node-c 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-      if [ -z "$PEER_ID" ]; then
-        echo "Error: Could not fetch PeerId from node-c"
-        exit 1
-      fi
-      kubectl exec -n ${environment.namespace} deploy/kels-registry -c kels-registry -- \
-        /app/kels-registry-admin peer add --peer-id "$PEER_ID" --node-id node-c
+    - scripts/propose-add-peer.sh
+    - node-c
 
+---
+
+# Propose core peer removal actions (creates removal proposal, outputs proposal ID)
+
+kind: Run
+name: propose-remove-node-a
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - node-a
+
+---
+
+kind: Run
+name: propose-remove-node-b
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - node-b
+
+---
+
+kind: Run
+name: propose-remove-node-c
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - node-c
+
+---
+
+# Vote to approve a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: vote-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+    - "true"
+
+---
+
+# Vote to reject a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: reject-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+    - "false"
+
+---
+
+# Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: withdraw-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/withdraw-peer.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+
+---
+
+# Regional peer actions (direct add, no proposal needed)
+
+kind: Run
+name: add-regional-node-d
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/add-regional-node.sh
+    - node-d
+    - ${environment.namespace}
+---
+
+kind: Run
+name: add-regional-node-e
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/add-regional-node.sh
+    - node-e
+    - ${environment.namespace}
+---
+
+kind: Run
+name: add-regional-node-f
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/add-regional-node.sh
+    - node-f
+    - ${environment.namespace}

@@ -3,13 +3,16 @@
 //! Provides a simplified interface to SoftHSM2 via cryptoki.
 //! Keys are identified by their label and looked up each time.
 
-use cryptoki::context::{CInitializeArgs, Pkcs11};
-use cryptoki::mechanism::Mechanism;
-use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
-use cryptoki::session::{Session, UserType};
-use cryptoki::types::AuthPin;
-use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
+
+use cryptoki::{
+    context::{CInitializeArgs, Pkcs11},
+    mechanism::Mechanism,
+    object::{Attribute, AttributeType, KeyType, ObjectClass},
+    session::{Session, UserType},
+    types::AuthPin,
+};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Error, Debug)]

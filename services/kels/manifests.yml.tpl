@@ -50,6 +50,8 @@ spec:
               value: "${var.kelsDatabaseUrl}"
             - name: REDIS_URL
               value: "${var.redis.url}"
+            - name: FEDERATION_REGISTRY_URLS
+              value: "${var.federationRegistryUrls}"
           livenessProbe:
             httpGet:
               path: /health
@@ -99,7 +101,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: kels.${environment.namespace}.local
+    - host: kels.${environment.namespace}.kels
       http:
         paths:
           - path: /

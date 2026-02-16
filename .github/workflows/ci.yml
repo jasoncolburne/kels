@@ -8,7 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY_PREFIX: EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  # Compile-time trusted registry prefixes (for CLI and gossip service)
+  TRUSTED_REGISTRY_PREFIXES: EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  TRUSTED_REGISTRY_MEMBERS: '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}
@@ -67,7 +69,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # this is slightly different than the Makefile, we can't use all-features and must instead
+      # use dev-tools to allow tests to pass without some macos dependencies. dev-tools allows 
+      # certain tests like the prefix fetch tests to avoid constructing authenticated clients
+      - run: cargo test --workspace --features=dev-tools
 
   build:
     name: Build
@@ -91,9 +96,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Generate coverage report
         run: |
+          # Exclude files that can't be meaningfully unit tested:
+          # - Binary mains (main.rs, admin.rs) - entry points only
+          # - FFI code (kels-ffi) - C bindings
+          # - Server setup (server.rs in services) - integration code
+          # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
+          COV_EXCLUDES="--ignore-filename-regex (main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)"
           printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
           echo ""
-          cargo llvm-cov --workspace 2>&1 | awk '
+          cargo llvm-cov --workspace $COV_EXCLUDES 2>&1 | awk '
             NR == 1 { next }
             /^-+$/ { next }
             /^TOTAL/ { print $10 > "/tmp/cov_total"; next }

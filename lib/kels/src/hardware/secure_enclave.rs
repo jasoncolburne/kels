@@ -1,12 +1,14 @@
 //! Secure Enclave Operations - low-level secp256r1 key operations
 
-use crate::error::KelsError;
-use cesr::{KeyCode, PublicKey, Signature, SignatureCode};
-use security_framework::item::{
-    ItemClass, ItemSearchOptions, KeyClass, Location, Reference, SearchResult,
-};
-use security_framework::key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token};
 use std::sync::Arc;
+
+use cesr::{KeyCode, PublicKey, Signature, SignatureCode};
+use security_framework::{
+    item::{ItemClass, ItemSearchOptions, KeyClass, Location, Reference, SearchResult},
+    key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token},
+};
+
+use crate::error::KelsError;
 
 /// Handle to a key stored in the Secure Enclave
 #[derive(Clone)]

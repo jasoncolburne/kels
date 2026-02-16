@@ -22,6 +22,20 @@ struct AnchorResponse {
     event_said: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignRequest {
+    data: String, // JSON string to sign
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignResponse {
+    pub signature: String,  // QB64-encoded signature
+    pub public_key: String, // QB64-encoded public key
+}
+
+#[derive(Debug)]
 pub struct IdentityClient {
     client: Client,
     base_url: String,
@@ -80,5 +94,22 @@ impl IdentityClient {
         let resp: AnchorResponse = self.parse_response(response).await?;
 
         Ok(resp.event_said)
+    }
+
+    /// Sign a JSON string with the registry's identity key.
+    /// Returns signature and public_key as QB64-encoded strings.
+    pub async fn sign(&self, data: &str) -> Result<SignResponse, KelsError> {
+        let url = format!("{}/api/identity/sign", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&SignRequest {
+                data: data.to_string(),
+            })
+            .send()
+            .await?;
+
+        self.parse_response(response).await
     }
 }

@@ -19,10 +19,11 @@ COPY lib/kels /app/lib/kels
 COPY services/identity /app/services/identity
 
 # Build with BuildKit cache mounts for cargo registry and target directory
+ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/services/identity
-RUN --mount=type=cache,id=identity-registry,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=identity-target,target=/app/services/identity/target \
-    cargo build --release --bin identity --bin identity-admin && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin identity --bin identity-admin && \
     cp /app/services/identity/target/release/identity /app/identity && \
     cp /app/services/identity/target/release/identity-admin /app/identity-admin
 
@@ -34,7 +35,6 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y \
-    ca-certificates \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 

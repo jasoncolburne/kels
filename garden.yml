@@ -1,11 +1,95 @@
 kind: Run
-name: read-registry-prefix
+name: federation-read-prefix
 type: exec
+description: Read this environment's registry prefix
 
 include:
-  - .kels/registry_prefix
+  - .kels/federated-registries.json
+  - scripts/federation-read-prefix.sh
 
 spec:
   command:
-    - cat
-    - .kels/registry_prefix
+    - bash
+    - scripts/federation-read-prefix.sh
+    - ${environment.name}
+
+---
+
+kind: Run
+name: federation-read-member-urls
+type: exec
+description: Read federation members (prefix=url pairs for runtime connectivity)
+
+include:
+  - .kels/federated-registries.json
+  - scripts/federation-read-member-urls.sh
+
+spec:
+  command:
+    - bash
+    - scripts/federation-read-member-urls.sh
+
+---
+
+kind: Run
+name: federation-read-url
+type: exec
+description: Read the registry URL for the current environment
+
+include:
+  - .kels/federated-registries.json
+  - scripts/federation-read-url.sh
+
+spec:
+  command:
+    - bash
+    - scripts/federation-read-url.sh
+    - ${environment.name}
+
+---
+
+kind: Run
+name: federation-read-prefixes
+type: exec
+description: Read all trusted registry prefixes (comma-separated)
+
+include:
+  - .kels/federated-registries.json
+  - scripts/federation-read-prefixes.sh
+
+spec:
+  command:
+    - bash
+    - scripts/federation-read-prefixes.sh
+
+---
+
+kind: Run
+name: federation-read-members
+type: exec
+description: Read all trusted registry members (JSON with id and prefix)
+
+include:
+  - .kels/federated-registries.json
+  - scripts/federation-read-members.sh
+
+spec:
+  command:
+    - bash
+    - scripts/federation-read-members.sh
+
+---
+
+kind: Run
+name: federation-read-urls
+type: exec
+description: Read all federation registry URLs (comma-separated)
+
+include:
+  - .kels/federated-registries.json
+  - scripts/federation-read-urls.sh
+
+spec:
+  command:
+    - bash
+    - scripts/federation-read-urls.sh

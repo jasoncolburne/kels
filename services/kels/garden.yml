@@ -3,7 +3,10 @@ name: kels
 type: container
 
 # KELS service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
+
+dependencies:
+  - run.federation-read-prefixes
 
 source:
   path: ../..  # Set build context to repository root
@@ -13,9 +16,14 @@ include:
   - lib/kels-derive/**/*
   - services/kels/**/*
   - project.garden.yml
+  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/kels/Dockerfile
+  buildArgs:
+    # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
+    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
+    CARGO_FEATURES: "${var.devTools ? '--features dev-tools' : ''}"
 
 ---
 
@@ -24,15 +32,18 @@ name: kels
 type: kubernetes
 
 # KELS service is not needed in the registry environment
-disabled: ${environment.name == 'registry'}
+disabled: ${var.envType == "registry"}
 
 dependencies:
+  - run.federation-read-url
+  - run.federation-read-urls
   - build.kels
   - deploy.postgres
   - deploy.redis
 
 variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
+  federationRegistryUrls: "${var.nodeType == 'core' ? actions.run.federation-read-urls.outputs.log : actions.run.federation-read-url.outputs.log}"
 
 spec:
   manifestTemplates:

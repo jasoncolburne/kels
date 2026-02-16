@@ -1,5 +1,7 @@
 //! HSM Service REST API Handlers
 
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -9,7 +11,6 @@ use axum::{
 use base64::Engine;
 use cesr::{KeyCode, Matter, PublicKey, Signature, SignatureCode};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::pkcs11::{HsmContext, HsmError};
 

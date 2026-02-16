@@ -23,16 +23,15 @@
 //! preload KELs via HTTP. But events occurring between the last preload and
 //! joining the gossip network would be missed. The resync catches these events.
 
-use crate::peer_store::PeerRepository;
 use kels::{
-    BatchKelsRequest, KelsClient, KelsError, KelsRegistryClient, NodeRegistration, NodeStatus,
-    PrefixListResponse, PrefixState, SignedKeyEvent,
+    BatchKelsRequest, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient,
+    PrefixListResponse, PrefixState, PrefixesRequest, RegistrySigner, SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::time::{interval, Duration};
+use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
@@ -52,16 +51,8 @@ pub struct BootstrapConfig {
     pub node_id: String,
     /// Local KELS URL (for this node to use)
     pub kels_url: String,
-    /// Advertised KELS URL for external clients
-    pub kels_advertise_url: String,
-    /// Advertised KELS URL for internal node-to-node sync (defaults to external if not set)
-    pub kels_advertise_url_internal: Option<String>,
-    /// Gossip multiaddr for registration
-    pub gossip_multiaddr: String,
     /// Page size for prefix listing
     pub page_size: usize,
-    /// Heartbeat interval in seconds
-    pub heartbeat_interval_secs: u64,
 }
 
 impl Default for BootstrapConfig {
@@ -69,35 +60,32 @@ impl Default for BootstrapConfig {
         Self {
             node_id: String::new(),
             kels_url: String::new(),
-            kels_advertise_url: String::new(),
-            kels_advertise_url_internal: None,
-            gossip_multiaddr: String::new(),
             page_size: 100,
-            heartbeat_interval_secs: 30,
         }
     }
 }
 
 /// Result of peer discovery phase.
 pub struct DiscoveryResult {
-    pub peers: Vec<NodeRegistration>,
-    pub registry_available: bool,
+    pub peers: Vec<kels::Peer>,
 }
 
 /// Handles bootstrap synchronization from existing peers.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    registry: KelsRegistryClient,
-    peer_repo: Arc<PeerRepository>,
+    registry: MultiRegistryClient,
+    allowlist: crate::allowlist::SharedAllowlist,
+    signer: Arc<dyn RegistrySigner>,
     http_client: reqwest::Client,
 }
 
 impl BootstrapSync {
-    /// Create a new BootstrapSync with an existing registry client.
+    /// Create a new BootstrapSync with an existing registry client, shared allowlist, and signer.
     pub fn new(
         config: BootstrapConfig,
-        peer_repo: Arc<PeerRepository>,
-        registry: KelsRegistryClient,
+        registry: MultiRegistryClient,
+        allowlist: crate::allowlist::SharedAllowlist,
+        signer: Arc<dyn RegistrySigner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -107,104 +95,22 @@ impl BootstrapSync {
         Self {
             config,
             registry,
-            peer_repo,
+            allowlist,
+            signer,
             http_client,
         }
     }
 
-    /// Phase 1: Discover peers and register as Bootstrapping.
+    /// Phase 1: Discover peers from the allowlist.
     /// Returns peers to connect to for gossip. Call this BEFORE starting the gossip swarm.
-    ///
-    /// Fallback logic:
-    /// 1. Try to connect to registry
-    /// 2. If registry unavailable, fall back to cached peers
-    /// 3. Continue without bootstrap if no peers available (first node)
     pub async fn discover_peers(&self) -> Result<DiscoveryResult, BootstrapError> {
         info!("Discovering peers for node {}", self.config.node_id);
 
-        let (peers, registry_available) =
-            match self.registry.list_nodes(Some(&self.config.node_id)).await {
-                Ok(nodes) => {
-                    info!("Registry available, found {} node(s)", nodes.len());
-                    self.peer_repo
-                        .try_sync_from_registry(&nodes, &self.config.node_id)
-                        .await;
-                    (nodes, true)
-                }
-                Err(e) => {
-                    warn!("Registry unavailable: {}. Falling back to cached peers.", e);
-                    match self.peer_repo.get_active_peers().await {
-                        Ok(cached) => {
-                            let nodes: Vec<NodeRegistration> = cached
-                                .into_iter()
-                                .map(|p| NodeRegistration {
-                                    node_id: p.node_id,
-                                    node_type: kels::NodeType::Kels,
-                                    kels_url: String::new(),
-                                    kels_url_internal: None,
-                                    gossip_multiaddr: p.gossip_multiaddr,
-                                    registered_at: chrono::Utc::now(),
-                                    last_heartbeat: chrono::Utc::now(),
-                                    status: NodeStatus::Ready,
-                                })
-                                .collect();
-                            info!("Loaded {} cached peer(s)", nodes.len());
-                            (nodes, false)
-                        }
-                        Err(cache_err) => {
-                            warn!(
-                                "Failed to load cached peers: {}. Starting as first node.",
-                                cache_err
-                            );
-                            (Vec::new(), false)
-                        }
-                    }
-                }
-            };
+        let allowlist = self.allowlist.read().await;
+        let peers: Vec<kels::Peer> = allowlist.values().cloned().collect();
+        info!("Found {} peer(s) in allowlist", peers.len());
 
-        if peers.is_empty() {
-            info!("No existing nodes found - this is the first node");
-            if registry_available {
-                if let Err(e) = self
-                    .registry
-                    .register(
-                        &self.config.node_id,
-                        &self.config.kels_advertise_url,
-                        self.config.kels_advertise_url_internal.as_deref(),
-                        &self.config.gossip_multiaddr,
-                        NodeStatus::Ready,
-                    )
-                    .await
-                {
-                    warn!("Failed to register with registry: {}", e);
-                }
-            }
-            info!("Registered as Ready (first node)");
-        } else {
-            info!("Found {} bootstrap node(s)", peers.len());
-            if registry_available {
-                if let Err(e) = self
-                    .registry
-                    .register(
-                        &self.config.node_id,
-                        &self.config.kels_advertise_url,
-                        self.config.kels_advertise_url_internal.as_deref(),
-                        &self.config.gossip_multiaddr,
-                        NodeStatus::Bootstrapping,
-                    )
-                    .await
-                {
-                    warn!("Failed to register as Bootstrapping: {}", e);
-                } else {
-                    info!("Registered as Bootstrapping");
-                }
-            }
-        }
-
-        Ok(DiscoveryResult {
-            peers,
-            registry_available,
-        })
+        Ok(DiscoveryResult { peers })
     }
 
     /// Preload KELs from Ready peers while not yet in the allowlist.
@@ -213,42 +119,75 @@ impl BootstrapSync {
     /// to be added to the allowlist. Called in the unauthorized wait loop.
     /// No registration is performed - just HTTP-based KEL sync.
     pub async fn preload_kels(&self) -> Result<(), BootstrapError> {
-        // Get current Ready peers via unauthenticated endpoint
-        let peers = match self.registry.list_nodes(Some(&self.config.node_id)).await {
-            Ok(nodes) => nodes
-                .into_iter()
-                .filter(|n| n.status == NodeStatus::Ready)
-                .collect::<Vec<_>>(),
-            Err(e) => {
-                warn!("Failed to fetch Ready peers for preload: {}", e);
-                return Ok(()); // Continue waiting, don't fail
-            }
-        };
+        // Get Ready peers from allowlist
+        let ready_peers = self.get_ready_peers().await;
 
-        if peers.is_empty() {
+        if ready_peers.is_empty() {
             info!("No Ready peers found for preload");
             return Ok(());
         }
 
-        info!("Preloading KELs from {} Ready peer(s)...", peers.len());
-        self.sync_from_peers(&peers).await?;
+        info!(
+            "Preloading KELs from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+        self.sync_from_peers(&ready_peers).await?;
         info!("KEL preload complete");
 
         Ok(())
     }
 
+    /// Get peers from allowlist that are ready (respond to /ready with success).
+    async fn get_ready_peers(&self) -> Vec<kels::Peer> {
+        let allowlist = self.allowlist.read().await;
+        let mut ready_peers = Vec::new();
+        for peer in allowlist.values() {
+            if self.is_peer_ready(peer).await {
+                ready_peers.push(peer.clone());
+            }
+        }
+        ready_peers
+    }
+
     /// Check if a peer is authorized in the allowlist.
-    pub async fn is_peer_authorized(&self, peer_id: &str) -> Result<bool, BootstrapError> {
-        Ok(self.registry.is_peer_authorized(peer_id).await?)
+    pub async fn is_peer_authorized(
+        &mut self,
+        peer_id: &str,
+        registry_prefix: &str,
+    ) -> Result<bool, BootstrapError> {
+        Ok(self
+            .registry
+            .is_peer_authorized(peer_id, registry_prefix)
+            .await?)
     }
 
     /// Check if there are Ready peers we should resync from.
-    /// Queries /api/nodes/bootstrap to get current Ready peers.
+    /// Queries each peer's HTTP /ready endpoint directly.
     pub async fn has_ready_peers(&self) -> bool {
-        match self.registry.list_nodes(Some(&self.config.node_id)).await {
-            Ok(nodes) => !nodes.is_empty(),
+        let allowlist = self.allowlist.read().await;
+        for peer in allowlist.values() {
+            if self.is_peer_ready(peer).await {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a peer is ready by querying its HTTP /ready endpoint.
+    async fn is_peer_ready(&self, peer: &kels::Peer) -> bool {
+        let http_url = match peer.gossip_http_url() {
+            Some(url) => url,
+            None => {
+                warn!("Could not derive HTTP URL for peer {}", peer.peer_id);
+                return false;
+            }
+        };
+
+        let url = format!("{}/ready", http_url);
+        match self.http_client.get(&url).send().await {
+            Ok(response) => response.status().is_success(),
             Err(e) => {
-                warn!("Failed to check for ready peers: {}", e);
+                debug!("Peer {} not ready: {}", peer.peer_id, e);
                 false
             }
         }
@@ -258,51 +197,34 @@ impl BootstrapSync {
     /// This catches any events that occurred between pre-load and joining gossip.
     /// Call this after receiving the first PeerConnected event.
     pub async fn resync_kels(&self) -> Result<(), BootstrapError> {
-        // Get current Ready peers (may be different from initial discovery)
-        let peers = match self.registry.list_nodes(Some(&self.config.node_id)).await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!("Failed to fetch peers for resync: {}", e);
-                return Ok(());
-            }
-        };
+        // Get Ready peers from allowlist
+        let ready_peers = self.get_ready_peers().await;
 
-        if peers.is_empty() {
+        if ready_peers.is_empty() {
             info!("No Ready peers found, skipping resync");
             return Ok(());
         }
 
-        info!("Starting resync from {} Ready peer(s)...", peers.len());
-        self.sync_from_peers(&peers).await?;
+        info!(
+            "Starting resync from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+        self.sync_from_peers(&ready_peers).await?;
         info!("Resync complete");
 
         Ok(())
     }
 
-    /// Phase 3: Mark node as Ready after sync completes.
-    pub async fn mark_ready(&self, registry_available: bool) {
-        if registry_available {
-            if let Err(e) = self
-                .registry
-                .update_status(&self.config.node_id, NodeStatus::Ready)
-                .await
-            {
-                warn!("Failed to update status to Ready: {}", e);
-            }
-        }
-        info!("Bootstrap complete - registered as Ready");
-    }
-
-    /// Get the URL to use for node-to-node sync (internal if available, else external).
-    fn get_sync_url(peer: &NodeRegistration) -> &str {
-        peer.kels_url_internal.as_deref().unwrap_or(&peer.kels_url)
+    /// Get the URL to use for node-to-node sync.
+    fn get_sync_url(peer: &kels::Peer) -> &str {
+        &peer.kels_url
     }
 
     /// Sync KELs from bootstrap peers.
     ///
     /// This collects all unique prefixes from all peers, randomly assigns each
     /// prefix to one peer, then batch-fetches KELs (50 at a time) from each peer.
-    async fn sync_from_peers(&self, peers: &[NodeRegistration]) -> Result<(), BootstrapError> {
+    async fn sync_from_peers(&self, peers: &[kels::Peer]) -> Result<(), BootstrapError> {
         if peers.is_empty() {
             return Ok(());
         }
@@ -311,7 +233,7 @@ impl BootstrapSync {
 
         // Step 1: Collect all unique prefixes from all peers that need syncing
         info!("Collecting prefixes from {} peer(s)...", peers.len());
-        let mut all_prefixes: HashSet<String> = HashSet::new();
+        let mut all_prefixes: HashMap<String, Option<String>> = HashMap::new();
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
@@ -321,9 +243,8 @@ impl BootstrapSync {
                 match self.fetch_prefix_page(peer_url, cursor.as_deref()).await {
                     Ok(page) => {
                         for state in &page.prefixes {
-                            let needs = self.needs_sync(state, &local_client).await;
-                            if needs {
-                                all_prefixes.insert(state.prefix.clone());
+                            if let Some(since) = self.sync_check(state, &local_client).await {
+                                all_prefixes.entry(state.prefix.clone()).or_insert(since);
                             }
                         }
                         cursor = page.next_cursor;
@@ -349,13 +270,16 @@ impl BootstrapSync {
 
         // Step 2: Randomly assign each prefix to one peer
         let mut rng = rand::thread_rng();
-        let mut peer_assignments: HashMap<String, Vec<String>> = HashMap::new();
+        let mut peer_assignments: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
 
-        for prefix in all_prefixes {
+        for (prefix, since) in all_prefixes {
             let peer_option = peers.choose(&mut rng);
             if let Some(peer) = peer_option {
                 let peer_url = Self::get_sync_url(peer).to_string();
-                peer_assignments.entry(peer_url).or_default().push(prefix);
+                peer_assignments
+                    .entry(peer_url)
+                    .or_default()
+                    .push((prefix, since));
             } else {
                 unreachable!("Inconsistent: found prefixes but have no peers?")
             }
@@ -372,7 +296,7 @@ impl BootstrapSync {
             info!("Syncing {} prefixes from {}", prefixes.len(), peer_url);
 
             for chunk in prefixes.chunks(BATCH_SIZE) {
-                let chunk_vec: Vec<String> = chunk.to_vec();
+                let chunk_vec: Vec<(String, Option<String>)> = chunk.to_vec();
                 batch_tasks.push((peer_url.clone(), chunk_vec));
             }
         }
@@ -399,7 +323,7 @@ impl BootstrapSync {
                         total_not_found += 1;
                     }
                     Err(e) => {
-                        let prefix = chunk.get(i).map(|s| s.as_str()).unwrap_or("?");
+                        let prefix = chunk.get(i).map(|(s, _)| s.as_str()).unwrap_or("?");
                         warn!("Failed to sync prefix {}: {}", prefix, e);
                         total_errors += 1;
                     }
@@ -417,19 +341,23 @@ impl BootstrapSync {
 
     /// Batch fetch KELs from a peer using the batch endpoint and submit to local KELS.
     /// Makes a single HTTP request to fetch all prefixes, then submits each KEL individually.
+    /// Each entry is (prefix, optional since SAID for delta fetch).
     async fn batch_fetch_and_submit(
         &self,
         peer_url: &str,
-        prefixes: &[String],
+        prefixes: &[(String, Option<String>)],
         local_client: &KelsClient,
     ) -> Vec<Result<bool, BootstrapError>> {
         if prefixes.is_empty() {
             return vec![];
         }
 
-        // Build batch request
+        // Build batch request with since SAIDs
         let request = BatchKelsRequest {
-            prefixes: prefixes.to_vec(),
+            prefixes: prefixes
+                .iter()
+                .map(|(p, s)| (p.clone(), s.clone()))
+                .collect(),
         };
 
         // Fetch all KELs in a single request
@@ -464,20 +392,23 @@ impl BootstrapSync {
             }
         };
 
-        // Submit each KEL to local KELS
+        // Submit each KEL to local KELS, using chunked submission for large KELs
         let mut results = Vec::with_capacity(prefixes.len());
-        for prefix in prefixes {
+        for (prefix, _since) in prefixes {
             let result = match events_map.get(prefix) {
                 Some(events) if !events.is_empty() => {
                     debug!("Fetched {} events for {} from peer", events.len(), prefix);
-                    match local_client.submit_events(events).await {
+                    match local_client
+                        .submit_events_chunked(events, MAX_EVENTS_PER_SUBMISSION)
+                        .await
+                    {
                         Ok(submit_result) => {
-                            if submit_result.accepted {
+                            if submit_result.applied {
                                 info!("Synced KEL for {} ({} events)", prefix, events.len());
                                 Ok(true)
                             } else {
                                 warn!(
-                                    "KEL for {} not accepted: diverged_at={:?}",
+                                    "KEL for {} not applied: diverged_at={:?}",
                                     prefix, submit_result.diverged_at
                                 );
                                 // Still consider it synced - divergence will be handled by gossip protocol
@@ -495,83 +426,55 @@ impl BootstrapSync {
         results
     }
 
-    /// Fetch a single page of prefix states.
+    /// Fetch a single page of prefix states via signed POST request.
     async fn fetch_prefix_page(
         &self,
         kels_url: &str,
         cursor: Option<&str>,
     ) -> Result<PrefixListResponse, BootstrapError> {
-        let mut url = format!(
-            "{}/api/kels/prefixes?limit={}",
-            kels_url.trim_end_matches('/'),
-            self.config.page_size
-        );
-        if let Some(c) = cursor {
-            url.push_str(&format!("&since={}", c));
-        }
-
-        let response: PrefixListResponse = self.http_client.get(&url).send().await?.json().await?;
+        let request = PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
+            since: cursor.map(|s| s.to_string()),
+            limit: Some(self.config.page_size),
+        };
+        let signed = kels::sign_request(self.signer.as_ref(), &request)
+            .await
+            .map_err(|e| {
+                BootstrapError::Failed(format!("Failed to sign prefixes request: {}", e))
+            })?;
+        let url = format!("{}/api/kels/prefixes", kels_url.trim_end_matches('/'));
+        let response: PrefixListResponse = self
+            .http_client
+            .post(&url)
+            .json(&signed)
+            .send()
+            .await?
+            .json()
+            .await?;
 
         Ok(response)
     }
 
     /// Check if a prefix needs syncing by comparing with local state.
-    async fn needs_sync(&self, remote_state: &PrefixState, local_client: &KelsClient) -> bool {
+    /// Returns:
+    /// - `None` = up to date, skip
+    /// - `Some(None)` = no local KEL, full fetch
+    /// - `Some(Some(said))` = has partial KEL, delta from said
+    async fn sync_check(
+        &self,
+        remote_state: &PrefixState,
+        local_client: &KelsClient,
+    ) -> Option<Option<String>> {
         match local_client.get_kel(&remote_state.prefix).await {
-            Ok(kel) => {
-                // Check if latest local SAID matches remote
-                kel.events()
-                    .last()
-                    .map(|e| e.event.said != remote_state.said)
-                    .unwrap_or(true) // Empty KEL = needs sync
-            }
-            Err(KelsError::KeyNotFound(_)) => true,
-            Err(_) => true, // On error, try to sync anyway
-        }
-    }
-}
-
-/// Run heartbeat loop in the background.
-/// This keeps the node registered as healthy in the registry.
-/// If the node is not found, it will re-register with the provided config.
-pub async fn run_heartbeat_loop(config: BootstrapConfig, client: KelsRegistryClient) {
-    let mut ticker = interval(Duration::from_secs(config.heartbeat_interval_secs));
-
-    info!(
-        "Starting heartbeat loop for node {} (interval: {}s)",
-        config.node_id, config.heartbeat_interval_secs
-    );
-
-    loop {
-        ticker.tick().await;
-
-        match client.heartbeat(&config.node_id).await {
-            Ok(_) => {
-                info!("Heartbeat sent successfully");
-            }
-            Err(KelsError::KeyNotFound(_)) => {
-                // Node was removed from registry, re-register
-                warn!("Node not found in registry, attempting re-registration");
-                match client
-                    .register(
-                        &config.node_id,
-                        &config.kels_advertise_url,
-                        config.kels_advertise_url_internal.as_deref(),
-                        &config.gossip_multiaddr,
-                        NodeStatus::Ready,
-                    )
-                    .await
-                {
-                    Ok(_) => info!("Re-registered successfully"),
-                    Err(e) => warn!(
-                        "Re-registration failed (node may not be in allowlist yet): {}",
-                        e
-                    ),
+            Ok(kel) => kel.events().last().and_then(|e| {
+                if e.event.said != remote_state.said {
+                    Some(Some(e.event.said.clone()))
+                } else {
+                    None
                 }
-            }
-            Err(e) => {
-                warn!("Heartbeat failed (node may not be in allowlist yet): {}", e);
-            }
+            }),
+            Err(_) => Some(None),
         }
     }
 }
@@ -585,11 +488,7 @@ mod tests {
         let config = BootstrapConfig::default();
         assert!(config.node_id.is_empty());
         assert!(config.kels_url.is_empty());
-        assert!(config.kels_advertise_url.is_empty());
-        assert!(config.kels_advertise_url_internal.is_none());
-        assert!(config.gossip_multiaddr.is_empty());
         assert_eq!(config.page_size, 100);
-        assert_eq!(config.heartbeat_interval_secs, 30);
     }
 
     #[test]
@@ -597,22 +496,11 @@ mod tests {
         let config = BootstrapConfig {
             node_id: "node-1".to_string(),
             kels_url: "http://localhost:8080".to_string(),
-            kels_advertise_url: "http://kels.example.com".to_string(),
-            kels_advertise_url_internal: Some("http://kels-internal:8080".to_string()),
-            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
             page_size: 50,
-            heartbeat_interval_secs: 60,
         };
         assert_eq!(config.node_id, "node-1");
         assert_eq!(config.kels_url, "http://localhost:8080");
-        assert_eq!(config.kels_advertise_url, "http://kels.example.com");
-        assert_eq!(
-            config.kels_advertise_url_internal,
-            Some("http://kels-internal:8080".to_string())
-        );
-        assert_eq!(config.gossip_multiaddr, "/ip4/127.0.0.1/tcp/4001");
         assert_eq!(config.page_size, 50);
-        assert_eq!(config.heartbeat_interval_secs, 60);
     }
 
     #[test]
@@ -640,47 +528,26 @@ mod tests {
 
     #[test]
     fn test_discovery_result_creation() {
-        let result = DiscoveryResult {
-            peers: vec![],
-            registry_available: true,
-        };
+        let result = DiscoveryResult { peers: vec![] };
         assert!(result.peers.is_empty());
-        assert!(result.registry_available);
-
-        let result_no_registry = DiscoveryResult {
-            peers: vec![],
-            registry_available: false,
-        };
-        assert!(!result_no_registry.registry_available);
     }
 
     #[test]
-    fn test_get_sync_url_with_internal() {
-        let peer = NodeRegistration {
+    fn test_get_sync_url() {
+        let peer = kels::Peer {
+            said: "test-said".to_string(),
+            prefix: "test-prefix".to_string(),
+            previous: None,
+            version: 1,
+            created_at: verifiable_storage::StorageDatetime::now(),
+            peer_id: "test-peer".to_string(),
             node_id: "node-1".to_string(),
-            node_type: kels::NodeType::Kels,
-            kels_url: "http://external:8080".to_string(),
-            kels_url_internal: Some("http://internal:8080".to_string()),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            active: true,
+            scope: kels::PeerScope::Core,
+            kels_url: "http://kels:8080".to_string(),
             gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
         };
-        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://internal:8080");
-    }
-
-    #[test]
-    fn test_get_sync_url_without_internal() {
-        let peer = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: kels::NodeType::Kels,
-            kels_url: "http://external:8080".to_string(),
-            kels_url_internal: None,
-            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://external:8080");
+        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://kels:8080");
     }
 }

@@ -2,13 +2,15 @@
 
 use std::collections::HashSet;
 
-use crate::client::KelsClient;
-use crate::crypto::KeyProvider;
-use crate::error::KelsError;
-use crate::kel::Kel;
-use crate::store::KelStore;
-use crate::types::{KeyEvent, SignedKeyEvent};
 use cesr::{Matter, PublicKey};
+
+use crate::{
+    client::KelsClient,
+    crypto::KeyProvider,
+    error::KelsError,
+    store::KelStore,
+    types::{Kel, KeyEvent, SignedKeyEvent},
+};
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
@@ -154,9 +156,19 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             let mut kels_kel = client.get_kel(prefix).await?;
             let local_events = self.events();
             let local_set: HashSet<_> = local_events.iter().collect();
-            let local_vec: Vec<_> = local_events.to_vec();
 
-            let _ = kels_kel.merge(local_vec)?;
+            // Filter out events the server already has before merging (mirrors server logic)
+            let server_saids: HashSet<String> =
+                kels_kel.iter().map(|e| e.event.said.clone()).collect();
+            let new_local_events: Vec<_> = local_events
+                .iter()
+                .filter(|e| !server_saids.contains(&e.event.said))
+                .cloned()
+                .collect();
+
+            if !new_local_events.is_empty() {
+                let _ = kels_kel.merge(new_local_events)?;
+            }
             if let Some(divergence) = kels_kel.find_divergence() {
                 let owner_has_rot = local_events.iter().any(|e| {
                     divergence.divergent_saids.contains(&e.event.said)
@@ -273,9 +285,19 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                 return Err(e);
             }
         };
-        self.add_and_flush(std::slice::from_ref(&signed_event))
-            .await?;
-        Ok(signed_event)
+        match self
+            .add_and_flush(std::slice::from_ref(&signed_event))
+            .await
+        {
+            Ok(()) => Ok(signed_event),
+            // Divergence is expected if an adversary event arrived via gossip before our ror.
+            // The ror was accepted — keys are committed internally.
+            Err(KelsError::DivergenceDetected {
+                submission_accepted: true,
+                ..
+            }) => Ok(signed_event),
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn recover(&mut self, add_rot: bool) -> Result<SignedKeyEvent, KelsError> {
@@ -427,16 +449,16 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         let response = client.submit_events(&pending).await?;
 
-        if response.accepted {
+        if response.applied {
             self.confirmed_cursor = self.kel.confirmed_length();
         }
 
         if let Some(diverged_at) = response.diverged_at {
             Err(KelsError::DivergenceDetected {
                 diverged_at,
-                submission_accepted: response.accepted,
+                submission_accepted: response.applied,
             })
-        } else if !response.accepted {
+        } else if !response.applied {
             Err(KelsError::InvalidKel(
                 "Rejected without divergence".to_string(),
             ))
@@ -654,9 +676,10 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::{Digest, Matter};
+
     use super::*;
     use crate::crypto::SoftwareKeyProvider;
-    use cesr::{Digest, Matter};
 
     fn make_anchor() -> String {
         Digest::blake3_256(b"test_anchor").qb64()

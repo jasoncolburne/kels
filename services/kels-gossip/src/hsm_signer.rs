@@ -2,10 +2,10 @@
 //!
 //! Implements the ExternalSigner trait to allow libp2p to use HSM-stored keys.
 
-use base64::{engine::general_purpose::URL_SAFE as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64};
 use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
 use libp2p_identity::ExternalSigner;
-use p256::{ecdsa::DerSignature, elliptic_curve::sec1::ToEncodedPoint, PublicKey as P256PublicKey};
+use p256::{PublicKey as P256PublicKey, ecdsa::DerSignature, elliptic_curve::sec1::ToEncodedPoint};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

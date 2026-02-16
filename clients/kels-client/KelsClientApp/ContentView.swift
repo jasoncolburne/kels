@@ -569,30 +569,32 @@ struct SettingsTab: View {
     @State private var copiedMessage: String?
     @State private var isDiscovering = false
 
-    private let defaultRegistryUrl = "http://kels-registry.kels-registry.local"
-
     var body: some View {
         NavigationStack {
             List {
                 // Registry Configuration
                 Section("Node Registry") {
+                    Picker("Registry", selection: $viewModel.selectedRegistry) {
+                        ForEach(KelsViewModel.registryUrls, id: \.0) { registry in
+                            Text(registry.0).tag(registry.0)
+                        }
+                    }
+                    .onChange(of: viewModel.selectedRegistry) {
+                        viewModel.onRegistryChanged()
+                    }
+
                     TextField("Registry URL", text: $viewModel.registryUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onAppear {
-                            if viewModel.registryUrl.isEmpty {
-                                viewModel.registryUrl = defaultRegistryUrl
-                            }
-                        }
 
-                    HStack {
-                        Button(action: {
+                    HStack(spacing: 16) {
+                        Button {
                             isDiscovering = true
                             Task {
                                 await viewModel.discoverNodes()
                                 isDiscovering = false
                             }
-                        }) {
+                        } label: {
                             HStack {
                                 if isDiscovering {
                                     ProgressView()
@@ -602,23 +604,25 @@ struct SettingsTab: View {
                                 }
                                 Text("Discover")
                             }
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
 
-                        Spacer()
-
-                        Button(action: {
+                        Button {
                             isDiscovering = true
                             Task {
                                 await viewModel.autoSelectNode()
                                 isDiscovering = false
                             }
-                        }) {
+                        } label: {
                             HStack {
                                 Image(systemName: "bolt.fill")
                                 Text("Auto-Select")
                             }
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isDiscovering || viewModel.registryUrl.isEmpty)
                     }
                 }

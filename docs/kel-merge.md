@@ -52,7 +52,14 @@ If the KEL is already divergent (frozen):
 
 ```
 if KEL has divergence AND first event does NOT reveal recovery key:
-    return Frozen  // Only rec/cnt can resolve divergence
+    // Look ahead for a rec event in the batch — handles the case where
+    // the owner's pre-recovery events precede the recovery event
+    // (e.g., [owner_ixn, rec] submitted to a KEL frozen with only adversary events)
+    if batch contains a rec event:
+        add pre-rec events to establish owner's chain in the fork
+        process rec event via recovery path below
+        return Recovered
+    return Frozen  // No recovery event in batch
 ```
 
 ### 3. Recovery from Divergent KEL
@@ -73,7 +80,8 @@ if first event is contest:
 
 **Recovery path** (`rec` event):
 ```
-if first event is recover:
+if batch contains a rec event (at any position):
+    add pre-rec events to establish owner's chain in the fork
     if KEL reveals recovery in divergent events:
         return Error(ContestRequired)  // Adversary has recovery key, must contest
     trace owner's chain from recovery event's previous field
@@ -83,9 +91,9 @@ if first event is recover:
     return Recovered
 ```
 
-**Other recovery-revealing events** (`ror`/`dec`):
+**No recovery event in batch**:
 ```
-return Error(Frozen)  // Only rec/cnt can be used on divergent KEL
+return Frozen  // Only rec/cnt can resolve a divergent KEL
 ```
 
 ### 4. Normal Merge (Non-divergent KEL)
@@ -128,20 +136,21 @@ divergent_new_events = submitted events not already in KEL
 
 // Check if existing divergent events reveal recovery key
 if old events reveal recovery:
-    if new event is contest:
+    if divergent new event is contest:
         if more than one event submitted:
             return Error("Cannot append events after contest")
         append contest event
         return Contested
     else:
         return RecoveryProtected  // Owner must contest, not recover
-else if new event is recover:
-    // Owner is recovering, adversary didn't have recovery key
+else if batch contains a rec event (at any position):
+    add pre-rec events to establish owner's chain in the fork
+    trace owner's chain from recovery event's previous field
+    remove adversary events (those not in owner's chain)
     append recovery events
-    remove adversary events (trace owner's chain via previous)
     return Recovered
 else:
-    // No recovery event - freeze KEL, mark as divergent
+    // No recovery event in batch - freeze KEL, mark as divergent
     push single divergent event
     return Recoverable
 ```
@@ -185,7 +194,7 @@ return result
 
 ## Key Invariants
 
-1. **Events are sorted by chain order** - The internal event list is sorted by following `previous` links from inception
+1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/v1/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `extend()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
 3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at generation N, divergence at generation <= N is rejected
 4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)

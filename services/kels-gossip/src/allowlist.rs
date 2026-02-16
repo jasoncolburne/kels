@@ -2,20 +2,33 @@
 //!
 //! Disconnects peers not in the authorized allowlist after connection establishment.
 
-use libp2p::swarm::behaviour::ConnectionEstablished;
-use libp2p::swarm::{
-    CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
-    THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+    task::{Context, Poll},
+    time::{Duration, Instant},
 };
-use libp2p::{Multiaddr, PeerId};
-use std::collections::HashSet;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
-use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
+
+use kels::{MultiRegistryClient, PeerScope};
+use libp2p::{
+    Multiaddr, PeerId,
+    swarm::{
+        CloseConnection, ConnectionClosed, ConnectionDenied, ConnectionId, FromSwarm,
+        NetworkBehaviour, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+        behaviour::ConnectionEstablished,
+    },
+};
+use thiserror::Error;
+use verifiable_storage::Chained;
+
+/// Maximum number of peers pending verification at any time.
+const MAX_PENDING_PEERS: usize = 200;
+
+/// Time-to-live for pending verification entries.
+const PENDING_PEER_TTL: Duration = Duration::from_secs(300);
 
 /// NetworkBehaviour that disconnects peers not in the allowlist.
 ///
@@ -24,12 +37,12 @@ use tracing::{debug, error, info, warn};
 /// for an allowlist refresh and holds the peer in a pending state. After refresh,
 /// `verify_pending_peers` should be called to disconnect still-unauthorized peers.
 pub struct AllowlistBehaviour {
-    /// Shared allowlist of authorized PeerIds
-    allowlist: Arc<RwLock<HashSet<PeerId>>>,
-    /// Peers awaiting verification after allowlist refresh
-    pending_verification: HashSet<PeerId>,
+    /// Shared allowlist of authorized PeerIds mapped to their Peer data
+    allowlist: SharedAllowlist,
+    /// Peers awaiting verification after allowlist refresh, with insertion time
+    pending_verification: HashMap<PeerId, Instant>,
     /// Pending disconnections to emit
-    pending_disconnects: HashSet<PeerId>,
+    pending_disconnects: HashMap<PeerId, ()>,
     /// Channel to signal that allowlist refresh is needed
     refresh_tx: mpsc::Sender<()>,
 }
@@ -38,13 +51,13 @@ impl AllowlistBehaviour {
     /// Create a new AllowlistBehaviour with the given shared allowlist.
     ///
     /// Returns the behaviour and a receiver that signals when refresh is needed.
-    pub fn new(allowlist: Arc<RwLock<HashSet<PeerId>>>) -> (Self, mpsc::Receiver<()>) {
+    pub fn new(allowlist: SharedAllowlist) -> (Self, mpsc::Receiver<()>) {
         let (tx, rx) = mpsc::channel(1);
         (
             Self {
                 allowlist,
-                pending_verification: HashSet::new(),
-                pending_disconnects: HashSet::new(),
+                pending_verification: HashMap::new(),
+                pending_disconnects: HashMap::new(),
                 refresh_tx: tx,
             },
             rx,
@@ -55,21 +68,28 @@ impl AllowlistBehaviour {
     fn is_peer_allowed(&self, peer: &PeerId) -> bool {
         self.allowlist
             .try_read()
-            .map(|guard| guard.contains(peer))
+            .map(|guard| guard.contains_key(peer))
             .unwrap_or(false)
     }
 
     /// Called after allowlist refresh completes.
     /// Checks pending peers and schedules disconnects for those still not allowed.
+    /// Expired entries are silently dropped.
     pub async fn verify_pending_peers(&mut self) {
         let allowlist = self.allowlist.read().await;
-        for peer_id in self.pending_verification.drain() {
-            if !allowlist.contains(&peer_id) {
+        let drained: Vec<(PeerId, Instant)> = self.pending_verification.drain().collect();
+        for (peer_id, inserted_at) in drained {
+            // Skip expired entries
+            if inserted_at.elapsed() >= PENDING_PEER_TTL {
+                debug!(peer_id = %peer_id, "Pending peer expired, dropping");
+                continue;
+            }
+            if !allowlist.contains_key(&peer_id) {
                 warn!(
                     peer_id = %peer_id,
                     "Peer not in allowlist after refresh, disconnecting"
                 );
-                self.pending_disconnects.insert(peer_id);
+                self.pending_disconnects.insert(peer_id, ());
             } else {
                 info!(
                     peer_id = %peer_id,
@@ -117,8 +137,19 @@ impl NetworkBehaviour for AllowlistBehaviour {
                 peer_id = %peer,
                 "Unknown peer connected, triggering allowlist refresh"
             );
-            // Add to pending verification and signal for refresh
-            self.pending_verification.insert(peer);
+            // Evict expired entries before checking capacity
+            self.pending_verification
+                .retain(|_, inserted_at| inserted_at.elapsed() < PENDING_PEER_TTL);
+            // Add to pending verification if not at capacity
+            if self.pending_verification.len() < MAX_PENDING_PEERS {
+                self.pending_verification.insert(peer, Instant::now());
+            } else {
+                warn!(
+                    peer_id = %peer,
+                    "Pending verification set at capacity ({}), skipping",
+                    MAX_PENDING_PEERS
+                );
+            }
             // Try to send refresh signal (ignore if channel full - refresh already pending)
             let _ = self.refresh_tx.try_send(());
         }
@@ -147,13 +178,24 @@ impl NetworkBehaviour for AllowlistBehaviour {
                 // Only check on first connection from this peer
                 if other_established == 0
                     && !self.is_peer_allowed(&peer_id)
-                    && !self.pending_verification.contains(&peer_id)
+                    && !self.pending_verification.contains_key(&peer_id)
                 {
                     debug!(
                         peer_id = %peer_id,
                         "Unknown peer connected (swarm event), triggering allowlist refresh"
                     );
-                    self.pending_verification.insert(peer_id);
+                    // Evict expired entries before checking capacity
+                    self.pending_verification
+                        .retain(|_, inserted_at| inserted_at.elapsed() < PENDING_PEER_TTL);
+                    if self.pending_verification.len() < MAX_PENDING_PEERS {
+                        self.pending_verification.insert(peer_id, Instant::now());
+                    } else {
+                        warn!(
+                            peer_id = %peer_id,
+                            "Pending verification set at capacity ({}), skipping",
+                            MAX_PENDING_PEERS
+                        );
+                    }
                     let _ = self.refresh_tx.try_send(());
                 }
             }
@@ -179,7 +221,7 @@ impl NetworkBehaviour for AllowlistBehaviour {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        if let Some(&peer_id) = self.pending_disconnects.iter().next() {
+        if let Some((&peer_id, _)) = self.pending_disconnects.iter().next() {
             self.pending_disconnects.remove(&peer_id);
             return Poll::Ready(ToSwarm::CloseConnection {
                 peer_id,
@@ -198,12 +240,18 @@ pub enum AllowlistRefreshError {
     KelVerificationFailed(String),
 }
 
-// Use types from kels library
-use kels::KelsRegistryClient;
-use verifiable_storage::Chained;
+/// Shared allowlist type - maps PeerId to full Peer data
+pub type SharedAllowlist = Arc<RwLock<HashMap<PeerId, kels::Peer>>>;
 
-/// Shared allowlist type
-pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
+/// Get this node's scope from the allowlist.
+/// Returns Regional as a safe default if not found.
+pub async fn get_local_scope(peer_id: &PeerId, allowlist: &SharedAllowlist) -> kels::PeerScope {
+    let guard = allowlist.read().await;
+    guard
+        .get(peer_id)
+        .map(|peer| peer.scope)
+        .unwrap_or(kels::PeerScope::Regional)
+}
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
@@ -211,28 +259,37 @@ pub type SharedAllowlist = Arc<RwLock<HashSet<PeerId>>>;
 /// 1. Fetches the registry's KEL and verifies its integrity
 /// 2. Checks that the registry prefix matches the expected trust anchor
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
+/// 4. For core peers: verifies an approved proposal exists with sufficient votes,
+///    where each vote passes SAID integrity (`verify()`) and KEL anchoring checks
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_client: &KelsRegistryClient,
+    registry_client: &mut MultiRegistryClient,
     registry_prefix: &str,
     allowlist: &SharedAllowlist,
+    local_scope: kels::PeerScope,
+    exclude_node_id: Option<&str>,
 ) -> Result<usize, AllowlistRefreshError> {
-    // Fetch and verify the registry's KEL
-    debug!("Verifying registry KEL");
-    let registry_kel = registry_client
-        .verify_registry(registry_prefix)
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    let original_peers = allowlist.read().await;
+    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
+    drop(original_peers);
 
-    // Fetch peers
-    debug!("Fetching peers");
-    let response = registry_client
-        .fetch_peers()
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    // Fetch peers — core nodes fetch from all registries, regional from their own
+    debug!("Fetching peers (scope: {:?})", local_scope);
+    let response = match local_scope {
+        kels::PeerScope::Core => registry_client.fetch_all_verified_peers().await,
+        kels::PeerScope::Regional => {
+            registry_client
+                .fetch_registry_verified_peers(registry_prefix)
+                .await
+        }
+    }
+    .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
-    let mut authorized_peers = HashSet::new();
+    // Fetch completed proposals for core peer vote verification
+    let proposals_response = registry_client.fetch_completed_proposals().await.ok();
+
+    let mut authorized_peers = HashMap::new();
 
     for history in response.peers {
         // Get the latest (last) record
@@ -248,12 +305,36 @@ pub async fn refresh_allowlist(
                 continue;
             }
 
-            // Verify the peer's SAID is anchored in the registry's KEL
-            if !registry_kel.contains_anchor(&latest.said) {
+            // Verify peer record anchoring in authorizing registry KEL
+            match registry_client.verify_peer_anchoring(latest).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(
+                        peer_id = %latest.peer_id,
+                        said = %latest.said,
+                        "Peer SAID not anchored in registry KEL, skipping"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        peer_id = %latest.peer_id,
+                        error = %e,
+                        "Failed to verify peer anchoring, skipping"
+                    );
+                    continue;
+                }
+            }
+
+            // For core peers, verify the proposal has sufficient verified votes
+            if latest.scope == PeerScope::Core
+                && !registry_client
+                    .verify_core_peer_votes(&latest.peer_id, &proposals_response)
+                    .await
+            {
                 warn!(
                     peer_id = %latest.peer_id,
-                    said = %latest.said,
-                    "Peer SAID not anchored in registry KEL, skipping"
+                    "Core peer not backed by sufficient verified votes, skipping"
                 );
                 continue;
             }
@@ -261,7 +342,7 @@ pub async fn refresh_allowlist(
             if latest.active {
                 match PeerId::from_str(&latest.peer_id) {
                     Ok(peer_id) => {
-                        authorized_peers.insert(peer_id);
+                        authorized_peers.insert(peer_id, latest.clone());
                     }
                     Err(e) => {
                         warn!(
@@ -275,15 +356,27 @@ pub async fn refresh_allowlist(
         }
     }
 
+    // Filter out the excluded node (e.g., self) from the authorized peers
+    if let Some(excluded) = exclude_node_id {
+        authorized_peers.retain(|_, peer| peer.node_id != excluded);
+    }
+
     let count = authorized_peers.len();
 
-    // Update the shared allowlist
-    *allowlist.write().await = authorized_peers;
+    if original_saids.len() != count
+        || authorized_peers
+            .iter()
+            .any(|(_, p)| !original_saids.contains(&p.said))
+    {
+        // Update the shared allowlist
+        *allowlist.write().await = authorized_peers;
 
-    info!(
-        "Allowlist refreshed with {} verified authorized peers",
-        count
-    );
+        info!(
+            "Allowlist refreshed with {} verified authorized peers",
+            count
+        );
+    }
+
     Ok(count)
 }
 
@@ -292,10 +385,12 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_client: KelsRegistryClient,
-    registry_prefix: String,
+    registry_client: &mut MultiRegistryClient,
+    registry_prefix: &str,
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
+    local_scope: kels::PeerScope,
+    node_id: &str,
 ) {
     info!(
         "Starting allowlist refresh loop (interval: {:?})",
@@ -303,7 +398,15 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(&registry_client, &registry_prefix, &allowlist).await {
+        match refresh_allowlist(
+            registry_client,
+            registry_prefix,
+            &allowlist,
+            local_scope,
+            Some(node_id),
+        )
+        .await
+        {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }
@@ -320,16 +423,33 @@ pub async fn run_allowlist_refresh_loop(
 mod tests {
     use super::*;
 
+    fn create_test_peer(peer_id: &PeerId) -> kels::Peer {
+        kels::Peer {
+            said: "test-said".to_string(),
+            prefix: "test-prefix".to_string(),
+            previous: None,
+            version: 1,
+            created_at: verifiable_storage::StorageDatetime::now(),
+            peer_id: peer_id.to_string(),
+            node_id: "test-node".to_string(),
+            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            active: true,
+            scope: kels::PeerScope::Core,
+            kels_url: "http://test:8080".to_string(),
+            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+        }
+    }
+
     #[test]
     fn test_allowlist_behaviour_creation() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _refresh_rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.pending_disconnects.is_empty());
     }
 
     #[test]
     fn test_allowlist_behaviour_initial_state() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.pending_verification.is_empty());
         assert!(behaviour.pending_disconnects.is_empty());
@@ -337,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_is_peer_allowed_empty_allowlist() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         // Generate a random PeerId
         let peer_id = PeerId::random();
@@ -347,41 +467,74 @@ mod tests {
     #[tokio::test]
     async fn test_is_peer_allowed_with_peer() {
         let peer_id = PeerId::random();
-        let mut set = HashSet::new();
-        set.insert(peer_id);
-        let allowlist = Arc::new(RwLock::new(set));
+        let mut map = HashMap::new();
+        map.insert(peer_id, create_test_peer(&peer_id));
+        let allowlist = Arc::new(RwLock::new(map));
         let (behaviour, _rx) = AllowlistBehaviour::new(allowlist);
         assert!(behaviour.is_peer_allowed(&peer_id));
     }
 
     #[tokio::test]
     async fn test_verify_pending_peers_removes_unauthorized() {
-        let allowlist = Arc::new(RwLock::new(HashSet::new()));
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
         let peer_id = PeerId::random();
-        behaviour.pending_verification.insert(peer_id);
+        behaviour
+            .pending_verification
+            .insert(peer_id, Instant::now());
 
         behaviour.verify_pending_peers().await;
 
         assert!(behaviour.pending_verification.is_empty());
-        assert!(behaviour.pending_disconnects.contains(&peer_id));
+        assert!(behaviour.pending_disconnects.contains_key(&peer_id));
     }
 
     #[tokio::test]
     async fn test_verify_pending_peers_keeps_authorized() {
         let peer_id = PeerId::random();
-        let mut set = HashSet::new();
-        set.insert(peer_id);
-        let allowlist = Arc::new(RwLock::new(set));
+        let mut map = HashMap::new();
+        map.insert(peer_id, create_test_peer(&peer_id));
+        let allowlist = Arc::new(RwLock::new(map));
         let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
 
-        behaviour.pending_verification.insert(peer_id);
+        behaviour
+            .pending_verification
+            .insert(peer_id, Instant::now());
 
         behaviour.verify_pending_peers().await;
 
         assert!(behaviour.pending_verification.is_empty());
-        assert!(!behaviour.pending_disconnects.contains(&peer_id));
+        assert!(!behaviour.pending_disconnects.contains_key(&peer_id));
+    }
+
+    #[tokio::test]
+    async fn test_verify_pending_peers_drops_expired() {
+        let allowlist = Arc::new(RwLock::new(HashMap::new()));
+        let (mut behaviour, _rx) = AllowlistBehaviour::new(allowlist);
+
+        let peer_id = PeerId::random();
+        // Insert with a timestamp in the past (expired)
+        behaviour.pending_verification.insert(
+            peer_id,
+            Instant::now() - PENDING_PEER_TTL - Duration::from_secs(1),
+        );
+
+        behaviour.verify_pending_peers().await;
+
+        // Should be dropped, not disconnected
+        assert!(behaviour.pending_verification.is_empty());
+        assert!(!behaviour.pending_disconnects.contains_key(&peer_id));
+    }
+
+    #[test]
+    fn test_max_pending_peers_constant() {
+        assert_eq!(MAX_PENDING_PEERS, 200);
+    }
+
+    #[test]
+    fn test_pending_peer_ttl_constant() {
+        assert_eq!(PENDING_PEER_TTL, Duration::from_secs(300));
     }
 
     // ==================== AllowlistRefreshError Tests ====================
