@@ -19,7 +19,6 @@ redis = ["dep:redis"]
 server-caching = ["dep:cacheable"]
 server = ["tokio/signal"]  # Server utilities (shutdown signal handling)
 dev-tools = []  # Developer-only tools - DO NOT enable in production
-p2p-verification = ["dep:p256", "dep:libp2p-identity"]
 
 [dependencies]
 # Local CESR library for cryptographic operations
@@ -65,11 +64,6 @@ futures = "0.3"
 # Base64 encoding
 base64 = "0.22"
 
-# p256 for public key decompression (optional, for p2p-verification)
-p256 = { version = "0.13", features = ["ecdsa"], optional = true }
-
-# libp2p for PeerId derivation (optional, for p2p-verification)
-libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer", features = ["peerid", "ecdsa"], optional = true }
 
 # Redis caching (optional, native only)
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }

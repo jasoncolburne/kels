@@ -1,40 +1,23 @@
 //! kels-registry-admin CLI - Peer allowlist management
 //!
 //! This CLI manages the peer allowlist in the kels-registry.
-//! For core peers in federation mode, it connects via localhost HTTP to the registry.
-//! For regional peers, it writes directly to PostgreSQL.
+//! For proposals in federation mode, it connects via localhost HTTP to the registry.
+//! For direct peer additions, it writes directly to PostgreSQL.
 
 use anyhow::{Context, anyhow};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::sync::Arc;
 
 use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
 use verifiable_storage_postgres::PgPool;
 
+use kels::IdentityClient;
 use kels::{
-    CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal, PeerScope,
-    ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
+    CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal, ProposalHistory,
+    ProposalWithVotes, ProposalWithVotesMethods, Vote,
 };
-use kels_registry::{
-    federation::FederationStatus, identity_client::IdentityClient, peer_store::PeerRepository,
-};
-
-/// CLI representation of PeerScope for clap parsing
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliPeerScope {
-    Core,
-    Regional,
-}
-
-impl From<CliPeerScope> for PeerScope {
-    fn from(scope: CliPeerScope) -> Self {
-        match scope {
-            CliPeerScope::Core => PeerScope::Core,
-            CliPeerScope::Regional => PeerScope::Regional,
-        }
-    }
-}
+use kels_registry::{federation::FederationStatus, peer_store::PeerRepository};
 
 #[derive(Parser)]
 #[command(name = "kels-registry-admin")]
@@ -70,52 +53,49 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PeerAction {
-    /// Add a peer to the allowlist (use 'propose' for multi-party approval of core peers)
+    /// Add a peer directly (for bootstrapping first peer)
     Add {
-        /// libp2p PeerId (Base58 encoded)
+        /// Peer identity (KELS prefix)
         #[arg(long)]
-        peer_id: String,
+        peer_prefix: String,
         /// Human-readable node name
         #[arg(long)]
         node_id: String,
-        /// Peer scope: core (replicated across federation) or regional (local only)
-        #[arg(long, value_enum, default_value = "regional")]
-        scope: CliPeerScope,
         /// HTTP URL for the KELS service
         #[arg(long)]
         kels_url: String,
-        /// libp2p multiaddr for gossip connections
+        /// Gossip address (host:port)
         #[arg(long)]
-        gossip_multiaddr: String,
+        gossip_addr: String,
     },
     /// Remove a peer from the allowlist
     Remove {
-        /// libp2p PeerId (Base58 encoded)
+        /// Peer identity (KELS prefix)
         #[arg(long)]
-        peer_id: String,
+        peer_prefix: String,
     },
     /// List all peers in the allowlist
     List,
     /// Propose a new core peer (requires multi-party approval)
     Propose {
-        /// libp2p PeerId (Base58 encoded)
+        /// Peer identity (KELS prefix)
         #[arg(long)]
-        peer_id: String,
+        peer_prefix: String,
         /// Human-readable node name
         #[arg(long)]
         node_id: String,
         /// HTTP URL for the KELS service
         #[arg(long)]
         kels_url: String,
-        /// libp2p multiaddr for gossip connections
+        /// Gossip address (host:port)
         #[arg(long)]
-        gossip_multiaddr: String,
+        gossip_addr: String,
     },
     /// Propose removing a core peer (requires multi-party approval)
     ProposeRemoval {
         /// Peer ID of the core peer to remove
         #[arg(long)]
-        peer_id: String,
+        peer_prefix: String,
     },
     /// Vote on a pending proposal
     Vote {
@@ -270,57 +250,15 @@ impl AdminContext {
     }
 }
 
-/// Check if there's at least one active core peer in the registry.
-async fn has_active_core_peer(ctx: &AdminContext) -> anyhow::Result<bool> {
-    // Get all distinct prefixes
-    let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
-
-    for prefix in prefixes {
-        if let Some(peer) = ctx.peer_repo.get_latest(&prefix).await?
-            && peer.active
-            && peer.scope == PeerScope::Core
-        {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
 async fn add_peer(
     ctx: &AdminContext,
-    peer_id: &str,
+    peer_prefix: &str,
     node_id: &str,
-    scope: PeerScope,
     kels_url: &str,
-    gossip_multiaddr: &str,
+    gossip_addr: &str,
 ) -> anyhow::Result<()> {
     use verifiable_storage::Chained;
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
-
-    // Core peers must go through the proposal system for multi-party approval
-    if scope == PeerScope::Core {
-        return Err(anyhow!(
-            "Core peers must go through the proposal system.\n\
-             Use: kels-registry-admin peer propose --peer-id {} --node-id {} --kels-url {} --gossip-multiaddr {}",
-            peer_id,
-            node_id,
-            kels_url,
-            gossip_multiaddr
-        ));
-    }
-
-    // For regional peers, require at least one active core peer to exist
-    // (regional nodes need core nodes to connect to the gossip swarm)
-    let has_core_peer = has_active_core_peer(ctx).await?;
-    if !has_core_peer {
-        return Err(anyhow!(
-            "Cannot add regional peer - no active core peers exist.\n\
-             Regional nodes need core nodes to connect to the gossip swarm.\n\
-             Add at least one core peer first with: peer add --scope core ..."
-        ));
-    }
 
     // Upsert pattern: load latest by node_id, if none create(), if some modify and increment()
     // Unique constraint on (node_id, version) prevents race conditions
@@ -333,38 +271,35 @@ async fn add_peer(
     let peer = match existing.first() {
         Some(latest)
             if latest.active
-                && latest.peer_id == peer_id
-                && latest.scope == scope
+                && latest.peer_prefix == peer_prefix
                 && latest.kels_url == kels_url
-                && latest.gossip_multiaddr == gossip_multiaddr =>
+                && latest.gossip_addr == gossip_addr =>
         {
             println!(
-                "Peer {} already authorized (node: {}, scope: {})",
-                peer_id, node_id, scope
+                "Peer {} already authorized (node: {})",
+                peer_prefix, node_id
             );
             return Ok(());
         }
         Some(latest) => {
             // Existing node - clone, update fields, increment version
             let mut peer = latest.clone();
-            peer.peer_id = peer_id.to_string();
+            peer.peer_prefix = peer_prefix.to_string();
             peer.active = true;
-            peer.scope = scope;
             peer.kels_url = kels_url.to_string();
-            peer.gossip_multiaddr = gossip_multiaddr.to_string();
+            peer.gossip_addr = gossip_addr.to_string();
             peer.increment()?;
             peer
         }
         None => {
             // New peer - create version 0
             Peer::create(
-                peer_id.to_string(),
+                peer_prefix.to_string(),
                 node_id.to_string(),
                 ctx.self_prefix.clone(),
                 true,
-                scope,
                 kels_url.to_string(),
-                gossip_multiaddr.to_string(),
+                gossip_addr.to_string(),
             )?
         }
     };
@@ -386,42 +321,28 @@ async fn add_peer(
     } else {
         "Updated"
     };
-    println!(
-        "{} peer {} (node: {}, scope: {})",
-        action, peer_id, node_id, scope
-    );
+    println!("{} peer {} (node: {})", action, peer_prefix, node_id);
     println!("Version: {} (SAID: {})", peer.version, peer.said);
     Ok(())
 }
 
-async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
+async fn remove_peer(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
     use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
-    // Query by peer_id field to determine scope
     let query = Query::<Peer>::new()
-        .eq("peer_id", peer_id)
+        .eq("peer_prefix", peer_prefix)
         .order_by("version", Order::Desc)
         .limit(1);
     let results: Vec<Peer> = ctx.peer_repo.pool.fetch(query).await?;
     let existing = results
         .first()
-        .ok_or_else(|| anyhow!("Peer not found: {}", peer_id))?;
+        .ok_or_else(|| anyhow!("Peer not found: {}", peer_prefix))?;
 
     if !existing.active {
-        println!("Peer {} already inactive", peer_id);
+        println!("Peer {} already inactive", peer_prefix);
         return Ok(());
     }
 
-    // Core peers must go through the proposal system for multi-party removal
-    if existing.scope == PeerScope::Core {
-        return Err(anyhow!(
-            "Core peers must go through the removal proposal system.\n\
-             Use: kels-registry-admin peer propose-removal --peer-id {}",
-            peer_id
-        ));
-    }
-
-    // For regional peers, use direct DB access
     let deactivated = existing.deactivate()?;
 
     // Anchor the peer SAID in registry's KEL via identity service
@@ -435,7 +356,10 @@ async fn remove_peer(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
         .await
         .context("Failed to insert peer")?;
 
-    println!("Removed peer {} (node: {})", peer_id, deactivated.node_id);
+    println!(
+        "Removed peer {} (node: {})",
+        peer_prefix, deactivated.node_id
+    );
     println!(
         "Version: {} (SAID: {})",
         deactivated.version, deactivated.said
@@ -458,10 +382,10 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
 
 async fn propose_peer(
     ctx: &AdminContext,
-    peer_id: &str,
+    peer_prefix: &str,
     node_id: &str,
     kels_url: &str,
-    gossip_multiaddr: &str,
+    gossip_addr: &str,
 ) -> anyhow::Result<()> {
     // Get this registry's prefix as proposer
     let proposer = ctx
@@ -480,10 +404,10 @@ async fn propose_peer(
 
     // Create payload for signing
     let peer_proposal = PeerAdditionProposal::empty(
-        peer_id,
+        peer_prefix,
         node_id,
         kels_url,
-        gossip_multiaddr,
+        gossip_addr,
         &proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
@@ -537,7 +461,7 @@ async fn propose_peer(
     Err(anyhow!("Failed to create proposal after retries"))
 }
 
-async fn propose_removal(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()> {
+async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
@@ -555,7 +479,7 @@ async fn propose_removal(ctx: &AdminContext, peer_id: &str) -> anyhow::Result<()
 
     // Create removal proposal
     let removal_proposal = PeerRemovalProposal::empty(
-        peer_id,
+        peer_prefix,
         &proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
@@ -692,7 +616,7 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
                     let expires = p.expires_at.to_string();
                     let expires = expires.split('T').next().unwrap_or(&expires);
                     println!("Proposal:  {}", pwv.proposal_id());
-                    println!("Peer ID:   {}", p.peer_id);
+                    println!("Peer ID:   {}", p.peer_prefix);
                     println!("Proposer:  {}", p.proposer);
                     println!("Status:    {:?}", status);
                     println!("Approvals: {}", pwv.approval_count());
@@ -711,7 +635,7 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
                     let expires = p.expires_at.to_string();
                     let expires = expires.split('T').next().unwrap_or(&expires);
                     println!("Proposal:  {}", rwv.proposal_id());
-                    println!("Peer ID:   {}", p.peer_id);
+                    println!("Peer ID:   {}", p.peer_prefix);
                     println!("Proposer:  {}", p.proposer);
                     println!("Status:    {:?}", status);
                     println!("Approvals: {}", rwv.approval_count());
@@ -746,7 +670,7 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
                     println!("Addition Proposal: {}", pwv.proposal_id());
                     println!("{}", "=".repeat(50));
                     println!("SAID:       {}", p.said);
-                    println!("Peer ID:    {}", p.peer_id);
+                    println!("Peer ID:    {}", p.peer_prefix);
                     println!("Node ID:    {}", p.node_id);
                     println!("Proposer:   {}", p.proposer);
                     println!("Approvals:  {}", pwv.approval_count());
@@ -766,7 +690,7 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
                     println!("Removal Proposal: {}", rwv.proposal_id());
                     println!("{}", "=".repeat(50));
                     println!("SAID:       {}", p.said);
-                    println!("Peer ID:    {}", p.peer_id);
+                    println!("Peer ID:    {}", p.peer_prefix);
                     println!("Proposer:   {}", p.proposer);
                     println!("Approvals:  {}", rwv.approval_count());
                     println!("Rejections: {}", rwv.rejection_count());
@@ -954,18 +878,15 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<20} {:<50} {:<10} {:<8}",
-        "NODE_ID", "PEER_ID", "SCOPE", "STATUS"
-    );
-    println!("{}", "-".repeat(92));
+    println!("{:<20} {:<50} {:<8}", "NODE_ID", "PEER_ID", "STATUS");
+    println!("{}", "-".repeat(82));
 
     for prefix in prefixes {
         if let Some(peer) = ctx.peer_repo.get_latest(&prefix).await? {
             let status = if peer.active { "active" } else { "inactive" };
             println!(
-                "{:<20} {:<50} {:<10} {:<8}",
-                peer.node_id, peer.peer_id, peer.scope, status
+                "{:<20} {:<50} {:<8}",
+                peer.node_id, peer.peer_prefix, status
             );
         }
     }
@@ -987,7 +908,7 @@ async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
             && peer.active
         {
             active_count += 1;
-            println!("  {} ({})", peer.peer_id, peer.node_id);
+            println!("  {} ({})", peer.peer_prefix, peer.node_id);
         }
     }
 
@@ -1009,7 +930,7 @@ async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
     for prefix in prefixes {
         let history = ctx.peer_repo.get_history(&prefix).await?;
         if let Some(latest) = history.last() {
-            println!("\nPeer: {} ({})", latest.peer_id, latest.node_id);
+            println!("\nPeer: {} ({})", latest.peer_prefix, latest.node_id);
             println!("{}", "-".repeat(60));
             for peer in &history {
                 let status = if peer.active { "active" } else { "inactive" };
@@ -1123,38 +1044,29 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Peer { action } => match action {
             PeerAction::Add {
-                peer_id,
+                peer_prefix,
                 node_id,
-                scope,
                 kels_url,
-                gossip_multiaddr,
+                gossip_addr,
             } => {
-                add_peer(
-                    &ctx,
-                    &peer_id,
-                    &node_id,
-                    scope.into(),
-                    &kels_url,
-                    &gossip_multiaddr,
-                )
-                .await?;
+                add_peer(&ctx, &peer_prefix, &node_id, &kels_url, &gossip_addr).await?;
             }
-            PeerAction::Remove { peer_id } => {
-                remove_peer(&ctx, &peer_id).await?;
+            PeerAction::Remove { peer_prefix } => {
+                remove_peer(&ctx, &peer_prefix).await?;
             }
             PeerAction::List => {
                 list_peers(&ctx).await?;
             }
             PeerAction::Propose {
-                peer_id,
+                peer_prefix,
                 node_id,
                 kels_url,
-                gossip_multiaddr,
+                gossip_addr,
             } => {
-                propose_peer(&ctx, &peer_id, &node_id, &kels_url, &gossip_multiaddr).await?;
+                propose_peer(&ctx, &peer_prefix, &node_id, &kels_url, &gossip_addr).await?;
             }
-            PeerAction::ProposeRemoval { peer_id } => {
-                propose_removal(&ctx, &peer_id).await?;
+            PeerAction::ProposeRemoval { peer_prefix } => {
+                propose_removal(&ctx, &peer_prefix).await?;
             }
             PeerAction::Vote {
                 proposal_id,

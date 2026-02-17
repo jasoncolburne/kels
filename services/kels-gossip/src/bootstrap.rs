@@ -51,6 +51,8 @@ pub struct BootstrapConfig {
     pub node_id: String,
     /// Local KELS URL (for this node to use)
     pub kels_url: String,
+    /// HTTP port for the gossip service (used to query peer /ready endpoints)
+    pub http_port: u16,
     /// Page size for prefix listing
     pub page_size: usize,
 }
@@ -60,6 +62,7 @@ impl Default for BootstrapConfig {
         Self {
             node_id: String::new(),
             kels_url: String::new(),
+            http_port: 80,
             page_size: 100,
         }
     }
@@ -152,12 +155,12 @@ impl BootstrapSync {
     /// Check if a peer is authorized in the allowlist.
     pub async fn is_peer_authorized(
         &mut self,
-        peer_id: &str,
+        peer_prefix: &str,
         registry_prefix: &str,
     ) -> Result<bool, BootstrapError> {
         Ok(self
             .registry
-            .is_peer_authorized(peer_id, registry_prefix)
+            .is_peer_authorized(peer_prefix, registry_prefix)
             .await?)
     }
 
@@ -174,20 +177,19 @@ impl BootstrapSync {
     }
 
     /// Check if a peer is ready by querying its HTTP /ready endpoint.
+    ///
+    /// Constructs the URL from the peer's gossip address hostname and the
+    /// configured HTTP port (all gossip services share the same HTTP port).
     async fn is_peer_ready(&self, peer: &kels::Peer) -> bool {
-        let http_url = match peer.gossip_http_url() {
-            Some(url) => url,
-            None => {
-                warn!("Could not derive HTTP URL for peer {}", peer.peer_id);
-                return false;
-            }
-        };
-
-        let url = format!("{}/ready", http_url);
+        let host = peer
+            .gossip_addr
+            .rsplit_once(':')
+            .map_or(peer.gossip_addr.as_str(), |(h, _)| h);
+        let url = format!("http://{}:{}/ready", host, self.config.http_port);
         match self.http_client.get(&url).send().await {
             Ok(response) => response.status().is_success(),
             Err(e) => {
-                debug!("Peer {} not ready: {}", peer.peer_id, e);
+                debug!("Peer {} not ready: {}", peer.peer_prefix, e);
                 false
             }
         }
@@ -496,10 +498,12 @@ mod tests {
         let config = BootstrapConfig {
             node_id: "node-1".to_string(),
             kels_url: "http://localhost:8080".to_string(),
+            http_port: 8081,
             page_size: 50,
         };
         assert_eq!(config.node_id, "node-1");
         assert_eq!(config.kels_url, "http://localhost:8080");
+        assert_eq!(config.http_port, 8081);
         assert_eq!(config.page_size, 50);
     }
 
@@ -540,13 +544,12 @@ mod tests {
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_id: "test-peer".to_string(),
+            peer_prefix: "test-peer".to_string(),
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            scope: kels::PeerScope::Core,
             kels_url: "http://kels:8080".to_string(),
-            gossip_multiaddr: "/ip4/127.0.0.1/tcp/4001".to_string(),
+            gossip_addr: "/ip4/127.0.0.1/tcp/4001".to_string(),
         };
         assert_eq!(BootstrapSync::get_sync_url(&peer), "http://kels:8080");
     }

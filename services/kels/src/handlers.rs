@@ -552,17 +552,7 @@ pub(crate) async fn list_prefixes(
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     #[cfg(not(feature = "dev-tools"))]
     {
-        let payload_json = serde_json::to_vec(&signed_request.payload)
-            .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
-        kels::p2p_signature::verify_signature(
-            &payload_json,
-            &signed_request.peer_id,
-            &signed_request.public_key,
-            &signed_request.signature,
-        )
-        .map_err(|e| ApiError::forbidden(format!("Signature verification failed: {}", e)))?;
-
-        if !kels::p2p_signature::validate_timestamp(signed_request.payload.timestamp, 60) {
+        if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
             return Err(ApiError::forbidden("Request timestamp expired"));
         }
 
@@ -581,14 +571,29 @@ pub(crate) async fn list_prefixes(
             }
         }
 
-        // Verify peer is in the authorized peer list (cached in Redis)
-        if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
-            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
-
-            if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
-                return Err(ApiError::forbidden("Peer not authorized"));
+        // Look up peer to verify they are in the verified allowlist
+        let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
+        let _peer = match peer {
+            Some(p) => p,
+            None => {
+                refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+                get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
+                    .await?
+                    .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
             }
-        }
+        };
+
+        // Verify signature against peer's current public key from their KEL
+        let kel = state
+            .repo
+            .key_events
+            .get_kel(&signed_request.peer_prefix)
+            .await
+            .map_err(|_| ApiError::forbidden("Peer KEL not found"))?;
+
+        signed_request
+            .verify_signature(&kel)
+            .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
     }
 
     let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
@@ -600,17 +605,26 @@ pub(crate) async fn list_prefixes(
     Ok(Json(result))
 }
 
-/// Check if a peer_id exists in the Redis verified peers cache.
+/// Look up a verified peer from Redis cache, returning the full Peer data.
 #[cfg(not(feature = "dev-tools"))]
-async fn is_peer_verified(
+async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_id: &str,
-) -> Result<bool, ApiError> {
+    peer_prefix: &str,
+) -> Result<Option<kels::Peer>, ApiError> {
     use redis::AsyncCommands;
     let mut conn = redis_conn.clone();
-    conn.exists::<_, bool>(format!("kels:verified-peer:{}", peer_id))
+    let json: Option<String> = conn
+        .get(format!("kels:verified-peer:{}", peer_prefix))
         .await
-        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))
+        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+    match json {
+        Some(j) => {
+            let peer: kels::Peer = serde_json::from_str(&j)
+                .map_err(|e| ApiError::internal_error(format!("Deserialization failed: {}", e)))?;
+            Ok(Some(peer))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Fetch verified peers from the registry and store records in Redis.
@@ -639,9 +653,12 @@ async fn refresh_verified_peers(
         {
             let peer_json = serde_json::to_string(peer)
                 .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
-            conn.set::<_, _, ()>(format!("kels:verified-peer:{}", peer.peer_id), peer_json)
-                .await
-                .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+            conn.set::<_, _, ()>(
+                format!("kels:verified-peer:{}", peer.peer_prefix),
+                peer_json,
+            )
+            .await
+            .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
         }
     }
 

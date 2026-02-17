@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = [
+    "lib/gossip",
     "lib/kels",
     "lib/kels-derive",
     "lib/kels-ffi",
@@ -26,6 +27,3 @@ expect_used = "deny"
 panic = "deny"
 unwrap_in_result = "deny"
 
-# Patch libp2p-identity to use our fork with external-signer support
-[patch.crates-io]
-libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer" }

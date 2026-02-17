@@ -8,7 +8,7 @@ The secure registration system ensures that only authorized nodes can:
 - Register with the kels-registry service
 - Participate in the gossip network
 
-Each node has a persistent secp256r1 identity stored in an HSM (the example implementation uses the software based SoftHSM2 - don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerIds stored in PostgreSQL.
+Each node has a persistent secp256r1 identity stored in an HSM (the example implementation uses the software based SoftHSM2 - don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ Each node has a persistent secp256r1 identity stored in an HSM (the example impl
 │  ┌────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
 │  │  identity  │───>│  Peer Allowlist │───>│  Registration Verification   │   │
 │  │  service   │    │  (PostgreSQL)   │    │  - Verify signature          │   │
-│  │ (1 replica)│    │  [PeerId list]  │    │  - Check PeerId in allowlist │   │
+│  │ (1 replica)│    │  [PeerPrefix list]  │    │  - Check PeerPrefix in allowlist │   │
 │  └─────┬──────┘    └─────────────────┘    └──────────────────────────────┘   │
 │        │                                                                     │
 │        ▼                                                                     │
@@ -79,14 +79,14 @@ Each node runs an HSM service (SoftHSM2) that provides:
 | `GET` | `/api/hsm/keys/{label}/public` | Get public key (CESR qb64) |
 | `POST` | `/api/hsm/keys/{label}/sign` | Sign data, returns CESR signature + public key |
 
-### PeerId Derivation
+### PeerPrefix Derivation
 
-The PeerId is cryptographically derived from the HSM public key:
+The PeerPrefix is cryptographically derived from the HSM public key:
 
 1. HSM stores secp256r1 key (33-byte compressed SEC1 format)
 2. Key is decompressed to 65-byte uncompressed format
-3. libp2p derives PeerId from uncompressed public key
-4. PeerId is stable across restarts (same HSM key = same PeerId)
+3. libp2p derives PeerPrefix from uncompressed public key
+4. PeerPrefix is stable across restarts (same HSM key = same PeerPrefix)
 
 ### Peer Allowlist
 
@@ -99,11 +99,10 @@ struct Peer {
     previous: Option<String>, // SAID of previous version
     version: u64,             // Version number
     created_at: DateTime,
-    peer_id: String,          // libp2p PeerId (Base58)
+    peer_prefix: String,          // libp2p PeerPrefix (Base58)
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
-    scope: PeerScope,         // Core (federated) or Regional (local-only)
     kels_url: String,         // HTTP URL for KELS service
     gossip_multiaddr: String, // libp2p multiaddr for gossip connections
 }
@@ -114,11 +113,7 @@ Each peer is a versioned entity - deactivation creates a new version with `activ
 **Authorizing KEL:**
 The `authorizing_kel` field identifies which registry's KEL contains the cryptographic anchor for this peer record. When verifying a peer, the gossip node fetches the KEL for the `authorizing_kel` prefix and checks that the peer's SAID is anchored in it. This allows federated registries to authorize peers independently while maintaining cryptographic proof of authorization.
 
-**Peer Scopes:**
-- `Core`: Replicated across all registries in a federation via Raft consensus
-- `Regional`: Local to this registry only, not shared across federation
-
-For more details on peer scopes and federation, see [Multi-Registry Federation](./federation.md).
+For more details on federation, see [Multi-Registry Federation](./federation.md).
 
 ## Signed Request Format
 
@@ -127,7 +122,7 @@ Mutating registry operations require signed requests:
 ```rust
 struct SignedRequest<T> {
     payload: T,           // The actual request data
-    peer_id: String,      // Base58 PeerId of signer
+    peer_prefix: String,      // Base58 PeerPrefix of signer
     public_key: String,   // CESR qb64 encoded public key
     signature: String,    // CESR qb64 encoded signature
 }
@@ -162,7 +157,7 @@ When the registry receives a signed request:
 
 1. **Parse signature components** from SignedRequest
 2. **Verify signature** over payload JSON using CESR library
-3. **Derive PeerId** from public key and verify it matches claimed peer_id
+3. **Derive PeerPrefix** from public key and verify it matches claimed peer_prefix
 4. **Check allowlist** - query PostgreSQL for latest version of peer, verify `active: true`
 5. **Process request** if all checks pass
 
@@ -170,7 +165,7 @@ When the registry receives a signed request:
 ┌──────────────────┐
 │ Signed Request   │
 │ - payload        │
-│ - peer_id        │
+│ - peer_prefix        │
 │ - public_key     │
 │ - signature      │
 └────────┬─────────┘
@@ -189,7 +184,7 @@ When the registry receives a signed request:
          │ YES
          ▼
 ┌──────────────────┐     ┌─────────────────┐
-│ Derive PeerId    │────>│ 401 Unauthorized│
+│ Derive PeerPrefix    │────>│ 401 Unauthorized│
 │ matches claimed? │ NO  │ (peer mismatch) │
 └────────┬─────────┘     └─────────────────┘
          │ YES
@@ -211,8 +206,8 @@ kels-gossip signs requests using `HsmRegistrySigner`:
 
 1. **Create signer** on startup with HSM URL and node_id
 2. **Sign requests** by calling HSM sign endpoint (returns signature + public key)
-3. **Derive peer_id** from returned public key
-4. **Wrap payload** in SignedRequest with signature, public key, and peer_id
+3. **Derive peer_prefix** from returned public key
+4. **Wrap payload** in SignedRequest with signature, public key, and peer_prefix
 
 ```rust
 // In kels-gossip startup
@@ -232,14 +227,8 @@ The HSM sign endpoint returns both signature and public key in a single call, av
 The `kels-registry-admin` CLI manages the peer allowlist:
 
 ```bash
-# Add a peer to allowlist (regional scope by default)
+# Add a peer to allowlist
 kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
-  --kels-url http://kels.kels-node-a.kels \
-  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
-
-# Add a core peer (in federated mode, must run on leader registry)
-kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
-  --scope core \
   --kels-url http://kels.kels-node-a.kels \
   --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
 
@@ -250,19 +239,19 @@ kels-registry-admin peer remove --peer-id 12D3KooWAbc...
 kels-registry-admin peer list
 ```
 
-See [Multi-Registry Federation](./federation.md) for details on core vs regional peer scopes.
+See [Multi-Registry Federation](./federation.md) for details on the multi-party approval process.
 
-### Getting a Node's PeerId
+### Getting a Node's PeerPrefix
 
-Before a node can be added to the allowlist, you need its PeerId. Options:
+Before a node can be added to the allowlist, you need its PeerPrefix. Options:
 
-1. **From logs:** Deploy the node, check kels-gossip logs for "Local PeerId: ..."
-2. **From HSM:** Query HSM public key and derive PeerId programmatically
+1. **From logs:** Deploy the node, check kels-gossip logs for "Local PeerPrefix: ..."
+2. **From HSM:** Query HSM public key and derive PeerPrefix programmatically
 
 ```bash
 # Check kels-gossip logs
-kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerId
-# Output: Local PeerId: 12D3KooWXyz...
+kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
+# Output: Local PeerPrefix: 12D3KooWXyz...
 ```
 
 ## Node Onboarding Workflow
@@ -270,13 +259,13 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerId
 ### Phase 1: Deploy Node (Unauthorized)
 
 1. Deploy new node namespace with HSM service
-2. Deploy kels-gossip - it generates/loads HSM key and logs PeerId
+2. Deploy kels-gossip - it generates/loads HSM key and logs PeerPrefix
 3. Node attempts to register with registry - **fails** (not in allowlist)
 4. Node can still fetch KELS data via HTTP (read-only, no auth required)
 
 ### Phase 2: Authorize Node
 
-1. Get PeerId from node logs
+1. Get PeerPrefix from node logs
 2. Add peer via admin CLI:
    ```bash
    kubectl exec -n kels-registry deploy/kels-registry -- \
@@ -302,9 +291,9 @@ In addition to registry authentication, the gossip layer filters connections:
 impl NetworkBehaviour for AllowlistBehaviour {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         if let FromSwarm::ConnectionEstablished(conn) = event {
-            if !self.allowlist.blocking_read().contains(&conn.peer_id) {
+            if !self.allowlist.blocking_read().contains(&conn.peer_prefix) {
                 // Queue disconnection
-                self.pending_disconnects.push(conn.peer_id);
+                self.pending_disconnects.push(conn.peer_prefix);
             }
         }
     }
@@ -323,9 +312,9 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 
 ### Identity Binding
 
-- PeerId is cryptographically derived from HSM public key
-- Cannot claim a different PeerId than what the key produces
-- Same key always produces same PeerId (deterministic)
+- PeerPrefix is cryptographically derived from HSM public key
+- Cannot claim a different PeerPrefix than what the key produces
+- Same key always produces same PeerPrefix (deterministic)
 
 ### Defense in Depth
 
@@ -384,10 +373,10 @@ kels-node-x/
    kubectl exec -n kels-registry deploy/kels-registry -- kels-registry-admin peer list
    ```
 
-2. Verify PeerId matches:
+2. Verify PeerPrefix matches:
    ```bash
-   # Get PeerId from node logs
-   kubectl logs -n kels-node-x deploy/kels-gossip | grep PeerId
+   # Get PeerPrefix from node logs
+   kubectl logs -n kels-node-x deploy/kels-gossip | grep PeerPrefix
    ```
 
 3. Check registry logs for verification errors:

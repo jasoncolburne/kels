@@ -2,9 +2,6 @@ kind: Build
 name: identity
 type: container
 
-# Identity service is only needed in the registry environment
-disabled: ${var.envType != "registry"}
-
 dependencies:
   - run.federation-read-prefixes
 
@@ -29,9 +26,6 @@ spec:
 kind: Deploy
 name: identity
 type: kubernetes
-
-# Identity service is only needed in the registry environment
-disabled: ${var.envType != "registry"}
 
 dependencies:
   - build.identity

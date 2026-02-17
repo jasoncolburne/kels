@@ -1,8 +1,9 @@
 //! Client for the identity service
 
-use kels::{ErrorResponse, Kel, KelsError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+use crate::{ErrorResponse, Kel, KelsError};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

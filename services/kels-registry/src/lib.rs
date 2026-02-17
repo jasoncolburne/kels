@@ -18,12 +18,10 @@
 
 pub mod federation;
 pub mod handlers;
-pub mod identity_client;
 pub mod peer_store;
 pub mod raft_store;
 pub mod repository;
 pub mod server;
-pub mod signature;
 pub mod store;
 
 pub use federation::{

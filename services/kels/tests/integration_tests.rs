@@ -428,8 +428,7 @@ async fn test_list_prefixes() {
             since: None,
             limit: None,
         },
-        peer_id: "mock".to_string(),
-        public_key: "mock".to_string(),
+        peer_prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -562,8 +561,7 @@ async fn test_list_prefixes_with_limit() {
             since: None,
             limit: Some(2),
         },
-        peer_id: "mock".to_string(),
-        public_key: "mock".to_string(),
+        peer_prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -769,8 +767,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
             since: None,
             limit: Some(1),
         },
-        peer_id: "mock".to_string(),
-        public_key: "mock".to_string(),
+        peer_prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -795,8 +792,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
                 since: Some(cursor.clone()),
                 limit: Some(1),
             },
-            peer_id: "mock".to_string(),
-            public_key: "mock".to_string(),
+            peer_prefix: "mock".to_string(),
             signature: "mock".to_string(),
         };
 

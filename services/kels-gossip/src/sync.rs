@@ -18,14 +18,13 @@ use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
-use kels::{KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, PeerScope, SignedKeyEvent};
-use libp2p::PeerId;
+use kels::{KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, SignedKeyEvent};
 use thiserror::Error;
 
 use crate::{
     allowlist::SharedAllowlist,
-    gossip::{GossipCommand, GossipEvent},
-    protocol::{AnnouncementScope, KelAnnouncement},
+    gossip_layer::{GossipCommand, GossipEvent},
+    protocol::KelAnnouncement,
 };
 
 /// Tracks prefix:said pairs recently stored via gossip to prevent feedback loops.
@@ -55,16 +54,11 @@ pub enum SyncError {
 
 /// Runs the Redis subscriber that listens for local KEL updates
 /// and broadcasts them to the gossip network.
-///
-/// Initial broadcast routing based on this node's scope:
-/// - Regional: broadcast regional→core (core nodes will bridge)
-/// - Core: broadcast core→all
 pub async fn run_redis_subscriber(
     redis_url: &str,
+    local_peer_prefix: String,
     command_tx: mpsc::Sender<GossipCommand>,
-    local_scope: PeerScope,
     recently_stored: RecentlyStoredFromGossip,
-    local_peer_id: PeerId,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -99,44 +93,11 @@ pub async fn run_redis_subscriber(
             }
         }
 
-        let sender = local_peer_id.to_string();
-
-        match local_scope {
-            PeerScope::Regional => {
-                // Regional node: broadcast regional→core
-                if let Some(ann) = KelAnnouncement::from_pubsub_message(
-                    &payload,
-                    AnnouncementScope::Regional,
-                    AnnouncementScope::Core,
-                    sender,
-                ) {
-                    debug!(
-                        "Broadcasting: prefix={}, said={}, regional→core",
-                        ann.prefix, ann.said
-                    );
-                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
-                        error!("Failed to send announce command - channel closed");
-                        return Err(SyncError::ChannelClosed);
-                    }
-                }
-            }
-            PeerScope::Core => {
-                // Core node: broadcast core→all
-                if let Some(ann) = KelAnnouncement::from_pubsub_message(
-                    &payload,
-                    AnnouncementScope::Core,
-                    AnnouncementScope::All,
-                    sender,
-                ) {
-                    debug!(
-                        "Broadcasting: prefix={}, said={}, core→all",
-                        ann.prefix, ann.said
-                    );
-                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
-                        error!("Failed to send announce command - channel closed");
-                        return Err(SyncError::ChannelClosed);
-                    }
-                }
+        if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
+            debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
+            if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
+                error!("Failed to send announce command - channel closed");
+                return Err(SyncError::ChannelClosed);
             }
         }
     }
@@ -158,13 +119,9 @@ pub struct SyncHandler {
     local_saids: HashMap<String, String>,
     /// Shared allowlist for peer URL lookups
     allowlist: SharedAllowlist,
-    /// This node's peer ID
-    local_peer_id: PeerId,
-    /// This node's scope (determined at startup)
-    local_scope: PeerScope,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
-    /// Per-peer fetch rate limiting: maps peer_id -> (count, window_start)
+    /// Per-peer fetch rate limiting: maps peer_prefix -> (count, window_start)
     peer_fetch_counts: HashMap<String, (u32, Instant)>,
     /// Redis-backed retry queue for failed gossip fetches
     retry_queue: OptionalRetryQueue,
@@ -174,8 +131,6 @@ impl SyncHandler {
     pub fn new(
         kels_url: &str,
         allowlist: SharedAllowlist,
-        local_peer_id: PeerId,
-        local_scope: PeerScope,
         recently_stored: RecentlyStoredFromGossip,
         retry_queue: OptionalRetryQueue,
     ) -> Self {
@@ -183,8 +138,6 @@ impl SyncHandler {
             kels_client: KelsClient::new(kels_url),
             local_saids: HashMap::new(),
             allowlist,
-            local_peer_id,
-            local_scope,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             retry_queue,
@@ -305,65 +258,45 @@ impl SyncHandler {
         (adversary, recovery)
     }
 
-    /// Get the local node's scope as an announcement scope
-    fn get_local_scope(&self) -> AnnouncementScope {
-        match self.local_scope {
-            PeerScope::Core => AnnouncementScope::Core,
-            PeerScope::Regional => AnnouncementScope::Regional,
-        }
-    }
-
-    /// Get a peer's KELS URL from the allowlist
-    async fn get_peer_kels_url(&self, peer_id: &str) -> Option<String> {
+    /// Get all peer KELS URLs from the allowlist
+    async fn get_peer_kels_urls(&self) -> Vec<(String, String)> {
         let guard = self.allowlist.read().await;
-        for peer in guard.values() {
-            if peer.peer_id == peer_id {
-                return Some(peer.kels_url.clone());
-            }
-        }
-        None
+        guard
+            .values()
+            .map(|peer| (peer.peer_prefix.clone(), peer.kels_url.clone()))
+            .collect()
     }
 
     /// Process a gossip event
     pub async fn handle_event(
         &mut self,
         event: GossipEvent,
-        command_tx: &mpsc::Sender<GossipCommand>,
+        _command_tx: &mpsc::Sender<GossipCommand>,
     ) -> Result<(), SyncError> {
         match event {
             GossipEvent::AnnouncementReceived { announcement } => {
-                self.handle_announcement(announcement, command_tx).await?;
+                self.handle_announcement(announcement).await?;
             }
-            GossipEvent::PeerConnected(peer_id) => {
-                debug!("Peer connected: {}", peer_id);
+            GossipEvent::PeerConnected(peer_prefix) => {
+                debug!("Peer connected: {}", peer_prefix);
             }
-            GossipEvent::PeerDisconnected(peer_id) => {
-                debug!("Peer disconnected: {}", peer_id);
+            GossipEvent::PeerDisconnected(peer_prefix) => {
+                debug!("Peer disconnected: {}", peer_prefix);
             }
         }
         Ok(())
     }
 
-    /// Handle an announcement from a peer
+    /// Handle an announcement from a peer.
+    ///
+    /// Tries the origin peer first (the node that stored the event), then
+    /// falls back to other peers in the allowlist.
     async fn handle_announcement(
         &mut self,
         announcement: KelAnnouncement,
-        command_tx: &mpsc::Sender<GossipCommand>,
     ) -> Result<(), SyncError> {
         let prefix = &announcement.prefix;
         let remote_said = &announcement.said;
-
-        // Filter by destination - only process messages meant for our scope
-        let local_scope = self.get_local_scope();
-        if announcement.destination != AnnouncementScope::All
-            && announcement.destination != local_scope
-        {
-            debug!(
-                "Ignoring announcement for {}: destination={} but local_scope={}",
-                prefix, announcement.destination, local_scope
-            );
-            return Ok(());
-        }
 
         // Get our local SAID for this prefix
         let local_said = self.get_local_said(prefix).await?;
@@ -377,9 +310,6 @@ impl SyncHandler {
         }
 
         // Application-level deduplication: if we already have this SAID, skip.
-        // This handles both the case where we're ahead of the announcer AND duplicate
-        // announcements from multiple core nodes rebroadcasting the same update
-        // (each core node replaces the sender, producing distinct gossipsub messages).
         if self.kels_client.event_exists(remote_said).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
@@ -389,202 +319,196 @@ impl SyncHandler {
         }
 
         info!(
-            "SAID mismatch for {}: local={:?}, remote={}. Fetching from sender {} ({}->{})",
-            prefix,
-            local_said,
-            remote_said,
-            announcement.sender,
-            announcement.origin,
-            announcement.destination
+            "SAID mismatch for {}: local={:?}, remote={}, origin={}. Fetching from peers.",
+            prefix, local_said, remote_said, announcement.origin,
         );
 
-        // Per-peer rate limiting
-        {
-            let now = Instant::now();
-            let entry = self
-                .peer_fetch_counts
-                .entry(announcement.sender.clone())
-                .or_insert((0, now));
-            if now.duration_since(entry.1) >= Duration::from_secs(60) {
-                entry.0 = 1;
-                entry.1 = now;
-            } else {
-                entry.0 += 1;
-                if entry.0 > MAX_FETCHES_PER_PEER_PER_MINUTE {
-                    debug!(
-                        "Rate limiting peer {}: {} fetches/min exceeded",
-                        announcement.sender, MAX_FETCHES_PER_PEER_PER_MINUTE
-                    );
-                    return Ok(());
-                }
+        // Build peer list with origin first, then remaining peers
+        let all_peers = self.get_peer_kels_urls().await;
+        let mut peers = Vec::with_capacity(all_peers.len());
+
+        // Origin peer goes first — they definitely have the event
+        if let Some(origin_peer) = all_peers.iter().find(|(pp, _)| pp == &announcement.origin) {
+            peers.push(origin_peer.clone());
+        }
+        for peer in &all_peers {
+            if peer.0 != announcement.origin {
+                peers.push(peer.clone());
             }
         }
 
-        // Look up the sender's KELS URL from the allowlist
-        let kels_url = match self.get_peer_kels_url(&announcement.sender).await {
-            Some(url) => url,
-            None => {
-                // this is expected for regional peer messages that are seen by core peers not
-                // associated with their registry
-                debug!(
-                    "Sender {} not in allowlist, cannot fetch KEL for {}",
-                    announcement.sender, prefix
-                );
-                return Ok(());
+        let mut fetched_events = None;
+
+        for (peer_prefix, kels_url) in &peers {
+            // Per-peer rate limiting
+            {
+                let now = Instant::now();
+                let entry = self
+                    .peer_fetch_counts
+                    .entry(peer_prefix.clone())
+                    .or_insert((0, now));
+                if now.duration_since(entry.1) >= Duration::from_secs(60) {
+                    entry.0 = 1;
+                    entry.1 = now;
+                } else {
+                    entry.0 += 1;
+                    if entry.0 > MAX_FETCHES_PER_PEER_PER_MINUTE {
+                        debug!(
+                            "Rate limiting peer {}: {} fetches/min exceeded",
+                            peer_prefix, MAX_FETCHES_PER_PEER_PER_MINUTE
+                        );
+                        continue;
+                    }
+                }
             }
-        };
 
-        // Fetch events via HTTP — delta when possible, full otherwise
-        let remote_client = KelsClient::new(&kels_url);
-        let events = if let Some(ref local_said) = local_said {
-            // Delta fetch: only events after our local state
-            match remote_client.fetch_kel_since(prefix, local_said).await {
-                Ok(events) => events,
-                Err(KelsError::KeyNotFound(_)) => {
-                    // Since SAID was removed by recovery/contest on remote.
-                    // Fetch with audit to get archived adversary events.
-                    info!(
-                        "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
-                        prefix
-                    );
-                    match remote_client.fetch_kel_with_audit(prefix).await {
-                        Ok(response) => {
-                            let clean_chain = response.events;
-                            let archived_events = response
-                                .audit_records
-                                .as_ref()
-                                .and_then(|records| records.last())
-                                .and_then(|record| match record.as_signed_key_events() {
-                                    Ok(events) if !events.is_empty() => {
-                                        info!(
-                                            "Got {} archived adversary events for {}",
-                                            events.len(),
-                                            prefix
-                                        );
-                                        Some(events)
-                                    }
-                                    Ok(_) => None,
-                                    Err(e) => {
-                                        warn!("Failed to deserialize audit events: {}", e);
-                                        None
-                                    }
-                                })
-                                .unwrap_or_default();
+            let remote_client = KelsClient::new(kels_url);
 
-                            if archived_events.is_empty() {
-                                // No audit data — fall through to normal submission
-                                clean_chain
-                            } else {
-                                // Recovery with archived events: multi-step submission
-                                // 1. Submit archived adversary events (establishes adversary branch)
-                                // 2. Submit clean chain pre-recovery events (creates fork)
-                                // 3. Submit recovery + post-recovery events (merge Path 1 resolves)
-                                let tip_said = clean_chain.last().map(|e| e.event.said.clone());
+            // Fetch events via HTTP — delta when possible, full otherwise
+            let events = if let Some(ref local_said) = local_said {
+                // Delta fetch: only events after our local state
+                match remote_client.fetch_kel_since(prefix, local_said).await {
+                    Ok(events) => events,
+                    Err(KelsError::KeyNotFound(_)) => {
+                        // Since SAID was removed by recovery/contest on remote.
+                        // Fetch with audit to get archived adversary events.
+                        info!(
+                            "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
+                            prefix
+                        );
+                        match remote_client.fetch_kel_with_audit(prefix).await {
+                            Ok(response) => {
+                                let clean_chain = response.events;
+                                let archived_events = response
+                                    .audit_records
+                                    .as_ref()
+                                    .and_then(|records| records.last())
+                                    .and_then(|record| match record.as_signed_key_events() {
+                                        Ok(events) if !events.is_empty() => {
+                                            info!(
+                                                "Got {} archived adversary events for {}",
+                                                events.len(),
+                                                prefix
+                                            );
+                                            Some(events)
+                                        }
+                                        Ok(_) => None,
+                                        Err(e) => {
+                                            warn!("Failed to deserialize audit events: {}", e);
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or_default();
 
-                                // Mark recently stored BEFORE submission
-                                if let Some(ref said) = tip_said {
-                                    let key = format!("{}:{}", prefix, said);
-                                    self.recently_stored
-                                        .write()
-                                        .await
-                                        .insert(key, Instant::now());
-                                }
-
-                                // Step 1: Submit archived adversary events
-                                let _ = self.submit_events_to_kels(&archived_events).await;
-
-                                // Step 2+3: Split clean chain at first recovery-revealing event.
-                                // Pre-recovery events create divergence, then recovery resolves it.
-                                // If recovery fails (frozen KEL rejected pre-rec events),
-                                // retry with the full chain — merge look-ahead handles it.
-                                let applied = if let Some(idx) = clean_chain
-                                    .iter()
-                                    .position(|e| e.event.reveals_recovery_key())
-                                    && idx > 0
-                                {
-                                    let _ = self.submit_events_to_kels(&clean_chain[..idx]).await;
-                                    let recovery_applied =
-                                        self.submit_events_to_kels(&clean_chain[idx..]).await?;
-                                    if !recovery_applied {
-                                        self.submit_events_to_kels(&clean_chain).await?
-                                    } else {
-                                        recovery_applied
-                                    }
+                                if archived_events.is_empty() {
+                                    // No audit data — fall through to normal submission
+                                    clean_chain
                                 } else {
-                                    self.submit_events_to_kels(&clean_chain).await?
-                                };
+                                    // Recovery with archived events: multi-step submission
+                                    let tip_said = clean_chain.last().map(|e| e.event.said.clone());
 
-                                self.handle_rebroadcast(
-                                    prefix,
-                                    tip_said,
-                                    applied,
-                                    &announcement,
-                                    command_tx,
-                                )
-                                .await;
-                                return Ok(());
+                                    // Mark recently stored BEFORE submission
+                                    if let Some(ref said) = tip_said {
+                                        let key = format!("{}:{}", prefix, said);
+                                        self.recently_stored
+                                            .write()
+                                            .await
+                                            .insert(key, Instant::now());
+                                    }
+
+                                    // Step 1: Submit archived adversary events
+                                    let _ = self.submit_events_to_kels(&archived_events).await;
+
+                                    // Step 2+3: Split clean chain at first recovery-revealing event.
+                                    let applied = if let Some(idx) = clean_chain
+                                        .iter()
+                                        .position(|e| e.event.reveals_recovery_key())
+                                        && idx > 0
+                                    {
+                                        let _ =
+                                            self.submit_events_to_kels(&clean_chain[..idx]).await;
+                                        let recovery_applied =
+                                            self.submit_events_to_kels(&clean_chain[idx..]).await?;
+                                        if !recovery_applied {
+                                            self.submit_events_to_kels(&clean_chain).await?
+                                        } else {
+                                            recovery_applied
+                                        }
+                                    } else {
+                                        self.submit_events_to_kels(&clean_chain).await?
+                                    };
+
+                                    if applied && let Some(said) = tip_said {
+                                        self.local_saids.insert(prefix.to_string(), said);
+                                    }
+                                    return Ok(());
+                                }
+                            }
+                            Err(KelsError::KeyNotFound(_)) => {
+                                warn!("KEL not found on remote for {}", prefix);
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
+                                continue;
                             }
                         }
-                        Err(KelsError::KeyNotFound(_)) => {
-                            warn!("KEL not found on remote for {}", prefix);
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
-                            self.queue_retry(prefix, remote_said).await;
-                            return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
+                            kels_url, prefix, e
+                        );
+                        match remote_client.get_kel(prefix).await {
+                            Ok(kel) => kel.events().to_vec(),
+                            Err(KelsError::KeyNotFound(_)) => {
+                                warn!("KEL not found on remote for {}", prefix);
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                                continue;
+                            }
                         }
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
-                        kels_url, prefix, e
-                    );
-                    match remote_client.get_kel(prefix).await {
-                        Ok(kel) => kel.events().to_vec(),
-                        Err(KelsError::KeyNotFound(_)) => {
-                            warn!("KEL not found on remote for {}", prefix);
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                            self.queue_retry(prefix, remote_said).await;
-                            return Ok(());
-                        }
+            } else {
+                // No local state — fetch full KEL
+                match remote_client.get_kel(prefix).await {
+                    Ok(kel) => kel.events().to_vec(),
+                    Err(KelsError::KeyNotFound(_)) => {
+                        warn!("KEL not found on remote for {}", prefix);
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch KEL from {}: {}", kels_url, e);
+                        continue;
                     }
                 }
-            }
-        } else {
-            // No local state — fetch full KEL
-            match remote_client.get_kel(prefix).await {
-                Ok(kel) => kel.events().to_vec(),
-                Err(KelsError::KeyNotFound(_)) => {
-                    warn!("KEL not found on remote for {}", prefix);
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                    self.queue_retry(prefix, remote_said).await;
-                    return Ok(());
-                }
-            }
-        };
+            };
 
-        if events.is_empty() {
-            warn!("Received empty KEL for {}", prefix);
-            return Ok(());
+            if events.is_empty() {
+                continue;
+            }
+
+            info!(
+                "Fetched {} events for prefix {} from {}",
+                events.len(),
+                prefix,
+                kels_url
+            );
+
+            fetched_events = Some((events, kels_url.clone()));
+            break;
         }
 
-        info!(
-            "Fetched {} events for prefix {} from {}",
-            events.len(),
-            prefix,
-            kels_url
-        );
+        let Some((events, kels_url)) = fetched_events else {
+            // No peer had the events — queue for retry
+            self.queue_retry(prefix, remote_said).await;
+            return Ok(());
+        };
 
         // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
-        // KELS publishes to Redis immediately when storing, so we must mark first.
         let said = events.last().map(|e| e.event.said.clone());
         if let Some(ref said) = said {
             let key = format!("{}:{}", prefix, said);
@@ -595,37 +519,30 @@ impl SyncHandler {
         }
 
         // For large event sets (e.g. full KEL fetch), use divergence-aware chunked seeding
-        // to respect server-side event count limits.
         let has_recovery = events.iter().any(|e| e.event.is_recover());
         let applied = if events.len() > MAX_EVENTS_PER_SUBMISSION {
             self.submit_events_seeding(events, MAX_EVENTS_PER_SUBMISSION)
                 .await?
         } else {
             // Partition events by content: adversary branch first, recovery branch second.
-            // The adversary branch establishes divergence context; the recovery branch resolves it.
             let (adversary_events, recovery_events) = Self::partition_events(events);
 
-            // Submit adversary events first (establishes divergence), then recovery events
             let initially_applied = if recovery_events.is_empty() {
-                // No recovery branch — submit everything as one batch
                 self.submit_events_to_kels(&adversary_events).await?
             } else if adversary_events.is_empty() {
-                // No adversary branch — submit recovery events directly
                 self.submit_events_to_kels(&recovery_events).await?
             } else {
-                // Both branches: adversary first to establish divergence, then recovery
                 let _ = self.submit_events_to_kels(&adversary_events).await;
                 self.submit_events_to_kels(&recovery_events).await?
             };
 
-            // If recovery events were rejected (e.g., frozen KEL missing owner's
-            // predecessor events), retry with the full remote KEL so merge's
-            // look-ahead can process [owner_events..., rec] as one batch.
+            // If recovery events were rejected, retry with the full remote KEL
             if !initially_applied && has_recovery {
                 info!(
                     "Recovery not applied for {} — retrying with full KEL from {}",
                     prefix, kels_url
                 );
+                let remote_client = KelsClient::new(&kels_url);
                 match remote_client.get_kel(prefix).await {
                     Ok(full_kel) => self
                         .submit_events_to_kels(full_kel.events())
@@ -642,8 +559,9 @@ impl SyncHandler {
             }
         };
 
-        self.handle_rebroadcast(prefix, said, applied, &announcement, command_tx)
-            .await;
+        if applied && let Some(said) = said {
+            self.local_saids.insert(prefix.to_string(), said);
+        }
 
         Ok(())
     }
@@ -672,57 +590,6 @@ impl SyncHandler {
             Ok(kel) => Ok(kel.events().to_vec()),
             Err(KelsError::KeyNotFound(_)) => Ok(vec![]),
             Err(e) => Err(SyncError::Kels(e)),
-        }
-    }
-
-    /// Handle post-submission steps: update SAID cache and rebroadcast if applied.
-    async fn handle_rebroadcast(
-        &mut self,
-        prefix: &str,
-        tip_said: Option<String>,
-        applied: bool,
-        announcement: &KelAnnouncement,
-        command_tx: &mpsc::Sender<GossipCommand>,
-    ) {
-        if applied {
-            if let Some(said) = tip_said {
-                self.local_saids.insert(prefix.to_string(), said);
-
-                // Replace sender with our own identity so cross-registry nodes
-                // can look us up in their allowlist to fetch events via HTTP.
-                let sender = self.local_peer_id.to_string();
-
-                let rebroadcast = match (announcement.origin, announcement.destination) {
-                    (AnnouncementScope::Regional, AnnouncementScope::Core) => {
-                        Some(announcement.rebroadcast(
-                            AnnouncementScope::Core,
-                            AnnouncementScope::All,
-                            sender,
-                        ))
-                    }
-                    _ => None,
-                };
-
-                if let Some(ann) = rebroadcast {
-                    info!(
-                        "Re-broadcasting: prefix={}, {}->{}",
-                        ann.prefix, ann.origin, ann.destination
-                    );
-                    if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
-                        warn!("Failed to re-broadcast announcement - channel closed");
-                    }
-                } else {
-                    debug!(
-                        "No rebroadcast needed for prefix={} ({}->{})",
-                        prefix, announcement.origin, announcement.destination
-                    );
-                }
-            }
-        } else {
-            debug!(
-                "Events not applied, skipping re-broadcast for prefix={}",
-                prefix
-            );
         }
     }
 
@@ -921,25 +788,15 @@ impl SyncHandler {
 }
 
 /// Run the sync event handler
-#[allow(clippy::too_many_arguments)]
 pub async fn run_sync_handler(
     kels_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
-    local_peer_id: PeerId,
-    local_scope: PeerScope,
     recently_stored: RecentlyStoredFromGossip,
     retry_queue: OptionalRetryQueue,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(
-        &kels_url,
-        allowlist,
-        local_peer_id,
-        local_scope,
-        recently_stored,
-        retry_queue,
-    );
+    let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, retry_queue);
 
     while let Some(event) = event_rx.recv().await {
         if let Err(e) = handler.handle_event(event, &command_tx).await {
@@ -1001,7 +858,7 @@ pub async fn run_resync_loop(
             let guard = allowlist.read().await;
             guard
                 .values()
-                .map(|p| (p.peer_id.clone(), p.kels_url.clone()))
+                .map(|p| (p.peer_prefix.clone(), p.kels_url.clone()))
                 .collect()
         };
 
@@ -1035,7 +892,7 @@ pub async fn run_resync_loop(
             let mut all_not_found = true;
             let mut resolved = false;
 
-            for (_peer_id, kels_url) in &shuffled_peers {
+            for (_peer_prefix, kels_url) in &shuffled_peers {
                 let peer_client = KelsClient::new(kels_url);
 
                 // Cheap pre-check: does the peer have this event?
@@ -1152,17 +1009,10 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    fn create_test_handler(local_peer_id: PeerId) -> SyncHandler {
+    fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
-        SyncHandler::new(
-            "http://localhost:8080",
-            allowlist,
-            local_peer_id,
-            PeerScope::Regional,
-            recently_stored,
-            None,
-        )
+        SyncHandler::new("http://localhost:8080", allowlist, recently_stored, None)
     }
 
     // ==================== Constants Tests ====================
@@ -1237,19 +1087,17 @@ mod tests {
 
     #[test]
     fn test_sync_handler_new() {
-        let local_peer_id = PeerId::random();
-        let handler = create_test_handler(local_peer_id);
+        let handler = create_test_handler();
         assert!(handler.local_saids.is_empty());
     }
 
     #[tokio::test]
     async fn test_sync_handler_peer_connected_event() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
+        let mut handler = create_test_handler();
         let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
 
-        let peer_id = PeerId::random();
-        let event = GossipEvent::PeerConnected(peer_id);
+        let peer_prefix = "test-peer-prefix".to_string();
+        let event = GossipEvent::PeerConnected(peer_prefix);
 
         // Should not error
         let result = handler.handle_event(event, &command_tx).await;
@@ -1262,7 +1110,6 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(10);
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
-        let local_peer_id = PeerId::random();
 
         // Drop the sender to close the channel
         drop(event_tx);
@@ -1273,8 +1120,6 @@ mod tests {
             event_rx,
             command_tx,
             allowlist,
-            local_peer_id,
-            PeerScope::Regional,
             recently_stored,
             None,
         )
@@ -1437,130 +1282,6 @@ mod tests {
         assert!(recovery.is_empty());
     }
 
-    // --- handle_rebroadcast tests ---
-
-    #[tokio::test]
-    async fn test_handle_rebroadcast_regional_to_core_rebroadcasts_core_to_all() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
-        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
-
-        let announcement = KelAnnouncement::from_pubsub_message(
-            "test-prefix:test-said",
-            AnnouncementScope::Regional,
-            AnnouncementScope::Core,
-            "sender-peer".to_string(),
-        )
-        .unwrap();
-
-        handler
-            .handle_rebroadcast(
-                "test-prefix",
-                Some("test-said".to_string()),
-                true,
-                &announcement,
-                &command_tx,
-            )
-            .await;
-
-        // Should rebroadcast core→all
-        let cmd = command_rx.try_recv().unwrap();
-        let GossipCommand::Announce(ann) = cmd;
-        assert_eq!(ann.origin, AnnouncementScope::Core);
-        assert_eq!(ann.destination, AnnouncementScope::All);
-
-        // SAID cache should be updated
-        assert_eq!(
-            handler.local_saids.get("test-prefix"),
-            Some(&"test-said".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_handle_rebroadcast_core_to_all_no_rebroadcast() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
-        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
-
-        let announcement = KelAnnouncement::from_pubsub_message(
-            "test-prefix:test-said",
-            AnnouncementScope::Core,
-            AnnouncementScope::All,
-            "sender-peer".to_string(),
-        )
-        .unwrap();
-
-        handler
-            .handle_rebroadcast(
-                "test-prefix",
-                Some("test-said".to_string()),
-                true,
-                &announcement,
-                &command_tx,
-            )
-            .await;
-
-        // No rebroadcast for core→all (final hop)
-        assert!(command_rx.try_recv().is_err());
-        // But SAID cache should still be updated
-        assert_eq!(
-            handler.local_saids.get("test-prefix"),
-            Some(&"test-said".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_handle_rebroadcast_not_applied_no_rebroadcast() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
-        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
-
-        let announcement = KelAnnouncement::from_pubsub_message(
-            "test-prefix:test-said",
-            AnnouncementScope::Regional,
-            AnnouncementScope::Core,
-            "sender-peer".to_string(),
-        )
-        .unwrap();
-
-        handler
-            .handle_rebroadcast(
-                "test-prefix",
-                Some("test-said".to_string()),
-                false, // not applied
-                &announcement,
-                &command_tx,
-            )
-            .await;
-
-        // Not applied: no rebroadcast and no SAID cache update
-        assert!(command_rx.try_recv().is_err());
-        assert!(!handler.local_saids.contains_key("test-prefix"));
-    }
-
-    #[tokio::test]
-    async fn test_handle_rebroadcast_no_tip_said() {
-        let local_peer_id = PeerId::random();
-        let mut handler = create_test_handler(local_peer_id);
-        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(10);
-
-        let announcement = KelAnnouncement::from_pubsub_message(
-            "test-prefix:test-said",
-            AnnouncementScope::Regional,
-            AnnouncementScope::Core,
-            "sender-peer".to_string(),
-        )
-        .unwrap();
-
-        handler
-            .handle_rebroadcast("test-prefix", None, true, &announcement, &command_tx)
-            .await;
-
-        // No tip SAID: no rebroadcast, no cache update
-        assert!(command_rx.try_recv().is_err());
-        assert!(!handler.local_saids.contains_key("test-prefix"));
-    }
-
     // --- partition_for_seeding tests ---
 
     #[test]
@@ -1643,8 +1364,6 @@ mod tests {
         ];
         let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
 
-        // Primary chain: icp through ixn9 (10 events), minus recovery events
-        // Recovery events branch off from ixn9, so primary should exclude rec10, ixn11, ixn12
         let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
         assert_eq!(primary.len(), 10);
         assert!(primary_saids.contains(&"icp"));
@@ -1665,10 +1384,6 @@ mod tests {
 
     #[test]
     fn test_partition_for_seeding_deferred_branch_is_longer() {
-        // Primary branch should be the LONGER one regardless of order.
-        // Branch A (3 events): a1 → a2 → a3
-        // Branch B (1 event): b1
-        // Both fork from "shared" (not in batch)
         let events = vec![
             make_event("b1", Some("shared"), EventKind::Ixn),
             make_event("a1", Some("shared"), EventKind::Ixn),
@@ -1695,14 +1410,6 @@ mod tests {
 
     #[test]
     fn test_partition_events_detects_recovery_on_non_first_sub_branch() {
-        // Root chain forks internally: root → a → {b, c}
-        // Recovery event is on the non-first branch (c).
-        // Without DFS, only the first child (b) is walked.
-        //
-        // Branch 1 (adversary): adv1 → adv2
-        // Branch 2 (recovery root): rec_root → fork_a → fork_b (no recovery)
-        //                                             → fork_c (rec event)
-        // Both branch from "shared" (not in batch)
         let events = vec![
             make_event("adv1", Some("shared"), EventKind::Ixn),
             make_event("adv2", Some("adv1"), EventKind::Ixn),
@@ -1712,7 +1419,6 @@ mod tests {
             make_event("fork_c", Some("fork_a"), EventKind::Rec),
         ];
         let (_adversary, recovery) = SyncHandler::partition_events(events);
-        // The recovery chain (rec_root and descendants) should be detected
         assert!(
             !recovery.is_empty(),
             "recovery on non-first sub-branch must be detected"
@@ -1724,12 +1430,6 @@ mod tests {
 
     #[test]
     fn test_partition_events_collects_all_sub_branches_of_recovery_root() {
-        // Recovery root's chain forks: both sub-branches should be collected.
-        //
-        // Adversary: adv1
-        // Recovery root: rec1 (rec event) → sub_a
-        //                                 → sub_b
-        // Both branch from "shared" (not in batch)
         let events = vec![
             make_event("adv1", Some("shared"), EventKind::Ixn),
             make_event("rec1", Some("shared"), EventKind::Rec),
@@ -1748,14 +1448,6 @@ mod tests {
 
     #[test]
     fn test_partition_for_seeding_counts_all_sub_branch_descendants() {
-        // Fork from "shared" where branch A sub-forks, making it appear shorter
-        // without DFS but actually longer with DFS.
-        //
-        // Branch A: a1 → {a2, a3, a4}  (4 total descendants with DFS; 2 with first-only)
-        // Branch B: b1 → b2 → b3       (3 linear descendants)
-        //
-        // Without DFS (.first() only): a1 → a2 = 2. B = 3. B would be primary.
-        // With DFS: A = 4. B = 3. A is primary (correct).
         let events = vec![
             make_event("a1", Some("shared"), EventKind::Ixn),
             make_event("a2", Some("a1"), EventKind::Ixn),
@@ -1767,13 +1459,11 @@ mod tests {
         ];
         let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
         let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
-        // Branch A recognized as longer → a1 is primary (not deferred)
         assert!(
             primary_saids.contains(&"a1"),
             "branch with more total descendants should be primary"
         );
         let deferred_saids: Vec<_> = deferred.iter().map(|e| e.event.said.as_str()).collect();
-        // Branch B should be deferred since it's shorter
         assert!(deferred_saids.contains(&"b1"));
         assert!(deferred_saids.contains(&"b2"));
         assert!(deferred_saids.contains(&"b3"));
@@ -1782,10 +1472,6 @@ mod tests {
 
     #[test]
     fn test_partition_for_seeding_recovery_on_non_first_sub_branch() {
-        // Fork from "shared", one branch sub-forks and has recovery on a non-first child.
-        // Branch A (longer, 4 total): a1 → a2 → {a3 (ixn), a4 (rec)}
-        // Branch B (shorter, 1):      b1
-        // Recovery event a4 should be detected even though it's not the first child of a2.
         let events = vec![
             make_event("a1", Some("shared"), EventKind::Ixn),
             make_event("a2", Some("a1"), EventKind::Ixn),
@@ -1794,13 +1480,11 @@ mod tests {
             make_event("b1", Some("shared"), EventKind::Ixn),
         ];
         let (_primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-        // a4 is a recovery event on the primary branch's sub-fork
         let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
         assert!(
             recovery_saids.contains(&"a4"),
             "recovery on non-first sub-branch must be detected"
         );
-        // b1 should be deferred
         assert_eq!(deferred.len(), 1);
         assert_eq!(deferred[0].event.said, "b1");
     }

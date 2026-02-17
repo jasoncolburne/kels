@@ -42,14 +42,14 @@ spec:
               command:
                 - redis-cli
                 - ping
-            initialDelaySeconds: 30
+            initialDelaySeconds: 2
             periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - redis-cli
                 - ping
-            initialDelaySeconds: 5
+            initialDelaySeconds: 2
             periodSeconds: 5
 
 ---

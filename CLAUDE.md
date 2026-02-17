@@ -90,14 +90,15 @@ When events are submitted, the KEL merge produces one of:
 ### Services
 
 - **kels** — Core registry service. Stores and serves KELs via REST API. Handles event submission with cryptographic verification, advisory locking per prefix, rate limiting, nonce deduplication, and pre-serialized caching via Redis.
-- **kels-gossip** — Gossip and federation service. Syncs KELs between peers using libp2p. Handles bootstrap sync, peer discovery, allowlist management, and scope-based routing.
-- **kels-registry** — Registry service. Manages peer lifecycle via OpenRaft consensus. Handles multi-party voting for core peer addition/removal. Federates state across registries.
+- **kels-gossip** — Gossip and federation service. Syncs KELs between peers using a custom gossip protocol (HyParView + PlumTree). Handles bootstrap sync, peer discovery, and allowlist management.
+- **kels-registry** — Registry service. Manages peer lifecycle via OpenRaft consensus. Handles multi-party voting for peer addition/removal. Federates state across registries.
 - **kels-identity** — Identity service. Manages the registry's own KEL and signing keys.
 - **hsm** — Hardware security module interface for key storage and signing operations.
 
 ### Libraries
 
-- **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache, p2p signatures.
+- **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
+- **gossip** (`lib/gossip`) — Custom gossip protocol library. HyParView membership + PlumTree broadcast over TCP with ECDH P-256 + AES-GCM-256 encryption. Uses 44-char CESR-encoded NodePrefix identities.
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
 
@@ -107,18 +108,13 @@ When events are submitted, the KEL merge produces one of:
 - **kels-bench** — Benchmarking tool.
 - **kels-client** — C client with shell-based test scripts.
 
-### Gossip & Scope-Based Routing
+### Gossip
 
-Peers have scopes that determine event propagation:
-- **Regional** — connected to a single registry, sees events from that registry's network only
-- **Core** — connected to all registries, bridges events between regions
-- **All** — receives all events
-
-Events flow Regional → Core → All, enabling geographic distribution while maintaining global consistency.
+All peers are equal participants in the gossip mesh. HyParView maintains the mesh overlay and PlumTree handles epidemic broadcast to all connected nodes, deduplicating by message ID. When a node receives an announcement for an unfamiliar SAID, it fetches the missing events from any peer in the allowlist that has the event.
 
 ### Federation
 
-Registries form a federated network using OpenRaft consensus for core peer management. Adding a core peer requires multi-party approval: one registry proposes, then a threshold of registries vote to approve. Regional peers are added by a single registry without federation. Registry prefixes are compiled into a trust anchor at build time via `TRUSTED_REGISTRY_PREFIXES`.
+Registries form a federated network using OpenRaft consensus for peer management. Adding a peer requires multi-party approval: one registry proposes, then a threshold of registries vote to approve. Registry prefixes are compiled into a trust anchor at build time via `TRUSTED_REGISTRY_PREFIXES`.
 
 ### Bootstrap Sync
 
@@ -144,6 +140,16 @@ The resync step is critical: events occurring between the last preload and joini
 - **Peer allowlist** — gossip peers must be in the allowlist (cached in Redis, refreshed from registry)
 - **Contested KELs** — if an adversary reveals the recovery key, the KEL is permanently frozen
 - **Audit records** — recovery operations log removed events for forensic review
+
+### Data Verification Rules
+
+All recorded/persisted data MUST be KEL-backed and verified independently before use. Verification happens at different layers:
+
+- **At ingestion/caching time** — Full verification of the entire trust chain. For peer data: verify peer record chain (SAIDs, prefixes), proposal DAG (SAIDs, chain integrity), vote anchoring in registry KELs, and the peer's own KEL structure. Use existing helpers (`fetch_all_verified_peers()`, `verify_peers_response()`, `verify_peer_votes()`). Never cache or persist data that hasn't been fully verified.
+- **At connection/request time** — Verify the signature on signed requests against the peer's current public key from their KEL (already verified and cached). This is a handshake — ephemeral, no anchoring needed.
+- **At KEL refresh time** — When re-fetching a peer's KEL, verify the KEL structure before updating the cached version.
+- **Never leave verification as a TODO** — If you write code that ingests external data without verification, that is a security vulnerability. Implement verification inline or flag it immediately.
+- **Ephemeral data is the only exception** — Handshakes and transient protocol messages don't need anchoring. Everything else does.
 
 ### Storage
 

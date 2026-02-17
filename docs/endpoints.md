@@ -60,7 +60,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 
 ## KELS Registry Service
 
-Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (core peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
+Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
 
 ### Standalone Mode
 
@@ -77,7 +77,7 @@ All standalone endpoints plus:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_id must match allowlist entry) |
+| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_prefix must match allowlist entry) |
 | POST | `/api/nodes/deregister` | **Signed + allowlisted** | Deregister a node |
 | POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Unhealthy) |
 
@@ -85,7 +85,7 @@ All standalone endpoints plus:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/peers` | None | List peers (core from Raft + regional from local DB) |
+| GET | `/api/peers` | None | List peers (from Raft state machine) |
 | GET | `/api/registry-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
 
 #### Federation Protocol
@@ -104,10 +104,9 @@ All standalone endpoints plus:
 | POST | `/api/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | GET | `/api/admin/proposals/:id` | **Localhost only** | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 | POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
-| POST | `/api/admin/peers` | **Localhost only** | Add a regional peer (bypasses Raft) |
 
 **Notes:**
-- Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_id in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
+- Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_prefix in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
 - Admin API: `is_localhost()` checks `ConnectInfo<SocketAddr>.ip().is_loopback()` — returns 403 otherwise
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
@@ -128,7 +127,7 @@ libp2p-based gossip network for KEL replication across nodes.
 
 | Protocol | Auth | Description |
 |----------|------|-------------|
-| gossipsub (`kels/events/v1`) | **Message signing** (libp2p) | KEL update announcements (`KelAnnouncement` JSON: prefix, said, origin, destination, sender) |
+| gossipsub (`kels/events/v1`) | **Message signing** (libp2p) | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
 | identify (`/kels/gossip/v1`) | **Noise handshake** | Peer discovery and capability exchange |
 | AllowlistBehaviour | **Noise + allowlist** | Custom NetworkBehaviour that disconnects unauthorized peers post-handshake |
 
@@ -140,22 +139,21 @@ libp2p-based gossip network for KEL replication across nodes.
 | POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
 
 **Notes:**
-- Transport: Noise protocol provides authenticated encryption; PeerId derived from ECDSA P-256 key
+- Transport: Noise protocol provides authenticated encryption; PeerPrefix derived from ECDSA P-256 key
 - AllowlistBehaviour: unknown inbound peers trigger allowlist refresh; pending peers held until verified or disconnected
 - gossipsub config: heartbeat 1s, strict validation, mesh min 2 / target 3
-- Scope-based routing: Regional announcements bridged to Core, Core rebroadcasts to All
-- Allowlist refresh verifies: peer record SAID (`verify()`), peer SAID anchored in registry KEL, and for core peers — full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
+- Allowlist refresh verifies: peer record SAID (`verify()`), peer SAID anchored in registry KEL, full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
 
 ## Authentication Methods Summary
 
 | Method | Where Used | Mechanism |
 |--------|-----------|-----------|
-| **Signed request** | Node registration, prefix listing | ECDSA P-256 signature over JSON payload; peer_id derived from public key; checked against allowlist |
+| **Signed request** | Node registration, prefix listing | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Localhost only** | Admin API | `SocketAddr.ip().is_loopback()` check |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
-| **Noise handshake** | libp2p connections | Authenticated encryption; PeerId = hash of public key |
-| **Allowlist** | Gossip connections | PeerId checked against registry-sourced peer list with full KEL verification |
+| **Noise handshake** | libp2p connections | Authenticated encryption; PeerPrefix = hash of public key |
+| **Allowlist** | Gossip connections | PeerPrefix checked against registry-sourced peer list with full KEL verification |
 | **SAID integrity** | Peer records, votes | `SelfAddressed::verify()` — content hash matches declared SAID |
 | **KEL anchoring** | Peer records, votes | SAID must appear in an ixn event in the authorizing registry's KEL |
 | **Compile-time trust** | All clients | `TRUSTED_REGISTRY_PREFIXES` env var baked at compile time; KEL prefixes must match |

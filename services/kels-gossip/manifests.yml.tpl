@@ -6,6 +6,8 @@ metadata:
     app: kels-gossip
 spec:
   replicas: ${var.gossip.replicas}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: kels-gossip
@@ -48,16 +50,29 @@ spec:
                 sleep 2;
               done;
               echo "HSM is ready!";
+        - name: wait-for-identity
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z ${var.identity.host} ${var.identity.port}; do
+                echo "Waiting for identity...";
+                sleep 2;
+              done;
+              echo "Identity is ready!";
       containers:
         - name: kels-gossip
           image: ${actions.build.kels-gossip.outputs.deployment-image-id}
           ports:
             - containerPort: 4001
-              name: libp2p
+              name: gossip
             - containerPort: ${var.gossip.httpPort}
               name: http
           env:
-            - name: HTTP_PORT
+            - name: HTTP_LISTEN_HOST
+              value: "${var.gossip.httpListenHost}"
+            - name: HTTP_LISTEN_PORT
               value: "${var.gossip.httpPort}"
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
@@ -71,6 +86,8 @@ spec:
               value: "${var.redis.url}"
             - name: HSM_URL
               value: "${var.hsm.url}"
+            - name: IDENTITY_URL
+              value: "${var.identityUrl}"
             - name: REGISTRY_URL
               value: "${var.registryUrl}"
             - name: FEDERATION_REGISTRY_URLS
@@ -83,6 +100,12 @@ spec:
               value: "${var.gossip.topic}"
             - name: RESYNC_INTERVAL_SECS
               value: "${var.gossipResyncIntervalSecs}"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
           resources:
             requests:
               cpu: 50m
@@ -105,7 +128,7 @@ spec:
     - port: ${var.gossip.port}
       targetPort: 4001
       protocol: TCP
-      name: libp2p
+      name: gossip
     - port: ${var.gossip.httpPort}
       targetPort: ${var.gossip.httpPort}
       protocol: TCP
@@ -128,7 +151,7 @@ spec:
     - port: ${var.gossip.port}
       targetPort: 4001
       protocol: TCP
-      name: libp2p
+      name: gossip
     - port: ${var.gossip.httpPort}
       targetPort: ${var.gossip.httpPort}
       protocol: TCP

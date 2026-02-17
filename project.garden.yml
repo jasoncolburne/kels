@@ -69,7 +69,7 @@ providers:
 
 variables:
   gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
-  rustLogLevel: info
+  rustLogLevel: debug
   postgres:
     user: kels_admin
     password: use_something_better_in_production
@@ -88,9 +88,10 @@ variables:
   gossip:
     replicas: 1
     port: 4001
+    httpListenHost: "0.0.0.0"
     httpPort: "80"
     topic: "kels/events/v1"
-    listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
+    listenAddress: "0.0.0.0:${var.gossip.port}"
     resyncIntervalSecs: "300"
   registry:
     replicas: 1

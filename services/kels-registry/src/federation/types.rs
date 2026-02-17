@@ -32,9 +32,6 @@ pub enum FederationError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
-    #[error("Invalid peer scope: {0}")]
-    InvalidScope(String),
-
     #[error("Unknown member: {0}")]
     UnknownMember(String),
 
@@ -50,7 +47,7 @@ pub enum FederationError {
 pub enum FederationRequest {
     /// Add a peer (used for regional peers or internal).
     AddPeer(Peer),
-    /// Remove a peer (by peer_id).
+    /// Remove a peer (by peer_prefix).
     RemovePeer(String),
 
     /// Submit an addition proposal (create or withdraw).
@@ -71,20 +68,20 @@ pub enum FederationRequest {
 impl fmt::Display for FederationRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_id),
-            FederationRequest::RemovePeer(peer_id) => write!(f, "RemovePeer({})", peer_id),
+            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_prefix),
+            FederationRequest::RemovePeer(peer_prefix) => write!(f, "RemovePeer({})", peer_prefix),
             FederationRequest::SubmitAdditionProposal(proposal) => {
                 if proposal.is_withdrawn() {
                     write!(
                         f,
                         "SubmitAdditionProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_id, proposal.proposer
+                        proposal.peer_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitAdditionProposal(create, peer={}, proposer={})",
-                        proposal.peer_id, proposal.proposer
+                        proposal.peer_prefix, proposal.proposer
                     )
                 }
             }
@@ -93,13 +90,13 @@ impl fmt::Display for FederationRequest {
                     write!(
                         f,
                         "SubmitRemovalProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_id, proposal.proposer
+                        proposal.peer_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitRemovalProposal(create, peer={}, proposer={})",
-                        proposal.peer_id, proposal.proposer
+                        proposal.peer_prefix, proposal.proposer
                     )
                 }
             }
@@ -158,7 +155,7 @@ pub enum FederationResponse {
     /// Removal proposal approved — peer should be removed from core set.
     RemovalApproved {
         proposal_id: String,
-        peer_id: String,
+        peer_prefix: String,
         current_votes: usize,
         votes_needed: usize,
     },
@@ -217,10 +214,10 @@ impl fmt::Display for FederationResponse {
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
             FederationResponse::RemovalApproved {
                 proposal_id,
-                peer_id,
+                peer_prefix,
                 ..
             } => {
-                write!(f, "RemovalApproved({}, peer={})", proposal_id, peer_id)
+                write!(f, "RemovalApproved({}, peer={})", proposal_id, peer_prefix)
             }
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
@@ -264,7 +261,6 @@ pub struct CorePeerSnapshot {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use kels::PeerScope;
 
     #[test]
     fn test_federation_request_serialization() {
@@ -273,7 +269,6 @@ mod tests {
             "node-test".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -285,8 +280,7 @@ mod tests {
 
         match parsed {
             FederationRequest::AddPeer(p) => {
-                assert_eq!(p.peer_id, "12D3KooWExample");
-                assert_eq!(p.scope, PeerScope::Core);
+                assert_eq!(p.peer_prefix, "12D3KooWExample");
             }
             _ => panic!("Expected AddPeer"),
         }
@@ -311,7 +305,6 @@ mod tests {
             "node-test".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -367,9 +360,6 @@ mod tests {
         let err = FederationError::ConfigError("config failed".to_string());
         assert!(err.to_string().contains("config failed"));
 
-        let err = FederationError::InvalidScope("bad scope".to_string());
-        assert!(err.to_string().contains("bad scope"));
-
         let err = FederationError::UnknownMember("unknown".to_string());
         assert!(err.to_string().contains("unknown"));
 
@@ -387,7 +377,6 @@ mod tests {
             "node-1".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -431,7 +420,6 @@ mod tests {
             "node-1".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -449,7 +437,7 @@ mod tests {
         let parsed: CorePeerSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.peers.len(), 1);
-        assert_eq!(parsed.peers[0].peer_id, "peer-1");
+        assert_eq!(parsed.peers[0].peer_prefix, "peer-1");
         assert!(parsed.pending_addition_proposals.is_empty());
         assert!(parsed.completed_addition_proposals.is_empty());
     }

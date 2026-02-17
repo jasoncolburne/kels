@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-comprehensive
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-comprehensive wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -136,20 +136,20 @@ fetch-prefixes:
 	garden run federation-fetch --env=registry-b
 	garden run federation-fetch --env=registry-c
 
-deploy-core-nodes:
-	# Deploy nodes and add as core peers via multi-party approval
+test-voting:
+	# Test voting
 	garden deploy --env=node-a
 
-	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1: propose and propose again (same node, should fail)
-	! garden run propose-add-node-a 2>&1
+	! garden run propose-add-peer --var node=node-a 2>&1
 
 	# Test 2: propose then withdraw (no votes — should succeed)
 	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 
 	# Re-propose (same node, previous proposal was withdrawn)
-	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 3: two rejections kill the proposal, further votes fail
 	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -157,7 +157,7 @@ deploy-core-nodes:
 	! garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 
 	# Re-propose (same node, previous proposal was rejected)
-	garden run propose-add-node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 4: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -167,64 +167,69 @@ deploy-core-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
+	# Remove
+	garden run propose-remove-peer --var node=node-a 2>&1 | grep "proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
+	# Vote from all registries
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-c
+
+	# Clean up
+	garden cleanup deploy --env node-a
+
+deploy-nodes:
+	garden deploy --env=node-a
 	garden deploy --env=node-b
-	garden run propose-add-node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
+	garden deploy --env=node-c
+	garden deploy --env=node-d
+	garden deploy --env=node-e
+	garden deploy --env=node-f
+
+vote-nodes:
+	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
+
+	garden run propose-add-peer --var node=node-b 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
-	garden deploy --env=node-c
-	garden run propose-add-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
+	garden run propose-add-peer --var node=node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-c
+
+	garden run propose-add-peer --var node=node-d 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-d.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-c
+
+	garden run propose-add-peer --var node=node-e 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-e.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-c
+
+	garden run propose-add-peer --var node=node-f 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-f.txt
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-a
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-b
+	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
+
+restart-nodes:
+	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
+	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
 	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
-
-deploy-regional-nodes:
-	# Deploy node-d as regional to registry-a only (not replicated via federation)
-	garden deploy --env=node-d && garden run add-regional-node-d --env=registry-a
 	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
-
-	# Deploy node-e as regional to registry-b only (not replicated via federation)
-	garden deploy --env=node-e && garden run add-regional-node-e --env=registry-b
 	kubectl rollout restart deployment/kels-gossip -n kels-node-e && kubectl rollout status deployment/kels-gossip -n kels-node-e
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
-
-	# Deploy node-f as regional to registry-c only (not replicated via federation)
-	garden deploy --env=node-f && garden run add-regional-node-f --env=registry-c
 	kubectl rollout restart deployment/kels-gossip -n kels-node-f && kubectl rollout status deployment/kels-gossip -n kels-node-f
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
-
-deploy-all-nodes: deploy-core-nodes deploy-regional-nodes
 
 test-resync:
 	scripts/coredns.sh break-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
 	scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh verify
-
-test-removal:
-	# Propose removal of node-c
-	garden run propose-remove-node-c 2>&1 | grep "proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-c.txt
-	# Vote from all registries
-	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-a
-	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-b
-	garden run vote-peer --var proposal=$$(cat /tmp/removal-c.txt) --env=registry-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
-	# Re-add node-c via proposal + vote
-	garden run propose-add-node-c 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/readd-c.txt
-	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-a
-	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-b
-	garden run vote-peer --var proposal=$$(cat /tmp/readd-c.txt) --env=registry-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl exec -n kels-node-a -it test-client -- ./test-kels.sh
 
 test-grow-federation:
 	# Deploy 4th registry standalone (generates identity)
@@ -241,7 +246,31 @@ test-grow-federation:
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-all-nodes
+wait-for-gossip:
+	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
+	@kubectl exec -n kels-node-a test-client -- sh -c '\
+		elapsed=0; \
+		while [ $$elapsed -lt 120 ]; do \
+			all_ready=true; \
+			for node in a b c d e f; do \
+				status=$$(curl -s -o /dev/null -w "%{http_code}" http://kels-gossip.kels-node-$$node.kels/ready 2>/dev/null); \
+				if [ "$$status" != "200" ]; then \
+					all_ready=false; \
+					break; \
+				fi; \
+			done; \
+			if $$all_ready; then \
+				echo "All gossip nodes ready"; \
+				exit 0; \
+			fi; \
+			sleep 2; \
+			elapsed=$$((elapsed + 2)); \
+		done; \
+		echo "Timeout waiting for gossip nodes"; \
+		exit 1'
+
+test-suite:
+	$(MAKE) wait-for-gossip
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
@@ -249,7 +278,8 @@ test-comprehensive: clean-garden configure-dns reset-federation-json deploy-regi
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
-	$(MAKE) test-removal
 	$(MAKE) test-grow-federation
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
+
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes vote-nodes restart-nodes test-suite

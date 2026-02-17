@@ -15,10 +15,11 @@ use tower_governor::{
 };
 use verifiable_storage::RepositoryConnection;
 
+use kels::IdentityClient;
+
 use crate::{
     federation::{FederationConfig, FederationNode},
     handlers::{self, AppState, FederationState, RegistryKelState},
-    identity_client::IdentityClient,
     repository::RegistryRepository,
     store::RegistryStore,
 };
@@ -87,8 +88,7 @@ pub fn create_router(
             .route(
                 "/api/admin/proposals/:proposal_id/vote",
                 post(handlers::admin_vote_proposal),
-            )
-            .route("/api/admin/peers", post(handlers::admin_add_regional_peer));
+            );
 
         let fed_router = discovery_router
             .merge(federation_router)

@@ -43,7 +43,7 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use kels::{Peer, PeerScope};
+use kels::Peer;
 use openraft::Raft;
 
 use crate::repository::RegistryRepository;
@@ -74,7 +74,7 @@ impl FederationNode {
     /// * `repository` - Registry repository with Raft storage components
     pub async fn new(
         config: FederationConfig,
-        identity_client: Arc<crate::identity_client::IdentityClient>,
+        identity_client: Arc<kels::IdentityClient>,
         repository: &RegistryRepository,
     ) -> Result<Self, FederationError> {
         let node_id = config.self_node_id()?;
@@ -244,12 +244,6 @@ impl FederationNode {
     ///
     /// This will replicate the peer to all registries via Raft consensus.
     pub async fn add_core_peer(&self, peer: Peer) -> Result<(), FederationError> {
-        if peer.scope != PeerScope::Core {
-            return Err(FederationError::InvalidScope(
-                "Peer must have Core scope".to_string(),
-            ));
-        }
-
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
                 leader_prefix: self.leader_prefix().await,
@@ -267,7 +261,7 @@ impl FederationNode {
     }
 
     /// Propose removing a core peer (leader only).
-    pub async fn remove_core_peer(&self, peer_id: &str) -> Result<(), FederationError> {
+    pub async fn remove_core_peer(&self, peer_prefix: &str) -> Result<(), FederationError> {
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
                 leader_prefix: self.leader_prefix().await,
@@ -275,7 +269,7 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::RemovePeer(peer_id.to_string());
+        let request = FederationRequest::RemovePeer(peer_prefix.to_string());
         self.raft
             .client_write(request)
             .await

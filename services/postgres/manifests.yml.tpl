@@ -81,7 +81,7 @@ spec:
                 - ${var.postgres.user}
                 - -d
                 - postgres
-            initialDelaySeconds: 30
+            initialDelaySeconds: 2
             periodSeconds: 10
           readinessProbe:
             exec:
@@ -91,7 +91,7 @@ spec:
                 - ${var.postgres.user}
                 - -d
                 - postgres
-            initialDelaySeconds: 5
+            initialDelaySeconds: 2
             periodSeconds: 5
       volumes:
         - name: postgres-storage

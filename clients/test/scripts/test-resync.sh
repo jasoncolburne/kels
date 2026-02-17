@@ -32,7 +32,7 @@ NC='\033[0m'
 NODE_A_URL="http://${NODE_A_KELS_HOST:-kels}"
 NODE_B_FQDN_URL="http://kels.kels-node-b.svc.cluster.local"
 REDIS_HOST="${NODE_A_REDIS_HOST:-redis}"
-RESYNC_WAIT="${RESYNC_WAIT:-20}"
+RESYNC_WAIT="${RESYNC_WAIT:-30}"
 RETRY_QUEUE_KEY="kels:resync:retry"
 STATE_FILE="/tmp/resync-test-state"
 
@@ -264,11 +264,31 @@ if [ "$MODE" = "verify" ]; then
     echo ""
 
     # ========================================
-    # Wait for resync loop
+    # Wait for resync loop (poll instead of fixed sleep)
     # ========================================
     echo -e "${CYAN}=== Waiting for Resync Loop ===${NC}"
-    echo "Waiting ${RESYNC_WAIT}s for the periodic resync loop to run..."
-    sleep "$RESYNC_WAIT"
+    echo "Polling up to ${RESYNC_WAIT}s for the periodic resync loop to resolve entries..."
+
+    FAKE_ENTRY="fakeprefix:Efakesaid000000000000000000000000000000000000"
+    RESYNC_RESOLVED=false
+    for i in $(seq 1 "$RESYNC_WAIT"); do
+        NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
+        MEMBERS=$(queue_members 2>/dev/null)
+        FAKE_GONE=true
+        if echo "$MEMBERS" | grep -q "$FAKE_ENTRY"; then
+            FAKE_GONE=false
+        fi
+        if [ "$NODE_A_COUNT" = "2" ] && [ "$FAKE_GONE" = "true" ]; then
+            echo "  Resync resolved after ${i}s"
+            RESYNC_RESOLVED=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$RESYNC_RESOLVED" = "false" ]; then
+        echo "  Resync did not fully resolve within ${RESYNC_WAIT}s"
+    fi
     echo ""
 
     # ========================================
@@ -278,7 +298,6 @@ if [ "$MODE" = "verify" ]; then
     echo "The fake entry should be gone (all peers return 404)"
     echo ""
 
-    FAKE_ENTRY="fakeprefix:Efakesaid000000000000000000000000000000000000"
     MEMBERS=$(queue_members)
     if echo "$MEMBERS" | grep -q "$FAKE_ENTRY"; then
         run_test "Fake entry dropped from retry queue" false

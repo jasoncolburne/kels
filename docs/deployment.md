@@ -72,17 +72,11 @@ The registries now form a Raft cluster. Node 0 (the registry whose `id` is 0 in 
 
 Deploy gossip nodes. Each node needs to be authorized in the peer allowlist before it can join the gossip network.
 
-**Core nodes** (replicate across all registries):
 1. Deploy the node's infrastructure (kels, kels-gossip, postgres, redis, hsm)
-2. Propose the node as a core peer from any registry (`kels-registry-admin peer propose-add-peer`)
-3. Vote from each registry to approve (`kels-registry-admin peer vote`)
-4. Restart kels-gossip so it picks up its authorization
+2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
+3. Vote from enough registry to approve (`kels-registry-admin peer vote`)
+4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
 5. The node bootstraps: fetches KELs from existing peers, joins the gossip mesh
-
-**Regional nodes** (replicate within one registry's network only):
-1. Deploy the node's infrastructure
-2. Add directly via the registry's admin API (`kels-registry-admin peer add-regional-peer`) — no proposal/vote needed
-3. Restart kels-gossip
 
 ### Phase 5: Verify
 
@@ -123,7 +117,7 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection URL |
-| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated for core nodes, single URL for regional) |
+| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated) |
 | `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
 | `RUST_LOG` | Logging level |
 
@@ -145,16 +139,16 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | `RESYNC_INTERVAL_SECS` | Periodic resync interval (default: 300) |
 | `RUST_LOG` | Logging level |
 
-## Core Peer Lifecycle
+## Peer Lifecycle
 
-### Adding a Core Peer
+### Adding a Peer
 
-Core peers require multi-party approval (minimum 3 votes from federation members):
+Peers require multi-party approval (minimum 3 votes from federation members):
 
 ```bash
 # From any registry:
 kels-registry-admin peer propose-add-peer \
-  --peer-id <peer_id> \
+  --peer-id <peer_prefix> \
   --node-id <node_id> \
   --kels-url <kels_url> \
   --gossip-multiaddr <multiaddr>
@@ -166,33 +160,19 @@ kels-registry-admin peer vote --proposal <proposal_id> --approve
 # Restart the node's kels-gossip to pick up authorization.
 ```
 
-### Removing a Core Peer
+### Removing a Peer
 
-Core peer removal also requires multi-party approval:
+Peer removal also requires multi-party approval:
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-removal --peer-id <peer_id>
+kels-registry-admin peer propose-removal --peer-id <peer_prefix>
 
 # Vote from each registry:
 kels-registry-admin peer vote --proposal <proposal_id> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```
-
-### Regional Peers
-
-Regional peers are added by a single registry without federation consensus:
-
-```bash
-kels-registry-admin peer add-regional-peer \
-  --peer-id <peer_id> \
-  --node-id <node_id> \
-  --kels-url <kels_url> \
-  --gossip-multiaddr <multiaddr>
-```
-
-Regional peers only replicate within that registry's network.
 
 ## Approval Threshold
 

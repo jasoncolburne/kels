@@ -7,25 +7,21 @@ CREATE TABLE IF NOT EXISTS peer (
     previous CHAR(44),
     version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    peer_id TEXT NOT NULL,
+    peer_prefix TEXT NOT NULL,
     node_id TEXT NOT NULL,
     authorizing_kel CHAR(44) NOT NULL,
     active BOOLEAN NOT NULL,
-    -- Peer scope: 'core' (replicated across federation) or 'regional' (local only)
-    scope VARCHAR(16) NOT NULL,
     -- HTTP URL for the KELS service
     kels_url TEXT NOT NULL,
-    -- libp2p multiaddr for gossip connections
-    gossip_multiaddr TEXT NOT NULL
+    -- Gossip address (host:port)
+    gossip_addr TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_peer_prefix ON peer(prefix);
 CREATE INDEX IF NOT EXISTS idx_peer_version ON peer(prefix, version DESC);
-CREATE INDEX IF NOT EXISTS idx_peer_active ON peer(peer_id) WHERE active = true;
+CREATE INDEX IF NOT EXISTS idx_peer_active ON peer(peer_prefix) WHERE active = true;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_prefix_version_unique ON peer(prefix, version);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_node_version_unique ON peer(node_id, version);
--- Index for querying by scope
-CREATE INDEX IF NOT EXISTS idx_peer_scope ON peer(scope) WHERE active = true;
 
 -- Raft consensus state for federation (content-addressed, chained)
 -- Each registry maintains its own Raft state keyed by node_id

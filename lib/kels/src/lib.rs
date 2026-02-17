@@ -37,9 +37,6 @@ pub mod server;
 #[cfg(feature = "secure-enclave")]
 pub mod hardware;
 
-#[cfg(feature = "p2p-verification")]
-pub mod p2p_signature;
-
 pub mod builder;
 pub mod client;
 pub mod crypto;
@@ -63,8 +60,8 @@ pub use hardware::HardwareKeyProvider;
 
 pub use builder::KeyEventBuilder;
 pub use client::{
-    KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient, RegistrySigner,
-    SignResult, sign_request, trusted_prefixes,
+    IdentityClient, KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient,
+    RegistrySigner, SignResult, sign_request, trusted_prefixes,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
@@ -75,11 +72,11 @@ pub use types::{
     CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
     EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
     NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeerScope, PeersResponse, PrefixListResponse, PrefixState,
-    PrefixesRequest, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotes,
-    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
-    RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest, Vote, generate_nonce,
+    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
+    ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
+    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
+    StatusUpdateRequest, Vote, generate_nonce, validate_timestamp,
 };
 pub use types::{Kel, compute_rotation_hash};
 

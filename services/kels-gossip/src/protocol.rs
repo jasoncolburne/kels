@@ -4,67 +4,24 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Scope indicator for announcement routing.
-/// Used for federation bridging between core and regional nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AnnouncementScope {
-    /// Core nodes (cross-registry)
-    Core,
-    /// Regional nodes (same registry only)
-    Regional,
-    /// All nodes (core broadcasts to everyone)
-    All,
-}
-
-impl std::fmt::Display for AnnouncementScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnnouncementScope::Core => write!(f, "core"),
-            AnnouncementScope::Regional => write!(f, "regional"),
-            AnnouncementScope::All => write!(f, "all"),
-        }
-    }
-}
-
-/// Gossipsub announcement message
+/// Gossipsub announcement message.
 ///
-/// Bridging rules based on origin→destination:
-/// - regional→core: core receives, rebroadcasts as core→all
-/// - core→all: all nodes receive, no rebroadcast (final)
+/// PlumTree handles deduplication and epidemic broadcast to all mesh nodes.
+/// The `origin` field identifies the peer that stored the event, so receivers
+/// know where to fetch the event data from (looked up via allowlist).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KelAnnouncement {
     /// The KEL prefix that was updated
     pub prefix: String,
     /// The SAID of the latest event
     pub said: String,
-    /// Scope of the node that originated this announcement
-    pub origin: AnnouncementScope,
-    /// Target scope for this announcement
-    pub destination: AnnouncementScope,
-    /// Identity of the node sending this announcement (currently a libp2p PeerId).
-    ///
-    /// Receivers use this to look up the sender's KELS URL from the allowlist
-    /// for HTTP event fetching. On rebroadcast (regional→core becomes core→all),
-    /// the sender is replaced with the rebroadcasting core node so that
-    /// cross-registry nodes can reach a KELS service in their allowlist.
-    ///
-    /// This means multiple core nodes rebroadcasting the same announcement produce
-    /// distinct gossipsub messages (different sender = different message ID).
-    /// This is harmless — receivers that already fetched the SAID skip the duplicate
-    /// via the event_exists check in the sync handler.
-    pub sender: String,
+    /// The peer prefix of the node that stored this event
+    pub origin: String,
 }
 
 impl KelAnnouncement {
     /// Parse from Redis pub/sub message format "{prefix}:{said}"
-    /// Sets origin and destination based on the local node's scope.
-    pub fn from_pubsub_message(
-        message: &str,
-        origin: AnnouncementScope,
-        destination: AnnouncementScope,
-        sender: String,
-    ) -> Option<Self> {
+    pub fn from_pubsub_message(message: &str, origin: &str) -> Option<Self> {
         let mut parts = message.splitn(2, ':');
         let prefix = parts.next()?.to_string();
         let said = parts.next()?.to_string();
@@ -77,26 +34,8 @@ impl KelAnnouncement {
         Some(Self {
             prefix,
             said,
-            origin,
-            destination,
-            sender,
+            origin: origin.to_string(),
         })
-    }
-
-    /// Create a new announcement for re-broadcasting with updated origin, destination, and sender.
-    pub fn rebroadcast(
-        &self,
-        origin: AnnouncementScope,
-        destination: AnnouncementScope,
-        sender: String,
-    ) -> Self {
-        Self {
-            prefix: self.prefix.clone(),
-            said: self.said.clone(),
-            origin,
-            destination,
-            sender,
-        }
     }
 }
 
@@ -107,30 +46,18 @@ mod tests {
     #[test]
     fn test_announcement_from_pubsub() {
         let msg = "Eprefix123:EsaidABC";
-        let ann = KelAnnouncement::from_pubsub_message(
-            msg,
-            AnnouncementScope::Regional,
-            AnnouncementScope::Core,
-            "sender1".to_string(),
-        );
+        let ann = KelAnnouncement::from_pubsub_message(msg, "Eorigin");
         assert!(ann.is_some());
         let ann = ann.unwrap();
         assert_eq!(ann.prefix, "Eprefix123");
         assert_eq!(ann.said, "EsaidABC");
-        assert_eq!(ann.origin, AnnouncementScope::Regional);
-        assert_eq!(ann.destination, AnnouncementScope::Core);
-        assert_eq!(ann.sender, "sender1");
+        assert_eq!(ann.origin, "Eorigin");
     }
 
     #[test]
     fn test_announcement_from_pubsub_empty_said() {
         let msg = "Eprefix123:";
-        let ann = KelAnnouncement::from_pubsub_message(
-            msg,
-            AnnouncementScope::Core,
-            AnnouncementScope::Regional,
-            "sender1".to_string(),
-        );
+        let ann = KelAnnouncement::from_pubsub_message(msg, "Eorigin");
         assert!(ann.is_none());
     }
 
@@ -139,28 +66,19 @@ mod tests {
         let ann = KelAnnouncement {
             prefix: "Eprefix".to_string(),
             said: "Esaid".to_string(),
-            origin: AnnouncementScope::Regional,
-            destination: AnnouncementScope::Core,
-            sender: "sender1".to_string(),
+            origin: "Eorigin".to_string(),
         };
         let json = serde_json::to_string(&ann).unwrap();
         let parsed: KelAnnouncement = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.prefix, ann.prefix);
         assert_eq!(parsed.said, ann.said);
         assert_eq!(parsed.origin, ann.origin);
-        assert_eq!(parsed.destination, ann.destination);
-        assert_eq!(parsed.sender, ann.sender);
     }
 
     #[test]
     fn test_announcement_from_pubsub_no_colon() {
         let msg = "prefixonly";
-        let ann = KelAnnouncement::from_pubsub_message(
-            msg,
-            AnnouncementScope::Core,
-            AnnouncementScope::Core,
-            "sender1".to_string(),
-        );
+        let ann = KelAnnouncement::from_pubsub_message(msg, "Eorigin");
         assert!(ann.is_none());
     }
 
@@ -168,47 +86,11 @@ mod tests {
     fn test_announcement_from_pubsub_multiple_colons() {
         // splitn(2, ':') means only split on first colon
         let msg = "Eprefix:Esaid:extra:stuff";
-        let ann = KelAnnouncement::from_pubsub_message(
-            msg,
-            AnnouncementScope::Core,
-            AnnouncementScope::Regional,
-            "sender1".to_string(),
-        );
+        let ann = KelAnnouncement::from_pubsub_message(msg, "Eorigin");
         assert!(ann.is_some());
         let ann = ann.unwrap();
         assert_eq!(ann.prefix, "Eprefix");
         assert_eq!(ann.said, "Esaid:extra:stuff");
-        assert_eq!(ann.origin, AnnouncementScope::Core);
-        assert_eq!(ann.destination, AnnouncementScope::Regional);
-        assert_eq!(ann.sender, "sender1");
-    }
-
-    #[test]
-    fn test_announcement_rebroadcast() {
-        let ann = KelAnnouncement {
-            prefix: "Eprefix".to_string(),
-            said: "Esaid".to_string(),
-            origin: AnnouncementScope::Regional,
-            destination: AnnouncementScope::Core,
-            sender: "original-sender".to_string(),
-        };
-        // regional→core received by core, rebroadcast as core→core
-        let rebroadcast = ann.rebroadcast(
-            AnnouncementScope::Core,
-            AnnouncementScope::Core,
-            "new-sender".to_string(),
-        );
-        assert_eq!(rebroadcast.prefix, ann.prefix);
-        assert_eq!(rebroadcast.said, ann.said);
-        assert_eq!(rebroadcast.origin, AnnouncementScope::Core);
-        assert_eq!(rebroadcast.destination, AnnouncementScope::Core);
-        assert_eq!(rebroadcast.sender, "new-sender");
-    }
-
-    #[test]
-    fn test_announcement_scope_display() {
-        assert_eq!(format!("{}", AnnouncementScope::Core), "core");
-        assert_eq!(format!("{}", AnnouncementScope::Regional), "regional");
     }
 
     #[test]
@@ -216,16 +98,12 @@ mod tests {
         let ann = KelAnnouncement {
             prefix: "ECLONE".to_string(),
             said: "ESAID".to_string(),
-            origin: AnnouncementScope::Regional,
-            destination: AnnouncementScope::Core,
-            sender: "sender1".to_string(),
+            origin: "EORIGIN".to_string(),
         };
         let cloned = ann.clone();
         assert_eq!(ann.prefix, cloned.prefix);
         assert_eq!(ann.said, cloned.said);
         assert_eq!(ann.origin, cloned.origin);
-        assert_eq!(ann.destination, cloned.destination);
-        assert_eq!(ann.sender, cloned.sender);
     }
 
     #[test]
@@ -233,13 +111,11 @@ mod tests {
         let ann = KelAnnouncement {
             prefix: "EDEBUG".to_string(),
             said: "ESAID".to_string(),
-            origin: AnnouncementScope::Core,
-            destination: AnnouncementScope::Regional,
-            sender: "sender1".to_string(),
+            origin: "EORIGIN".to_string(),
         };
         let debug_str = format!("{:?}", ann);
         assert!(debug_str.contains("EDEBUG"));
         assert!(debug_str.contains("ESAID"));
-        // Note: Debug shows variant name, serde serializes as lowercase
+        assert!(debug_str.contains("EORIGIN"));
     }
 }
