@@ -91,13 +91,17 @@ queue_members() {
 get_event_count() {
     local url="$1"
     local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq 'length'
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
+    echo "$resp" | jq 'if type == "array" then length else 0 end'
 }
 
 get_latest_said() {
     local url="$1"
     local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq -r 'sort_by(.event.version) | .[-1].event.said // empty'
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
+    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
 }
 
 print_summary() {
@@ -194,12 +198,18 @@ if [ "$MODE" = "setup" ]; then
     PREFIX=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
     echo "Created KEL on node-a: $PREFIX"
 
-    # Wait for gossip to propagate the icp to node-b
+    # Wait for gossip to propagate the icp to node-b (poll instead of fixed sleep)
     echo "Waiting for icp to propagate to node-b..."
-    sleep 3
+    NODE_B_COUNT=0
+    for i in {1..30}; do
+        NODE_B_COUNT=$(get_event_count "$NODE_B_FQDN_URL" "$PREFIX")
+        if [ "$NODE_B_COUNT" = "1" ]; then
+            echo "  Propagated after ${i}s"
+            break
+        fi
+        sleep 1
+    done
 
-    # Verify node-b has the KEL via FQDN
-    NODE_B_COUNT=$(get_event_count "$NODE_B_FQDN_URL" "$PREFIX")
     echo "Node-B event count: $NODE_B_COUNT"
     run_test "KEL propagated to node-b" [ "$NODE_B_COUNT" = "1" ]
 

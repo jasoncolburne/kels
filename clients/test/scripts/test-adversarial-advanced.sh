@@ -143,7 +143,9 @@ kels_match_all() {
 get_event_count() {
     local url="$1"
     local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq 'length'
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
+    echo "$resp" | jq 'if type == "array" then length else 0 end'
 }
 
 # Check if a KEL exists on a given node
