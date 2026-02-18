@@ -959,7 +959,9 @@ pub async fn run_resync_loop(
                 };
 
                 if events.is_empty() {
-                    continue;
+                    // Delta was empty — local already has all events for this prefix
+                    resolved = true;
+                    break;
                 }
 
                 // Submit to local KELS

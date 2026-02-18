@@ -169,7 +169,8 @@ if [ "$MODE" = "setup" ]; then
     # Scenario 2: Create real fetch failure
     # ========================================
     echo -e "${CYAN}=== Scenario 2: Trigger Real Fetch Failure ===${NC}"
-    echo "Create KEL on node-a, submit ixn to node-b via FQDN, wait for gossip fetch to fail"
+    echo "Create KEL on node-a, submit two ixns to node-b via FQDN."
+    echo "Use the first ixn as a sync point, then verify the second fails to fetch."
     echo ""
 
     # Wait for DNS caches to expire so .kels lookups for node-b actually fail.
@@ -191,7 +192,7 @@ if [ "$MODE" = "setup" ]; then
     # Brief additional wait for node-level DNS caches (NodeLocal DNSCache, etc.)
     # on other K8s nodes where gossip pods may run. With DNS_CACHE_TTL=2 set at
     # the start of test-comprehensive, stale entries expire within 2s.
-    sleep 3
+    sleep 5
     echo ""
 
     # Create KEL on node-a
@@ -213,8 +214,41 @@ if [ "$MODE" = "setup" ]; then
     echo "Node-B event count: $NODE_B_COUNT"
     run_test "KEL propagated to node-b" [ "$NODE_B_COUNT" = "1" ]
 
-    # Submit ixn to node-b via its K8s FQDN (bypasses broken .kels DNS)
-    echo "Submitting anchor to node-b via FQDN..."
+    # Submit first ixn (sync event) to node-b via FQDN
+    echo "Submitting sync anchor (ixn #1) to node-b via FQDN..."
+    SYNC_SAID="EResyncSyncAnchor___________________________"
+    kels-cli -u "$NODE_B_FQDN_URL" anchor --prefix "$PREFIX" --said "$SYNC_SAID"
+
+    # Get the sync event's SAID from node-b
+    SYNC_EVENT_SAID=$(get_latest_said "$NODE_B_FQDN_URL" "$PREFIX")
+    echo "Sync event SAID: $SYNC_EVENT_SAID"
+
+    # Wait for the gossip handler to process the sync announcement.
+    # Two possible outcomes:
+    #   - Fetch succeeded (DNS cache/connection pool still alive): node-a count == 2
+    #   - Fetch failed (DNS properly broken): entry appears in retry queue
+    # Either way, the gossip handler has finished with the sync event.
+    echo "Waiting for sync event to be processed..."
+    SYNC_FETCHED=false
+    SYNC_ENTRY="${PREFIX}:${SYNC_EVENT_SAID}"
+    for i in {1..30}; do
+        NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
+        if [ "$NODE_A_COUNT" = "2" ]; then
+            echo "  Sync event fetched directly after ${i}s"
+            SYNC_FETCHED=true
+            break
+        fi
+        MEMBERS=$(queue_members 2>/dev/null)
+        if echo "$MEMBERS" | grep -qF "$SYNC_ENTRY"; then
+            echo "  Sync event queued (DNS confirmed broken) after ${i}s"
+            break
+        fi
+        sleep 1
+    done
+
+    # Submit second ixn (test event) to node-b via FQDN.
+    # By now, DNS caches and HTTP connection pools should be stale.
+    echo "Submitting test anchor (ixn #2) to node-b via FQDN..."
     TEST_SAID="EResyncTestAnchor___________________________"
     kels-cli -u "$NODE_B_FQDN_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
 
@@ -222,19 +256,26 @@ if [ "$MODE" = "setup" ]; then
     NODE_B_SAID=$(get_latest_said "$NODE_B_FQDN_URL" "$PREFIX")
     echo "Node-B latest SAID: $NODE_B_SAID"
 
-    # Wait for gossip announcement to arrive at node-a and the HTTP fetch to fail
+    # Wait for gossip announcement + fetch attempt for the test event
     echo "Waiting for gossip announcement + fetch failure..."
     sleep 5
 
-    # Verify node-a's retry queue has entries
+    # Log retry queue state (informational — may be empty if resync loop is mid-cycle)
     COUNT=$(queue_count)
     echo "Retry queue size: $COUNT"
-    run_test "Retry queue has entries (>= 1)" [ "$COUNT" -ge 1 ]
 
-    # Verify node-a does NOT have the ixn yet
+    # Verify node-a does NOT have the test ixn yet.
+    # Expected count depends on whether the sync event's fetch succeeded:
+    #   - Sync fetched: count == 2 (icp + sync ixn, missing test ixn)
+    #   - Sync queued:  count == 1 (icp only, missing both ixns)
     NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
-    echo "Node-A event count: $NODE_A_COUNT (should be 1, missing the ixn)"
-    run_test "Node-A missing ixn (count == 1)" [ "$NODE_A_COUNT" = "1" ]
+    if [ "$SYNC_FETCHED" = "true" ]; then
+        EXPECTED_COUNT=2
+    else
+        EXPECTED_COUNT=1
+    fi
+    echo "Node-A event count: $NODE_A_COUNT (should be $EXPECTED_COUNT, missing test ixn)"
+    run_test "Node-A missing test ixn (count == $EXPECTED_COUNT)" [ "$NODE_A_COUNT" = "$EXPECTED_COUNT" ]
 
     # Save state for verify phase
     echo "$PREFIX" > "$STATE_FILE"
@@ -279,16 +320,11 @@ if [ "$MODE" = "verify" ]; then
     echo -e "${CYAN}=== Waiting for Resync Loop ===${NC}"
     echo "Polling up to ${RESYNC_WAIT}s for the periodic resync loop to resolve entries..."
 
-    FAKE_ENTRY="fakeprefix:Efakesaid000000000000000000000000000000000000"
     RESYNC_RESOLVED=false
     for i in $(seq 1 "$RESYNC_WAIT"); do
         NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
-        MEMBERS=$(queue_members 2>/dev/null)
-        FAKE_GONE=true
-        if echo "$MEMBERS" | grep -q "$FAKE_ENTRY"; then
-            FAKE_GONE=false
-        fi
-        if [ "$NODE_A_COUNT" = "2" ] && [ "$FAKE_GONE" = "true" ]; then
+        QUEUE_SIZE=$(queue_count)
+        if [ "$NODE_A_COUNT" = "3" ] && [ "$QUEUE_SIZE" = "0" ]; then
             echo "  Resync resolved after ${i}s"
             RESYNC_RESOLVED=true
             break
@@ -302,35 +338,22 @@ if [ "$MODE" = "verify" ]; then
     echo ""
 
     # ========================================
-    # Scenario 1 verify: Fake entry dropped
+    # Verify: All entries resolved
     # ========================================
-    echo -e "${CYAN}=== Scenario 1 Verify: Fake Entry Dropped ===${NC}"
-    echo "The fake entry should be gone (all peers return 404)"
-    echo ""
-
-    MEMBERS=$(queue_members)
-    if echo "$MEMBERS" | grep -q "$FAKE_ENTRY"; then
-        run_test "Fake entry dropped from retry queue" false
-    else
-        run_test "Fake entry dropped from retry queue" true
-    fi
-
-    echo ""
-
-    # ========================================
-    # Scenario 2 verify: Real entry resolved
-    # ========================================
-    echo -e "${CYAN}=== Scenario 2 Verify: Real Entry Resolved ===${NC}"
-    echo "Node-a should now have the ixn event from node-b"
+    echo -e "${CYAN}=== Verify: All Entries Resolved ===${NC}"
+    echo "Node-a should have all events and retry queue should be empty"
     echo ""
 
     NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
-    echo "Node-A event count: $NODE_A_COUNT (should be 2)"
-    run_test "Node-A has the ixn (count == 2)" [ "$NODE_A_COUNT" = "2" ]
+    echo "Node-A event count: $NODE_A_COUNT (should be 3)"
+    run_test "Node-A has all events (count == 3)" [ "$NODE_A_COUNT" = "3" ]
 
-    # Check retry queue is empty
     COUNT=$(queue_count)
     echo "Retry queue size: $COUNT"
+    if [ "$COUNT" != "0" ]; then
+        echo "Remaining queue contents:"
+        queue_members
+    fi
     run_test "Retry queue is empty" [ "$COUNT" = "0" ]
 
     echo ""
