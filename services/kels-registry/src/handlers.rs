@@ -1,18 +1,22 @@
 //! KELS Registry REST API Handlers
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+};
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use kels::{
     AdditionHistory, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel,
     NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
-    Proposal, ProposalHistory, ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory,
-    SignedRequest, StatusUpdateRequest, Vote,
+    Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest,
+    RemovalHistory, SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
@@ -433,18 +437,60 @@ pub async fn federation_status(
 
 // ==================== Public Federation API ====================
 
+/// Query parameters for the proposals endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ProposalsQuery {
+    #[serde(default)]
+    pub audit: bool,
+}
+
 /// Public endpoint returning completed proposals with their votes.
 ///
-/// Gossip nodes and other consumers use this to independently verify
-/// that core peers were properly approved through multi-party voting.
+/// Default mode returns only approved, non-withdrawn addition proposals for
+/// currently active peers. Use `?audit=true` for the full unfiltered response.
 pub async fn list_completed_proposals(
     State(state): State<Arc<FederationState>>,
+    Query(query): Query<ProposalsQuery>,
 ) -> Result<Json<CompletedProposalsResponse>, ApiError> {
+    if query.audit {
+        return Ok(Json(CompletedProposalsResponse {
+            additions: state.node.completed_addition_proposals_with_votes().await,
+            removals: state.node.completed_removal_proposals_with_votes().await,
+            member_prefixes: state.node.member_prefixes(),
+            approval_threshold: state.node.approval_threshold(),
+        }));
+    }
+
+    let active_peer_prefixes: HashSet<String> = state
+        .node
+        .core_peers()
+        .await
+        .into_iter()
+        .filter(|p| p.active)
+        .map(|p| p.peer_prefix)
+        .collect();
+
+    let threshold = state.node.approval_threshold();
+
+    let additions = state
+        .node
+        .completed_addition_proposals_with_votes()
+        .await
+        .into_iter()
+        .filter(|awv| {
+            awv.history
+                .inception()
+                .is_some_and(|p| active_peer_prefixes.contains(&p.peer_prefix))
+                && !awv.history.is_withdrawn()
+                && awv.status(threshold) == ProposalStatus::Approved
+        })
+        .collect();
+
     Ok(Json(CompletedProposalsResponse {
-        additions: state.node.completed_addition_proposals_with_votes().await,
-        removals: state.node.completed_removal_proposals_with_votes().await,
+        additions,
+        removals: vec![],
         member_prefixes: state.node.member_prefixes(),
-        approval_threshold: state.node.approval_threshold(),
+        approval_threshold: threshold,
     }))
 }
 

@@ -1068,16 +1068,35 @@ impl MultiRegistryClient {
 
     /// Fetch completed proposals from any available registry.
     ///
-    /// Returns proposals with their votes so consumers can independently
-    /// verify that core peers were properly approved.
+    /// Returns the default filtered response: only approved, non-withdrawn
+    /// addition proposals for currently active peers.
     pub async fn fetch_completed_proposals(
         &self,
+    ) -> Result<crate::CompletedProposalsResponse, KelsError> {
+        self.fetch_proposals_inner("/api/federation/proposals")
+            .await
+    }
+
+    /// Fetch all completed proposals (unfiltered) from any available registry.
+    ///
+    /// Returns the full audit response including all additions, removals,
+    /// withdrawn and rejected proposals.
+    pub async fn fetch_completed_proposals_audit(
+        &self,
+    ) -> Result<crate::CompletedProposalsResponse, KelsError> {
+        self.fetch_proposals_inner("/api/federation/proposals?audit=true")
+            .await
+    }
+
+    async fn fetch_proposals_inner(
+        &self,
+        path: &str,
     ) -> Result<crate::CompletedProposalsResponse, KelsError> {
         for url in &self.urls {
             let client = self.create_client(url);
             let response = client
                 .client
-                .get(format!("{}/api/federation/proposals", client.base_url))
+                .get(format!("{}{}", client.base_url, path))
                 .send()
                 .await;
 

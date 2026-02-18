@@ -596,7 +596,7 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
 }
 
 async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/federation/proposals", ctx.registry_url);
+    let url = format!("{}/api/federation/proposals?audit=true", ctx.registry_url);
     let resp = ctx.http_client.get(&url).send().await?;
 
     if resp.status().is_success() {
