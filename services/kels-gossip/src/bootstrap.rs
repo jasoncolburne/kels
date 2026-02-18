@@ -195,28 +195,6 @@ impl BootstrapSync {
         }
     }
 
-    /// Resync KELs after connecting to the gossip swarm.
-    /// This catches any events that occurred between pre-load and joining gossip.
-    /// Call this after receiving the first PeerConnected event.
-    pub async fn resync_kels(&self) -> Result<(), BootstrapError> {
-        // Get Ready peers from allowlist
-        let ready_peers = self.get_ready_peers().await;
-
-        if ready_peers.is_empty() {
-            info!("No Ready peers found, skipping resync");
-            return Ok(());
-        }
-
-        info!(
-            "Starting resync from {} Ready peer(s)...",
-            ready_peers.len()
-        );
-        self.sync_from_peers(&ready_peers).await?;
-        info!("Resync complete");
-
-        Ok(())
-    }
-
     /// Get the URL to use for node-to-node sync.
     fn get_sync_url(peer: &kels::Peer) -> &str {
         &peer.kels_url

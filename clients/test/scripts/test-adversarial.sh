@@ -93,6 +93,7 @@ run_test_expect_divergence() {
     echo -e "${YELLOW}Testing (expect divergence): ${name}${NC}"
     # Run the command (expected to fail)
     "$@" 2>&1 || true
+    sleep 0.03
     # Check server state for divergence
     local status
     status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')

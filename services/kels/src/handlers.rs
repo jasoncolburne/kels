@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -39,6 +39,12 @@ impl IntoResponse for PreSerializedJson {
 /// Maximum submissions per prefix per minute (sliding window).
 const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
 
+/// Maximum write requests per IP per second (token bucket: refill rate).
+const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+
+/// Burst capacity for per-IP write rate limiting.
+const IP_RATE_LIMIT_BURST: u32 = 1000;
+
 /// Nonce expiry window in seconds (matches the timestamp validation window).
 #[cfg(not(feature = "dev-tools"))]
 const NONCE_WINDOW_SECS: u64 = 60;
@@ -51,6 +57,8 @@ pub(crate) struct AppState {
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
+    pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
     #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) nonce_cache: DashMap<String, Instant>,
@@ -132,6 +140,27 @@ impl ApiError {
             }),
         )
     }
+}
+
+/// Per-IP write rate limiting using a token bucket.
+/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+fn check_ip_rate_limit(
+    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.1 = now;
+    }
+    if entry.0 == 0 {
+        return Err(ApiError::rate_limited("Too many requests"));
+    }
+    entry.0 -= 1;
+    Ok(())
 }
 
 impl From<KelsError> for ApiError {
@@ -256,8 +285,11 @@ pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Js
 /// verify the trust chain.
 pub(crate) async fn submit_events(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
 ) -> Result<Json<BatchSubmitResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
+
     if events.is_empty() {
         return Ok(Json(BatchSubmitResponse {
             diverged_at: None,
@@ -548,8 +580,10 @@ pub(crate) async fn event_exists(
 /// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     #[cfg(not(feature = "dev-tools"))]
     {
         if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {

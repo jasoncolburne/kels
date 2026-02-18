@@ -10,7 +10,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Timeout for sending a message to a peer's outbound channel.
+const SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
 use bytes::Bytes;
 use futures::AsyncReadExt;
@@ -414,32 +417,38 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         messages: Vec<proto::Message<NodePrefix>>,
     ) {
         if let Some(peer_state) = self.peers.get(&peer_prefix) {
-            for msg in messages {
-                if peer_state.msg_tx.try_send(msg).is_err() {
-                    warn!(%peer_prefix, "failed to drain queued message (channel full or closed)");
-                    break;
+            let msg_tx = peer_state.msg_tx.clone();
+            tokio::spawn(async move {
+                for msg in messages {
+                    match tokio::time::timeout(SEND_TIMEOUT, msg_tx.send(msg)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => {
+                            warn!(%peer_prefix, "peer channel closed while draining queued messages");
+                            break;
+                        }
+                        Err(_) => {
+                            warn!(%peer_prefix, "send timed out while draining queued messages");
+                            break;
+                        }
+                    }
                 }
-            }
+            });
         }
     }
 
     /// Process output events from the protocol state machine.
+    ///
+    /// Messages to connected peers are sent concurrently (one task per peer)
+    /// so a slow peer cannot block sends to other peers.
     fn process_out_events(&mut self, events: Vec<proto::OutEvent<NodePrefix>>) {
+        let mut peer_messages: HashMap<NodePrefix, Vec<proto::Message<NodePrefix>>> =
+            HashMap::new();
+
         for event in events {
             match event {
                 proto::OutEvent::SendMessage(peer, msg) => {
-                    if let Some(peer_state) = self.peers.get(&peer) {
-                        // Peer is connected — send directly.
-                        if peer_state.msg_tx.try_send(msg).is_err() {
-                            // Channel full or closed — connection is stalled/dead.
-                            // Disconnect so HyParView can replace this peer.
-                            warn!(%peer, "peer channel full or closed, disconnecting");
-                            self.peers.remove(&peer);
-                            let now = Instant::now();
-                            let in_event = proto::InEvent::PeerDisconnected(peer);
-                            let events: Vec<_> = self.state.handle(in_event, now).collect();
-                            self.process_out_events(events);
-                        }
+                    if self.peers.contains_key(&peer) {
+                        peer_messages.entry(peer).or_default().push(msg);
                     } else if let Some(queue) = self.pending_dials.get_mut(&peer) {
                         // Already dialing this peer — queue the message.
                         queue.push(msg);
@@ -500,6 +509,28 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                         debug!(%peer, addr = %addr_str, "stored peer address from PeerData");
                     }
                 }
+            }
+        }
+
+        // Send collected messages to connected peers concurrently.
+        for (peer, messages) in peer_messages {
+            if let Some(peer_state) = self.peers.get(&peer) {
+                let msg_tx = peer_state.msg_tx.clone();
+                tokio::spawn(async move {
+                    for msg in messages {
+                        match tokio::time::timeout(SEND_TIMEOUT, msg_tx.send(msg)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => {
+                                warn!(%peer, "peer channel closed during send");
+                                break;
+                            }
+                            Err(_) => {
+                                warn!(%peer, "send timed out, dropping remaining messages");
+                                break;
+                            }
+                        }
+                    }
+                });
             }
         }
     }

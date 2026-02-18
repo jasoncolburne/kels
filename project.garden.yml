@@ -69,7 +69,7 @@ providers:
 
 variables:
   gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
-  rustLogLevel: debug
+  rustLogLevel: info
   postgres:
     user: kels_admin
     password: use_something_better_in_production

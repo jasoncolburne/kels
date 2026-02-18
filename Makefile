@@ -35,10 +35,21 @@ clean:
 	find . -type d -name "target" -exec rm -rf {} +
 	make -C clients/kels-client clean
 
-clean-garden:
-	# Cleanup all environments
-	garden cleanup deploy --env=registry-a && garden cleanup deploy --env=registry-b && garden cleanup deploy --env=registry-c && garden cleanup deploy --env=registry-d
-	garden cleanup deploy --env=node-a && garden cleanup deploy --env=node-b && garden cleanup deploy --env=node-c && garden cleanup deploy --env=node-d && garden cleanup deploy --env=node-e && garden cleanup deploy --env=node-f
+clean-registries:
+	garden cleanup namespace --env=registry-a
+	garden cleanup namespace --env=registry-b
+	garden cleanup namespace --env=registry-c
+	garden cleanup namespace --env=registry-d
+
+clean-nodes:
+	garden cleanup namespace --env=node-a
+	garden cleanup namespace --env=node-b
+	garden cleanup namespace --env=node-c
+	garden cleanup namespace --env=node-d
+	garden cleanup namespace --env=node-e
+	garden cleanup namespace --env=node-f
+
+clean-garden: clean-nodes clean-registries
 
 clean-docker:
 	@echo "Cleaning docker caches..."
@@ -246,6 +257,9 @@ test-grow-federation:
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
+seed-kels:
+	kubectl exec -n kels-node-a -it test-client -- bash -c 'TEST_KELS_HOST=kels.kels-node-a.kels ./test-kels.sh'
+
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
 	@kubectl exec -n kels-node-a test-client -- sh -c '\
@@ -282,4 +296,4 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes vote-nodes restart-nodes test-suite
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels vote-nodes restart-nodes test-suite

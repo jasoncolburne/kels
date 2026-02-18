@@ -50,11 +50,6 @@ async-trait = "0.1.89"
 # Per-prefix rate limiting
 dashmap = "6"
 
-# Per-IP rate limiting
-governor = "0.8"
-tower_governor = "0.5"
-tower = { version = "0.5", features = ["util"] }
-
 # Redis for KelStreamCache
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 futures-util = "0.3"

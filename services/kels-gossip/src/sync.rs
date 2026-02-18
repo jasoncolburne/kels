@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
@@ -787,7 +787,11 @@ impl SyncHandler {
     }
 }
 
-/// Run the sync event handler
+/// Run the sync event handler.
+///
+/// If `peer_connected_tx` is provided, it will be signaled on the first
+/// `PeerConnected` event. This allows the bootstrap flow to wait for
+/// connectivity without consuming the event stream directly.
 pub async fn run_sync_handler(
     kels_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
@@ -795,10 +799,18 @@ pub async fn run_sync_handler(
     allowlist: SharedAllowlist,
     recently_stored: RecentlyStoredFromGossip,
     retry_queue: OptionalRetryQueue,
+    mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
     let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, retry_queue);
 
     while let Some(event) = event_rx.recv().await {
+        // Signal first PeerConnected to the bootstrap flow
+        if matches!(&event, GossipEvent::PeerConnected(_))
+            && let Some(tx) = peer_connected_tx.take()
+        {
+            let _ = tx.send(());
+        }
+
         if let Err(e) = handler.handle_event(event, &command_tx).await {
             error!("Error handling gossip event: {}", e);
         }
@@ -1121,6 +1133,7 @@ mod tests {
             command_tx,
             allowlist,
             recently_stored,
+            None,
             None,
         )
         .await;

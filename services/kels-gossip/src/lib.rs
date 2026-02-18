@@ -432,7 +432,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Ready peers available for resync: {}", has_ready_peers);
 
     let (command_tx, command_rx) = mpsc::channel::<GossipCommand>(100);
-    let (event_tx, mut event_rx) = mpsc::channel::<GossipEvent>(100);
+    let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(100);
 
     // Shared state to prevent Redis feedback loop when gossip stores events
     let recently_stored: sync::RecentlyStoredFromGossip = Arc::new(RwLock::new(HashMap::new()));
@@ -497,63 +497,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
     });
 
-    // Step 5-6: If Ready peers exist, wait for PeerConnected then resync
-    // This catches any events missed between preload (while unauthorized) and joining gossip
-    if has_ready_peers {
-        info!("Waiting for first peer connection before resync...");
-
-        // Wait for PeerConnected event (with timeout)
-        let peer_connected = tokio::time::timeout(Duration::from_secs(60), async {
-            loop {
-                match event_rx.recv().await {
-                    Some(GossipEvent::PeerConnected(connected_peer)) => {
-                        info!("Connected to peer: {}", connected_peer);
-                        return true;
-                    }
-                    Some(_) => continue,  // Ignore other events
-                    None => return false, // Channel closed
-                }
-            }
-        })
-        .await;
-
-        match peer_connected {
-            Ok(true) => {
-                // Resync to catch events missed between preload and connection
-                info!("Performing resync to catch events missed during unauthorized period...");
-                if let Err(e) = bootstrap.resync_kels().await {
-                    error!("Resync failed: {}", e);
-                }
-            }
-            Ok(false) => {
-                warn!("Event channel closed before peer connected");
-            }
-            Err(_) => {
-                warn!("Timeout waiting for peer connection, skipping resync");
-            }
-        }
-    } else {
-        // No ready peers — either first node or all peers are still bootstrapping.
-        // The gossip protocol handles connection establishment after join; no resync
-        // needed since there's nothing to sync from yet.
-        info!("No ready peers - skipping connection wait");
-    }
-
-    // Step 8: Mark Ready
-    *ready_state.write().await = true;
-    info!("Bootstrap complete - node is ready");
-
-    // Publish ready state to Redis for KELS service to read
-    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str())
-        && let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
-    {
-        if let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "true").await {
-            error!("Failed to publish ready state to Redis {}", e);
-        } else {
-            info!("Published ready state to Redis");
-        }
-    }
-
     // Create Redis connection manager for retry queue
     let retry_queue: sync::OptionalRetryQueue = match redis::Client::open(config.redis_url.as_str())
     {
@@ -573,7 +516,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     };
 
-    // Spawn sync handler (needs ownership of event_rx)
+    // Start sync handler BEFORE waiting for PeerConnected so no gossip events are dropped.
+    // The sync handler processes all events (announcements, peer connects/disconnects) as
+    // they arrive. A oneshot channel signals back when the first peer connects.
+    let (peer_connected_tx, peer_connected_rx) = tokio::sync::oneshot::channel::<()>();
     let kels_url = config.kels_url.clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
@@ -586,12 +532,53 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync_allowlist,
             recently_stored,
             sync_retry_queue,
+            if has_ready_peers {
+                Some(peer_connected_tx)
+            } else {
+                None
+            },
         )
         .await
         {
             error!("Sync handler error: {}", e);
         }
     });
+
+    // Step 5: If Ready peers exist, wait for first PeerConnected, then preload KELs via HTTP
+    if has_ready_peers {
+        info!("Waiting for first peer connection...");
+        match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
+            Ok(Ok(())) => {
+                info!("First peer connected — preloading KELs from ready peers...");
+                if let Err(e) = bootstrap.preload_kels().await {
+                    error!("KEL preload failed: {}", e);
+                }
+            }
+            Ok(Err(_)) => {
+                warn!("Sync handler dropped peer_connected sender before signaling");
+            }
+            Err(_) => {
+                warn!("Timeout waiting for peer connection");
+            }
+        }
+    } else {
+        info!("No ready peers - skipping connection wait");
+    }
+
+    // Step 6: Mark Ready
+    *ready_state.write().await = true;
+    info!("Bootstrap complete - node is ready");
+
+    // Publish ready state to Redis for KELS service to read
+    if let Ok(redis_client) = redis::Client::open(config.redis_url.as_str())
+        && let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
+    {
+        if let Err(e) = conn.set::<_, _, ()>("kels:gossip:ready", "true").await {
+            error!("Failed to publish ready state to Redis {}", e);
+        } else {
+            info!("Published ready state to Redis");
+        }
+    }
 
     // Spawn periodic resync loop (retries failed gossip fetches)
     if let Some(ref rq) = retry_queue {
