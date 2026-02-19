@@ -169,13 +169,13 @@ impl Stats {
 }
 
 async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<String> {
-    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), Some(client.clone()));
+    // Build events offline (no client) then batch-submit to avoid per-event rate limits.
+    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
     let icp = builder.incept().await?;
     let prefix = icp.event.prefix.clone();
 
     for i in 1..event_count {
         if i % 5 == 0 {
-            // rotate every 5th event
             builder.rotate().await?;
         } else {
             let anchor = test_said(&format!("test_anchor_{}", i));
@@ -183,6 +183,10 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
         }
     }
 
+    let response = client.submit_events(builder.events()).await?;
+    if !response.applied {
+        anyhow::bail!("Failed to create test KEL: events were not applied");
+    }
     Ok(prefix)
 }
 
