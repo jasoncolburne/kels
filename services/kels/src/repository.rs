@@ -76,10 +76,12 @@ impl KeyEventRepository {
         since: Option<&str>,
         limit: usize,
     ) -> Result<PrefixListResponse, StorageError> {
-        // Use DISTINCT ON to get one event per prefix for the page
+        // DISTINCT ON (prefix) with secondary sort by serial DESC ensures we
+        // deterministically get the highest-serial event per prefix.
         let mut query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
             .distinct_on("prefix")
             .order_by("prefix", Order::Asc)
+            .order_by("serial", Order::Desc)
             .limit(limit as u64 + 1);
 
         if let Some(cursor) = since {
@@ -107,10 +109,10 @@ impl KeyEventRepository {
             None
         };
 
-        // For divergent prefixes, replace the arbitrary SAID from DISTINCT ON with
-        // a deterministic hash of sorted tip SAIDs.
+        // For divergent prefixes, replace the single tip SAID with a deterministic
+        // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
-            if self.find_divergence_serial(&state.prefix).await?.is_some()
+            if self.is_divergent(&state.prefix).await?
                 && let Some(effective) = self.compute_prefix_effective_said(&state.prefix).await?
             {
                 state.said = effective;
@@ -142,6 +144,22 @@ impl KeyEventRepository {
             .collect();
 
         Ok(kels::compute_effective_tail_said(&pairs))
+    }
+
+    /// Quick check: does any serial number appear more than once for this prefix?
+    ///
+    /// Uses `GROUP BY serial ORDER BY COUNT(*) DESC LIMIT 1` — returns true if
+    /// the highest count exceeds 1.
+    pub async fn is_divergent(&self, prefix: &str) -> Result<bool, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("serial")
+            .limit(1);
+        let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
+        Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
     /// Find the lowest serial where divergence occurs (duplicate serial values).
