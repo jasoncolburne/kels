@@ -64,6 +64,13 @@ pub struct AppState {
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
 impl ApiError {
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: msg.into() }),
+        )
+    }
+
     pub fn internal(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -203,10 +210,7 @@ pub async fn ecdh(
 ) -> Result<Json<EcdhResponse>, ApiError> {
     let peer_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&request.peer_public_key)
-        .map_err(|e| {
-            tracing::error!("ECDH: invalid base64 peer public key: {}", e);
-            ApiError::internal(format!("Invalid base64 peer public key: {}", e))
-        })?;
+        .map_err(|e| ApiError::bad_request(format!("Invalid base64 peer public key: {}", e)))?;
 
     tracing::info!("ECDH: peer public key {} bytes", peer_public_key.len());
 

@@ -862,6 +862,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_hsm_key_provider_ecdh() {
+        let mock = Arc::new(MockHsm::new());
+        let mut provider = HsmKeyProvider::new(mock.clone(), "test", 0, 0);
+
+        provider.generate_initial_keys().await.unwrap();
+
+        // Generate a peer keypair and get its compressed public key
+        let (_, peer_pk) = mock.generate_keypair("peer").await.unwrap();
+        let peer_bytes = peer_pk.raw();
+
+        let result = provider.ecdh(peer_bytes).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn test_hsm_key_provider_ecdh_no_key() {
+        let mock = Arc::new(MockHsm::new());
+        let provider = HsmKeyProvider::new(mock, "test", 0, 0);
+
+        let result = provider.ecdh(&[0u8; 33]).await;
+        assert!(matches!(result, Err(KelsError::NoCurrentKey)));
+    }
+
+    #[tokio::test]
     async fn test_hsm_key_provider_sign_with_recovery() {
         let mock = Arc::new(MockHsm::new());
         let mut provider = HsmKeyProvider::new(mock, "test", 0, 0);

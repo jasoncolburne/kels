@@ -46,13 +46,15 @@ pub struct PeerConnection {
 
 /// Perform the full handshake on an established TCP connection.
 ///
-/// This implements the KELS gossip handshake protocol:
+/// This implements the KELS gossip handshake protocol (three-DH pattern):
 /// 1. Exchange prefixes (44 bytes each)
-/// 2. ECDH ephemeral key exchange (33 bytes compressed P-256)
+/// 2. Ephemeral ECDH key exchange (33 bytes compressed P-256)
 /// 3. Mutual authentication: each side signs a JSON payload containing CESR-encoded
 ///    ephemeral keys and the peer's prefix
 /// 4. Verify peer's signature against their KEL public key
-/// 5. Derive AES-GCM-256 session keys from the shared ECDH secret
+/// 5. Static-ephemeral DH: compute se (our_static × their_eph via HSM) and
+///    es (our_eph × their_static locally)
+/// 6. Derive AES-GCM-256 session keys from all three DH secrets (ee + se + es)
 ///
 /// Returns a `PeerConnection` with the authenticated peer identity and encrypted stream.
 /// Configure TCP keepalive for faster stale connection detection.
