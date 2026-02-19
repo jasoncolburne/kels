@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ECDH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events from any peer in the allowlist that has the event via HTTP.
+The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with three-DH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events from any peer in the allowlist that has the event via HTTP.
 
 ## Architecture
 
@@ -108,8 +108,8 @@ struct KelAnnouncement {
 
 | Protocol | Transport | Purpose |
 |----------|-----------|---------|
-| PlumTree broadcast | TCP + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
-| HyParView membership | TCP + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
+| PlumTree broadcast | TCP + three-DH P-256 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
+| HyParView membership | TCP + three-DH P-256 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
 | HTTP fetch | HTTP | Fetch KEL events from peer's KELS service |
 
 ## Configuration
@@ -142,7 +142,9 @@ Gossip nodes use persistent HSM-backed identities:
 - Each node's identity is cryptographically bound to keys in the HSM — the identity does not change across restarts
 - The NodePrefix (44-char CESR-encoded) identifies the node in the gossip mesh and verified allowlist
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh
-- Unauthorized peers are rejected during the gossip handshake (ECDH P-256 key exchange + signature verification against the peer's KEL)
+- Unauthorized peers are rejected during the gossip handshake
+- The handshake uses a three-DH pattern: ephemeral-ephemeral (forward secrecy), static-ephemeral via HSM (our static key × their ephemeral), and ephemeral-static locally (our ephemeral × their static key). Session keys are derived from all three shared secrets via BLAKE3 key derivation. The static private key never leaves the HSM.
+- Each peer's handshake signature is verified against their KEL public key via the verified allowlist
 - See [Secure Registration](secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback

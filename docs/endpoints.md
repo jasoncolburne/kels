@@ -13,6 +13,7 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 | GET | `/api/hsm/keys` | None | List all key labels |
 | GET | `/api/hsm/keys/:label/public` | None | Get compressed public key (CESR qb64) |
 | POST | `/api/hsm/keys/:label/sign` | None | Sign data with ECDSA P-256; returns signature + public key (CESR qb64) |
+| POST | `/api/hsm/keys/:label/ecdh` | None | ECDH key agreement (CKM_ECDH1_DERIVE); accepts base64url peer public key, returns base64url shared secret |
 
 **Notes:**
 - Label validation: alphanumeric + `-_.`, max 128 chars
@@ -22,7 +23,7 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 
 ## Identity Service
 
-HSM-backed key management for the registry's cryptographic identity (KEL). No authentication — internal to the registry pod.
+HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. No authentication — internal to the pod.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -31,6 +32,7 @@ HSM-backed key management for the registry's cryptographic identity (KEL). No au
 | GET | `/api/identity/kel` | None | Get full registry KEL (fresh from DB) |
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
+| POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
@@ -55,7 +57,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires ECDSA signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` uses Redis cache with pub/sub invalidation; falls back to DB on miss
+- `get_kel` uses Redis cache with pub/sub invalidation; falls back to DB on miss. The `?since=SAID` parameter returns only events after the given SAID. If the SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty array is returned. This allows divergent KELs to be correctly recognized as in-sync without requiring a full fetch.
 - Error codes: `NotFound`, `BadRequest`, `Unauthorized`, `Frozen`, `Contested`, `RecoveryProtected`, `InternalError`
 
 ## KELS Registry Service
@@ -127,8 +129,8 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Protocol | Auth | Description |
 |----------|------|-------------|
-| PlumTree broadcast (`kels/events/v1`) | **ECDH P-256 + AES-GCM-256** | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
-| HyParView membership | **ECDH P-256 + AES-GCM-256** | Mesh overlay maintenance (join, shuffle, forward-join) |
+| PlumTree broadcast (`kels/events/v1`) | **Three-DH P-256 + AES-GCM-256** | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
+| HyParView membership | **Three-DH P-256 + AES-GCM-256** | Mesh overlay maintenance (join, shuffle, forward-join) |
 | Allowlist verification | **Signature + verified allowlist** | Verifies peer's NodePrefix against verified allowlist post-handshake |
 
 ### Peer-to-Peer HTTP (between gossip nodes)
@@ -139,7 +141,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
 
 **Notes:**
-- Transport: ECDH P-256 key exchange + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers
+- Transport: Three-DH P-256 key exchange (ee + se + es) + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers
 - Peer verification: handshake signature verified against peer's KEL public key; unknown peers trigger allowlist refresh before rejection
 - Allowlist verification: peer record SAID (`verify()`), peer SAID anchored in registry KEL, full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
 
@@ -151,7 +153,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Localhost only** | Admin API | `SocketAddr.ip().is_loopback()` check |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
-| **Gossip handshake** | Gossip connections | ECDH P-256 key exchange + AES-GCM-256; signature verified against peer's KEL |
+| **Gossip handshake** | Gossip connections | Three-DH pattern (ee + se + es) with AES-GCM-256; signature verified against peer's KEL; static key operations via HSM |
 | **Allowlist** | Gossip connections | NodePrefix checked against verified peer allowlist with full KEL verification |
 | **SAID integrity** | Peer records, votes | `SelfAddressed::verify()` — content hash matches declared SAID |
 | **KEL anchoring** | Peer records, votes | SAID must appear in an ixn event in the authorizing registry's KEL |

@@ -281,12 +281,14 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 
 In addition to registry authentication, the gossip layer verifies connections during the handshake:
 
-1. ECDH P-256 key exchange establishes encrypted session
+1. Ephemeral ECDH P-256 key exchange (ee — forward secrecy)
 2. Mutual signature exchange — each side signs a payload containing both ephemeral keys and the peer's prefix
 3. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
 4. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
-5. Unknown peers trigger a one-shot allowlist refresh before rejection
-6. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
+5. Static-ephemeral DH: se (our static key × their ephemeral, via HSM) and es (our ephemeral × their static key, locally)
+6. Session keys derived from all three DH secrets (ee + se + es) via BLAKE3 — the static private key never leaves the HSM
+7. Unknown peers trigger a one-shot allowlist refresh before rejection
+8. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
 
 Nodes periodically refresh their allowlist from the registry's `/api/peers` endpoint (default: every 60 seconds).
 

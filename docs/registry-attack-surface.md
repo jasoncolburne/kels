@@ -60,7 +60,7 @@ If an attacker gains access to the HSM service:
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip messages between nodes.
-- **Mitigation:** The gossip protocol uses ECDH P-256 + AES-GCM-256 authenticated encryption. Handshake signatures are verified against the peer's KEL public key. NodePrefix is derived from the node's identity KEL.
+- **Mitigation:** The gossip protocol uses a three-DH handshake (ephemeral-ephemeral, static-ephemeral via HSM, ephemeral-static locally) with AES-GCM-256 authenticated encryption. Session keys are derived from all three shared secrets via BLAKE3, so an attacker needs both the ephemeral session secret and the HSM-held static private key to derive session keys. Handshake signatures are verified against the peer's KEL public key. NodePrefix is derived from the node's identity KEL.
 
 ### Denial of Service — Allowlist Refresh Trigger
 
@@ -132,7 +132,7 @@ These are intentionally public. The security model relies on cryptographic verif
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
-5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption
+5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption
 6. (removed)
 
 ## Roadmap
@@ -154,5 +154,5 @@ The admin API relies solely on `is_localhost()` for access control. Proposal and
 
 ### ~~TLS between services (addresses residual risk 5)~~
 
-~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
+~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
 

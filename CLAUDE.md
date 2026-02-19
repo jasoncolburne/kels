@@ -75,6 +75,10 @@ Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL
 
 When conflicting events exist at the same serial number in a KEL (e.g., from competing updates or adversarial forks). A divergent KEL is frozen until recovery resolves the conflict. Detected by finding duplicate serial values in the event chain.
 
+### Effective SAID
+
+A single identifier representing the current state of a KEL, including divergent KELs. For non-divergent KELs, this is the tip event's SAID. For divergent KELs (multiple branch tips), this is a deterministic Blake3 hash of the sorted tip SAIDs (`hash_tip_saids`). Used for delta sync: when a `?since=<said>` query doesn't match a real event SAID, the server computes the effective SAID — if it matches, both sides have the same divergent state and no sync is needed. Also used by anti-entropy to compare prefix states across nodes.
+
 ### Merge Results
 
 When events are submitted, the KEL merge produces one of:
@@ -98,7 +102,7 @@ When events are submitted, the KEL merge produces one of:
 ### Libraries
 
 - **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library. HyParView membership + PlumTree broadcast over TCP with ECDH P-256 + AES-GCM-256 encryption. Uses 44-char CESR-encoded NodePrefix identities.
+- **gossip** (`lib/gossip`) — Custom gossip protocol library. HyParView membership + PlumTree broadcast over TCP with three-DH (ee + se + es) P-256 + AES-GCM-256 encryption. Uses 44-char CESR-encoded NodePrefix identities.
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
 
@@ -140,6 +144,7 @@ An **anti-entropy loop** (default every 10s) provides background repair: Phase 1
 - **Nonce deduplication** — prevents replay of signed requests within a 60-second window
 - **Signed peer requests** — prefix listing requires signed requests with timestamp validation and peer verification
 - **Peer allowlist** — gossip peers must be in the allowlist (cached in Redis, refreshed from registry)
+- **Three-DH handshake** — gossip uses ee (forward secrecy), se via HSM (static authentication), and es locally (mutual authentication), with session keys derived from all three secrets via BLAKE3
 - **Contested KELs** — if an adversary reveals the recovery key, the KEL is permanently frozen
 - **Audit records** — recovery operations log removed events for forensic review
 

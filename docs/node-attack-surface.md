@@ -66,7 +66,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip traffic between nodes.
-- **Mitigation:** The gossip protocol uses ECDH P-256 key exchange with AES-GCM-256 authenticated encryption on every connection. Each peer's handshake signature is verified against their KEL public key via the verified allowlist. Modifying messages invalidates the AES-GCM authentication tag.
+- **Mitigation:** The gossip protocol uses a three-DH handshake (ephemeral-ephemeral, static-ephemeral via HSM, ephemeral-static locally) with AES-GCM-256 authenticated encryption. Session keys are derived from all three shared secrets via BLAKE3, so an attacker needs both the ephemeral session secret and the HSM-held static private key to derive session keys. Each peer's handshake signature is verified against their KEL public key via the verified allowlist. Modifying messages invalidates the AES-GCM authentication tag.
 
 ### Replay Attack (Gossip)
 
@@ -141,7 +141,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 
 ### ~~TLS between services (addresses residual risk 2)~~
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
 ### Gossip protocol hardening (addresses residual risks 8, 9)
 
