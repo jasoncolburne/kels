@@ -27,7 +27,6 @@ environments:
       devTools: true # testing
       gossip:
         resyncIntervalSecs: "15" # testing
-        antiEntropyIntervalSecs: "1" # testing
   - name: node-b
     defaultNamespace: kels-node-b
     variables:

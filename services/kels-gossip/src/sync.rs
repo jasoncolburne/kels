@@ -1302,7 +1302,10 @@ pub async fn run_anti_entropy_loop(
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
                     }
                     RepairResult::Failed => {
-                        record_stale_prefix(redis.as_ref(), kel_prefix, source_node_prefix).await;
+                        // Don't re-add — Phase 2 or the resync loop will rediscover
+                        // if still needed. Re-adding causes a hot retry loop when the
+                        // source peer is unreachable.
+                        warn!("Anti-entropy: failed to repair stale prefix {}", kel_prefix);
                     }
                     RepairResult::NoOp => {}
                 }
