@@ -20,6 +20,7 @@ Each **registry** runs:
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
 - `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
+- `identity` — the node's own cryptographic identity (KEL + signing + ECDH)
 - `hsm` — key storage for gossip peer identity
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
@@ -72,7 +73,7 @@ The registries now form a Raft cluster. Node 0 (the registry whose `id` is 0 in 
 
 Deploy gossip nodes. Each node needs to be authorized in the peer allowlist before it can join the gossip network.
 
-1. Deploy the node's infrastructure (kels, kels-gossip, postgres, redis, hsm)
+1. Deploy the node's infrastructure (kels, kels-gossip, identity, hsm, postgres, redis)
 2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
 3. Vote from enough registries to approve (`kels-registry-admin peer vote`)
 4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
