@@ -74,7 +74,7 @@ Deploy gossip nodes. Each node needs to be authorized in the peer allowlist befo
 
 1. Deploy the node's infrastructure (kels, kels-gossip, postgres, redis, hsm)
 2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
-3. Vote from enough registry to approve (`kels-registry-admin peer vote`)
+3. Vote from enough registries to approve (`kels-registry-admin peer vote`)
 4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
 5. The node bootstraps: fetches KELs from existing peers, joins the gossip mesh
 
