@@ -1,6 +1,6 @@
 # KELS Endpoints Reference
 
-Complete inventory of HTTP endpoints, libp2p protocols, and internal RPC across all services.
+Complete inventory of HTTP endpoints, gossip protocols, and internal RPC across all services.
 
 ## HSM Service
 
@@ -115,7 +115,7 @@ All standalone endpoints plus:
 
 ## KELS Gossip Service
 
-libp2p-based gossip network for KEL replication across nodes.
+Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 ### HTTP
 
@@ -123,13 +123,13 @@ libp2p-based gossip network for KEL replication across nodes.
 |--------|------|------|-------------|
 | GET | `/ready` | None | Readiness check (has bootstrap completed?) |
 
-### libp2p Protocols
+### Gossip Protocols
 
 | Protocol | Auth | Description |
 |----------|------|-------------|
-| gossipsub (`kels/events/v1`) | **Message signing** (libp2p) | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
-| identify (`/kels/gossip/v1`) | **Noise handshake** | Peer discovery and capability exchange |
-| AllowlistBehaviour | **Noise + allowlist** | Custom NetworkBehaviour that disconnects unauthorized peers post-handshake |
+| PlumTree broadcast (`kels/events/v1`) | **ECDH P-256 + AES-GCM-256** | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
+| HyParView membership | **ECDH P-256 + AES-GCM-256** | Mesh overlay maintenance (join, shuffle, forward-join) |
+| Allowlist verification | **Signature + verified allowlist** | Verifies peer's NodePrefix against verified allowlist post-handshake |
 
 ### Peer-to-Peer HTTP (between gossip nodes)
 
@@ -139,10 +139,9 @@ libp2p-based gossip network for KEL replication across nodes.
 | POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
 
 **Notes:**
-- Transport: Noise protocol provides authenticated encryption; PeerPrefix derived from ECDSA P-256 key
-- AllowlistBehaviour: unknown inbound peers trigger allowlist refresh; pending peers held until verified or disconnected
-- gossipsub config: heartbeat 1s, strict validation, mesh min 2 / target 3
-- Allowlist refresh verifies: peer record SAID (`verify()`), peer SAID anchored in registry KEL, full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
+- Transport: ECDH P-256 key exchange + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers
+- Peer verification: handshake signature verified against peer's KEL public key; unknown peers trigger allowlist refresh before rejection
+- Allowlist verification: peer record SAID (`verify()`), peer SAID anchored in registry KEL, full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
 
 ## Authentication Methods Summary
 
@@ -152,8 +151,8 @@ libp2p-based gossip network for KEL replication across nodes.
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Localhost only** | Admin API | `SocketAddr.ip().is_loopback()` check |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
-| **Noise handshake** | libp2p connections | Authenticated encryption; PeerPrefix = hash of public key |
-| **Allowlist** | Gossip connections | PeerPrefix checked against registry-sourced peer list with full KEL verification |
+| **Gossip handshake** | Gossip connections | ECDH P-256 key exchange + AES-GCM-256; signature verified against peer's KEL |
+| **Allowlist** | Gossip connections | NodePrefix checked against verified peer allowlist with full KEL verification |
 | **SAID integrity** | Peer records, votes | `SelfAddressed::verify()` — content hash matches declared SAID |
 | **KEL anchoring** | Peer records, votes | SAID must appear in an ixn event in the authorizing registry's KEL |
 | **Compile-time trust** | All clients | `TRUSTED_REGISTRY_PREFIXES` env var baked at compile time; KEL prefixes must match |

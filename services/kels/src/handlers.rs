@@ -477,12 +477,26 @@ pub(crate) async fn get_kel(
 ) -> Result<Response, ApiError> {
     // If since parameter provided, return delta events after the given SAID
     if let Some(ref since_said) = params.since {
-        let since_event = state
-            .repo
-            .key_events
-            .get_by_said(since_said)
-            .await?
-            .ok_or_else(|| ApiError::not_found(format!("Since SAID {} not found", since_said)))?;
+        let since_event = match state.repo.key_events.get_by_said(since_said).await? {
+            Some(e) => e,
+            None => {
+                // SAID not found as a real event — check if it's a composite effective
+                // SAID for a divergent KEL. If the effective SAID matches, the caller
+                // is already in sync; return empty delta.
+                let effective = state
+                    .repo
+                    .key_events
+                    .compute_prefix_effective_said(&prefix)
+                    .await?;
+                if effective.as_deref() == Some(since_said.as_str()) {
+                    return Ok(Json(Vec::<SignedKeyEvent>::new()).into_response());
+                }
+                return Err(ApiError::not_found(format!(
+                    "Since SAID {} not found",
+                    since_said
+                )));
+            }
+        };
 
         if since_event.prefix != prefix {
             return Err(ApiError::bad_request(
@@ -759,7 +773,18 @@ pub(crate) async fn get_kels_batch(
                         {
                             Some(e) => e,
                             None => {
-                                // SAID not found (archived by recovery) — fall back to full fetch
+                                // SAID not found — check if it's a composite effective SAID
+                                // for a divergent KEL. If the effective SAID matches, the
+                                // caller is in sync; return empty.
+                                let effective = state
+                                    .repo
+                                    .key_events
+                                    .compute_prefix_effective_said(&prefix)
+                                    .await?;
+                                if effective.as_deref() == Some(since_said.as_str()) {
+                                    return Ok((prefix, b"[]".to_vec()));
+                                }
+                                // Otherwise fall back to full fetch (SAID archived by recovery)
                                 warn!(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix

@@ -81,12 +81,11 @@ Each node runs an HSM service (SoftHSM2) that provides:
 
 ### PeerPrefix Derivation
 
-The PeerPrefix is cryptographically derived from the HSM public key:
+The PeerPrefix is cryptographically derived from the node's identity KEL:
 
-1. HSM stores secp256r1 key (33-byte compressed SEC1 format)
-2. Key is decompressed to 65-byte uncompressed format
-3. libp2p derives PeerPrefix from uncompressed public key
-4. PeerPrefix is stable across restarts (same HSM key = same PeerPrefix)
+1. The identity service manages the node's KEL (backed by HSM secp256r1 keys)
+2. The PeerPrefix is the prefix of the node's identity KEL (44-char CESR-encoded Blake3 hash)
+3. PeerPrefix is stable across restarts — the identity does not change even if keys rotate
 
 ### Peer Allowlist
 
@@ -99,12 +98,12 @@ struct Peer {
     previous: Option<String>, // SAID of previous version
     version: u64,             // Version number
     created_at: DateTime,
-    peer_prefix: String,          // libp2p PeerPrefix (Base58)
+    peer_prefix: String,          // NodePrefix (44-char CESR)
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
     kels_url: String,         // HTTP URL for KELS service
-    gossip_multiaddr: String, // libp2p multiaddr for gossip connections
+    gossip_addr: String,     // Gossip address (host:port)
 }
 ```
 
@@ -230,7 +229,7 @@ The `kels-registry-admin` CLI manages the peer allowlist:
 # Add a peer to allowlist
 kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
   --kels-url http://kels.kels-node-a.kels \
-  --gossip-multiaddr /dns4/kels-gossip.kels-node-a.kels/tcp/4001
+  --gossip-addr kels-gossip.kels-node-a.kels:4001
 
 # Remove a peer (creates deactivated version)
 kels-registry-admin peer remove --peer-id 12D3KooWAbc...
@@ -278,29 +277,18 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 2. Node connects to gossip peers
 3. Node is fully operational
 
-## libp2p Connection Filtering
+## Gossip Connection Filtering
 
-In addition to registry authentication, the gossip layer filters connections:
+In addition to registry authentication, the gossip layer verifies connections during the handshake:
 
-1. Noise handshake completes - peer identity verified
-2. `AllowlistBehaviour` checks peer against cached allowlist
-3. Unauthorized peers are immediately disconnected
+1. ECDH P-256 key exchange establishes encrypted session
+2. Mutual signature exchange — each side signs a payload containing both ephemeral keys and the peer's prefix
+3. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
+4. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
+5. Unknown peers trigger a one-shot allowlist refresh before rejection
+6. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
 
-```rust
-// AllowlistBehaviour in kels-gossip
-impl NetworkBehaviour for AllowlistBehaviour {
-    fn on_swarm_event(&mut self, event: FromSwarm) {
-        if let FromSwarm::ConnectionEstablished(conn) = event {
-            if !self.allowlist.blocking_read().contains(&conn.peer_prefix) {
-                // Queue disconnection
-                self.pending_disconnects.push(conn.peer_prefix);
-            }
-        }
-    }
-}
-```
-
-Nodes periodically refresh their allowlist from the registry's `/api/peers` endpoint.
+Nodes periodically refresh their allowlist from the registry's `/api/peers` endpoint (default: every 60 seconds).
 
 ## Security Considerations
 
@@ -319,7 +307,7 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 ### Defense in Depth
 
 1. **Registry layer:** Signature verification + allowlist check
-2. **Gossip layer:** Connection filtering after Noise handshake
+2. **Gossip layer:** Connection filtering during ECDH handshake
 3. **Admin access:** CLI requires kubectl exec (same trust as cluster admin)
 
 ### Signature Algorithm
@@ -338,7 +326,7 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 | Register node | Signed + allowlist |
 | Deregister node | Signed + allowlist |
 | Status update | Signed + allowlist |
-| Gossip connection | Allowlist check after handshake |
+| Gossip connection | Verified allowlist + KEL signature check during handshake |
 
 ## Deployment
 

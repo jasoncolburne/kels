@@ -97,6 +97,8 @@ pub struct Config {
     pub http_listen_port: u16,
     /// Periodic resync interval in seconds (retries failed gossip fetches)
     pub resync_interval_secs: u64,
+    /// Periodic anti-entropy interval in seconds (repairs silent divergence)
+    pub anti_entropy_interval_secs: u64,
 }
 
 /// Raw environment values before validation
@@ -117,6 +119,7 @@ pub struct EnvValues {
     pub http_listen_host: Option<String>,
     pub http_listen_port: Option<u16>,
     pub resync_interval_secs: Option<u64>,
+    pub anti_entropy_interval_secs: Option<u64>,
 }
 
 impl Config {
@@ -170,6 +173,7 @@ impl Config {
                 .unwrap_or_else(|| "0.0.0.0".to_string()),
             http_listen_port: env.http_listen_port.unwrap_or(80),
             resync_interval_secs: env.resync_interval_secs.unwrap_or(300),
+            anti_entropy_interval_secs: env.anti_entropy_interval_secs.unwrap_or(10),
         })
     }
 
@@ -195,6 +199,9 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok()),
             resync_interval_secs: std::env::var("RESYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            anti_entropy_interval_secs: std::env::var("ANTI_ENTROPY_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
         };
@@ -327,6 +334,25 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
 
+    // Create Redis connection manager early — used by both bootstrap and retry/anti-entropy loops
+    let redis_conn_manager: Option<Arc<redis::aio::ConnectionManager>> =
+        match redis::Client::open(config.redis_url.as_str()) {
+            Ok(client) => match redis::aio::ConnectionManager::new(client).await {
+                Ok(conn) => {
+                    info!("Created Redis connection manager");
+                    Some(Arc::new(conn))
+                }
+                Err(e) => {
+                    error!("Failed to create Redis connection manager: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                error!("Failed to open Redis client: {}", e);
+                None
+            }
+        };
+
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
         kels_url: config.kels_url.clone(),
@@ -340,6 +366,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         allowlist.clone(),
         registry_signer.clone(),
     );
+    if let Some(ref redis) = redis_conn_manager {
+        bootstrap = bootstrap.with_redis(redis.clone());
+    }
 
     // Step 2-3: Check allowlist and wait if not authorized
     loop {
@@ -497,24 +526,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
     });
 
-    // Create Redis connection manager for retry queue
-    let retry_queue: sync::OptionalRetryQueue = match redis::Client::open(config.redis_url.as_str())
-    {
-        Ok(client) => match redis::aio::ConnectionManager::new(client).await {
-            Ok(conn) => {
-                info!("Created Redis connection for retry queue");
-                Some(std::sync::Arc::new(conn))
-            }
-            Err(e) => {
-                error!("Failed to create Redis connection for retry queue: {}", e);
-                None
-            }
-        },
-        Err(e) => {
-            error!("Failed to open Redis client for retry queue: {}", e);
-            None
-        }
-    };
+    // Reuse the Redis connection manager created earlier for retry/anti-entropy queues
+    let retry_queue: sync::OptionalRetryQueue = redis_conn_manager.clone();
 
     // Start sync handler BEFORE waiting for PeerConnected so no gossip events are dropped.
     // The sync handler processes all events (announcements, peer connects/disconnects) as
@@ -592,6 +605,23 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 resync_allowlist,
                 resync_kels_url,
                 resync_interval,
+            )
+            .await;
+        });
+
+        // Spawn periodic anti-entropy loop (repairs silent divergence)
+        let ae_redis = rq.clone();
+        let ae_allowlist = allowlist.clone();
+        let ae_kels_url = config.kels_url.clone();
+        let ae_signer = registry_signer.clone();
+        let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
+        tokio::spawn(async move {
+            sync::run_anti_entropy_loop(
+                ae_redis,
+                ae_allowlist,
+                ae_kels_url,
+                ae_signer,
+                ae_interval,
             )
             .await;
         });

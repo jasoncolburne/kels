@@ -148,7 +148,7 @@ kels-registry-admin peer propose \
   --peer-id Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
-  --gossip-multiaddr /dns4/gossip.node-1.example.com/tcp/4001
+  --gossip-addr gossip.node-1.example.com:4001
 
 # Output:
 # Proposal created: EProposal123...

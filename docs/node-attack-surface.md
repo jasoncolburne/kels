@@ -23,13 +23,13 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Selective Message Dropping
 
 **Attack:** A compromised gossip node selectively drops announcements, preventing propagation to certain peers.
-- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Announcements propagate through multiple paths. Bootstrap resync catches events missed during the gap. Periodic bootstrap from Ready peers fills gaps.
-- **Residual risk:** No real-time detection of selective dropping. Affected peers may be delayed until the next resync cycle. Periodic resync partially mitigates this: failed gossip fetches are queued and retried against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers.
+- **Mitigation:** PlumTree broadcast tree redundancy with lazy push (IHave messages via backup peers). Announcements propagate through eager push peers with lazy repair from other peers. Bootstrap resync catches events missed during the gap. Anti-entropy loop detects and repairs silent divergence via periodic random sampling.
+- **Residual risk:** No real-time detection of selective dropping. Affected peers may be delayed until the next anti-entropy or resync cycle. Periodic resync partially mitigates this: failed gossip fetches are queued and retried against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. Anti-entropy (default 10s) repairs unknown mismatches via prefix page comparison.
 
-### Gossipsub Message ID Collision
+### Gossip Message ID Collision
 
-**Attack:** Craft two different announcements with the same content hash to cause message deduplication to drop the legitimate message.
-- **Mitigation:** Message ID is derived from `DefaultHasher::hash` of the raw message data. Two messages with identical content produce the same ID and are deduplicated, which is correct behavior. Different content produces different IDs. The hash is not cryptographic but collision resistance at 64 bits is sufficient for deduplication.
+**Attack:** Craft two different announcements with the same message ID to cause deduplication to drop the legitimate message.
+- **Mitigation:** PlumTree message IDs are derived from content hashing. Two messages with identical content produce the same ID and are deduplicated, which is correct behavior. Different content produces different IDs.
 
 ### Feedback Loop Amplification
 
@@ -63,10 +63,10 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 **Attack:** Intercept HTTP traffic between gossip nodes and KELS services.
 - **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. All data is public by design (KELs must be accessible for verification) and end-verifiable (SAID chaining + cryptographic signatures). A MITM can observe public data or inject modified events that fail signature validation. TLS is not required because there is no confidential data to protect and integrity is already guaranteed at the application layer.
 
-### Man-in-the-Middle (libp2p)
+### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip traffic between nodes.
-- **Mitigation:** libp2p Noise protocol provides authenticated encryption. PeerPrefix is cryptographically derived from the node's public key (secp256r1 via HSM). Messages use `MessageAuthenticity::Signed`. Modifying messages invalidates both the Noise encryption and the gossipsub signature.
+- **Mitigation:** The gossip protocol uses ECDH P-256 key exchange with AES-GCM-256 authenticated encryption on every connection. Each peer's handshake signature is verified against their KEL public key via the verified allowlist. Modifying messages invalidates the AES-GCM authentication tag.
 
 ### Replay Attack (Gossip)
 
@@ -141,7 +141,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 
 ### ~~TLS between services (addresses residual risk 2)~~
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses libp2p Noise for authenticated encryption on the p2p transport.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
 ### Gossip protocol hardening (addresses residual risks 8, 9)
 

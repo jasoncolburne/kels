@@ -60,7 +60,7 @@ If an attacker gains access to the HSM service:
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip messages between nodes.
-- **Mitigation:** libp2p Noise protocol provides authenticated encryption. Messages are signed with `MessageAuthenticity::Signed`. PeerPrefix is cryptographically derived from the node's public key.
+- **Mitigation:** The gossip protocol uses ECDH P-256 + AES-GCM-256 authenticated encryption. Handshake signatures are verified against the peer's KEL public key. NodePrefix is derived from the node's identity KEL.
 
 ### Denial of Service — Allowlist Refresh Trigger
 
@@ -83,7 +83,7 @@ If an attacker gains access to the HSM service:
 ### Selective Message Dropping
 
 **Attack:** A compromised node selectively drops announcements, preventing propagation to certain peers.
-- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. No real-time detection mechanism.
+- **Mitigation:** PlumTree broadcast redundancy with lazy push repair. Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. Anti-entropy loop (default 10s) detects and repairs silent divergence via prefix page sampling. No real-time detection mechanism.
 
 ## Admin API
 
@@ -104,7 +104,7 @@ These endpoints have no authentication and return potentially sensitive informat
 
 | Endpoint | Risk | Justification |
 |----------|------|---------------|
-| `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, multiaddrs | Needed for peer discovery; peer_prefixes are public (derived from public keys) |
+| `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
 | `GET /api/registry-kel` | Exposes full KEL history | KELs are public by design — verifiability requires availability |
 | `GET /api/registry-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
 | `GET /api/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
@@ -132,7 +132,7 @@ These are intentionally public. The security model relies on cryptographic verif
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
-5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption
+5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption
 6. (removed)
 
 ## Roadmap
@@ -154,5 +154,5 @@ The admin API relies solely on `is_localhost()` for access control. Proposal and
 
 ### ~~TLS between services (addresses residual risk 5)~~
 
-~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
+~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses ECDH P-256 + AES-GCM-256 for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
 

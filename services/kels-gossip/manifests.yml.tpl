@@ -100,6 +100,8 @@ spec:
               value: "${var.gossip.topic}"
             - name: RESYNC_INTERVAL_SECS
               value: "${var.gossipResyncIntervalSecs}"
+            - name: ANTI_ENTROPY_INTERVAL_SECS
+              value: "${var.gossipAntiEntropyIntervalSecs}"
           livenessProbe:
             httpGet:
               path: /healthz
@@ -136,25 +138,3 @@ spec:
   selector:
     app: kels-gossip
 
----
-
-# Headless service for peer discovery
-apiVersion: v1
-kind: Service
-metadata:
-  name: kels-gossip-headless
-  labels:
-    app: kels-gossip
-spec:
-  clusterIP: None
-  ports:
-    - port: ${var.gossip.port}
-      targetPort: 4001
-      protocol: TCP
-      name: gossip
-    - port: ${var.gossip.httpPort}
-      targetPort: ${var.gossip.httpPort}
-      protocol: TCP
-      name: http
-  selector:
-    app: kels-gossip

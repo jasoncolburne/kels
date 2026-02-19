@@ -25,38 +25,34 @@ environments:
     variables:
       envType: node
       devTools: true # testing
-      gossipResyncIntervalSecs: "15" # testing
-      nodeType: core
+      gossip:
+        resyncIntervalSecs: "15" # testing
+        antiEntropyIntervalSecs: "1" # testing
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       envType: node
       devTools: true # testing
-      nodeType: core
   - name: node-c
     defaultNamespace: kels-node-c
     variables:
       envType: node
       devTools: false
-      nodeType: core
   - name: node-d
     defaultNamespace: kels-node-d
     variables:
       envType: node
       devTools: true # testing
-      nodeType: regional
   - name: node-e
     defaultNamespace: kels-node-e
     variables:
       envType: node
       devTools: false
-      nodeType: regional
   - name: node-f
     defaultNamespace: kels-node-f
     variables:
       envType: node
       devTools: false
-      nodeType: regional
 
 providers:
   - name: local-kubernetes
@@ -68,7 +64,6 @@ providers:
     buildMode: local-docker
 
 variables:
-  gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
   rustLogLevel: info
   postgres:
     user: kels_admin
@@ -93,6 +88,7 @@ variables:
     topic: "kels/events/v1"
     listenAddress: "0.0.0.0:${var.gossip.port}"
     resyncIntervalSecs: "300"
+    antiEntropyIntervalSecs: "10"
   registry:
     replicas: 1
     port: "80"

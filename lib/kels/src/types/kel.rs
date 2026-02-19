@@ -44,6 +44,20 @@ impl Kel {
 
     // ==================== Basic Accessors ====================
 
+    /// Compute the effective tail SAID for this KEL.
+    ///
+    /// For non-divergent KELs, this is the single tip event's SAID.
+    /// For divergent KELs, this is a deterministic Blake3 hash of sorted tip SAIDs.
+    /// Returns `None` if the KEL is empty.
+    pub fn effective_tail_said(&self) -> Option<String> {
+        let pairs: Vec<(&str, Option<&str>)> = self
+            .0
+            .iter()
+            .map(|e| (e.event.said.as_str(), e.event.previous.as_deref()))
+            .collect();
+        crate::compute_effective_tail_said(&pairs)
+    }
+
     pub fn delegating_prefix(&self) -> Option<&str> {
         self.0
             .first()

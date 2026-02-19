@@ -481,6 +481,35 @@ impl KelsClient {
         }
     }
 
+    /// Fetch a page of prefix states via signed POST request.
+    pub async fn fetch_prefixes(
+        &self,
+        signer: &dyn crate::RegistrySigner,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::PrefixListResponse, KelsError> {
+        let request = crate::PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: crate::generate_nonce(),
+            since: cursor.map(|s| s.to_string()),
+            limit: Some(limit),
+        };
+        let signed = crate::sign_request(signer, &request).await?;
+        let resp = self
+            .client
+            .post(format!("{}/api/kels/prefixes", self.base_url))
+            .json(&signed)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
     /// Check if an event SAID exists on the server.
     pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
         let resp = self

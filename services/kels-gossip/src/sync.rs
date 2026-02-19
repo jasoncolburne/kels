@@ -18,7 +18,8 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
-use kels::{KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, SignedKeyEvent};
+use kels::{Kel, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, RegistrySigner, SignedKeyEvent};
+use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::{
@@ -112,6 +113,24 @@ const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
 /// Redis key for the retry queue set
 const RETRY_QUEUE_KEY: &str = "kels:resync:retry";
 
+/// Redis hash key for anti-entropy stale prefix tracking.
+/// Maps kel_prefix → source_node_prefix.
+const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
+
+/// Redis set of known-divergent prefixes to skip in anti-entropy random sampling.
+///
+/// When two nodes each have a divergent KEL but with *different* adversary branches
+/// (e.g., Node A has branches X+Y, Node B has branches X+Z, where Y and Z were
+/// injected via a race-condition attack), their effective SAIDs will mismatch.
+/// Anti-entropy will detect this but cannot resolve it — frozen KELs only accept
+/// recovery events, and we cannot accept additional divergent events (an adversary
+/// could create unlimited forks from the divergence point, exhausting storage).
+///
+/// Prefixes are added here when a submit returns `applied: false` with `diverged_at`,
+/// indicating the local node already has a different divergent branch. They are
+/// removed when a successful submit resolves the divergence (recovery event applied).
+const DIVERGENT_PREFIX_KEY: &str = "kels:anti_entropy:divergent";
+
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
@@ -150,17 +169,8 @@ impl SyncHandler {
             return;
         };
         let entry = format!("{}:{}", prefix, said);
-        let mut conn = retry_queue.as_ref().clone();
-        if let Err(e) = redis::cmd("SADD")
-            .arg(RETRY_QUEUE_KEY)
-            .arg(&entry)
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to queue retry for {}: {}", entry, e);
-        } else {
-            debug!("Queued retry for {}", entry);
-        }
+        requeue_entry(retry_queue.as_ref(), &entry).await;
+        debug!("Queued retry for {}", entry);
     }
 
     /// Partition events into two branches based on content analysis.
@@ -296,31 +306,31 @@ impl SyncHandler {
         announcement: KelAnnouncement,
     ) -> Result<(), SyncError> {
         let prefix = &announcement.prefix;
-        let remote_said = &announcement.said;
+        let remote_effective_said = &announcement.said;
 
-        // Get our local SAID for this prefix
-        let local_said = self.get_local_said(prefix).await?;
+        // Get our local effective SAID for this prefix
+        let local_effective_said = self.get_local_effective_said(prefix).await?;
 
-        // If SAIDs match, we're in sync
-        if let Some(ref local) = local_said
-            && local == remote_said
+        // If effective SAIDs match, we're in sync
+        if let Some(ref local) = local_effective_said
+            && local == remote_effective_said
         {
             debug!("Already in sync for prefix {}", prefix);
             return Ok(());
         }
 
         // Application-level deduplication: if we already have this SAID, skip.
-        if self.kels_client.event_exists(remote_said).await? {
+        if self.kels_client.event_exists(remote_effective_said).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
-                remote_said, prefix
+                remote_effective_said, prefix
             );
             return Ok(());
         }
 
         info!(
-            "SAID mismatch for {}: local={:?}, remote={}, origin={}. Fetching from peers.",
-            prefix, local_said, remote_said, announcement.origin,
+            "SAID mismatch for {}: local_effective={:?}, remote={}, origin={}. Fetching from peers.",
+            prefix, local_effective_said, remote_effective_said, announcement.origin,
         );
 
         // Build peer list with origin first, then remaining peers
@@ -365,9 +375,9 @@ impl SyncHandler {
             let remote_client = KelsClient::new(kels_url);
 
             // Fetch events via HTTP — delta when possible, full otherwise
-            let events = if let Some(ref local_said) = local_said {
+            let events = if let Some(ref effective_said) = local_effective_said {
                 // Delta fetch: only events after our local state
-                match remote_client.fetch_kel_since(prefix, local_said).await {
+                match remote_client.fetch_kel_since(prefix, effective_said).await {
                     Ok(events) => events,
                     Err(KelsError::KeyNotFound(_)) => {
                         // Since SAID was removed by recovery/contest on remote.
@@ -438,8 +448,8 @@ impl SyncHandler {
                                         self.submit_events_to_kels(&clean_chain).await?
                                     };
 
-                                    if applied && let Some(said) = tip_said {
-                                        self.local_saids.insert(prefix.to_string(), said);
+                                    if applied {
+                                        self.refresh_local_effective_said(prefix).await;
                                     }
                                     return Ok(());
                                 }
@@ -504,7 +514,11 @@ impl SyncHandler {
 
         let Some((events, kels_url)) = fetched_events else {
             // No peer had the events — queue for retry
-            self.queue_retry(prefix, remote_said).await;
+            self.queue_retry(prefix, remote_effective_said).await;
+            // Also record as stale for anti-entropy repair
+            if let Some(ref rq) = self.retry_queue {
+                record_stale_prefix(rq.as_ref(), prefix, &announcement.origin).await;
+            }
             return Ok(());
         };
 
@@ -550,7 +564,7 @@ impl SyncHandler {
                         .unwrap_or(false),
                     Err(e) => {
                         warn!("Failed to fetch full KEL for retry: {}", e);
-                        self.queue_retry(prefix, remote_said).await;
+                        self.queue_retry(prefix, remote_effective_said).await;
                         false
                     }
                 }
@@ -559,36 +573,51 @@ impl SyncHandler {
             }
         };
 
-        if applied && let Some(said) = said {
-            self.local_saids.insert(prefix.to_string(), said);
+        if applied {
+            self.refresh_local_effective_said(prefix).await;
         }
 
         Ok(())
     }
 
-    /// Get the latest SAID for a prefix from local KELS
-    async fn get_local_said(&mut self, prefix: &str) -> Result<Option<String>, SyncError> {
+    /// Get the effective tail SAID for a prefix from local KELS.
+    ///
+    /// Returns the deterministic effective SAID (composite hash for divergent KELs,
+    /// real event SAID for non-divergent). Cached to avoid repeated DB round-trips.
+    async fn get_local_effective_said(
+        &mut self,
+        prefix: &str,
+    ) -> Result<Option<String>, SyncError> {
         // Check our cache first
         if let Some(said) = self.local_saids.get(prefix) {
             return Ok(Some(said.clone()));
         }
 
-        // Fetch from KELS
-        let events = self.fetch_local_kel(prefix).await?;
-        if let Some(last_event) = events.last() {
-            let said = last_event.event.said.clone();
-            self.local_saids.insert(prefix.to_string(), said.clone());
-            Ok(Some(said))
+        // Fetch from KELS and compute effective tail SAID
+        let kel = self.fetch_local_kel(prefix).await?;
+        if let Some(effective) = kel.effective_tail_said() {
+            self.local_saids
+                .insert(prefix.to_string(), effective.clone());
+            Ok(Some(effective))
         } else {
             Ok(None)
         }
     }
 
+    /// Re-fetch effective tail SAID from local KELS and update cache.
+    async fn refresh_local_effective_said(&mut self, prefix: &str) {
+        if let Ok(kel) = self.fetch_local_kel(prefix).await
+            && let Some(effective) = kel.effective_tail_said()
+        {
+            self.local_saids.insert(prefix.to_string(), effective);
+        }
+    }
+
     /// Fetch a KEL from local KELS using the client library
-    async fn fetch_local_kel(&self, prefix: &str) -> Result<Vec<SignedKeyEvent>, SyncError> {
+    async fn fetch_local_kel(&self, prefix: &str) -> Result<Kel, SyncError> {
         match self.kels_client.get_kel(prefix).await {
-            Ok(kel) => Ok(kel.events().to_vec()),
-            Err(KelsError::KeyNotFound(_)) => Ok(vec![]),
+            Ok(kel) => Ok(kel),
+            Err(KelsError::KeyNotFound(_)) => Ok(Kel::default()),
             Err(e) => Err(SyncError::Kels(e)),
         }
     }
@@ -832,35 +861,14 @@ pub async fn run_resync_loop(
     local_kels_url: String,
     interval: Duration,
 ) {
-    use rand::seq::SliceRandom;
-
     let local_client = KelsClient::new(&local_kels_url);
 
     loop {
         tokio::time::sleep(interval).await;
 
-        // Read all pending entries
-        let entries: Vec<String> = {
-            let mut conn = retry_queue.as_ref().clone();
-            match redis::cmd("SMEMBERS")
-                .arg(RETRY_QUEUE_KEY)
-                .query_async::<Vec<String>>(&mut conn)
-                .await
-            {
-                Ok(entries) if entries.is_empty() => continue,
-                Ok(entries) => {
-                    // Clear the set — entries re-added on failure
-                    let _ = redis::cmd("DEL")
-                        .arg(RETRY_QUEUE_KEY)
-                        .query_async::<()>(&mut conn)
-                        .await;
-                    entries
-                }
-                Err(e) => {
-                    warn!("Failed to read retry queue: {}", e);
-                    continue;
-                }
-            }
+        // Read and clear all pending entries
+        let Some(entries) = drain_retry_queue(retry_queue.as_ref()).await else {
+            continue;
         };
 
         info!("Resync loop: processing {} pending entries", entries.len());
@@ -876,14 +884,7 @@ pub async fn run_resync_loop(
 
         if peers.is_empty() {
             warn!("Resync loop: no peers available, re-queuing all entries");
-            let mut conn = retry_queue.as_ref().clone();
-            for entry in &entries {
-                let _ = redis::cmd("SADD")
-                    .arg(RETRY_QUEUE_KEY)
-                    .arg(entry)
-                    .query_async::<()>(&mut conn)
-                    .await;
-            }
+            requeue_entries(retry_queue.as_ref(), &entries).await;
             continue;
         }
 
@@ -1005,12 +1006,425 @@ pub async fn run_resync_loop(
 
             // If not resolved, re-add to retry queue for next cycle
             if !resolved {
-                let mut conn = retry_queue.as_ref().clone();
-                let _ = redis::cmd("SADD")
-                    .arg(RETRY_QUEUE_KEY)
-                    .arg(entry)
-                    .query_async::<()>(&mut conn)
-                    .await;
+                requeue_entry(retry_queue.as_ref(), entry).await;
+            }
+        }
+    }
+}
+
+/// Drain all entries from the retry queue, returning them and clearing the set atomically.
+/// Returns `None` if the queue is empty or on error.
+async fn drain_retry_queue(redis: &redis::aio::ConnectionManager) -> Option<Vec<String>> {
+    let mut conn = redis.clone();
+    let entries: Vec<String> = redis::cmd("SMEMBERS")
+        .arg(RETRY_QUEUE_KEY)
+        .query_async(&mut conn)
+        .await
+        .ok()?;
+
+    if entries.is_empty() {
+        return None;
+    }
+
+    let _ = redis::cmd("DEL")
+        .arg(RETRY_QUEUE_KEY)
+        .query_async::<()>(&mut conn)
+        .await;
+
+    Some(entries)
+}
+
+/// Add a single entry back to the retry queue.
+async fn requeue_entry(redis: &redis::aio::ConnectionManager, entry: &str) {
+    let mut conn = redis.clone();
+    let _ = redis::cmd("SADD")
+        .arg(RETRY_QUEUE_KEY)
+        .arg(entry)
+        .query_async::<()>(&mut conn)
+        .await;
+}
+
+/// Add multiple entries back to the retry queue.
+async fn requeue_entries(redis: &redis::aio::ConnectionManager, entries: &[String]) {
+    let mut conn = redis.clone();
+    for entry in entries {
+        let _ = redis::cmd("SADD")
+            .arg(RETRY_QUEUE_KEY)
+            .arg(entry)
+            .query_async::<()>(&mut conn)
+            .await;
+    }
+}
+
+/// Record a stale prefix for anti-entropy repair.
+///
+/// Adds an entry to the Redis hash mapping `kel_prefix → source_node_prefix`.
+/// The source node is the peer that was expected to have the KEL.
+pub async fn record_stale_prefix(
+    redis: &redis::aio::ConnectionManager,
+    kel_prefix: &str,
+    source_node_prefix: &str,
+) {
+    let mut conn = redis.clone();
+    if let Err(e) = redis::cmd("HSET")
+        .arg(STALE_PREFIX_KEY)
+        .arg(kel_prefix)
+        .arg(source_node_prefix)
+        .query_async::<()>(&mut conn)
+        .await
+    {
+        warn!(
+            "Failed to record stale prefix {} from {}: {}",
+            kel_prefix, source_node_prefix, e
+        );
+    } else {
+        debug!(
+            "Recorded stale prefix {} (source: {})",
+            kel_prefix, source_node_prefix
+        );
+    }
+}
+
+/// Record a prefix as known-divergent in Redis.
+///
+/// Divergent prefixes are skipped during Phase 2 random sampling because the
+/// mismatch cannot be resolved without a recovery event. See [`DIVERGENT_PREFIX_KEY`].
+pub async fn record_divergent_prefix(redis: &redis::aio::ConnectionManager, kel_prefix: &str) {
+    let mut conn = redis.clone();
+    if let Err(e) = redis::cmd("SADD")
+        .arg(DIVERGENT_PREFIX_KEY)
+        .arg(kel_prefix)
+        .query_async::<()>(&mut conn)
+        .await
+    {
+        warn!("Failed to record divergent prefix {}: {}", kel_prefix, e);
+    } else {
+        info!(
+            "Recorded known-divergent prefix {} (will skip in anti-entropy sampling)",
+            kel_prefix
+        );
+    }
+}
+
+/// Remove a prefix from the known-divergent set (e.g., after recovery resolves divergence).
+pub async fn remove_divergent_prefix(redis: &redis::aio::ConnectionManager, kel_prefix: &str) {
+    let mut conn = redis.clone();
+    if let Err(e) = redis::cmd("SREM")
+        .arg(DIVERGENT_PREFIX_KEY)
+        .arg(kel_prefix)
+        .query_async::<()>(&mut conn)
+        .await
+    {
+        warn!("Failed to remove divergent prefix {}: {}", kel_prefix, e);
+    } else {
+        debug!("Removed prefix {} from known-divergent set", kel_prefix);
+    }
+}
+
+/// Check if a prefix is in the known-divergent set.
+async fn is_known_divergent(redis: &redis::aio::ConnectionManager, kel_prefix: &str) -> bool {
+    let mut conn = redis.clone();
+    redis::cmd("SISMEMBER")
+        .arg(DIVERGENT_PREFIX_KEY)
+        .arg(kel_prefix)
+        .query_async::<bool>(&mut conn)
+        .await
+        .unwrap_or(false)
+}
+
+/// Fetch events from `source`, using delta fetch with full-fetch fallback.
+/// Returns `None` on failure (caller should handle).
+async fn fetch_events_delta(
+    source: &KelsClient,
+    prefix: &str,
+    since: Option<&str>,
+) -> Option<Vec<SignedKeyEvent>> {
+    if let Some(since_effective_said) = since
+        && let Ok(events) = source.fetch_kel_since(prefix, since_effective_said).await
+    {
+        return Some(events);
+    }
+    match source.get_kel(prefix).await {
+        Ok(kel) => Some(kel.events().to_vec()),
+        Err(_) => None,
+    }
+}
+
+/// Result of submitting fetched events to a KELS node.
+enum RepairResult {
+    /// Events applied successfully.
+    Repaired(usize),
+    /// Submission revealed divergence — prefix should be tracked as divergent.
+    Diverged,
+    /// KEL is contested — no further action possible.
+    Contested,
+    /// Submission or fetch failed — prefix should be re-queued as stale.
+    Failed,
+    /// No events to submit (already in sync).
+    NoOp,
+}
+
+/// Fetch events from `source` (delta with fallback) and submit to `dest`.
+async fn sync_prefix(
+    source: &KelsClient,
+    dest: &KelsClient,
+    prefix: &str,
+    since: Option<&str>,
+) -> RepairResult {
+    let events = match fetch_events_delta(source, prefix, since).await {
+        Some(events) if !events.is_empty() => events,
+        Some(_) => return RepairResult::NoOp,
+        None => return RepairResult::Failed,
+    };
+
+    let count = events.len();
+    match dest.submit_events(&events).await {
+        Ok(result) if result.applied => RepairResult::Repaired(count),
+        Ok(result) if result.diverged_at.is_some() => RepairResult::Diverged,
+        Ok(_) => RepairResult::NoOp,
+        Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
+        Err(_) => RepairResult::Failed,
+    }
+}
+
+/// Drain the stale prefix hash from Redis, returning entries and deleting the key atomically.
+async fn drain_stale_prefixes(
+    redis: &redis::aio::ConnectionManager,
+) -> Option<HashMap<String, String>> {
+    let mut conn = redis.clone();
+    let flat: Vec<String> = redis::cmd("HGETALL")
+        .arg(STALE_PREFIX_KEY)
+        .query_async(&mut conn)
+        .await
+        .ok()?;
+
+    let map: HashMap<String, String> = flat
+        .chunks(2)
+        .filter_map(|pair| {
+            if pair.len() == 2 {
+                Some((pair[0].clone(), pair[1].clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !map.is_empty() {
+        let _ = redis::cmd("DEL")
+            .arg(STALE_PREFIX_KEY)
+            .query_async::<()>(&mut conn)
+            .await;
+    }
+
+    Some(map)
+}
+
+/// Periodically runs anti-entropy repair to detect and fix silent divergence.
+///
+/// Two phases per cycle:
+/// - **Phase 1 (targeted):** Process known-stale prefixes from the Redis hash.
+/// - **Phase 2 (random sampling):** Compare a random page of prefixes with a random peer.
+///
+/// If Phase 1 finds stale entries, Phase 2 is skipped for that cycle.
+pub async fn run_anti_entropy_loop(
+    redis: Arc<redis::aio::ConnectionManager>,
+    allowlist: SharedAllowlist,
+    local_kels_url: String,
+    signer: Arc<dyn RegistrySigner>,
+    interval: Duration,
+) {
+    let local_client = KelsClient::new(&local_kels_url);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let peers: Vec<(String, String)> = {
+            let guard = allowlist.read().await;
+            guard
+                .values()
+                .map(|p| (p.peer_prefix.clone(), p.kels_url.clone()))
+                .collect()
+        };
+
+        if peers.is_empty() {
+            continue;
+        }
+
+        // Phase 1: Process known-stale prefixes
+        let stale_entries = match drain_stale_prefixes(redis.as_ref()).await {
+            Some(map) => map,
+            None => {
+                warn!("Anti-entropy: failed to read stale prefixes");
+                continue;
+            }
+        };
+
+        if !stale_entries.is_empty() {
+            info!(
+                "Anti-entropy: processing {} stale prefixes",
+                stale_entries.len()
+            );
+
+            for (kel_prefix, source_node_prefix) in &stale_entries {
+                let kels_url = peers
+                    .iter()
+                    .find(|(pp, _)| pp == source_node_prefix)
+                    .or_else(|| peers.first())
+                    .map(|(_, url)| url.clone());
+
+                let Some(kels_url) = kels_url else {
+                    continue;
+                };
+
+                let remote_client = KelsClient::new(&kels_url);
+                let local_said = local_client
+                    .get_kel(kel_prefix)
+                    .await
+                    .ok()
+                    .and_then(|kel| kel.effective_tail_said());
+
+                match sync_prefix(
+                    &remote_client,
+                    &local_client,
+                    kel_prefix,
+                    local_said.as_deref(),
+                )
+                .await
+                {
+                    RepairResult::Repaired(n) => {
+                        info!("Anti-entropy: repaired {} ({} events)", kel_prefix, n);
+                        remove_divergent_prefix(redis.as_ref(), kel_prefix).await;
+                    }
+                    RepairResult::Diverged => {
+                        record_divergent_prefix(redis.as_ref(), kel_prefix).await;
+                    }
+                    RepairResult::Contested => {
+                        warn!("Anti-entropy: KEL contested for {}", kel_prefix);
+                    }
+                    RepairResult::Failed => {
+                        record_stale_prefix(redis.as_ref(), kel_prefix, source_node_prefix).await;
+                    }
+                    RepairResult::NoOp => {}
+                }
+            }
+            continue; // skip Phase 2 when we had stale entries
+        }
+
+        // Phase 2: Random sampling
+        let (peer_prefix, peer_kels_url) = {
+            let mut rng = rand::thread_rng();
+            match peers.choose(&mut rng) {
+                Some((pp, url)) => (pp.clone(), url.clone()),
+                None => continue,
+            }
+        };
+
+        let remote_client = KelsClient::new(&peer_kels_url);
+
+        let random_cursor = kels::generate_nonce();
+        let local_page = local_client
+            .fetch_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+        let remote_page = remote_client
+            .fetch_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+
+        let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
+            debug!("Anti-entropy: failed to fetch prefix pages for comparison");
+            continue;
+        };
+
+        let local_map: HashMap<&str, &str> = local_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+        let remote_map: HashMap<&str, &str> = remote_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+
+        if local_map == remote_map {
+            debug!("Anti-entropy: random sample matched");
+            continue;
+        }
+
+        info!("Anti-entropy: random sample mismatch detected, reconciling");
+
+        // Fetch from remote where local is missing or different
+        for state in &remote_page.prefixes {
+            if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            if is_known_divergent(redis.as_ref(), &state.prefix).await {
+                continue;
+            }
+
+            let since = local_client
+                .get_kel(&state.prefix)
+                .await
+                .ok()
+                .and_then(|kel| kel.effective_tail_said());
+
+            match sync_prefix(
+                &remote_client,
+                &local_client,
+                &state.prefix,
+                since.as_deref(),
+            )
+            .await
+            {
+                RepairResult::Repaired(n) => {
+                    info!(
+                        "Anti-entropy: repaired {} from remote ({n} events)",
+                        state.prefix
+                    );
+                    remove_divergent_prefix(redis.as_ref(), &state.prefix).await;
+                }
+                RepairResult::Diverged => {
+                    record_divergent_prefix(redis.as_ref(), &state.prefix).await;
+                }
+                RepairResult::Failed => {
+                    record_stale_prefix(redis.as_ref(), &state.prefix, &peer_prefix).await;
+                }
+                _ => {}
+            }
+        }
+
+        // Push to remote where remote is missing or different
+        for state in &local_page.prefixes {
+            if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            if is_known_divergent(redis.as_ref(), &state.prefix).await {
+                continue;
+            }
+
+            let since = remote_client
+                .get_kel(&state.prefix)
+                .await
+                .ok()
+                .and_then(|kel| kel.effective_tail_said());
+
+            match sync_prefix(
+                &local_client,
+                &remote_client,
+                &state.prefix,
+                since.as_deref(),
+            )
+            .await
+            {
+                RepairResult::Repaired(n) => {
+                    info!(
+                        "Anti-entropy: pushed {} to remote ({n} events)",
+                        state.prefix
+                    );
+                }
+                RepairResult::Diverged => {
+                    record_divergent_prefix(redis.as_ref(), &state.prefix).await;
+                }
+                _ => {}
             }
         }
     }
@@ -1019,9 +1433,14 @@ pub async fn run_resync_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kels::{EventKind, KeyEvent};
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    use kels::{EventKind, KeyEvent};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -1483,6 +1902,156 @@ mod tests {
         assert!(deferred_saids.contains(&"b2"));
         assert!(deferred_saids.contains(&"b3"));
         assert!(recovery.is_empty());
+    }
+
+    // ==================== Anti-Entropy Tests ====================
+
+    #[test]
+    fn test_stale_prefix_key_constant() {
+        assert_eq!(STALE_PREFIX_KEY, "kels:anti_entropy:stale");
+    }
+
+    // Mock signer for testing fetch_prefixes
+    struct MockSigner;
+
+    #[async_trait::async_trait]
+    impl kels::RegistrySigner for MockSigner {
+        async fn sign(&self, _data: &[u8]) -> Result<kels::SignResult, KelsError> {
+            Ok(kels::SignResult {
+                signature: "0BAAAA_mock_signature".to_string(),
+                peer_prefix: "EMockPeerPrefix_____________________________".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_prefixes_success() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = kels::PrefixListResponse {
+            prefixes: vec![
+                kels::PrefixState {
+                    prefix: "Eprefix_a___________________________________".to_string(),
+                    said: "Esaid_a_____________________________________".to_string(),
+                },
+                kels::PrefixState {
+                    prefix: "Eprefix_b___________________________________".to_string(),
+                    said: "Esaid_b_____________________________________".to_string(),
+                },
+            ],
+            next_cursor: None,
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/kels/prefixes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsClient::new(&mock_server.uri());
+        let signer = MockSigner;
+
+        let result = client
+            .fetch_prefixes(
+                &signer,
+                Some("Ecursor_____________________________________"),
+                100,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let page = result.unwrap();
+        assert_eq!(page.prefixes.len(), 2);
+        assert_eq!(
+            page.prefixes[0].prefix,
+            "Eprefix_a___________________________________"
+        );
+        assert_eq!(
+            page.prefixes[1].prefix,
+            "Eprefix_b___________________________________"
+        );
+        assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_prefixes_with_pagination() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = kels::PrefixListResponse {
+            prefixes: vec![kels::PrefixState {
+                prefix: "Eprefix_c___________________________________".to_string(),
+                said: "Esaid_c_____________________________________".to_string(),
+            }],
+            next_cursor: Some("Enext_cursor________________________________".to_string()),
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/kels/prefixes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsClient::new(&mock_server.uri());
+        let signer = MockSigner;
+
+        let result = client.fetch_prefixes(&signer, None, 1).await;
+
+        assert!(result.is_ok());
+        let page = result.unwrap();
+        assert_eq!(page.prefixes.len(), 1);
+        assert_eq!(
+            page.next_cursor,
+            Some("Enext_cursor________________________________".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_prefixes_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/kels/prefixes"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(kels::ErrorResponse {
+                    error: "Internal Server Error".to_string(),
+                    code: kels::ErrorCode::InternalError,
+                }),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsClient::new(&mock_server.uri());
+        let signer = MockSigner;
+
+        let result = client.fetch_prefixes(&signer, None, 100).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_prefixes_empty_response() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = kels::PrefixListResponse {
+            prefixes: vec![],
+            next_cursor: None,
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/kels/prefixes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let client = KelsClient::new(&mock_server.uri());
+        let signer = MockSigner;
+
+        let result = client.fetch_prefixes(&signer, None, 100).await;
+
+        assert!(result.is_ok());
+        let page = result.unwrap();
+        assert!(page.prefixes.is_empty());
+        assert!(page.next_cursor.is_none());
     }
 
     #[test]

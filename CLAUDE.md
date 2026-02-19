@@ -128,6 +128,8 @@ When a gossip node starts:
 
 The resync step is critical: events occurring between the last preload and joining gossip would otherwise be missed. Bootstrap supports delta fetching via `since` SAID per prefix to avoid re-fetching events the node already has.
 
+An **anti-entropy loop** (default every 10s) provides background repair: Phase 1 retries known-stale prefixes (tracked in Redis), Phase 2 randomly samples prefix pages against a peer to detect and reconcile silent divergence. Known-divergent prefixes (where nodes have different adversary branches) are tracked and skipped to prevent infinite retry loops.
+
 ### Security Model
 
 - **Fail secure** — restrictive defaults when state is unknown

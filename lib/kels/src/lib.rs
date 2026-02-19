@@ -76,7 +76,8 @@ pub use types::{
     ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
     RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest, Vote, generate_nonce, validate_timestamp,
+    StatusUpdateRequest, Vote, compute_effective_tail_said, generate_nonce, hash_tip_saids,
+    validate_timestamp,
 };
 pub use types::{Kel, compute_rotation_hash};
 

@@ -159,7 +159,7 @@ struct NodeRegistration {
     node_id: String,           // Unique identifier (e.g., "node-a")
     node_type: NodeType,       // Kels or Registry
     kels_url: String,          // HTTP endpoint for KELS API
-    gossip_multiaddr: String,  // libp2p multiaddr for gossip
+    gossip_addr: String,       // Gossip address (host:port)
     registered_at: DateTime<Utc>,
     last_heartbeat: DateTime<Utc>,
     status: NodeStatus,
@@ -225,8 +225,8 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
-| `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
-| `GOSSIP_ADVERTISE_ADDR` | libp2p advertised address | (required) |
+| `GOSSIP_LISTEN_ADDR` | TCP listen address | `0.0.0.0:4001` |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections | (required) |
 
 ## Design Decisions
 

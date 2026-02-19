@@ -19,7 +19,7 @@ Each **registry** runs:
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
-- `kels-gossip` — libp2p gossip network for KEL replication
+- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
 - `hsm` — key storage for gossip peer identity
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
@@ -130,13 +130,15 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
 | `REGISTRY_URL` | Primary registry URL for this node |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
-| `GOSSIP_LISTEN_ADDR` | libp2p listen multiaddr (e.g., `/ip4/0.0.0.0/tcp/4001`) |
-| `GOSSIP_ADVERTISE_ADDR` | libp2p advertised multiaddr |
-| `GOSSIP_TOPIC` | Gossip pubsub topic name |
+| `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |
+| `GOSSIP_TOPIC` | Gossip topic name |
 | `HSM_URL` | HSM service URL for gossip peer identity |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
 | `RESYNC_INTERVAL_SECS` | Periodic resync interval (default: 300) |
+| `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
+| `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
 | `RUST_LOG` | Logging level |
 
 ## Peer Lifecycle
@@ -151,7 +153,7 @@ kels-registry-admin peer propose-add-peer \
   --peer-id <peer_prefix> \
   --node-id <node_id> \
   --kels-url <kels_url> \
-  --gossip-multiaddr <multiaddr>
+  --gossip-addr <host:port>
 
 # Produces a proposal ID. Vote from each registry:
 kels-registry-admin peer vote --proposal <proposal_id> --approve
