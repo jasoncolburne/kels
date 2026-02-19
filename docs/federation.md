@@ -21,16 +21,15 @@ Federation enables:
     │   │ Party: Acme │    │ Party: Beta │    │ Party: Gamma│     │
     │   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘     │
     │          │                  │                  │            │
-    │          │     PEER SET (replicated via Raft)                │
-    │                                                             │
+    │          │     PEER SET (replicated via Raft)  │            │
     └─────────────────────────────────────────────────────────────┘
-              │                    │                    │
-              ▼                    ▼                    ▼
+               │                  │                  │
+               ▼                  ▼                  ▼
     ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
     │ KELS nodes      │  │ KELS nodes      │  │ KELS nodes      │
     │ (Acme region)   │  │ (Beta region)   │  │ (Gamma region)  │
     │                 │  │                 │  │                 │
-    │ Trust: peer set  │  │ Trust: peer set  │  │ Trust: peer set  │
+    │ Trust: peer set │  │ Trust: peer set │  │ Trust: peer set │
     │                 │  │                 │  │                 │
     └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
