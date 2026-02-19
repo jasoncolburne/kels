@@ -7,11 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use cryptoki::{
     context::{CInitializeArgs, Pkcs11},
-    mechanism::Mechanism,
+    mechanism::{
+        Mechanism,
+        elliptic_curve::{EcKdf, Ecdh1DeriveParams},
+    },
     object::{Attribute, AttributeType, KeyType, ObjectClass},
     session::{Session, UserType},
     types::AuthPin,
 };
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -86,6 +90,7 @@ impl HsmContext {
             Attribute::Private(true),
             Attribute::Sensitive(true),
             Attribute::Sign(true),
+            Attribute::Derive(true),
             Attribute::Label(label_bytes),
         ];
 
@@ -164,6 +169,61 @@ impl HsmContext {
         session
             .sign(&Mechanism::Ecdsa, priv_handle, &hash)
             .map_err(Into::into)
+    }
+
+    /// Perform ECDH key agreement using CKM_ECDH1_DERIVE.
+    ///
+    /// `peer_public_key` is compressed SEC1 (33 bytes). Returns the 32-byte shared secret.
+    pub fn ecdh(&self, label: &str, peer_public_key: &[u8]) -> Result<Vec<u8>, HsmError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| HsmError::InternalError("Session lock poisoned during ECDH".into()))?;
+
+        let priv_handle = self.find_key(&session, label, ObjectClass::PRIVATE_KEY)?;
+
+        // Decompress peer public key from SEC1 compressed (33 bytes) to uncompressed (65 bytes)
+        let peer_pk = p256::PublicKey::from_sec1_bytes(peer_public_key)
+            .map_err(|e| HsmError::InternalError(format!("Invalid peer public key: {}", e)))?;
+        let uncompressed = peer_pk.to_encoded_point(false);
+        let uncompressed_bytes = uncompressed.as_bytes();
+
+        let params = Ecdh1DeriveParams::new(EcKdf::null(), uncompressed_bytes);
+        let mechanism = Mechanism::Ecdh1Derive(params);
+
+        let derive_template = vec![
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::GENERIC_SECRET),
+            Attribute::Extractable(true),
+            Attribute::Sensitive(false),
+            Attribute::ValueLen(32.into()),
+        ];
+
+        let derived_handle = session
+            .derive_key(&mechanism, priv_handle, &derive_template)
+            .map_err(|e| HsmError::InternalError(format!("ECDH derive failed: {}", e)))?;
+
+        let attrs = session.get_attributes(derived_handle, &[AttributeType::Value])?;
+
+        let secret = attrs
+            .iter()
+            .find_map(|attr| {
+                if let Attribute::Value(bytes) = attr {
+                    Some(bytes.clone())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                HsmError::InternalError("Failed to extract ECDH shared secret".into())
+            })?;
+
+        // Clean up the derived key object
+        session.destroy_object(derived_handle).map_err(|e| {
+            HsmError::InternalError(format!("Failed to destroy derived key: {}", e))
+        })?;
+
+        Ok(secret)
     }
 
     /// Check if a key exists

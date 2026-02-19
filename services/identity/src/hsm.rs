@@ -39,6 +39,7 @@ pub trait HsmOperations: Send + Sync {
     async fn generate_keypair(&self, label: &str) -> Result<(KeyHandle, PublicKey), KelsError>;
     async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError>;
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError>;
+    async fn ecdh(&self, handle: &KeyHandle, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,6 +71,18 @@ struct SignRequest {
 #[serde(rename_all = "camelCase")]
 struct SignResponse {
     signature: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EcdhRequest {
+    peer_public_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EcdhResponse {
+    shared_secret: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,6 +165,27 @@ impl HsmOperations for HsmClient {
         let resp: SignResponse = self.parse_response(response).await?;
 
         Ok(Signature::from_qb64(&resp.signature)?)
+    }
+
+    async fn ecdh(&self, handle: &KeyHandle, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError> {
+        let url = format!("{}/api/hsm/keys/{}/ecdh", self.base_url, handle.as_str());
+
+        let request = EcdhRequest {
+            peer_public_key: base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                peer_public_key,
+            ),
+        };
+
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        let resp: EcdhResponse = self.parse_response(response).await?;
+
+        base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &resp.shared_secret,
+        )
+        .map_err(|e| KelsError::CryptoError(format!("Invalid base64 shared secret: {}", e)))
     }
 }
 
@@ -249,6 +283,21 @@ impl HsmKeyProvider {
         let label = format!("{}-recovery-{}", self.label_prefix, *generation);
         *generation += 1;
         self.hsm.generate_keypair(&label).await
+    }
+
+    /// Perform ECDH key agreement using the current signing key.
+    ///
+    /// `peer_public_key` is compressed SEC1 (33 bytes). Returns the 32-byte shared secret.
+    pub async fn ecdh(&self, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError> {
+        if !self.has_next().await {
+            return Err(KelsError::NoCurrentKey);
+        }
+
+        let key_handles = self.key_handles.read().await;
+        let length = key_handles.len();
+        let handle = &key_handles[length - 2];
+
+        self.hsm.ecdh(handle, peer_public_key).await
     }
 }
 
@@ -511,6 +560,7 @@ mod tests {
 
     struct MockHsm {
         keys: Mutex<HashMap<String, String>>, // label -> public_key_qb64
+        seeds: Mutex<HashMap<String, [u8; 32]>>, // label -> seed for key derivation
         call_count: Mutex<usize>,
     }
 
@@ -518,6 +568,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 keys: Mutex::new(HashMap::new()),
+                seeds: Mutex::new(HashMap::new()),
                 call_count: Mutex::new(0),
             }
         }
@@ -552,6 +603,9 @@ mod tests {
             let mut keys = self.keys.lock().await;
             keys.insert(label.to_string(), public_key.qb64());
 
+            let mut seeds = self.seeds.lock().await;
+            seeds.insert(label.to_string(), seed);
+
             Ok((KeyHandle::new(label), public_key))
         }
 
@@ -574,6 +628,28 @@ mod tests {
             let sig_bytes = vec![1u8; 64];
             Signature::from_raw(cesr::SignatureCode::Secp256r1, sig_bytes)
                 .map_err(|e| KelsError::SigningFailed(e.to_string()))
+        }
+
+        async fn ecdh(
+            &self,
+            handle: &KeyHandle,
+            peer_public_key: &[u8],
+        ) -> Result<Vec<u8>, KelsError> {
+            use p256::{SecretKey, ecdh::diffie_hellman};
+
+            let seeds = self.seeds.lock().await;
+            let seed = seeds
+                .get(handle.as_str())
+                .ok_or_else(|| KelsError::KeyNotFound(handle.as_str().to_string()))?;
+
+            let secret_key =
+                SecretKey::from_slice(seed).map_err(|e| KelsError::CryptoError(e.to_string()))?;
+
+            let peer_pk = p256::PublicKey::from_sec1_bytes(peer_public_key)
+                .map_err(|e| KelsError::CryptoError(format!("Invalid peer public key: {}", e)))?;
+
+            let shared = diffie_hellman(secret_key.to_nonzero_scalar(), peer_pk.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
         }
     }
 

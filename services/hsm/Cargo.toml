@@ -47,6 +47,9 @@ hex = "0.4"
 # SHA-256 for pre-hashing before ECDSA (SoftHSM2 doesn't support EcdsaSha256)
 sha2 = "0.10.9"
 
+# P-256 for public key decompression (PKCS#11 ECDH requires uncompressed points)
+p256 = "0.13"
+
 [dev-dependencies]
 
 [lints.clippy]

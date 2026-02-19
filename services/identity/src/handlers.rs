@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use base64::Engine;
 use kels::{Kel, KelsError, KeyEventBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -177,6 +178,50 @@ pub async fn sign(
     Ok(Json(SignResponse {
         signature: signature.qb64(),
         public_key: public_key.qb64(),
+    }))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EcdhRequest {
+    pub peer_public_key: String, // base64url-encoded compressed SEC1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EcdhResponse {
+    pub shared_secret: String, // base64url-encoded 32-byte secret
+}
+
+/// Perform ECDH key agreement using the registry's current signing key.
+///
+/// Used by gossip to compute static-ephemeral DH via the HSM.
+/// peer_public_key is base64url-encoded compressed SEC1 (33 bytes).
+pub async fn ecdh(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<EcdhRequest>,
+) -> Result<Json<EcdhResponse>, ApiError> {
+    let peer_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&request.peer_public_key)
+        .map_err(|e| {
+            tracing::error!("ECDH: invalid base64 peer public key: {}", e);
+            ApiError::internal(format!("Invalid base64 peer public key: {}", e))
+        })?;
+
+    tracing::info!("ECDH: peer public key {} bytes", peer_public_key.len());
+
+    let builder = state.builder.read().await;
+    let key_provider = builder.key_provider();
+
+    let shared_secret = key_provider.ecdh(&peer_public_key).await.map_err(|e| {
+        tracing::error!("ECDH failed: {}", e);
+        ApiError::internal(format!("ECDH failed: {}", e))
+    })?;
+
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&shared_secret);
+
+    Ok(Json(EcdhResponse {
+        shared_secret: encoded,
     }))
 }
 

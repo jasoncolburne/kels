@@ -81,8 +81,8 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     let their_id = exchange_prefixes(&mut stream, &our_id, is_initiator).await?;
     debug!(peer = %their_id, "prefix exchange complete");
 
-    // Step 2: ECDH key exchange.
-    let (shared_secret, our_eph, their_eph) =
+    // Step 2: ECDH key exchange (returns ephemeral SecretKey for static-ephemeral DH).
+    let (ee_secret, eph_secret_key, our_eph, their_eph) =
         crypto::ecdh_key_exchange(&mut stream, is_initiator).await?;
     debug!(peer = %their_id, "ECDH key exchange complete");
 
@@ -112,8 +112,15 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
         .await?;
     debug!(peer = %their_id, "peer authentication verified");
 
-    // Step 5: Derive session keys and create encrypted stream.
-    let (send_cipher, recv_cipher) = crypto::derive_session_keys(&shared_secret, is_initiator);
+    // Step 5: Static-ephemeral DH.
+    // se: our_static × their_ephemeral (via identity service / HSM)
+    let se_secret = signer.ecdh(&their_eph).await?;
+    // es: our_ephemeral × their_static (local computation)
+    let es_secret = crypto::compute_eph_static_dh(&eph_secret_key, &their_pubkey)?;
+
+    // Step 6: Derive session keys from all three DH secrets.
+    let (send_cipher, recv_cipher) =
+        crypto::derive_session_keys(&ee_secret, &se_secret, &es_secret, is_initiator);
     let encrypted = EncryptedStream::new(stream, send_cipher, recv_cipher);
 
     Ok(PeerConnection {

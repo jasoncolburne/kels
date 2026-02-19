@@ -16,8 +16,8 @@ use aes_gcm::{
 };
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use p256::{
-    PublicKey,
-    ecdh::EphemeralSecret,
+    PublicKey, SecretKey,
+    ecdh::diffie_hellman,
     elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
 };
 use pin_project_lite::pin_project;
@@ -31,16 +31,35 @@ const TAG_LEN: usize = 16;
 /// Frame length prefix size (4 bytes, big-endian).
 const LEN_PREFIX_SIZE: usize = 4;
 
-/// Derive two AES-256-GCM session keys from a shared ECDH secret.
+/// Derive two AES-256-GCM session keys from three ECDH shared secrets.
 ///
-/// Uses blake3's key derivation to produce separate keys for each direction:
-/// - initiator→acceptor key
-/// - acceptor→initiator key
+/// The three secrets come from the three-DH pattern:
+/// - `ee`: ephemeral × ephemeral (forward secrecy)
+/// - `se`: our_static × their_ephemeral (via HSM)
+/// - `es`: our_ephemeral × their_static (local)
 ///
-/// The `is_initiator` flag determines which key is used for sending vs receiving.
-pub fn derive_session_keys(shared_secret: &[u8], is_initiator: bool) -> (Aes256Gcm, Aes256Gcm) {
-    let i2a = blake3::derive_key("kels/gossip/v1/keys/initiator-to-acceptor", shared_secret);
-    let a2i = blake3::derive_key("kels/gossip/v1/keys/acceptor-to-initiator", shared_secret);
+/// The IKM is canonicalized so both sides produce the same input:
+/// `ikm = ee || DH(initiator_static, acceptor_eph) || DH(initiator_eph, acceptor_static)`
+///
+/// Uses blake3's key derivation to produce separate keys for each direction.
+pub fn derive_session_keys(
+    ee: &[u8; 32],
+    se: &[u8; 32],
+    es: &[u8; 32],
+    is_initiator: bool,
+) -> (Aes256Gcm, Aes256Gcm) {
+    let mut ikm = [0u8; 96];
+    ikm[..32].copy_from_slice(ee);
+    if is_initiator {
+        ikm[32..64].copy_from_slice(se); // DH(init_static, acc_eph)
+        ikm[64..96].copy_from_slice(es); // DH(init_eph, acc_static)
+    } else {
+        ikm[32..64].copy_from_slice(es); // DH(init_static, acc_eph)
+        ikm[64..96].copy_from_slice(se); // DH(init_eph, acc_static)
+    }
+
+    let i2a = blake3::derive_key("kels/gossip/v1/keys/initiator-to-acceptor", &ikm);
+    let a2i = blake3::derive_key("kels/gossip/v1/keys/acceptor-to-initiator", &ikm);
 
     let (send_key, recv_key) = if is_initiator { (i2a, a2i) } else { (a2i, i2a) };
 
@@ -355,13 +374,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
 /// Both parties generate ephemeral P-256 keypairs, exchange the compressed SEC1 public keys
 /// (33 bytes each), and derive a shared secret.
 ///
-/// Returns `(shared_secret_bytes, our_eph_pubkey_bytes, their_eph_pubkey_bytes)`.
+/// Returns `(shared_secret_bytes, ephemeral_secret_key, our_eph_pubkey_bytes, their_eph_pubkey_bytes)`.
+/// The `SecretKey` is returned so the caller can perform additional DH operations (e.g.,
+/// static-ephemeral DH with the peer's KEL signing key).
 pub async fn ecdh_key_exchange<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     is_initiator: bool,
-) -> Result<([u8; 32], Vec<u8>, Vec<u8>), super::Error> {
+) -> Result<([u8; 32], SecretKey, Vec<u8>, Vec<u8>), super::Error> {
     // Generate ephemeral keypair.
-    let secret = EphemeralSecret::random(&mut OsRng);
+    let secret = SecretKey::random(&mut OsRng);
     let our_pubkey = secret.public_key();
     let our_encoded = our_pubkey.to_encoded_point(true);
     let our_bytes = our_encoded.as_bytes(); // 33 bytes compressed SEC1
@@ -395,11 +416,28 @@ pub async fn ecdh_key_exchange<S: AsyncRead + AsyncWrite + Unpin>(
     let their_pubkey = PublicKey::from_sec1_bytes(&their_bytes)
         .map_err(|e| super::Error::Handshake(format!("invalid peer ephemeral pubkey: {e}")))?;
 
-    let shared = secret.diffie_hellman(&their_pubkey);
+    let shared = diffie_hellman(secret.to_nonzero_scalar(), their_pubkey.as_affine());
     let mut shared_bytes = [0u8; 32];
     shared_bytes.copy_from_slice(shared.raw_secret_bytes().as_ref());
 
-    Ok((shared_bytes, our_bytes.to_vec(), their_bytes))
+    Ok((shared_bytes, secret, our_bytes.to_vec(), their_bytes))
+}
+
+/// Compute a static-ephemeral DH: our ephemeral private key × peer's static public key.
+///
+/// `eph_secret` is our ephemeral secret key (kept in-process).
+/// `static_pubkey_bytes` is the peer's KEL signing key (compressed SEC1, 33 bytes).
+pub fn compute_eph_static_dh(
+    eph_secret: &SecretKey,
+    static_pubkey_bytes: &[u8],
+) -> Result<[u8; 32], super::Error> {
+    let static_pubkey = PublicKey::from_sec1_bytes(static_pubkey_bytes)
+        .map_err(|e| super::Error::Handshake(format!("invalid static pubkey: {e}")))?;
+
+    let shared = diffie_hellman(eph_secret.to_nonzero_scalar(), static_pubkey.as_affine());
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(shared.raw_secret_bytes().as_ref());
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -415,14 +453,19 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_stream_roundtrip() {
+        // In the real protocol: initiator's se = acceptor's es (and vice versa)
+        let ee = [0x11u8; 32];
+        let init_se = [0x22u8; 32]; // DH(init_static, acc_eph)
+        let init_es = [0x33u8; 32]; // DH(init_eph, acc_static)
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.map_err(|_| "accept failed")?;
             let compat = stream.compat();
-            let (send_cipher, recv_cipher) =
-                derive_session_keys(b"test-shared-secret-32-bytes!!!!!", false);
+            // Acceptor: se = DH(acc_static, init_eph) = init_es, es = DH(acc_eph, init_static) = init_se
+            let (send_cipher, recv_cipher) = derive_session_keys(&ee, &init_es, &init_se, false);
             let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
             let mut buf = vec![0u8; 1024];
@@ -440,8 +483,7 @@ mod tests {
 
         let stream = TcpStream::connect(addr).await.unwrap();
         let compat = stream.compat();
-        let (send_cipher, recv_cipher) =
-            derive_session_keys(b"test-shared-secret-32-bytes!!!!!", true);
+        let (send_cipher, recv_cipher) = derive_session_keys(&ee, &init_se, &init_es, true);
         let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
         let msg = b"hello encrypted world";
@@ -459,8 +501,13 @@ mod tests {
 
     #[test]
     fn key_derivation_produces_different_keys() {
-        let (send1, recv1) = derive_session_keys(b"secret", true);
-        let (send2, recv2) = derive_session_keys(b"secret", false);
+        // In the real protocol: initiator's se = acceptor's es (and vice versa)
+        let ee = [0x11u8; 32];
+        let init_se = [0x22u8; 32]; // DH(init_static, acc_eph)
+        let init_es = [0x33u8; 32]; // DH(init_eph, acc_static)
+        let (send1, recv1) = derive_session_keys(&ee, &init_se, &init_es, true);
+        // Acceptor: se = init_es, es = init_se
+        let (send2, recv2) = derive_session_keys(&ee, &init_es, &init_se, false);
 
         // Initiator's send key should match acceptor's recv key.
         let nonce = nonce_from_counter(0);
@@ -483,7 +530,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.map_err(|_| "accept")?;
             let mut compat = stream.compat();
-            let (shared, _, _) = ecdh_key_exchange(&mut compat, false)
+            let (shared, _eph_secret, _, _) = ecdh_key_exchange(&mut compat, false)
                 .await
                 .map_err(|_| "ecdh")?;
             Ok::<_, &str>(shared)
@@ -493,7 +540,8 @@ mod tests {
 
         let stream = TcpStream::connect(addr).await.unwrap();
         let mut compat = stream.compat();
-        let (client_shared, _, _) = ecdh_key_exchange(&mut compat, true).await.unwrap();
+        let (client_shared, _eph_secret, _, _) =
+            ecdh_key_exchange(&mut compat, true).await.unwrap();
 
         let result = server.await;
         assert!(result.is_ok());

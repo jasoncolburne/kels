@@ -1,9 +1,10 @@
 //! Client for the identity service
 
+use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::{ErrorResponse, Kel, KelsError};
+use crate::{Kel, KelsError};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +37,25 @@ pub struct SignResponse {
     pub public_key: String, // QB64-encoded public key
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EcdhRequest {
+    peer_public_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EcdhResponse {
+    shared_secret: String,
+}
+
+/// Identity service error response (simpler than the kels service's ErrorResponse).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityErrorResponse {
+    error: String,
+}
+
 #[derive(Debug)]
 pub struct IdentityClient {
     client: Client,
@@ -51,8 +71,8 @@ impl IdentityClient {
     }
 
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
-        match response.json::<ErrorResponse>().await {
-            Ok(e) => KelsError::ServerError(e.error, e.code),
+        match response.json::<IdentityErrorResponse>().await {
+            Ok(e) => KelsError::HardwareError(e.error),
             Err(e) => e.into(),
         }
     }
@@ -112,5 +132,25 @@ impl IdentityClient {
             .await?;
 
         self.parse_response(response).await
+    }
+
+    /// Perform ECDH key agreement using the registry's current signing key.
+    ///
+    /// `peer_public_key` is compressed SEC1 (33 bytes). Returns the 32-byte shared secret.
+    pub async fn ecdh(&self, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError> {
+        let url = format!("{}/api/identity/ecdh", self.base_url);
+
+        let request = EcdhRequest {
+            peer_public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(peer_public_key),
+        };
+
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        let resp: EcdhResponse = self.parse_response(response).await?;
+
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&resp.shared_secret)
+            .map_err(|e| KelsError::CryptoError(format!("Invalid base64 shared secret: {}", e)))
     }
 }

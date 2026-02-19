@@ -34,7 +34,7 @@ dependencies:
 
 variables:
   identityDatabaseUrl: ${var.postgres.url}/identity
-  identityKeyHandlePrefix: kels-registry
+  identityKeyHandlePrefix: "${var.envType == 'registry' ? 'kels-registry' : 'kels-gossip'}"
 
 spec:
   manifestTemplates:

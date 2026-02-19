@@ -77,6 +77,24 @@ impl Signer for IdentityGossipSigner {
         self.node_prefix
     }
 
+    async fn ecdh(&self, peer_public_key: &[u8]) -> Result<[u8; 32], GossipError> {
+        let result = self
+            .identity_client
+            .ecdh(peer_public_key)
+            .await
+            .map_err(|e| GossipError::Handshake(format!("Identity ECDH failed: {}", e)))?;
+
+        let mut secret = [0u8; 32];
+        if result.len() != 32 {
+            return Err(GossipError::Handshake(format!(
+                "ECDH shared secret wrong length: {} (expected 32)",
+                result.len()
+            )));
+        }
+        secret.copy_from_slice(&result);
+        Ok(secret)
+    }
+
     async fn sign(&self, data: &[u8]) -> Result<SignatureBundle, GossipError> {
         // The handshake data is a JSON string (from transport::handshake_payload)
         let data_str = std::str::from_utf8(data)
