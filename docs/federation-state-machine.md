@@ -1,12 +1,12 @@
 # Federation State Machine
 
-This document describes the Raft state machine used by the registry federation to manage the core peer set.
+This document describes the Raft state machine used by the registry federation to manage the peer set.
 
 ## Overview
 
 The federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distributed consensus. The Raft state machine is the replicated state that all federation members maintain identical copies of. It stores:
 
-- **Core peer set** - peers trusted by all nodes in the federation
+- **Peer set** - peers trusted by all nodes in the federation
 - **Pending proposals** - addition and removal proposals awaiting multi-party approval
 - **Completed proposals** - approved/withdrawn proposals (audit trail)
 - **Votes** - stored by SAID
@@ -45,15 +45,15 @@ pub struct StateMachineData {
 
 ### Peers
 
-The `peers` HashMap is the core peer set, keyed by `peer_id`. These are the peers trusted across all federation members. Regional peers are not stored here -- they live in each registry's local database only.
+The `peers` HashMap is the peer set, keyed by `peer_prefix`. These are the peers trusted across all federation members.
 
 ### Proposals and Votes
 
-Core peer additions and removals go through a multi-party approval process:
+Peer additions and removals go through a multi-party approval process:
 
 1. A federation member **proposes** a peer addition or removal (`SubmitAdditionProposal` / `SubmitRemovalProposal`)
-2. Other members **vote** on the proposal (`VoteCorePeer`)
-3. When the approval threshold is met, the peer is automatically added to or removed from the core set
+2. Other members **vote** on the proposal (`VotePeer`)
+3. When the approval threshold is met, the peer is automatically added to or removed from the peer set
 4. The proposal moves to the completed proposals list for auditing
 
 Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in proposals.
@@ -62,11 +62,11 @@ Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in 
 
 | Request | Description | Who Can Submit |
 |---------|-------------|----------------|
-| `AddPeer` | Directly add a peer to the core set | Leader (via DB sync or approved proposal) |
-| `RemovePeer` | Remove a peer from the core set | Leader |
-| `SubmitAdditionProposal` | Create or withdraw a proposal for a new core peer | Any member |
-| `SubmitRemovalProposal` | Create or withdraw a proposal to remove a core peer | Any member |
-| `VoteCorePeer` | Vote on a pending proposal (addition or removal) | Any member |
+| `AddPeer` | Directly add a peer to the peer set | Leader (via DB sync or approved proposal) |
+| `RemovePeer` | Remove a peer from the peer set | Leader |
+| `SubmitAdditionProposal` | Create or withdraw a proposal for a new peer | Any member |
+| `SubmitRemovalProposal` | Create or withdraw a proposal to remove a peer | Any member |
+| `VotePeer` | Vote on a pending proposal (addition or removal) | Any member |
 
 ## Synchronous Apply (Pure State Machine)
 
@@ -76,7 +76,7 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
 - **RemovePeer**: Removes peer from `peers` HashMap
 - **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
 - **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
-- **VoteCorePeer**: Records vote, checks threshold. For additions: auto-adds peer to core set on approval. For removals: auto-removes peer from core set on approval. Moves proposal to completed.
+- **VotePeer**: Records vote, checks threshold. For additions: auto-adds peer to peer set on approval. For removals: auto-removes peer from peer set on approval. Moves proposal to completed.
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -92,7 +92,7 @@ Before applying an `AddPeer` entry from the Raft log:
 
 If anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers -- followers independently verify and reject unanchored entries.
 
-### VoteCorePeer Verification
+### VotePeer Verification
 
 Before applying a vote:
 
@@ -110,12 +110,12 @@ Before applying a proposal:
 
 ### Approved Proposal Side Effects
 
-When a `VoteCorePeer` triggers addition approval (threshold met), the async layer also:
+When a `VotePeer` triggers addition approval (threshold met), the async layer also:
 
 1. Anchors the approved peer's SAID in our KEL
 2. Writes the peer to the local database
 
-When a `VoteCorePeer` triggers removal approval, the async layer:
+When a `VotePeer` triggers removal approval, the async layer:
 
 1. Deactivates the peer in the local database
 2. Anchors the deactivated peer's SAID in our KEL
@@ -138,7 +138,7 @@ Each follower independently verifies every Raft log entry before applying it. Th
 
 ### Layer 4: Multi-Party Voting
 
-Core peer additions and removals require a minimum of 3 votes from federation members (scaling to ceil(n/3) for larger federations). A single compromised registry cannot unilaterally modify the peer set.
+Peer additions and removals require a minimum of 3 votes from federation members (scaling to ceil(n/3) for larger federations). A single compromised registry cannot unilaterally modify the peer set.
 
 ### Layer 5: Tamper-Evident Chaining
 
@@ -146,7 +146,7 @@ Proposals and votes use content-addressed chaining (SAID + previous). Any tamper
 
 ## Peer Allowlist Consumers
 
-The core peer set flows to multiple consumers:
+The peer set flows to multiple consumers:
 
 | Consumer | How It Gets Peers | Verification |
 |----------|-------------------|--------------|
@@ -165,7 +165,7 @@ The state machine supports snapshotting for efficient Raft log compaction:
 
 ## DB Sync Loop
 
-The leader runs a background sync loop (`sync.rs`) that reads core peers from the local PostgreSQL database and replicates changes to Raft. This allows the admin CLI to write directly to the database, with changes propagating automatically via consensus.
+The leader runs a background sync loop (`sync.rs`) that reads peers from the local PostgreSQL database and replicates changes to Raft. This allows the admin CLI to write directly to the database, with changes propagating automatically via consensus.
 
 Flow: Admin CLI -> local DB -> sync loop (leader) -> Raft -> all followers
 
@@ -173,7 +173,7 @@ The reverse direction (Raft -> DB) happens immediately in the state machine `app
 
 ## Approval Threshold
 
-The voting threshold for core peer approval scales with federation size:
+The voting threshold for peer approval scales with federation size:
 
 | Federation Size (n) | Threshold |
 |---------------------|-----------|

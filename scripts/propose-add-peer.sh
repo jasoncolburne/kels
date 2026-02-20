@@ -5,22 +5,22 @@ NODE_NAME="$1"
 
 if [ -z "$NODE_NAME" ]; then
     echo "Usage: propose-add-peer.sh <node-name>"
-    echo "  Proposes a core peer for the given node."
+    echo "  Proposes a peer for the given node."
     echo "  Outputs the proposal ID on success."
     exit 1
 fi
 
 # Construct URLs for the node
 KELS_URL="http://kels.kels-${NODE_NAME}.kels:80"
-GOSSIP_MULTIADDR="/dns4/kels-gossip.kels-${NODE_NAME}.kels/tcp/4001"
+GOSSIP_ADDR="kels-gossip.kels-${NODE_NAME}.kels:4001"
 
 # Get the garden binary path
 GARDEN_BIN="${GARDEN_BIN:-garden}"
 
-# Fetch the peer ID from the node's gossip service
-PEER_ID=$("$GARDEN_BIN" run fetch-gossip-identity --env "$NODE_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-if [ -z "$PEER_ID" ]; then
-    echo "Error: Could not fetch PeerId from $NODE_NAME" >&2
+# Fetch the peer prefix from the node's gossip service
+PEER_PREFIX=$("$GARDEN_BIN" run fetch-gossip-identity --env "$NODE_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9_-]{44}$' | tail -1)
+if [ -z "$PEER_PREFIX" ]; then
+    echo "Error: Could not fetch PeerPrefix from $NODE_NAME" >&2
     exit 1
 fi
 
@@ -45,15 +45,15 @@ if [ -z "$LEADER_NS" ]; then
 fi
 
 echo "Found leader: $LEADER_NS" >&2
-echo "Creating proposal for $NODE_NAME (peer: $PEER_ID)..." >&2
+echo "Creating proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 
 # Create proposal on leader
 PROPOSE_OUTPUT=$(kubectl exec -n "$LEADER_NS" deploy/kels-registry -c kels-registry -- \
     /app/kels-registry-admin peer propose \
-    --peer-id "$PEER_ID" \
+    --peer-prefix "$PEER_PREFIX" \
     --node-id "$NODE_NAME" \
     --kels-url "$KELS_URL" \
-    --gossip-multiaddr "$GOSSIP_MULTIADDR" 2>&1)
+    --gossip-addr "$GOSSIP_ADDR" 2>&1)
 
 echo "$PROPOSE_OUTPUT" >&2
 

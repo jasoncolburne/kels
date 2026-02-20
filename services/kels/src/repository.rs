@@ -64,19 +64,24 @@ impl KeyEventRepository {
         Ok(signed_events)
     }
 
-    /// List unique prefixes with their latest SAIDs for bootstrap sync.
+    /// List unique prefixes with their effective SAIDs for bootstrap sync and anti-entropy.
     /// Returns prefixes in sorted order with cursor-based pagination.
-    /// Each entry includes the SAID of the latest event for that prefix.
+    ///
+    /// For non-divergent KELs, the SAID is the tip event's SAID.
+    /// For divergent KELs (frozen due to conflicting events), the SAID is a Blake3 hash
+    /// of all sorted tip SAIDs — ensuring deterministic comparison between nodes that
+    /// have the same divergent branches. See [`kels::compute_effective_said`] for details.
     pub async fn list_prefixes(
         &self,
         since: Option<&str>,
         limit: usize,
     ) -> Result<PrefixListResponse, StorageError> {
-        // Use DISTINCT ON to get latest event per prefix
-        // Order by prefix ASC (for pagination), then version DESC (to get latest)
+        // DISTINCT ON (prefix) with secondary sort by serial DESC ensures we
+        // deterministically get the highest-serial event per prefix.
         let mut query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
             .distinct_on("prefix")
             .order_by("prefix", Order::Asc)
+            .order_by("serial", Order::Desc)
             .limit(limit as u64 + 1);
 
         if let Some(cursor) = since {
@@ -88,7 +93,6 @@ impl KeyEventRepository {
 
         let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
 
-        // Extract prefix and said from each event
         let mut prefix_states: Vec<PrefixState> = events
             .into_iter()
             .map(|e| PrefixState {
@@ -99,16 +103,63 @@ impl KeyEventRepository {
 
         // Check if there are more results
         let next_cursor = if prefix_states.len() > limit {
-            prefix_states.pop(); // Remove the extra item
+            prefix_states.pop();
             prefix_states.last().map(|s| s.prefix.clone())
         } else {
             None
         };
 
+        // For divergent prefixes, replace the single tip SAID with a deterministic
+        // composite hash of all sorted tip SAIDs.
+        for state in &mut prefix_states {
+            if self.is_divergent(&state.prefix).await?
+                && let Some(effective) = self.compute_prefix_effective_said(&state.prefix).await?
+            {
+                state.said = effective;
+            }
+        }
+
         Ok(PrefixListResponse {
             prefixes: prefix_states,
             next_cursor,
         })
+    }
+
+    /// Compute the effective SAID for a prefix by finding all tip events.
+    ///
+    /// Fetches all events for the prefix, identifies tips (events not referenced
+    /// as `previous` by any other event), and delegates to [`kels::compute_effective_tail_said`].
+    pub async fn compute_prefix_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("said", Order::Asc);
+        let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
+
+        let pairs: Vec<(&str, Option<&str>)> = events
+            .iter()
+            .map(|e| (e.said.as_str(), e.previous.as_deref()))
+            .collect();
+
+        Ok(kels::compute_effective_tail_said(&pairs))
+    }
+
+    /// Quick check: does any serial number appear more than once for this prefix?
+    ///
+    /// Uses `GROUP BY serial ORDER BY COUNT(*) DESC LIMIT 1` — returns true if
+    /// the highest count exceeds 1.
+    pub async fn is_divergent(&self, prefix: &str) -> Result<bool, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("serial")
+            .limit(1);
+        let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
+        Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
     /// Find the lowest serial where divergence occurs (duplicate serial values).

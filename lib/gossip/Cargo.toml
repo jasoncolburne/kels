@@ -1,0 +1,42 @@
+[package]
+name = "kels-gossip-proto"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS gossip protocol - HyParView membership + PlumTree broadcast (inspired by iroh-gossip)"
+
+[lib]
+name = "gossip"
+path = "src/lib.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+blake3 = "1"
+bytes = { version = "1", features = ["serde"] }
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+derive_more = { version = "2", features = ["add", "debug", "deref", "from"] }
+futures = "0.3"
+hex = "0.4"
+indexmap = "2"
+p256 = { version = "0.13", features = ["ecdh"] }
+pin-project-lite = "0.2"
+postcard = { version = "1", default-features = false, features = ["alloc", "use-std", "experimental-derive"] }
+rand = { version = "0.9", features = ["std_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+socket2 = "0.5"
+tokio = { version = "1", features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+yamux = "0.13"
+
+[dev-dependencies]
+rand_chacha = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

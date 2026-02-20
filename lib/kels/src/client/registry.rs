@@ -19,9 +19,9 @@ use crate::{
     error::KelsError,
     types::{
         CompletedProposalsResponse, DeregisterRequest, ErrorResponse, Kel, NodeInfo,
-        NodeRegistration, NodeStatus, Peer, PeerHistory, PeerScope, PeersResponse, Proposal,
-        ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest,
-        SignedRequest, StatusUpdateRequest, Vote,
+        NodeRegistration, NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory,
+        ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, SignedRequest,
+        StatusUpdateRequest, Vote,
     },
 };
 
@@ -47,20 +47,19 @@ pub fn trusted_prefixes() -> HashSet<&'static str> {
 pub struct SignResult {
     /// CESR qb64 encoded signature
     pub signature: String,
-    /// CESR qb64 encoded public key
-    pub public_key: String,
-    /// libp2p PeerId derived from public key
-    pub peer_id: String,
+    /// The signer's peer identity (KELS prefix)
+    pub peer_prefix: String,
 }
 
 /// Trait for signing registry requests.
 ///
-/// Implementors sign data and return the signature along with the public key
-/// and peer ID (all derived from the same HSM call).
+/// Implementors sign data and return the signature along with the signer's
+/// peer identity (KELS prefix). The public key is not included — verifiers
+/// look it up from the peer's cached KEL.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait RegistrySigner: Send + Sync {
-    /// Sign the given data and return signature, public key, and peer ID.
+    /// Sign the given data and return the signature and peer identity.
     async fn sign(&self, data: &[u8]) -> Result<SignResult, KelsError>;
 }
 
@@ -75,13 +74,12 @@ where
     // Serialize payload to JSON for signing
     let payload_json = serde_json::to_vec(payload)?;
 
-    // Sign the payload (returns signature, public key, and peer ID)
+    // Sign the payload (returns signature and peer prefix)
     let sign_result = signer.sign(&payload_json).await?;
 
     Ok(SignedRequest {
         payload: payload.clone(),
-        peer_id: sign_result.peer_id,
-        public_key: sign_result.public_key,
+        peer_prefix: sign_result.peer_prefix,
         signature: sign_result.signature,
     })
 }
@@ -157,14 +155,14 @@ impl KelsRegistryClient {
         &self,
         node_id: &str,
         kels_url: &str,
-        gossip_multiaddr: &str,
+        gossip_addr: &str,
         status: NodeStatus,
     ) -> Result<NodeRegistration, KelsError> {
         let request = RegisterNodeRequest {
             node_id: node_id.to_string(),
             node_type: crate::NodeType::Kels,
             kels_url: kels_url.to_string(),
-            gossip_multiaddr: gossip_multiaddr.to_string(),
+            gossip_addr: gossip_addr.to_string(),
             status,
         };
 
@@ -230,7 +228,7 @@ impl KelsRegistryClient {
                         Some(NodeInfo {
                             node_id: peer.node_id,
                             kels_url: peer.kels_url,
-                            gossip_multiaddr: peer.gossip_multiaddr,
+                            gossip_addr: peer.gossip_addr,
                             status: *status,
                             latency_ms: None,
                         })
@@ -321,7 +319,7 @@ impl KelsRegistryClient {
 
     pub async fn is_peer_authorized(
         &self,
-        peer_id: &str,
+        peer_prefix: &str,
         trusted_prefixes: &HashSet<&'static str>,
         kels: &[&Kel],
     ) -> Result<bool, KelsError> {
@@ -330,12 +328,12 @@ impl KelsRegistryClient {
             history
                 .records
                 .last()
-                .map(|peer| peer.peer_id == peer_id)
+                .map(|peer| peer.peer_prefix == peer_prefix)
                 .unwrap_or(false)
         }) {
             return Err(KelsError::RegistryFailure(format!(
                 "Peer {} not found in peers list",
-                peer_id
+                peer_prefix
             )));
         }
 
@@ -555,7 +553,7 @@ impl MultiRegistryClient {
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
     ///
     /// Performs full verification: structural integrity, peer anchoring in registry KEL,
-    /// and core peer vote verification. Peers that fail any check are excluded.
+    /// and peer vote verification. Peers that fail any check are excluded.
     pub async fn list_verified_nodes_info(
         &mut self,
         prefix: &str,
@@ -585,14 +583,14 @@ impl MultiRegistryClient {
                         Ok(true) => {}
                         Ok(false) => {
                             warn!(
-                                peer_id = %peer.peer_id,
+                                peer_prefix = %peer.peer_prefix,
                                 "Peer SAID not anchored in registry KEL, skipping"
                             );
                             continue;
                         }
                         Err(e) => {
                             warn!(
-                                peer_id = %peer.peer_id,
+                                peer_prefix = %peer.peer_prefix,
                                 error = %e,
                                 "Failed to verify peer anchoring, skipping"
                             );
@@ -600,15 +598,14 @@ impl MultiRegistryClient {
                         }
                     }
 
-                    // For core peers, verify proposal + votes
-                    if peer.scope == PeerScope::Core
-                        && !self
-                            .verify_core_peer_votes(&peer.peer_id, &proposals_response)
-                            .await
+                    // Verify proposal + votes
+                    if !self
+                        .verify_peer_votes(&peer.peer_prefix, &proposals_response)
+                        .await
                     {
                         warn!(
-                            peer_id = %peer.peer_id,
-                            "Core peer not backed by sufficient verified votes, skipping"
+                            peer_prefix = %peer.peer_prefix,
+                            "Peer not backed by sufficient verified votes, skipping"
                         );
                         continue;
                     }
@@ -619,7 +616,7 @@ impl MultiRegistryClient {
                     nodes.push(NodeInfo {
                         node_id: peer.node_id.clone(),
                         kels_url: peer.kels_url.clone(),
-                        gossip_multiaddr: peer.gossip_multiaddr.clone(),
+                        gossip_addr: peer.gossip_addr.clone(),
                         status: *status,
                         latency_ms: None,
                     });
@@ -634,63 +631,30 @@ impl MultiRegistryClient {
         }
     }
 
-    /// Fetch peers from a single registry (for regional nodes).
+    /// Fetch verified peers from any available registry.
     ///
-    /// Returns peer histories from the registry matching the given prefix.
-    pub async fn fetch_registry_verified_peers(
-        &mut self,
-        prefix: &str,
-    ) -> Result<PeersResponse, KelsError> {
-        self.fetch_verified_registry_kels(false).await?;
-
-        let url = self.url_for_prefix(prefix)?;
-        let client = self.create_client(&url);
-        match client.fetch_peers().await {
-            Ok((response, _ready_map)) => {
-                self.verify_peers_response(&response).await?;
-                Ok(response)
-            }
-            Err(e) => Err(KelsError::RegistryFailure(format!(
-                "Could not list nodes for registry {}: {}",
-                prefix, e
-            ))),
-        }
-    }
-
-    /// Fetch peers from all registries in the federation (for core nodes).
-    ///
-    /// Returns peer histories merged across all registries, deduplicated by peer_id.
-    /// This ensures core nodes know about all peers regardless of which registry
-    /// they registered with.
+    /// Tries each registry in order, returning on first success.
+    /// Since all registries are federated and replicate the same peer data,
+    /// any single registry has the complete peer list.
     pub async fn fetch_all_verified_peers(&mut self) -> Result<PeersResponse, KelsError> {
         self.fetch_verified_registry_kels(false).await?;
 
-        let futures = self.urls.iter().map(|url| {
+        for url in &self.urls {
             let client = self.create_client(url);
-            async move { client.fetch_peers().await.ok() }
-        });
-
-        let results = join_all(futures).await;
-
-        let mut seen_peer_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut merged_peers: Vec<PeerHistory> = Vec::new();
-
-        for result in results.into_iter().flatten() {
-            let (response, _ready_map) = result;
-            for history in response.peers {
-                if let Some(latest) = history.records.last()
-                    && seen_peer_ids.insert(latest.peer_id.clone())
-                {
-                    merged_peers.push(history);
+            match client.fetch_peers().await {
+                Ok((response, _ready_map)) => {
+                    self.verify_peers_response(&response).await?;
+                    return Ok(response);
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to fetch peers, trying next registry");
                 }
             }
         }
 
-        let merged = PeersResponse {
-            peers: merged_peers,
-        };
-        self.verify_peers_response(&merged).await?;
-        Ok(merged)
+        Err(KelsError::RegistryFailure(
+            "Could not fetch peers from any registry".to_string(),
+        ))
     }
 
     async fn verify_peers_response(&mut self, response: &PeersResponse) -> Result<(), KelsError> {
@@ -717,20 +681,20 @@ impl MultiRegistryClient {
         Ok(maybe_kel.is_some())
     }
 
-    /// Verify that a core peer has an approved proposal backed by sufficient anchored votes.
+    /// Verify that a peer has an approved proposal backed by sufficient anchored votes.
     ///
     /// Performs full DAG verification:
     /// 1. Structural: proposal chain integrity, vote SAIDs, vote references
     /// 2. Proposal anchoring: each proposal record's SAID anchored in proposer's KEL
     /// 3. Vote anchoring: each approval vote's SAID anchored in voter's KEL
     /// 4. Status: must be Approved with threshold verified votes
-    pub async fn verify_core_peer_votes(
+    pub async fn verify_peer_votes(
         &mut self,
-        peer_id: &str,
+        peer_prefix: &str,
         proposals_response: &Option<CompletedProposalsResponse>,
     ) -> bool {
         let Some(response) = proposals_response else {
-            warn!(peer_id = %peer_id, "No proposals available for core peer vote verification");
+            warn!(peer_prefix = %peer_prefix, "No proposals available for peer vote verification");
             return false;
         };
 
@@ -743,7 +707,10 @@ impl MultiRegistryClient {
                 continue;
             };
             if last.is_withdrawn()
-                || awv.history.inception().is_none_or(|p| p.peer_id != peer_id)
+                || awv
+                    .history
+                    .inception()
+                    .is_none_or(|p| p.peer_prefix != peer_prefix)
                 || awv.status(last.threshold) != ProposalStatus::Approved
             {
                 continue;
@@ -756,7 +723,10 @@ impl MultiRegistryClient {
                 continue;
             };
             if last.is_withdrawn()
-                || rwv.history.inception().is_none_or(|p| p.peer_id != peer_id)
+                || rwv
+                    .history
+                    .inception()
+                    .is_none_or(|p| p.peer_prefix != peer_prefix)
                 || rwv.status(last.threshold) != ProposalStatus::Approved
             {
                 continue;
@@ -765,7 +735,7 @@ impl MultiRegistryClient {
         }
 
         if candidates.is_empty() {
-            info!(peer_id = %peer_id, "No approved proposal found for core peer");
+            info!(peer_prefix = %peer_prefix, "No approved proposal found for peer");
             return false;
         }
 
@@ -810,7 +780,7 @@ impl MultiRegistryClient {
 
             if self
                 .verify_proposal_dag(
-                    peer_id,
+                    peer_prefix,
                     kind,
                     verify_result,
                     proposer,
@@ -824,15 +794,15 @@ impl MultiRegistryClient {
                 if *is_addition {
                     return true;
                 } else {
-                    info!(peer_id = %peer_id, "Verified removal — peer excluded");
+                    info!(peer_prefix = %peer_prefix, "Verified removal — peer excluded");
                     return false;
                 }
             }
 
-            warn!(peer_id = %peer_id, kind = kind, "Proposal failed verification, trying next");
+            warn!(peer_prefix = %peer_prefix, kind = kind, "Proposal failed verification, trying next");
         }
 
-        warn!(peer_id = %peer_id, "No proposal passed verification for core peer");
+        warn!(peer_prefix = %peer_prefix, "No proposal passed verification for peer");
         false
     }
 
@@ -843,7 +813,7 @@ impl MultiRegistryClient {
     #[allow(clippy::too_many_arguments)]
     async fn verify_proposal_dag<'a>(
         &mut self,
-        peer_id: &str,
+        peer_prefix: &str,
         kind: &str,
         structural_result: Result<(), KelsError>,
         proposer: Option<&str>,
@@ -854,7 +824,7 @@ impl MultiRegistryClient {
     ) -> bool {
         // 1. Structural verification
         if let Err(e) = structural_result {
-            warn!(peer_id = %peer_id, error = %e, "{} proposal DAG verification failed", kind);
+            warn!(peer_prefix = %peer_prefix, error = %e, "{} proposal DAG verification failed", kind);
             return false;
         }
 
@@ -862,13 +832,13 @@ impl MultiRegistryClient {
         let proposer = match proposer {
             Some(p) => p.to_string(),
             None => {
-                warn!(peer_id = %peer_id, "{} proposal has no proposer", kind);
+                warn!(peer_prefix = %peer_prefix, "{} proposal has no proposer", kind);
                 return false;
             }
         };
 
         if !member_prefixes.contains(proposer.as_str()) {
-            warn!(peer_id = %peer_id, proposer = %proposer, "{} proposer is not a federation member", kind);
+            warn!(peer_prefix = %peer_prefix, proposer = %proposer, "{} proposer is not a federation member", kind);
             return false;
         }
 
@@ -883,7 +853,7 @@ impl MultiRegistryClient {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     warn!(
-                        peer_id = %peer_id,
+                        peer_prefix = %peer_prefix,
                         said = %said,
                         "{} proposal record SAID not anchored in proposer's KEL", kind
                     );
@@ -891,7 +861,7 @@ impl MultiRegistryClient {
                 }
                 Err(e) => {
                     warn!(
-                        peer_id = %peer_id,
+                        peer_prefix = %peer_prefix,
                         error = %e,
                         "Failed to fetch proposer's KEL for {} proposal anchoring", kind
                     );
@@ -940,10 +910,10 @@ impl MultiRegistryClient {
 
         if verified_voters.len() < threshold {
             warn!(
-                peer_id = %peer_id,
+                peer_prefix = %peer_prefix,
                 verified = verified_voters.len(),
                 threshold = threshold,
-                "Insufficient verified votes for {} of core peer", kind
+                "Insufficient verified votes for {} of peer", kind
             );
             return false;
         }
@@ -953,12 +923,12 @@ impl MultiRegistryClient {
 
     /// Check if a peer is authorized in the allowlist.
     ///
-    /// Returns true if the peer_id is found in the allowlist with active=true.
+    /// Returns true if the peer_prefix is found in the allowlist with active=true.
     /// This is an unauthenticated check - nodes can verify their authorization
     /// before attempting to register.
     pub async fn is_peer_authorized(
         &mut self,
-        peer_id: &str,
+        peer_prefix: &str,
         registry_prefix: &str,
     ) -> Result<bool, KelsError> {
         let kels_vec: Vec<_> = self.fetch_verified_registry_kels(false).await?;
@@ -966,7 +936,7 @@ impl MultiRegistryClient {
         let client: KelsRegistryClient = self.create_client(&url);
         let kels: Vec<&Kel> = kels_vec.iter().collect();
         match client
-            .is_peer_authorized(peer_id, &self.trusted_prefixes, &kels)
+            .is_peer_authorized(peer_prefix, &self.trusted_prefixes, &kels)
             .await
         {
             Ok(p) => Ok(p),
@@ -1098,16 +1068,35 @@ impl MultiRegistryClient {
 
     /// Fetch completed proposals from any available registry.
     ///
-    /// Returns proposals with their votes so consumers can independently
-    /// verify that core peers were properly approved.
+    /// Returns the default filtered response: only approved, non-withdrawn
+    /// addition proposals for currently active peers.
     pub async fn fetch_completed_proposals(
         &self,
+    ) -> Result<crate::CompletedProposalsResponse, KelsError> {
+        self.fetch_proposals_inner("/api/federation/proposals")
+            .await
+    }
+
+    /// Fetch all completed proposals (unfiltered) from any available registry.
+    ///
+    /// Returns the full audit response including all additions, removals,
+    /// withdrawn and rejected proposals.
+    pub async fn fetch_completed_proposals_audit(
+        &self,
+    ) -> Result<crate::CompletedProposalsResponse, KelsError> {
+        self.fetch_proposals_inner("/api/federation/proposals?audit=true")
+            .await
+    }
+
+    async fn fetch_proposals_inner(
+        &self,
+        path: &str,
     ) -> Result<crate::CompletedProposalsResponse, KelsError> {
         for url in &self.urls {
             let client = self.create_client(url);
             let response = client
                 .client
-                .get(format!("{}/api/federation/proposals", client.base_url))
+                .get(format!("{}{}", client.base_url, path))
                 .send()
                 .await;
 
@@ -1157,7 +1146,7 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
-    use crate::types::{Kel, NodeRegistration, NodeType, Peer, PeerHistory, PeerScope};
+    use crate::types::{Kel, NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1170,8 +1159,7 @@ mod tests {
         async fn sign(&self, _data: &[u8]) -> Result<SignResult, KelsError> {
             Ok(SignResult {
                 signature: "0BAAAA_mock_signature".to_string(),
-                public_key: "1AAA_mock_public_key".to_string(),
-                peer_id: "12D3KooWMockPeerId".to_string(),
+                peer_prefix: "EMockPeerPrefix_____________________________".to_string(),
             })
         }
     }
@@ -1225,7 +1213,7 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            gossip_addr: "10.0.0.1:9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
             status: NodeStatus::Bootstrapping,
@@ -1243,7 +1231,7 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                "/ip4/10.0.0.1/tcp/9000",
+                "10.0.0.1:9000",
                 NodeStatus::Bootstrapping,
             )
             .await;
@@ -1260,7 +1248,7 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                "/ip4/10.0.0.1/tcp/9000",
+                "10.0.0.1:9000",
                 NodeStatus::Bootstrapping,
             )
             .await;
@@ -1287,7 +1275,7 @@ mod tests {
             .register(
                 "node-1",
                 "http://node-1:8091",
-                "/ip4/10.0.0.1/tcp/9000",
+                "10.0.0.1:9000",
                 NodeStatus::Bootstrapping,
             )
             .await;
@@ -1350,13 +1338,12 @@ mod tests {
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),
-            peer_id: "12D3KooWPeer1".to_string(),
+            peer_prefix: "EPeer1Prefix________________________________".to_string(),
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            scope: PeerScope::Core,
             kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            gossip_addr: "10.0.0.1:9000".to_string(),
         };
 
         let response = PeersResponse {
@@ -1392,7 +1379,7 @@ mod tests {
             node_id: "node-1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://node-1:8091".to_string(),
-            gossip_multiaddr: "/ip4/10.0.0.1/tcp/9000".to_string(),
+            gossip_addr: "10.0.0.1:9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
             status: NodeStatus::Ready,
@@ -1438,15 +1425,14 @@ mod tests {
 
     // ==================== Peers Tests ====================
 
-    fn make_test_peer(peer_id: &str, node_id: &str, active: bool) -> Peer {
+    fn make_test_peer(peer_prefix: &str, node_id: &str, active: bool) -> Peer {
         Peer::create(
-            peer_id.to_string(),
+            peer_prefix.to_string(),
             node_id.to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             active,
-            PeerScope::Regional,
             format!("http://{}:8080", node_id),
-            format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_id),
+            "127.0.0.1:4001".to_string(),
         )
         .expect("create peer")
     }
@@ -1455,7 +1441,11 @@ mod tests {
     async fn test_fetch_peers_success() {
         let mock_server = MockServer::start().await;
 
-        let peer = make_test_peer("12D3KooWPeer1", "node-1", true);
+        let peer = make_test_peer(
+            "EPeer1Prefix________________________________",
+            "node-1",
+            true,
+        );
         let response = PeersResponse {
             peers: vec![PeerHistory {
                 prefix: peer.prefix.clone(),

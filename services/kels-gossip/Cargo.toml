@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Jason Colburne"]
 license = "MIT"
-description = "KELS Gossip Protocol - Synchronizes KELs between KELS deployments using libp2p"
+description = "KELS Gossip Protocol - Synchronizes KELs between KELS deployments"
 
 [[bin]]
 name = "kels-gossip"
@@ -15,30 +15,19 @@ name = "kels_gossip"
 path = "src/lib.rs"
 
 [dependencies]
-# libp2p for peer-to-peer networking
-libp2p = { version = "0.54", features = [
-    "tokio",
-    "gossipsub",
-    "request-response",
-    "noise",
-    "yamux",
-    "tcp",
-    "identify",
-    "macros",
-    "dns",
-    "ecdsa",
-] }
+# Custom gossip protocol (HyParView + PlumTree over TCP with ECDH + AES-GCM-256)
+gossip = { package = "kels-gossip-proto", path = "../../lib/gossip" }
 
-# Forked libp2p-identity with external-signer support for HSM-backed keys
-libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer", features = ["peerid", "ecdsa", "external-signer"] }
+# Bytes for gossip API message content
+bytes = "1"
 
-# CESR for decoding HSM responses
+# Blake3 for topic ID derivation
+blake3 = "1"
+
+# CESR for decoding identity service responses
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 
-# Base64 for HSM API
-base64 = "0.22"
-
-# p256 for key decompression and signature encoding
+# p256 for signature verification
 p256 = { version = "0.13", features = ["ecdsa"] }
 
 # KELS library for types and server utilities (shutdown_signal)
@@ -55,7 +44,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # Logging
 tracing = "0.1"
@@ -86,6 +75,7 @@ rand = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tokio-test = "0.4"
 serial_test = "3"
+wiremock = "0.6"
 
 [lints.clippy]
 unwrap_used = "deny"

@@ -5,7 +5,7 @@ NODE_NAME="$1"
 
 if [ -z "$NODE_NAME" ]; then
     echo "Usage: propose-remove-peer.sh <node-name>"
-    echo "  Proposes removal of a core peer for the given node."
+    echo "  Proposes removal of a peer for the given node."
     echo "  Outputs the proposal ID on success."
     exit 1
 fi
@@ -13,10 +13,10 @@ fi
 # Get the garden binary path
 GARDEN_BIN="${GARDEN_BIN:-garden}"
 
-# Fetch the peer ID from the node's gossip service
-PEER_ID=$("$GARDEN_BIN" run fetch-gossip-identity --env "$NODE_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9]{40,60}$' | tail -1)
-if [ -z "$PEER_ID" ]; then
-    echo "Error: Could not fetch PeerId from $NODE_NAME" >&2
+# Fetch the peer prefix from the node's gossip service
+PEER_PREFIX=$("$GARDEN_BIN" run fetch-gossip-identity --env "$NODE_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9_-]{44}$' | tail -1)
+if [ -z "$PEER_PREFIX" ]; then
+    echo "Error: Could not fetch PeerPrefix from $NODE_NAME" >&2
     exit 1
 fi
 
@@ -41,12 +41,12 @@ if [ -z "$LEADER_NS" ]; then
 fi
 
 echo "Found leader: $LEADER_NS" >&2
-echo "Creating removal proposal for $NODE_NAME (peer: $PEER_ID)..." >&2
+echo "Creating removal proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 
 # Create removal proposal on leader
 PROPOSE_OUTPUT=$(kubectl exec -n "$LEADER_NS" deploy/kels-registry -c kels-registry -- \
     /app/kels-registry-admin peer propose-removal \
-    --peer-id "$PEER_ID" 2>&1)
+    --peer-prefix "$PEER_PREFIX" 2>&1)
 
 echo "$PROPOSE_OUTPUT" >&2
 

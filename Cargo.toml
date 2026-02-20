@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = [
+    "lib/gossip",
     "lib/kels",
     "lib/kels-derive",
     "lib/kels-ffi",
@@ -14,11 +15,6 @@ members = [
     "clients/kels-cli",
 ]
 
-# Shared dependencies across workspace for version consistency
-[workspace.dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-
 # Workspace-wide clippy lints - deny panicky code patterns
 [workspace.lints.clippy]
 unwrap_used = "deny"
@@ -26,6 +22,3 @@ expect_used = "deny"
 panic = "deny"
 unwrap_in_result = "deny"
 
-# Patch libp2p-identity to use our fork with external-signer support
-[patch.crates-io]
-libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer" }

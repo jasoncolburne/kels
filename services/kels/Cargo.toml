@@ -23,7 +23,7 @@ cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 cacheable = { git = "https://github.com/jasoncolburne/cacheable", features = ["redis"] }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
-libkels = { path = "../../lib/kels", features = ["redis", "server-caching", "server", "p2p-verification"] }
+libkels = { path = "../../lib/kels", features = ["redis", "server-caching", "server"] }
 libkels-derive = { path = "../../lib/kels-derive" }
 
 # Async runtime
@@ -49,11 +49,6 @@ async-trait = "0.1.89"
 
 # Per-prefix rate limiting
 dashmap = "6"
-
-# Per-IP rate limiting
-governor = "0.8"
-tower_governor = "0.5"
-tower = { version = "0.5", features = ["util"] }
 
 # Redis for KelStreamCache
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }

@@ -1,38 +1,53 @@
 //! KELS Registry REST API Handlers
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+    time::Instant,
+};
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use kels::p2p_signature::{SignatureError, verify_signature};
+use dashmap::DashMap;
 use kels::{
-    AdditionHistory, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel,
-    NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeerScope,
-    PeersResponse, Proposal, ProposalHistory, ProposalWithVotesMethods, RegisterNodeRequest,
-    RemovalHistory, SignedRequest, StatusUpdateRequest, Vote,
+    AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest, ErrorCode,
+    ErrorResponse, Kel, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
+    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedRequest,
+    StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{ChainedRepository, SelfAddressed};
+use verifiable_storage::SelfAddressed;
 use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
+
+use kels::IdentityClient;
 
 use crate::{
     federation::{
         FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
         SignedFederationRpc,
     },
-    identity_client::IdentityClient,
     repository::RegistryRepository,
     store::{RegistryStore, StoreError},
 };
+
+/// Maximum write requests per IP per second (token bucket: refill rate).
+const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+
+/// Burst capacity for per-IP write rate limiting.
+const IP_RATE_LIMIT_BURST: u32 = 1000;
 
 pub struct AppState {
     pub store: RegistryStore,
     pub repo: Arc<RegistryRepository>,
     pub federation_node: Option<Arc<FederationNode>>,
+    /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
+    pub ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -87,20 +102,37 @@ impl ApiError {
             }),
         )
     }
+
+    fn rate_limited(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::RateLimited,
+            }),
+        )
+    }
 }
 
-impl From<SignatureError> for ApiError {
-    fn from(e: SignatureError) -> Self {
-        match e {
-            SignatureError::PeerIdMismatch { .. } => {
-                ApiError::unauthorized(format!("Invalid signature: {}", e))
-            }
-            SignatureError::VerificationFailed => {
-                ApiError::unauthorized("Signature verification failed")
-            }
-            _ => ApiError::bad_request(format!("Invalid request: {}", e)),
-        }
+/// Per-IP write rate limiting using a token bucket.
+/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+fn check_ip_rate_limit(
+    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.1 = now;
     }
+    if entry.0 == 0 {
+        return Err(ApiError::rate_limited("Too many requests"));
+    }
+    entry.0 -= 1;
+    Ok(())
 }
 
 impl From<StoreError> for ApiError {
@@ -121,25 +153,17 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Verifies signature, checks peer is in allowlist, and for core peers verifies
-/// the backing proposal was properly approved with sufficient anchored votes.
+/// Verifies peer is in allowlist and verifies the backing proposal
+/// was properly approved with sufficient anchored votes.
 async fn verify_and_authorize<T: serde::Serialize>(
     state: &AppState,
     signed_request: &SignedRequest<T>,
 ) -> Result<Peer, ApiError> {
-    let payload_json = serde_json::to_vec(&signed_request.payload)
-        .map_err(|e| ApiError::internal_error(format!("Failed to serialize payload: {}", e)))?;
+    let peer_prefix_str = &signed_request.peer_prefix;
 
-    let peer_id = verify_signature(
-        &payload_json,
-        &signed_request.peer_id,
-        &signed_request.public_key,
-        &signed_request.signature,
-    )?;
-    let peer_id_str = peer_id.to_string();
-
+    // Look up the peer to verify they are in the allowlist
     let query = StorageQuery::<Peer>::new()
-        .eq("peer_id", &peer_id_str)
+        .eq("peer_prefix", peer_prefix_str)
         .order_by("version", Order::Desc)
         .limit(1);
 
@@ -152,27 +176,34 @@ async fn verify_and_authorize<T: serde::Serialize>(
         .map_err(|e| ApiError::internal_error(format!("Failed to query allowlist: {}", e)))?;
 
     let peer = match peers.into_iter().next() {
-        Some(peer) if peer.active => peer,
+        Some(peer) if peer.active => peer.clone(),
         Some(_) => {
             return Err(ApiError::forbidden(format!(
                 "Peer {} is not authorized (deactivated)",
-                peer_id_str
+                peer_prefix_str
             )));
         }
         None => {
             return Err(ApiError::forbidden(format!(
                 "Peer {} is not in allowlist",
-                peer_id_str
+                peer_prefix_str
             )));
         }
     };
 
-    // For core peers, verify the backing proposal was properly approved
-    if peer.scope == PeerScope::Core {
-        let node = state.federation_node.as_ref().ok_or_else(|| {
-            ApiError::internal_error("Core peer found but federation not configured")
-        })?;
+    // Verify signature against peer's current public key from their KEL
+    let kels_client = kels::KelsClient::new(&peer.kels_url);
+    let kel = kels_client
+        .get_kel(&peer.peer_prefix)
+        .await
+        .map_err(|_| ApiError::forbidden("Could not fetch peer KEL for signature verification"))?;
 
+    signed_request
+        .verify_signature(&kel)
+        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+
+    // Verify the backing proposal was properly approved
+    if let Some(node) = state.federation_node.as_ref() {
         let threshold = node.approval_threshold();
         let prefixes = node.config().member_prefixes();
         let member_prefixes: std::collections::HashSet<&str> =
@@ -185,14 +216,14 @@ async fn verify_and_authorize<T: serde::Serialize>(
             .find(|pw| {
                 pw.history
                     .inception()
-                    .is_some_and(|p| p.peer_id == peer.peer_id)
+                    .is_some_and(|p| p.peer_prefix == peer.peer_prefix)
                     && !pw.history.is_withdrawn()
                     && pw.status(threshold) == kels::ProposalStatus::Approved
             })
             .ok_or_else(|| {
                 ApiError::forbidden(format!(
-                    "No approved proposal found for core peer {}",
-                    peer.peer_id
+                    "No approved proposal found for peer {}",
+                    peer.peer_prefix
                 ))
             })?;
 
@@ -200,7 +231,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
         pwv.verify().map_err(|e| {
             ApiError::forbidden(format!(
                 "Proposal verification failed for peer {}: {}",
-                peer.peer_id, e
+                peer.peer_prefix, e
             ))
         })?;
 
@@ -236,8 +267,8 @@ async fn verify_and_authorize<T: serde::Serialize>(
 
         if verified_voters.len() < threshold {
             return Err(ApiError::forbidden(format!(
-                "Insufficient verified votes for core peer {} ({}/{})",
-                peer.peer_id,
+                "Insufficient verified votes for peer {} ({}/{})",
+                peer.peer_prefix,
                 verified_voters.len(),
                 threshold
             )));
@@ -259,8 +290,10 @@ pub async fn health() -> StatusCode {
 
 pub async fn register_node(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -273,8 +306,8 @@ pub async fn register_node(
     if request.kels_url.is_empty() {
         return Err(ApiError::bad_request("kels_url is required"));
     }
-    if request.gossip_multiaddr.is_empty() {
-        return Err(ApiError::bad_request("gossip_multiaddr is required"));
+    if request.gossip_addr.is_empty() {
+        return Err(ApiError::bad_request("gossip_addr is required"));
     }
 
     let registration = state.store.register(request).await?;
@@ -283,8 +316,10 @@ pub async fn register_node(
 
 pub async fn deregister_node(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
 ) -> Result<StatusCode, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -301,8 +336,10 @@ pub async fn deregister_node(
 
 pub async fn update_status(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -448,35 +485,102 @@ pub async fn federation_status(
 
 // ==================== Public Federation API ====================
 
+/// Query parameters for the proposals endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ProposalsQuery {
+    #[serde(default)]
+    pub audit: bool,
+}
+
 /// Public endpoint returning completed proposals with their votes.
 ///
-/// Gossip nodes and other consumers use this to independently verify
-/// that core peers were properly approved through multi-party voting.
+/// Default mode returns only approved, non-withdrawn addition proposals for
+/// currently active peers. Use `?audit=true` for the full unfiltered response.
 pub async fn list_completed_proposals(
     State(state): State<Arc<FederationState>>,
+    Query(query): Query<ProposalsQuery>,
 ) -> Result<Json<CompletedProposalsResponse>, ApiError> {
+    if query.audit {
+        return Ok(Json(CompletedProposalsResponse {
+            additions: state.node.completed_addition_proposals_with_votes().await,
+            removals: state.node.completed_removal_proposals_with_votes().await,
+            member_prefixes: state.node.member_prefixes(),
+            approval_threshold: state.node.approval_threshold(),
+        }));
+    }
+
+    let active_peer_prefixes: HashSet<String> = state
+        .node
+        .peers()
+        .await
+        .into_iter()
+        .filter(|p| p.active)
+        .map(|p| p.peer_prefix)
+        .collect();
+
+    let threshold = state.node.approval_threshold();
+
+    let additions = state
+        .node
+        .completed_addition_proposals_with_votes()
+        .await
+        .into_iter()
+        .filter(|awv| {
+            awv.history
+                .inception()
+                .is_some_and(|p| active_peer_prefixes.contains(&p.peer_prefix))
+                && !awv.history.is_withdrawn()
+                && awv.status(threshold) == ProposalStatus::Approved
+        })
+        .collect();
+
     Ok(Json(CompletedProposalsResponse {
-        additions: state.node.completed_addition_proposals_with_votes().await,
-        removals: state.node.completed_removal_proposals_with_votes().await,
+        additions,
+        removals: vec![],
         member_prefixes: state.node.member_prefixes(),
-        approval_threshold: state.node.approval_threshold(),
+        approval_threshold: threshold,
     }))
 }
 
 // ==================== Admin API ====================
 
-/// Check if request is from localhost.
-fn is_localhost(addr: &SocketAddr) -> bool {
-    addr.ip().is_loopback()
+/// Verify a signed admin request against this node's own identity.
+///
+/// Checks that the request was signed by this node's identity key by:
+/// 1. Confirming the signer prefix matches our own
+/// 2. Verifying the signature against our KEL's current public key
+async fn verify_admin_request<T: Serialize>(
+    signed_request: &SignedRequest<T>,
+    identity_client: &IdentityClient,
+) -> Result<(), ApiError> {
+    let our_prefix = identity_client
+        .get_prefix()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Identity error: {}", e)))?;
+
+    if signed_request.peer_prefix != our_prefix {
+        return Err(ApiError::forbidden("Not signed by this node's identity"));
+    }
+
+    let kel = identity_client
+        .get_kel()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
+
+    signed_request
+        .verify_signature(&kel)
+        .map_err(|_| ApiError::unauthorized("Admin signature verification failed"))?;
+
+    Ok(())
 }
 
-/// Request to add a core peer.
+/// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
-    pub peer_id: String,
+    pub peer_prefix: String,
     pub node_id: String,
     pub kels_url: String,
-    pub gossip_multiaddr: String,
+    pub gossip_addr: String,
 }
 
 /// Response for proposal operations.
@@ -489,16 +593,18 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// Get a specific proposal with votes (admin, localhost only).
+/// Get a specific proposal with votes (admin, signed request required).
 /// Returns either an addition or removal proposal.
+///
+/// This endpoint uses `SignedRequest<AdminRequest>` for authentication — the admin
+/// CLI signs the request via the identity service (HSM-backed). If we add more admin
+/// query endpoints, they should follow this same pattern.
 pub async fn admin_get_proposal(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
+    Json(signed_request): Json<SignedRequest<AdminRequest>>,
 ) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
-    if !is_localhost(&addr) {
-        return Err(ApiError::forbidden("Admin API is localhost only"));
-    }
+    verify_admin_request(&signed_request, &state.identity_client).await?;
 
     if let Some(addition) = state
         .node
@@ -610,9 +716,9 @@ pub async fn admin_submit_addition_proposal(
             current_votes: 0,
             message: "Proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerAlreadyExists(peer_id) => Err(ApiError::bad_request(format!(
+        FederationResponse::PeerAlreadyExists(peer_prefix) => Err(ApiError::bad_request(format!(
             "Peer already exists: {}",
-            peer_id
+            peer_prefix
         ))),
         FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
             format!("Proposal already exists: {}", proposal_id),
@@ -715,9 +821,10 @@ pub async fn admin_submit_removal_proposal(
             current_votes: 0,
             message: "Removal proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerNotFound(peer_id) => {
-            Err(ApiError::not_found(format!("Peer not found: {}", peer_id)))
-        }
+        FederationResponse::PeerNotFound(peer_prefix) => Err(ApiError::not_found(format!(
+            "Peer not found: {}",
+            peer_prefix
+        ))),
         FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
             format!("Removal proposal already exists: {}", proposal_id),
         )),
@@ -838,7 +945,7 @@ pub async fn admin_vote_proposal(
 
     let response = state
         .node
-        .vote_core_peer(proposal_id.clone(), vote)
+        .vote_peer(proposal_id.clone(), vote)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -860,10 +967,7 @@ pub async fn admin_vote_proposal(
             peer,
         } => {
             let message = if approved {
-                format!(
-                    "Proposal approved! Peer {:?} added to core set.",
-                    peer.map(|p| p.said)
-                )
+                format!("Proposal approved! Peer {:?} added.", peer.map(|p| p.said))
             } else {
                 format!(
                     "Vote recorded. {} of {} approvals.",
@@ -884,7 +988,7 @@ pub async fn admin_vote_proposal(
         }
         FederationResponse::RemovalApproved {
             proposal_id,
-            peer_id,
+            peer_prefix,
             current_votes,
             votes_needed,
         } => Ok(Json(ProposalResponse {
@@ -892,7 +996,7 @@ pub async fn admin_vote_proposal(
             status: "removal_approved".to_string(),
             votes_needed,
             current_votes,
-            message: format!("Removal approved! Peer {} removed from core set.", peer_id),
+            message: format!("Removal approved! Peer {} removed.", peer_prefix),
         })),
         FederationResponse::ProposalNotFound(id) => {
             Err(ApiError::not_found(format!("Proposal not found: {}", id)))
@@ -918,106 +1022,15 @@ pub async fn admin_vote_proposal(
     }
 }
 
-/// Add a regional peer (admin, localhost only).
-/// Core peers must go through the proposal system.
-pub async fn admin_add_regional_peer(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<FederationState>>,
-    Json(req): Json<AddPeerRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if !is_localhost(&addr) {
-        return Err(ApiError::forbidden("Admin API is localhost only"));
-    }
-
-    // Create the peer as regional scope
-    let peer = Peer::create(
-        req.peer_id.clone(),
-        req.node_id.clone(),
-        "EAuthorizingKel_____________________________".to_string(),
-        true,
-        PeerScope::Regional,
-        req.kels_url,
-        req.gossip_multiaddr,
-    )
-    .map_err(|e| ApiError::bad_request(format!("Invalid peer data: {}", e)))?;
-
-    // Write directly to local DB (regional peers don't go through Raft)
-    use verifiable_storage::Chained;
-    use verifiable_storage_postgres::{Order, Query, QueryExecutor};
-
-    let query = Query::<Peer>::new()
-        .eq("node_id", &req.node_id)
-        .order_by("version", Order::Desc)
-        .limit(1);
-    let existing: Vec<Peer> = state
-        .repo
-        .peers
-        .pool
-        .fetch(query)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Database error: {}", e)))?;
-
-    let db_peer = match existing.first() {
-        Some(latest) if latest.active && latest.peer_id == peer.peer_id => {
-            return Ok(Json(serde_json::json!({
-                "status": "ok",
-                "message": format!("Regional peer {} already exists", req.peer_id)
-            })));
-        }
-        Some(latest) => {
-            let mut updated = latest.clone();
-            updated.peer_id = peer.peer_id.clone();
-            updated.active = true;
-            updated.scope = PeerScope::Regional;
-            updated.kels_url = peer.kels_url.clone();
-            updated.gossip_multiaddr = peer.gossip_multiaddr.clone();
-            updated
-                .increment()
-                .map_err(|e| ApiError::internal_error(format!("Failed to increment: {}", e)))?;
-            updated
-        }
-        None => peer,
-    };
-
-    state
-        .repo
-        .peers
-        .insert(db_peer)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to insert peer: {}", e)))?;
-
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "message": format!("Regional peer {} added", req.peer_id)
-    })))
-}
-
-/// List all peers (core from federation + regional from local database).
+/// List all peers from federation.
 ///
-/// When federation is enabled, core peers come from the Raft state machine
-/// and regional peers come from the local PostgreSQL database.
+/// Peers come from the Raft state machine.
 pub async fn list_peers_federated(
     State(state): State<Arc<FederationState>>,
 ) -> Result<Json<PeersResponse>, ApiError> {
-    // Get core peers from federation state machine
-    let core_peers = state.node.core_peers().await;
+    let core_peers = state.node.peers().await;
 
-    // Get regional peers from local database
-    let query = StorageQuery::<Peer>::new()
-        .eq("scope", "regional")
-        .order_by("prefix", Order::Asc)
-        .order_by("version", Order::Asc);
-
-    let regional_peers: Vec<Peer> = state
-        .repo
-        .peers
-        .pool
-        .fetch(query)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Storage error: {}", e)))?;
-
-    // Build histories for core peers (each has just a single record)
-    let mut histories: Vec<PeerHistory> = core_peers
+    let histories: Vec<PeerHistory> = core_peers
         .into_iter()
         .filter(|p| p.active)
         .map(|peer| PeerHistory {
@@ -1025,41 +1038,6 @@ pub async fn list_peers_federated(
             records: vec![peer],
         })
         .collect();
-
-    // Group regional peers into histories by prefix
-    let mut current_prefix: Option<String> = None;
-    let mut current_records: Vec<Peer> = Vec::new();
-
-    for peer in regional_peers {
-        if current_prefix.as_ref() != Some(&peer.prefix) {
-            if let Some(prefix) = current_prefix.take()
-                && !current_records.is_empty()
-            {
-                // Only include if latest record is active
-                if current_records.last().is_some_and(|r| r.active) {
-                    histories.push(PeerHistory {
-                        prefix,
-                        records: std::mem::take(&mut current_records),
-                    });
-                } else {
-                    current_records.clear();
-                }
-            }
-            current_prefix = Some(peer.prefix.clone());
-        }
-        current_records.push(peer);
-    }
-
-    // Don't forget the last regional history
-    if let Some(prefix) = current_prefix
-        && !current_records.is_empty()
-        && current_records.last().is_some_and(|r| r.active)
-    {
-        histories.push(PeerHistory {
-            prefix,
-            records: current_records,
-        });
-    }
 
     Ok(Json(PeersResponse { peers: histories }))
 }
@@ -1141,49 +1119,12 @@ mod tests {
         assert_eq!(err.1.error, "server crash");
     }
 
-    // ==================== ApiError From<SignatureError> Tests ====================
-
     #[test]
-    fn test_api_error_from_signature_peer_id_mismatch() {
-        let sig_err = SignatureError::PeerIdMismatch {
-            expected: "expected".to_string(),
-            actual: "actual".to_string(),
-        };
-        let api_err: ApiError = sig_err.into();
-        assert_eq!(api_err.0, StatusCode::UNAUTHORIZED);
-        assert!(api_err.1.error.contains("Invalid signature"));
-    }
-
-    #[test]
-    fn test_api_error_from_signature_verification_failed() {
-        let sig_err = SignatureError::VerificationFailed;
-        let api_err: ApiError = sig_err.into();
-        assert_eq!(api_err.0, StatusCode::UNAUTHORIZED);
-        assert_eq!(api_err.1.error, "Signature verification failed");
-    }
-
-    #[test]
-    fn test_api_error_from_signature_invalid_public_key() {
-        let sig_err = SignatureError::InvalidPublicKey("bad key".to_string());
-        let api_err: ApiError = sig_err.into();
-        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
-        assert!(api_err.1.error.contains("Invalid request"));
-    }
-
-    #[test]
-    fn test_api_error_from_signature_invalid_signature() {
-        let sig_err = SignatureError::InvalidSignature("bad sig".to_string());
-        let api_err: ApiError = sig_err.into();
-        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
-        assert!(api_err.1.error.contains("Invalid request"));
-    }
-
-    #[test]
-    fn test_api_error_from_signature_invalid_peer_id() {
-        let sig_err = SignatureError::InvalidPeerId("bad id".to_string());
-        let api_err: ApiError = sig_err.into();
-        assert_eq!(api_err.0, StatusCode::BAD_REQUEST);
-        assert!(api_err.1.error.contains("Invalid request"));
+    fn test_api_error_rate_limited() {
+        let err = ApiError::rate_limited("Too many requests");
+        assert_eq!(err.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.1.code, ErrorCode::RateLimited);
+        assert_eq!(err.1.error, "Too many requests");
     }
 
     // ==================== ApiError From<StoreError> Tests ====================

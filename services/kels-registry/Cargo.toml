@@ -47,7 +47,7 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 
 # Shared types and verifiable storage
-libkels = { path = "../../lib/kels", default-features = false, features = ["native", "server", "p2p-verification"] }
+libkels = { path = "../../lib/kels", default-features = false, features = ["native", "server"] }
 libkels-derive = { path = "../../lib/kels-derive" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
@@ -70,11 +70,6 @@ async-trait = "0.1"
 # Futures for Stream support
 futures = "0.3"
 
-# libp2p for PeerId parsing and HSM-backed identity (forked with external-signer support)
-libp2p-identity = { git = "https://github.com/jasoncolburne/rust-libp2p", branch = "external-signer", features = ["peerid", "ecdsa", "external-signer"] }
-
-# p256 for public key decompression (libp2p requires uncompressed format)
-p256 = { version = "0.13", features = ["ecdsa"] }
 
 # OpenRaft for federation consensus (0.10 alpha has simpler trait API)
 openraft = { git = "https://github.com/datafuselabs/openraft", tag = "v0.10.0-alpha.13", features = ["serde"] }
@@ -86,9 +81,7 @@ byteorder = "1"
 uuid = { version = "1", features = ["v4"] }
 
 # Rate limiting
-governor = "0.8"
-tower_governor = "0.5"
-tower = { version = "0.5", features = ["util"] }
+dashmap = "6"
 
 [dev-dependencies]
 tokio-test = "0.4"

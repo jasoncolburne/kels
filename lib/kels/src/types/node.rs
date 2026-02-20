@@ -25,7 +25,7 @@ pub struct NodeRegistration {
     #[serde(default)]
     pub node_type: NodeType,
     pub kels_url: String,
-    pub gossip_multiaddr: String,
+    pub gossip_addr: String,
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub last_heartbeat: chrono::DateTime<chrono::Utc>,
     pub status: NodeStatus,
@@ -38,7 +38,7 @@ pub struct RegisterNodeRequest {
     #[serde(default)]
     pub node_type: NodeType,
     pub kels_url: String,
-    pub gossip_multiaddr: String,
+    pub gossip_addr: String,
     pub status: NodeStatus,
 }
 
@@ -61,7 +61,7 @@ pub struct DeregisterRequest {
 pub struct NodeInfo {
     pub node_id: String,
     pub kels_url: String,
-    pub gossip_multiaddr: String,
+    pub gossip_addr: String,
     pub status: NodeStatus,
     /// Measured latency in milliseconds (populated by discovery)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,7 +73,7 @@ impl From<NodeRegistration> for NodeInfo {
         Self {
             node_id: reg.node_id,
             kels_url: reg.kels_url,
-            gossip_multiaddr: reg.gossip_multiaddr,
+            gossip_addr: reg.gossip_addr,
             status: reg.status,
             latency_ms: None,
         }

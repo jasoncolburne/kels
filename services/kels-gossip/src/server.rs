@@ -1,7 +1,8 @@
-//! HTTP server for ready status endpoint.
+//! HTTP server for health and ready status endpoints.
 //!
-//! Exposes a `/ready` endpoint that other gossip nodes can query to determine
-//! if this node is ready to sync KELs from.
+//! Exposes:
+//! - `/healthz` — liveness: always returns 200 if the process is running
+//! - `/ready` — readiness: returns 200 only after bootstrap completes
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use serde::Serialize;
@@ -18,6 +19,11 @@ pub struct ReadyResponse {
     pub ready: bool,
 }
 
+/// GET /healthz handler — always returns 200
+async fn healthz_handler() -> StatusCode {
+    StatusCode::OK
+}
+
 /// GET /ready handler
 async fn ready_handler(
     State(ready_state): State<SharedReadyState>,
@@ -31,9 +37,10 @@ async fn ready_handler(
     (status, Json(ReadyResponse { ready }))
 }
 
-/// Create the HTTP router for the ready endpoint
+/// Create the HTTP router
 pub fn create_router(ready_state: SharedReadyState) -> Router {
     Router::new()
+        .route("/healthz", get(healthz_handler))
         .route("/ready", get(ready_handler))
         .with_state(ready_state)
 }

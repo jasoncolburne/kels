@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using libp2p. Nodes announce KEL updates as `prefix:said` pairs over gossipsub — events themselves are not transmitted over the p2p layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events from the announcing node's KELS service via HTTP.
+The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with three-DH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
@@ -16,17 +16,17 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 │   └──────────┘              └───────┘               │    │
 │     ▲      ▲                                ┌───────┴───┐│
 │     │      │ HTTP POST (submit events)      │kels-gossip││
-│     │      └────────────────────────────────│ (libp2p)  ││
+│     │      └────────────────────────────────│ (gossip)  ││
 │     │      * HTTP GET omitted for clarity   └─────┬─────┘│
 │     │                                             │      │
 └─────│─────────────────────────────────────────────│──────┘
       │                                             │
-      │             gossipsub: announce prefix:said │
+      │          PlumTree broadcast: prefix:said    │
       │                                             │
 ┌─────│─────────────────────────────────────────────│──────┐
 │     │                                       ┌─────┴─────┐│
 │     └───────────────────────────────────────│kels-gossip││
-│  HTTP GET (fetch events from remote KELS)   │ (libp2p)  ││
+│  HTTP GET (fetch events from remote KELS)   │ (gossip)  ││
 │        ┌────────────────────────────────────│           ││
 │        │ HTTP POST (submit events)          └───────┬───┘│
 │        ▼                                            │    │
@@ -46,11 +46,11 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 1. Client submits events to KELS via HTTP
 2. KELS writes to DB, then explicitly publishes `{prefix}:{said}` to Redis `kel_updates` channel, where `said` is the last **submitted** event's SAID (not the sorted KEL's last event — this distinction matters for same-kind forks where the sorted tail may be an event other nodes already have)
 3. `kels-gossip` receives notification via Redis SUBSCRIBE
-4. Broadcasts `KelAnnouncement { prefix, said }` to gossipsub topic
+4. Broadcasts `KelAnnouncement { prefix, said }` via PlumTree to all peers
 
 ### Inbound (gossip network → local)
 
-1. `kels-gossip` receives `KelAnnouncement` from gossipsub
+1. `kels-gossip` receives `KelAnnouncement` via PlumTree broadcast
 2. Compares announced SAID with local latest SAID for that prefix
 3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
 4. If SAID is new:
@@ -59,10 +59,6 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
-
-### Failed Fetch Retry
-
-When a gossip fetch fails (timeout, HTTP error, connection refused), the `prefix:said` pair is added to a Redis-backed retry queue (`kels:resync:retry`). A periodic resync loop drains this queue on a configurable interval (default 5 min), attempting each entry against all known peers in shuffled order. Uses `event_exists` as a cheap pre-check before fetching. Entries where all peers return 404 are dropped (SAID was superseded). Entries that fail again are re-queued for the next cycle.
 
 ### Why SAID comparison?
 
@@ -84,33 +80,23 @@ services/kels-gossip/
 └── src/
     ├── main.rs       # Entry point, config loading
     ├── lib.rs        # Service orchestration
-    ├── gossip.rs     # libp2p swarm with gossipsub + request-response
-    ├── sync.rs       # Redis subscriber, sync handler using KelsClient
-    ├── protocol.rs   # Message types (KelAnnouncement, KelRequest, KelResponse)
-    ├── allowlist.rs  # Connection filtering based on peer allowlist
-    ├── bootstrap.rs  # Bootstrap sync from existing peers
-    ├── hsm_signer.rs # HSM-backed request signing
-    └── peer_store.rs # Peer cache in PostgreSQL
+    ├── gossip_layer.rs # Custom gossip protocol wrapper (HyParView + PlumTree)
+    ├── server.rs       # HTTP server for ready endpoint
+    ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
+    ├── protocol.rs     # Message types (KelAnnouncement)
+    ├── allowlist.rs    # Connection filtering based on verified peer allowlist
+    ├── bootstrap.rs    # Bootstrap sync from existing peers
+    └── hsm_signer.rs   # HSM-backed request signing and peer verification
 ```
 
 ### Message Types
 
 ```rust
-/// Broadcast via gossipsub to announce KEL updates
+/// Broadcast via PlumTree to announce KEL updates
 struct KelAnnouncement {
     prefix: String,
     said: String,
-}
-
-/// Request full KEL from a peer
-struct KelRequest {
-    prefix: String,
-}
-
-/// Response containing full KEL
-struct KelResponse {
-    prefix: String,
-    events: Vec<SignedKeyEvent>,
+    origin: String,  // NodePrefix of the originating peer
 }
 ```
 
@@ -118,9 +104,9 @@ struct KelResponse {
 
 | Protocol | Transport | Purpose |
 |----------|-----------|---------|
-| gossipsub | Flood/mesh | Broadcast announcements to all peers |
-| request-response | Direct | Fetch KEL from specific peer |
-| identify | Direct | Exchange peer metadata on connect |
+| PlumTree broadcast | TCP + three-DH P-256 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
+| HyParView membership | TCP + three-DH P-256 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
+| HTTP fetch | HTTP | Fetch KEL events from peer's KELS service |
 
 ## Configuration
 
@@ -129,10 +115,12 @@ struct KelResponse {
 | `NODE_ID` | Unique node identifier | `node-unknown` |
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
-| `REGISTRY_URL` | Registry service URL for bootstrap sync | (optional) |
-| `GOSSIP_LISTEN_ADDR` | libp2p listen address | `/ip4/0.0.0.0/tcp/4001` |
-| `GOSSIP_TOPIC` | Gossipsub topic name | `kels/events/v1` |
-| `RESYNC_INTERVAL_SECS` | Periodic resync interval for retrying failed fetches | `300` (5 min) |
+| `REGISTRY_URL` | Registry service URL for bootstrap sync | (required) |
+| `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
+| `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |
+| `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
+| `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval | `60` |
 
 ## Design Decisions
 
@@ -143,13 +131,15 @@ struct KelResponse {
 - Easier debugging and monitoring
 - Communicates with KELS via HTTP (no direct DB access)
 
-### HSM-backed libp2p identity
+### HSM-backed gossip identity
 
 Gossip nodes use persistent HSM-backed identities:
-- Each node's libp2p identity is derived from a secp256r1 key stored in the HSM service
-- The PeerId is deterministic - same HSM key = same PeerId across restarts
+- Each node's identity is cryptographically bound to keys in the HSM — the identity does not change across restarts
+- The NodePrefix (44-char CESR-encoded) identifies the node in the gossip mesh and verified allowlist
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh
-- Unauthorized peers are disconnected immediately after the Noise handshake
+- Unauthorized peers are rejected during the gossip handshake
+- The handshake uses a three-DH pattern: ephemeral-ephemeral (forward secrecy), static-ephemeral via HSM (our static key × their ephemeral), and ephemeral-static locally (our ephemeral × their static key). Session keys are derived from all three shared secrets via BLAKE3 key derivation. The static private key never leaves the HSM.
+- Each peer's handshake signature is verified against their KEL public key via the verified allowlist
 - See [Secure Registration](secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback
@@ -165,7 +155,7 @@ Gossip nodes use persistent HSM-backed identities:
 
 - Nodes register with the `kels-registry` service on startup
 - New nodes query the registry for existing peers and bootstrap sync
-- Peers discover each other dynamically via gossipsub mesh
+- Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
 - No hardcoded peer addresses needed in configuration
 - See [registry.md](registry.md) for details on the registration protocol
 
@@ -178,8 +168,9 @@ Gossip nodes in different namespaces connect via the registry service. The regis
 ### Services
 
 Each namespace has:
-- `kels-gossip` - ClusterIP service for libp2p connections
-- `kels-gossip-headless` - Headless service for direct pod addressing
+- `kels-gossip` - ClusterIP service for gossip TCP connections
+
+**Cross-cluster note:** The test harness colocates all nodes in one Kubernetes cluster with cross-namespace routing via CoreDNS rewrites. In a production deployment where nodes are in separate clusters or networks, each node's gossip TCP port must be externally reachable — e.g., via a LoadBalancer service, NodePort, or Gateway API TCPRoute. The gossip advertise address (`GOSSIP_ADVERTISE_ADDR`) should be set to the externally routable hostname and port.
 
 ### CoreDNS Configuration for `.kels` Domains
 
@@ -211,6 +202,27 @@ rewrite name regex (.*)\.kels-node-(.)\.kels {1}.kels-node-{2}.svc.cluster.kels
 | k3s | Uses CoreDNS by default; same ConfigMap approach works |
 
 If your Kubernetes distribution uses a different DNS provider or configuration method, adapt the rewrite rules accordingly. The key requirement is that `*.kels-node-X.kels` resolves to `*.kels-node-X.svc.cluster.kels` inside the cluster.
+
+## Anti-Entropy Repair
+
+Gossip propagation can miss events due to timing gaps (e.g., between bootstrap preload and gossip join, DNS issues, connection failures). The anti-entropy loop detects and repairs silent divergence — where a node is missing events it never learned about. It also handles failed gossip fetches: when a fetch fails, the prefix is recorded as stale and picked up by Phase 1 within the next cycle.
+
+### Two-phase repair (every `ANTI_ENTROPY_INTERVAL_SECS`, default 10s)
+
+**Phase 1 — Targeted repair of known-stale prefixes:**
+- Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → source_node_prefix` entries
+- For each entry, fetches the KEL from the source peer and submits locally
+- Failures are not re-queued (Phase 2 rediscovers if still needed)
+- If any stale entries were processed, Phase 2 is skipped (spread work across cycles)
+
+**Phase 2 — Random sampling (only when no stale entries):**
+- Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
+- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs this is a deterministic Blake3 hash of sorted tip SAIDs
+- If digests match, done for this cycle
+- If different, reconciles: fetches missing/different KELs in both directions
+- Known-divergent prefixes (tracked in Redis SET `kels:anti_entropy:divergent`) are skipped to prevent infinite retry loops — these are prefixes where two nodes have different adversary branches that can't be resolved until recovery
+
+Stale prefix entries are populated by bootstrap sync failures, gossip fetch failures, and anti-entropy mismatches.
 
 ## Divergence Handling
 
@@ -246,10 +258,10 @@ The gossip layer doesn't need special divergence logic - KELS handles all verifi
 - MD5 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
 - Behavioral state consistency for any mismatched KELs
 
-`clients/test/scripts/test-resync.sh` verifies the periodic resync / retry queue:
-- Fake retry queue entries are dropped when all peers return 404
-- Real fetch failures (caused by broken DNS) populate the retry queue
-- After DNS repair, the resync loop resolves pending entries
-- Retry queue is empty after resolution
+`clients/test/scripts/test-resync.sh` verifies anti-entropy stale prefix repair:
+- Fake stale prefix entries are dropped when all peers return 404
+- Real fetch failures (caused by broken DNS) populate the stale prefix hash
+- After DNS repair, the anti-entropy loop resolves stale entries
+- Stale prefix hash is empty after resolution
 
-The resync test is orchestrated by `make test-resync` which breaks CoreDNS for node-b (so gossip HTTP fetches fail while gossipsub announcements still flow over existing TCP connections), runs the setup phase, repairs DNS, then runs the verify phase.
+The test is orchestrated by `make test-resync` which breaks CoreDNS for node-b (so gossip HTTP fetches fail while gossip announcements still flow over existing TCP connections), runs the setup phase, repairs DNS, then runs the verify phase.

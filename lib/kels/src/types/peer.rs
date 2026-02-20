@@ -4,11 +4,23 @@
 
 use std::collections::HashSet;
 
+use cesr::{Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
 use super::Kel;
 use crate::KelsError;
+
+/// Validate that a timestamp is within the acceptable window.
+///
+/// Uses asymmetric bounds: allows up to 5 seconds of clock skew into the future,
+/// but the full `max_age_secs` into the past. This prevents attackers from
+/// pre-signing requests with far-future timestamps for delayed replay.
+pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    let max_future_skew = 5;
+    timestamp <= now + max_future_skew && timestamp >= now - max_age_secs
+}
 
 /// Minimum number of rejection votes required to kill a proposal.
 ///
@@ -21,52 +33,37 @@ pub const REJECTION_THRESHOLD: usize = 2;
 #[serde(rename_all = "camelCase")]
 pub struct SignedRequest<T> {
     pub payload: T,
-    pub peer_id: String,
-    pub public_key: String,
+    pub peer_prefix: String,
     pub signature: String,
 }
 
-/// Scope of a peer in the registry federation.
-///
-/// - `Core`: Replicated to all registries via Raft consensus
-/// - `Regional`: Local to this registry only, not shared across federation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum PeerScope {
-    /// Core peers are replicated across all registries in the federation via Raft consensus.
-    /// Changes to core peers require consensus from the federation leader.
-    Core,
-    /// Regional peers are local to this registry only.
-    /// They are not shared across the federation and can be managed independently.
-    #[default]
-    Regional,
-}
+impl<T: Serialize> SignedRequest<T> {
+    /// Verify the request signature against the current public key from a KEL.
+    ///
+    /// Extracts the public key from the last establishment event, serializes the
+    /// payload to JSON, and verifies the CESR-encoded signature.
+    pub fn verify_signature(&self, kel: &Kel) -> Result<(), KelsError> {
+        let establishment = kel
+            .last_establishment_event()
+            .ok_or_else(|| KelsError::VerificationFailed("No establishment event in KEL".into()))?;
 
-impl PeerScope {
-    /// Returns the string representation of the scope.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PeerScope::Core => "core",
-            PeerScope::Regional => "regional",
-        }
-    }
-}
+        let public_key_qb64 = establishment.event.public_key.as_ref().ok_or_else(|| {
+            KelsError::VerificationFailed("No public key in establishment event".into())
+        })?;
 
-impl std::str::FromStr for PeerScope {
-    type Err = String;
+        let public_key = PublicKey::from_qb64(public_key_qb64)
+            .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "core" => Ok(PeerScope::Core),
-            "regional" => Ok(PeerScope::Regional),
-            _ => Err(format!("Unknown peer scope: {}", s)),
-        }
-    }
-}
+        let signature = Signature::from_qb64(&self.signature)
+            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
 
-impl std::fmt::Display for PeerScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+        let payload_json = serde_json::to_vec(&self.payload)?;
+
+        public_key
+            .verify(&payload_json, &signature)
+            .map_err(|_| KelsError::SignatureVerificationFailed)?;
+
+        Ok(())
     }
 }
 
@@ -85,36 +82,17 @@ pub struct Peer {
     pub version: u64,
     #[created_at]
     pub created_at: StorageDatetime,
-    pub peer_id: String,
+    pub peer_prefix: String,
     pub node_id: String,
     pub authorizing_kel: String,
     pub active: bool,
-    /// Scope of this peer: core (replicated) or regional (local-only)
-    pub scope: PeerScope,
     /// HTTP URL for the KELS service
     pub kels_url: String,
-    /// libp2p multiaddr for gossip connections
-    pub gossip_multiaddr: String,
+    /// Gossip address (host:port)
+    pub gossip_addr: String,
 }
 
 impl Peer {
-    /// Derive the HTTP URL for the gossip service from the multiaddr.
-    /// Assumes HTTP is on port 80 on the same host as the gossip service.
-    /// e.g., `/dns4/kels-gossip.ns.kels/tcp/4001` -> `http://kels-gossip.ns.kels:80`
-    pub fn gossip_http_url(&self) -> Option<String> {
-        // Parse multiaddr to extract host
-        // Format: /dns4/<host>/tcp/<port> or /ip4/<ip>/tcp/<port>
-        let parts: Vec<&str> = self.gossip_multiaddr.split('/').collect();
-        if parts.len() >= 4 {
-            let addr_type = parts[1];
-            let host = parts[2];
-            if addr_type == "dns4" || addr_type == "ip4" {
-                return Some(format!("http://{}:80", host));
-            }
-        }
-        None
-    }
-
     pub fn deactivate(&self) -> Result<Self, verifiable_storage::StorageError> {
         let mut peer = self.clone();
         peer.active = false;
@@ -185,12 +163,12 @@ pub struct PeersResponse {
     pub peers: Vec<PeerHistory>,
 }
 
-/// Status of a core peer proposal.
+/// Status of a peer proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProposalStatus {
     /// Proposal is waiting for votes.
     Pending,
-    /// Threshold met, peer was added/removed from core set.
+    /// Threshold met, peer was added/removed.
     Approved,
     /// Proposal was rejected (majority rejected or expired).
     Rejected,
@@ -452,7 +430,7 @@ pub trait ProposalWithVotesMethods {
     }
 }
 
-/// A proposal to add a core peer, requiring multi-party approval.
+/// A proposal to add a peer, requiring multi-party approval.
 ///
 /// Uses chaining for tamper-evident audit trail:
 /// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_id
@@ -475,12 +453,12 @@ pub struct PeerAdditionProposal {
     pub previous: Option<String>,
     #[version]
     pub version: u64,
-    /// The peer_id being proposed.
-    pub peer_id: String,
+    /// The KELS prefix of the peer being proposed.
+    pub peer_prefix: String,
     /// The node_id being proposed.
     pub node_id: String,
     pub kels_url: String,
-    pub gossip_multiaddr: String,
+    pub gossip_addr: String,
     pub proposer: String,
     /// Approval threshold at time of proposal creation.
     pub threshold: usize,
@@ -498,21 +476,21 @@ impl PeerAdditionProposal {
     /// Create a new empty proposal (v0, no votes yet).
     ///
     /// The prefix (proposal ID) is derived from content - no UUID needed.
-    /// The proposer must submit their vote separately via VoteCorePeer.
+    /// The proposer must submit their vote separately via VotePeer.
     pub fn empty(
-        peer_id: &str,
+        peer_prefix: &str,
         node_id: &str,
         kels_url: &str,
-        gossip_multiaddr: &str,
+        gossip_addr: &str,
         proposer: &str,
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
         Self::create(
-            peer_id.to_string(),
+            peer_prefix.to_string(),
             node_id.to_string(),
             kels_url.to_string(),
-            gossip_multiaddr.to_string(),
+            gossip_addr.to_string(),
             proposer.to_string(),
             threshold,
             expires_at.clone(),
@@ -596,7 +574,7 @@ pub enum ProposalWithVotes {
     Removal(RemovalWithVotes),
 }
 
-/// A proposal to remove a core peer, requiring multi-party approval.
+/// A proposal to remove a peer, requiring multi-party approval.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 pub struct PeerRemovalProposal {
     #[said]
@@ -608,7 +586,7 @@ pub struct PeerRemovalProposal {
     pub previous: Option<String>,
     #[version]
     pub version: u64,
-    pub peer_id: String,
+    pub peer_prefix: String,
     pub proposer: String,
     pub threshold: usize,
     #[created_at]
@@ -620,13 +598,13 @@ pub struct PeerRemovalProposal {
 
 impl PeerRemovalProposal {
     pub fn empty(
-        peer_id: &str,
+        peer_prefix: &str,
         proposer: &str,
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
         Self::create(
-            peer_id.to_string(),
+            peer_prefix.to_string(),
             proposer.to_string(),
             threshold,
             expires_at.clone(),
@@ -719,6 +697,56 @@ mod tests {
     use super::*;
     use verifiable_storage::{Chained, SelfAddressed};
 
+    // ==================== validate_timestamp Tests ====================
+
+    #[test]
+    fn test_timestamp_current_is_valid() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_within_window() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now - 30, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_outside_window() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now - 61, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_within_skew() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now + 3, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_at_skew_boundary() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now + 5, 60));
+    }
+
+    #[test]
+    fn test_timestamp_future_beyond_skew() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now + 6, 60));
+    }
+
+    #[test]
+    fn test_timestamp_far_future_rejected() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(!validate_timestamp(now + 60, 60));
+    }
+
+    #[test]
+    fn test_timestamp_past_at_boundary() {
+        let now = chrono::Utc::now().timestamp();
+        assert!(validate_timestamp(now - 60, 60));
+    }
+
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
     }
@@ -731,7 +759,7 @@ mod tests {
             "peer-1",
             "node-1",
             "http://node-1:8080",
-            "/ip4/127.0.0.1/tcp/4001/p2p/peer-1",
+            "127.0.0.1:4001",
             "ERegistryA",
             2,
             &test_expires_at(),
@@ -755,7 +783,7 @@ mod tests {
             "peer-1",
             "node-1",
             "http://node-1:8080",
-            "/ip4/127.0.0.1/tcp/4001/p2p/peer-1",
+            "127.0.0.1:4001",
             "ERegistryA",
             2,
             &test_expires_at(),

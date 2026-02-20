@@ -5,9 +5,8 @@ This document describes the multi-registry federation architecture that enables 
 ## Overview
 
 Federation enables:
-- **Core peer set**: Global allowlist shared by all registries via Raft consensus
-- **Regional allowlists**: Each registry manages its own local peers
-- **Leader election**: Raft consensus for core set management
+- **Peer set**: Global allowlist shared by all registries via Raft consensus
+- **Leader election**: Raft consensus for peer set management
 - **Multi-party operation**: Different organizations can run their own registries while sharing a global trust backbone
 
 ## Architecture
@@ -22,34 +21,18 @@ Federation enables:
     │   │ Party: Acme │    │ Party: Beta │    │ Party: Gamma│     │
     │   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘     │
     │          │                  │                  │            │
-    │          │     CORE PEER SET (replicated via Raft)          │
-    │          │     + Regional peers (local only)                │
-    │                                                             │
+    │          │     PEER SET (replicated via Raft)  │            │
     └─────────────────────────────────────────────────────────────┘
-              │                    │                    │
-              ▼                    ▼                    ▼
+               │                  │                  │
+               ▼                  ▼                  ▼
     ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
     │ KELS nodes      │  │ KELS nodes      │  │ KELS nodes      │
     │ (Acme region)   │  │ (Beta region)   │  │ (Gamma region)  │
     │                 │  │                 │  │                 │
-    │ Trust: Core +   │  │ Trust: Core +   │  │ Trust: Core +   │
-    │        Acme     │  │        Beta     │  │        Gamma    │
+    │ Trust: peer set │  │ Trust: peer set │  │ Trust: peer set │
+    │                 │  │                 │  │                 │
     └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
-
-## Peer Scopes
-
-### Core Peers
-- Replicated across all federation members via Raft consensus
-- Added or removed through multi-party approval, committed by the leader via Raft
-- All gossip nodes in the federation trust core peers
-
-### Regional Peers
-- Local to a single registry
-- Can be added/removed by any registry operator
-- Only trusted by nodes connected to that registry
-
-The registry serves each gossip node an allowlist of `core_peers ∪ regional_peers`, which the node verifies against its trusted registry prefixes.
 
 ## Raft Consensus
 
@@ -57,17 +40,16 @@ Federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distrib
 
 ### Leader Election
 - Leader is automatically elected from federation members
-- Leader commits approved core peer modifications to the Raft log
-- Follower registries reject core peer writes with an error message indicating the current leader
+- Leader commits approved peer modifications to the Raft log
+- Follower registries reject peer writes with an error message indicating the current leader
 
 ### State Machine
 The Raft state machine maintains:
-- List of core peers (peer_id, node_id, active status, scope)
+- List of peers (peer_prefix, node_id, active status)
 - Each entry is anchored in a trusted registry's KEL (current leader)
 
 ### Fault Tolerance
-- Minimum 3 votes required for core peer approval regardless of federation size, scaling to ceil(n/3) for 10+ members
-- Regional operations continue independently during network partitions
+- Minimum 3 votes required for peer approval regardless of federation size, scaling to ceil(n/3) for 10+ members
 - Leader election occurs automatically if current leader fails
 
 ## Configuration
@@ -141,9 +123,9 @@ Federation Members:
   ERegistryGamma...
 ```
 
-### Adding Core Peers (Multi-Party Approval)
+### Adding Peers (Multi-Party Approval)
 
-Core peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers — though a malicious peer could at most deny service, since all KEL events require valid signatures from the owner's keys and are verified during merge.
+Peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers — though a malicious peer could at most deny service, since all KEL events require valid signatures from the owner's keys and are verified during merge.
 
 **Approval Threshold** (where n = number of federation members):
 
@@ -155,9 +137,9 @@ Core peers require multi-party approval from federation members. This prevents a
 
 Minimum threshold is always 3 votes to prevent trivial collusion. Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), with a hard floor of 3 and a smooth transition toward ceil(n/3) at scale.
 
-**Step 1: Propose a new core peer**
+**Step 1: Propose a new peer**
 
-Any federation member can propose a new core peer:
+Any federation member can propose a new peer:
 
 ```bash
 # From any registry in the federation
@@ -165,7 +147,7 @@ kels-registry-admin peer propose \
   --peer-id Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
-  --gossip-multiaddr /dns4/gossip.node-1.example.com/tcp/4001
+  --gossip-addr gossip.node-1.example.com:4001
 
 # Output:
 # Proposal created: EProposal123...
@@ -182,7 +164,7 @@ kels-registry-admin peer vote --proposal-id EProposal123... --approve
 
 # Output:
 # Vote recorded. Status: 2/2 approvals - APPROVED
-# Peer added to core set.
+# Peer added to peer set.
 ```
 
 **Step 3: Monitor proposals**
@@ -197,11 +179,11 @@ kels-registry-admin peer proposal-status --proposal-id EProposal123...
 
 **Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
 
-### Removing Core Peers (Multi-Party Approval)
+### Removing Peers (Multi-Party Approval)
 
-Core peer removal follows the same multi-party approval process as additions.
+Peer removal follows the same multi-party approval process as additions.
 
-**Step 1: Propose removal of a core peer**
+**Step 1: Propose removal of a peer**
 
 ```bash
 # From any registry in the federation
@@ -220,28 +202,12 @@ kels-registry-admin peer propose-removal \
 kels-registry-admin peer vote --proposal-id EProposal456... --approve
 
 # Output:
-# Removal approved! Peer Qm... removed from core set.
+# Removal approved! Peer Qm... removed from peer set.
 # Progress: 3/3 approvals
-# Peer has been removed from the core set.
+# Peer has been removed from the peer set.
 ```
 
 After approval, the peer is removed from the Raft state machine and deactivated in the database. The peer can be re-added later via a new addition proposal.
-
-### Adding Regional Peers
-
-Regional peers can be added on any registry, but require at least one active core peer to exist first:
-
-```bash
-# On any registry (requires at least one core peer to exist)
-kels-registry-admin peer add --peer-id Qm... --node-id node-regional --scope regional
-
-# If no core peers exist, you'll see:
-# Error: Cannot add regional peer - no active core peers exist.
-# Regional nodes need core nodes to connect to the gossip swarm.
-# Add at least one core peer first with: peer add --scope core ...
-```
-
-**Why this restriction?** Regional nodes need core nodes to bootstrap their gossip connections. Without any core peers, the gossip swarm would be disjoint - regional nodes could not discover or connect to each other.
 
 ## Security Considerations
 
@@ -269,7 +235,7 @@ kels-registry-admin peer add --peer-id Qm... --node-id node-regional --scope reg
 
 If a federation member is compromised:
 
-1. **Detection**: Audit logs show unexpected core peer changes with the rogue registry's prefix
+1. **Detection**: Audit logs show unexpected peer changes with the rogue registry's prefix
 
 2. **Isolation**: Update `TRUSTED_REGISTRY_PREFIXES` on honest registries to exclude the rogue:
    ```bash
@@ -280,23 +246,23 @@ If a federation member is compromised:
    - Rogue is excluded from consensus
    - New leader elected from remaining members
 
-4. **Recovery**: If core peer set was compromised:
+4. **Recovery**: If peer set was compromised:
    ```bash
-   # Manually re-add legitimate core peers
-   kels-registry-admin peer add --scope core --peer-id Qm... --node-id node-1
+   # Manually re-add legitimate peers
+   kels-registry-admin peer add --peer-id Qm... --node-id node-1
    ```
 
 5. **Gossip nodes auto-heal**: Next allowlist refresh removes unauthorized peers
 
 ### Approval Requirements
 
-Core peer changes require the approval threshold described above — minimum 3 votes, scaling to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the core peer set.
+Peer changes require the approval threshold described above — minimum 3 votes, scaling to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the peer set.
 
 ### Split-Brain Protection
 
 - Raft requires majority quorum for log replication
 - Minority partition cannot replicate approved changes
-- Regional operations continue in all partitions
+- Minority partition is read-only until quorum is restored
 
 ## API Endpoints
 
@@ -312,7 +278,7 @@ Returns current federation state including leader, term, and membership.
 GET /api/peers
 ```
 
-Returns combined list of core peers (from Raft state machine) and regional peers (from local database).
+Returns the peer set from the Raft state machine.
 
 ### Registry KELs
 ```
@@ -323,19 +289,13 @@ Returns KELs for all federation members (for cross-registry verification).
 
 ### Admin API (localhost only)
 
-Core peer proposal management:
+Peer proposal management:
 
 ```
-POST   /api/admin/addition-proposals              # Propose a new core peer (addition)
-POST   /api/admin/removal-proposals              # Propose removal of a core peer
+POST   /api/admin/addition-proposals              # Propose a new peer (addition)
+POST   /api/admin/removal-proposals              # Propose removal of a peer
 GET    /api/admin/proposals/:proposal_id         # Get proposal details
 POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
-```
-
-Regional peer management:
-
-```
-POST   /api/admin/peers              # Add a regional peer
 ```
 
 ### Federation RPC (Internal)
@@ -365,12 +325,12 @@ garden run fetch-registry-prefix --env=registry-c
 # Wait for leader election
 sleep 10
 
-# Deploy core nodes
+# Deploy nodes
 garden deploy --env=node-a
 garden deploy --env=node-b
 garden deploy --env=node-c
 
-# Add core peers (requires multi-party approval)
+# Add peers (requires multi-party approval)
 # Step 1: Propose from registry-a
 garden run propose-add-node-a --env=registry-a
 # Output includes proposal ID
@@ -379,10 +339,6 @@ garden run propose-add-node-a --env=registry-a
 garden run vote-peer --env=registry-b --var proposal=EProposal...
 
 # Repeat for node-b and node-c
-
-# Deploy regional node (no approval needed, but requires core peers)
-garden deploy --env=node-d
-garden run add-regional-node-d --env=registry-a
 
 # View federation status
 kubectl exec -n kels-registry-a deploy/kels-registry -- \
@@ -402,6 +358,6 @@ Registry prefixes are stored in `.kels/federated-registries.json`:
 ```
 
 Node environments are mapped to their registries:
-- `node-a` (core), `node-d` (regional) -> `registry-a`
-- `node-b` (core), `node-e` (regional) -> `registry-b`
-- `node-c` (core), `node-f` (regional) -> `registry-c`
+- `node-a`, `node-d` -> `registry-a`
+- `node-b`, `node-e` -> `registry-b`
+- `node-c`, `node-f` -> `registry-c`

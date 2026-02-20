@@ -45,7 +45,7 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 
 ## Roadmap
 
-1. Replace libp2p with gossip based on kels crypto
+1. ~~Replace libp2p with gossip based on kels crypto~~
   a. Fix gossip port 80 hard-coding (break down all environment variables?)
 2. Cleanup & self-audit
 3. Build some example applications
@@ -88,7 +88,7 @@ kels/
 
 - **Server-side caching**: Optional Redis + Local LRU caching for high-throughput deployments (enabled by default for the garden example)
 
-- **Cross-deployment gossip**: libp2p-based gossip protocol synchronizes KELs between independent deployments for high availability
+- **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) synchronizes KELs between independent deployments for high availability
 
 - **Secure node registration**: HSM-backed identities with cryptographic peer allowlist - only authorized nodes can register and participate in gossip
 
@@ -163,12 +163,10 @@ This is the flow:
 3. Rebuild all software to bake prefixes in
 4. Update environment variables as required
 5. Re-deploy registries
-6. Deploy core nodes
-7. Gather node ids
-8. Propose core nodes
-9. Approve core nodes
-10. Deploy regional nodes
-11. Add regional nodes to respective registries
+6. Deploy peers
+7. Gather peer prefixes
+8. Propose peers
+9. Approve peers
 
 This system assumes operators of registries are coordinated.
 
@@ -187,6 +185,15 @@ This system assumes operators of registries are coordinated.
 | Signing only | Sign `ixn` events | `rec` event recovers KEL |
 | Rotation | Sign `rot`, then any events | `rec` event recovers KEL |
 | Rotation + Recovery | Full control | `cnt` event freezes KEL |
+
+### Data Verification Principles
+
+All recorded data in KELS is KEL-backed and verified independently before use:
+
+- **Verify at ingestion**: Any time a service ingests data from an external source (peer, federation, network), it verifies the data's authenticity and provenance before caching or persisting. For peer data, this means full verification of the peer record chain, proposal DAG, vote anchoring in registry KELs, and the peer's own KEL structure.
+- **Authenticate at connection**: When a potentially adversarial peer connects, the handshake is backed by already-verified data — the peer's signature is checked against their current public key from their KEL, which was verified at ingestion time.
+- **Re-verify on refresh**: When re-fetching a peer's KEL (e.g. after key rotation), the KEL structure is fully verified before updating any cached state.
+- **Ephemeral data is the exception**: Only transient protocol messages (handshakes, gossip announcements) are exempt from anchoring. Everything persisted is KEL-backed.
 
 ### Proactive Protection
 
@@ -304,7 +311,7 @@ The provided Garden configuration is a test harness, not a production deployment
 - **Redis authentication and persistence**: Redis runs with no authentication and no persistence (`--appendonly no`). Impact is limited to availability — all data read from Redis is cryptographically re-verified before use, so a compromised Redis cannot influence trust decisions. Redis AUTH and persistence should still be enabled for production
 - **Container security**: All containers run as root with no `securityContext`, no read-only filesystem, and no resource quotas beyond memory limits
 - **Network policies**: No Kubernetes NetworkPolicies are defined — all services are reachable from anywhere in the cluster. The security model does not depend on network isolation for data integrity (all data is end-verifiable), but network policies are still recommended to limit blast radius and protect pod-internal services (HSM, identity)
-- **TLS for internal services**: Data plane communication is plaintext HTTP, which is acceptable by design — all data is public and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC uses `SignedFederationRpc` for integrity, and gossip uses libp2p Noise for authenticated encryption. TLS is only needed for defense-in-depth on internal services that carry secrets (HSM, Redis, PostgreSQL connections)
+- **TLS for internal services**: Data plane communication is plaintext HTTP, which is acceptable by design — all data is public and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC uses `SignedFederationRpc` for integrity, and gossip uses three-DH P-256 + AES-GCM-256 for authenticated encryption. TLS is only needed for defense-in-depth on internal services that carry secrets (HSM, Redis, PostgreSQL connections)
 
 ### Operational gaps
 

@@ -12,6 +12,7 @@ source:
   path: ../..  # Set build context to repository root
 
 include:
+  - lib/gossip/**/*
   - lib/kels/**/*
   - lib/kels-derive/**/*
   - services/kels-gossip/**/*
@@ -40,12 +41,16 @@ dependencies:
   - deploy.kels
   - deploy.redis
   - deploy.hsm
+  - deploy.identity
 
 variables:
-  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
-  gossipAdvertiseAddress: "/dns4/kels-gossip.kels-${environment.name}.kels/tcp/${var.gossip.port}"
-  registryUrl: ${actions.run.federation-read-url.outputs.log}
+  redisUrl: "${var.redis.gossipUrl}"
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
+  gossipAdvertiseAddress: "kels-gossip.kels-${environment.name}.kels:${var.gossip.port}"
+  gossipAntiEntropyIntervalSecs: "${var.gossip.antiEntropyIntervalSecs}"
+  identityUrl: ${var.identity.url}
+  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
+  registryUrl: ${actions.run.federation-read-url.outputs.log}
 
 spec:
   manifestTemplates:

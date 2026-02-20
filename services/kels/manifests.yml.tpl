@@ -49,20 +49,20 @@ spec:
             - name: DATABASE_URL
               value: "${var.kelsDatabaseUrl}"
             - name: REDIS_URL
-              value: "${var.redis.url}"
+              value: "${var.redisUrl}"
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
           livenessProbe:
             httpGet:
               path: /health
               port: 80
-            initialDelaySeconds: 10
+            initialDelaySeconds: 2
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health
               port: 80
-            initialDelaySeconds: 5
+            initialDelaySeconds: 2
             periodSeconds: 5
           resources:
             requests:

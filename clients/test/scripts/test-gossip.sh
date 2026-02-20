@@ -20,7 +20,8 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-2.5}"
+GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
 NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
@@ -78,6 +79,56 @@ wait_for_propagation() {
     sleep "$GOSSIP_PROPAGATION_DELAY"
 }
 
+# Poll until a KEL exists on both nodes (or timeout)
+wait_for_kel_on_both_nodes() {
+    local prefix="$1"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for KEL $prefix to exist on both nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        if kel_exists_on_node "$NODE_A_URL" "$prefix" \
+            && kel_exists_on_node "$NODE_B_URL" "$prefix"; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout waiting for KEL on both nodes"
+    return 1
+}
+
+# Poll until both nodes have matching KELs (or timeout)
+wait_for_convergence() {
+    local prefix="$1"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for KEL $prefix to converge on both nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        if kels_match "$prefix" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    # Final check with error output
+    kels_match "$prefix"
+}
+
+# Poll until event count on a node reaches expected value (or timeout)
+wait_for_event_count() {
+    local url="$1"
+    local prefix="$2"
+    local expected="$3"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for $expected events on $url (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local count
+        count=$(get_event_count "$url" "$prefix")
+        if [ "$count" = "$expected" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: expected $expected events, got $(get_event_count "$url" "$prefix")"
+    return 1
+}
+
 # Check if a KEL exists on a given node
 kel_exists_on_node() {
     local url="$1"
@@ -93,14 +144,18 @@ kel_exists_on_node() {
 get_latest_said() {
     local url="$1"
     local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq -r 'sort_by(.event.version) | .[-1].event.said // empty'
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
+    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
 }
 
 # Get event count for a KEL on a given node
 get_event_count() {
     local url="$1"
     local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq 'length'
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
+    echo "$resp" | jq 'if type == "array" then length else 0 end'
 }
 
 # Compare KELs between nodes (using md5sum of full response)
@@ -153,14 +208,9 @@ echo "Created KEL on node-a: $PREFIX1"
 # Verify it exists on node-a
 run_test "KEL exists on node-a" kel_exists_on_node "$NODE_A_URL" "$PREFIX1"
 
-# Wait for gossip propagation
-wait_for_propagation
-
-# Verify it propagated to node-b
-run_test "KEL propagated to node-b" kel_exists_on_node "$NODE_B_URL" "$PREFIX1"
-
-# Verify SAIDs match
-run_test "KELs match between nodes" kels_match "$PREFIX1"
+# Wait for propagation and verify
+run_test "KEL propagated to node-b" wait_for_kel_on_both_nodes "$PREFIX1"
+run_test "KELs match between nodes" wait_for_convergence "$PREFIX1"
 
 echo ""
 
@@ -178,10 +228,8 @@ run_test "Rotate signing key on node-a" kels-cli -u "$NODE_A_URL" rotate --prefi
 SAID_AFTER_ROTATE=$(get_latest_said "$NODE_A_URL" "$PREFIX1")
 echo "SAID after rotation: $SAID_AFTER_ROTATE"
 
-wait_for_propagation
-
-# Verify node-b has the same SAID
-run_test "Rotation propagated to node-b" kels_match "$PREFIX1"
+# Verify rotation propagated
+run_test "Rotation propagated to node-b" wait_for_convergence "$PREFIX1"
 
 echo ""
 
@@ -196,10 +244,8 @@ echo ""
 TEST_SAID="EGossipTestAnchor___________________________"
 run_test "Anchor data on node-a" kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID"
 
-wait_for_propagation
-
-# Verify node-b has the same event count and SAID
-run_test "Anchor propagated to node-b" kels_match "$PREFIX1"
+# Verify anchor propagated
+run_test "Anchor propagated to node-b" wait_for_convergence "$PREFIX1"
 
 echo ""
 
@@ -224,13 +270,8 @@ kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "EGossipMulti4______
 COUNT_A=$(get_event_count "$NODE_A_URL" "$PREFIX4")
 echo "Node-a has $COUNT_A events"
 
-wait_for_propagation
-
-COUNT_B=$(get_event_count "$NODE_B_URL" "$PREFIX4")
-echo "Node-b has $COUNT_B events"
-
-run_test "All events propagated (count matches)" [ "$COUNT_A" = "$COUNT_B" ]
-run_test "All events propagated (SAIDs match)" kels_match "$PREFIX4"
+# Wait for all events to propagate
+run_test "All events propagated" wait_for_convergence "$PREFIX4"
 
 echo ""
 
@@ -274,7 +315,8 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
 
     kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "EPreDivergence______________________________"
 
-    wait_for_propagation
+    # Wait for pre-divergence events to propagate
+    run_test "Pre-divergence KEL converged" wait_for_convergence "$PREFIX6"
 
     # Inject adversary event on node-a
     kels-cli -u "$NODE_A_URL" adversary inject --prefix "$PREFIX6" --events ixn || true
@@ -282,12 +324,8 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     # Owner event creates divergence
     kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "EOwnerCausesDivergence______________________" 2>&1 || true
 
-    wait_for_propagation
-    wait_for_propagation
-
-    # Check event count on node-b (should have divergent events)
-    COUNT_B=$(get_event_count "$NODE_B_URL" "$PREFIX6")
-    run_test "Divergent events propagated to node-b (4 events)" [ "$COUNT_B" = "4" ]
+    # Wait for divergent events to propagate to node-b (4 events: icp, anchor, adv_ixn, owner_ixn)
+    run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4"
 else
     echo -e "${YELLOW}Skipping: kels-cli not built with --features dev-tools${NC}"
     ((TESTS_PASSED++))  # Count as passed since we can't test
@@ -308,11 +346,8 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
         # Recover on node-a
         run_test "Owner recovers on node-a" kels-cli -u "$NODE_A_URL" recover --prefix "$PREFIX6"
 
-        wait_for_propagation
-        wait_for_propagation
-
-        # Verify recovery propagated - SAIDs should match after recovery
-        run_test "Recovery propagated to node-b" kels_match "$PREFIX6"
+        # Verify recovery propagated
+        run_test "Recovery propagated to node-b" wait_for_convergence "$PREFIX6"
     else
         echo -e "${YELLOW}Skipping: PREFIX6 not set from scenario 6${NC}"
         ((TESTS_PASSED++))
@@ -335,15 +370,14 @@ echo ""
 PREFIX8=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX8"
 
-wait_for_propagation
+# Wait for KEL to propagate before decommission
+run_test "KEL propagated before decommission" wait_for_kel_on_both_nodes "$PREFIX8"
 
 # Decommission on node-a
 run_test "Decommission KEL on node-a" kels-cli -u "$NODE_A_URL" decommission --prefix "$PREFIX8"
 
-wait_for_propagation
-
-# Verify node-b has the decommission event
-run_test "Decommission propagated to node-b" kels_match "$PREFIX8"
+# Verify decommission propagated
+run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8"
 
 # Verify the last event on node-b is a dec event
 LAST_KIND=$(curl -s "$NODE_B_URL/api/kels/kel/$PREFIX8" | jq -r '.[-1].event.kind')

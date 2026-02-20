@@ -20,6 +20,7 @@ pub fn create_router(hsm: Arc<HsmContext>) -> Router {
         .route("/api/hsm/keys", get(handlers::list_keys))
         .route("/api/hsm/keys/:label/public", get(handlers::get_public_key))
         .route("/api/hsm/keys/:label/sign", post(handlers::sign))
+        .route("/api/hsm/keys/:label/ecdh", post(handlers::ecdh))
         .with_state(hsm)
 }
 

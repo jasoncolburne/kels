@@ -242,6 +242,38 @@ pub async fn sign(
     }))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EcdhRequest {
+    pub peer_public_key: String, // base64url-encoded compressed SEC1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EcdhResponse {
+    pub shared_secret: String, // base64url-encoded 32-byte secret
+}
+
+pub async fn ecdh(
+    State(hsm): State<Arc<HsmContext>>,
+    Path(label): Path<String>,
+    Json(request): Json<EcdhRequest>,
+) -> Result<Json<EcdhResponse>, ApiError> {
+    validate_label(&label)?;
+
+    let peer_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&request.peer_public_key)
+        .map_err(|e| ApiError::bad_request(format!("Invalid base64 peer public key: {}", e)))?;
+
+    let shared_secret = hsm.ecdh(&label, &peer_public_key)?;
+
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&shared_secret);
+
+    Ok(Json(EcdhResponse {
+        shared_secret: encoded,
+    }))
+}
+
 pub async fn list_keys(
     State(hsm): State<Arc<HsmContext>>,
 ) -> Result<Json<ListKeysResponse>, ApiError> {

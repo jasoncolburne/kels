@@ -8,9 +8,9 @@ if [ -z "$ENV_NAMESPACE" ]; then
     exit 1
 fi
 
-PEER_ID=$(kubectl logs -n "$ENV_NAMESPACE" deploy/kels-gossip -c kels-gossip 2>/dev/null | rg "Local PeerId: " | jq -r '.fields.message // empty' | cut -f 3 -d ' ')
-if [ -z "$PEER_ID" ]; then
-    echo "Error: Could not fetch PeerId from kels-gossip logs" >&2
+PEER_PREFIX=$(kubectl logs -n "$ENV_NAMESPACE" deploy/kels-gossip -c kels-gossip 2>/dev/null | rg "Local PeerPrefix:" | jq -r '.fields.message // empty' | awk '{print $NF}')
+if [ -z "$PEER_PREFIX" ]; then
+    echo "Error: Could not fetch PeerPrefix from kels-gossip logs" >&2
     exit 1
 fi
-echo -n "$PEER_ID"
+echo -n "$PEER_PREFIX"

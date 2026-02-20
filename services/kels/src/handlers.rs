@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -39,6 +39,12 @@ impl IntoResponse for PreSerializedJson {
 /// Maximum submissions per prefix per minute (sliding window).
 const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
 
+/// Maximum write requests per IP per second (token bucket: refill rate).
+const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+
+/// Burst capacity for per-IP write rate limiting.
+const IP_RATE_LIMIT_BURST: u32 = 1000;
+
 /// Nonce expiry window in seconds (matches the timestamp validation window).
 #[cfg(not(feature = "dev-tools"))]
 const NONCE_WINDOW_SECS: u64 = 60;
@@ -51,6 +57,8 @@ pub(crate) struct AppState {
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
+    pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
     #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) nonce_cache: DashMap<String, Instant>,
@@ -132,6 +140,27 @@ impl ApiError {
             }),
         )
     }
+}
+
+/// Per-IP write rate limiting using a token bucket.
+/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+fn check_ip_rate_limit(
+    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.1 = now;
+    }
+    if entry.0 == 0 {
+        return Err(ApiError::rate_limited("Too many requests"));
+    }
+    entry.0 -= 1;
+    Ok(())
 }
 
 impl From<KelsError> for ApiError {
@@ -256,8 +285,11 @@ pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Js
 /// verify the trust chain.
 pub(crate) async fn submit_events(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
 ) -> Result<Json<BatchSubmitResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
+
     if events.is_empty() {
         return Ok(Json(BatchSubmitResponse {
             diverged_at: None,
@@ -445,12 +477,26 @@ pub(crate) async fn get_kel(
 ) -> Result<Response, ApiError> {
     // If since parameter provided, return delta events after the given SAID
     if let Some(ref since_said) = params.since {
-        let since_event = state
-            .repo
-            .key_events
-            .get_by_said(since_said)
-            .await?
-            .ok_or_else(|| ApiError::not_found(format!("Since SAID {} not found", since_said)))?;
+        let since_event = match state.repo.key_events.get_by_said(since_said).await? {
+            Some(e) => e,
+            None => {
+                // SAID not found as a real event — check if it's a composite effective
+                // SAID for a divergent KEL. If the effective SAID matches, the caller
+                // is already in sync; return empty delta.
+                let effective = state
+                    .repo
+                    .key_events
+                    .compute_prefix_effective_said(&prefix)
+                    .await?;
+                if effective.as_deref() == Some(since_said.as_str()) {
+                    return Ok(Json(Vec::<SignedKeyEvent>::new()).into_response());
+                }
+                return Err(ApiError::not_found(format!(
+                    "Since SAID {} not found",
+                    since_said
+                )));
+            }
+        };
 
         if since_event.prefix != prefix {
             return Err(ApiError::bad_request(
@@ -548,21 +594,13 @@ pub(crate) async fn event_exists(
 /// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     #[cfg(not(feature = "dev-tools"))]
     {
-        let payload_json = serde_json::to_vec(&signed_request.payload)
-            .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
-        kels::p2p_signature::verify_signature(
-            &payload_json,
-            &signed_request.peer_id,
-            &signed_request.public_key,
-            &signed_request.signature,
-        )
-        .map_err(|e| ApiError::forbidden(format!("Signature verification failed: {}", e)))?;
-
-        if !kels::p2p_signature::validate_timestamp(signed_request.payload.timestamp, 60) {
+        if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
             return Err(ApiError::forbidden("Request timestamp expired"));
         }
 
@@ -581,14 +619,29 @@ pub(crate) async fn list_prefixes(
             }
         }
 
-        // Verify peer is in the authorized peer list (cached in Redis)
-        if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
-            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
-
-            if !is_peer_verified(&state.redis_conn, &signed_request.peer_id).await? {
-                return Err(ApiError::forbidden("Peer not authorized"));
+        // Look up peer to verify they are in the verified allowlist
+        let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
+        let _peer = match peer {
+            Some(p) => p,
+            None => {
+                refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+                get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
+                    .await?
+                    .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
             }
-        }
+        };
+
+        // Verify signature against peer's current public key from their KEL
+        let kel = state
+            .repo
+            .key_events
+            .get_kel(&signed_request.peer_prefix)
+            .await
+            .map_err(|_| ApiError::forbidden("Peer KEL not found"))?;
+
+        signed_request
+            .verify_signature(&kel)
+            .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
     }
 
     let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
@@ -600,17 +653,26 @@ pub(crate) async fn list_prefixes(
     Ok(Json(result))
 }
 
-/// Check if a peer_id exists in the Redis verified peers cache.
+/// Look up a verified peer from Redis cache, returning the full Peer data.
 #[cfg(not(feature = "dev-tools"))]
-async fn is_peer_verified(
+async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_id: &str,
-) -> Result<bool, ApiError> {
+    peer_prefix: &str,
+) -> Result<Option<kels::Peer>, ApiError> {
     use redis::AsyncCommands;
     let mut conn = redis_conn.clone();
-    conn.exists::<_, bool>(format!("kels:verified-peer:{}", peer_id))
+    let json: Option<String> = conn
+        .get(format!("kels:verified-peer:{}", peer_prefix))
         .await
-        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))
+        .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+    match json {
+        Some(j) => {
+            let peer: kels::Peer = serde_json::from_str(&j)
+                .map_err(|e| ApiError::internal_error(format!("Deserialization failed: {}", e)))?;
+            Ok(Some(peer))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Fetch verified peers from the registry and store records in Redis.
@@ -639,9 +701,13 @@ async fn refresh_verified_peers(
         {
             let peer_json = serde_json::to_string(peer)
                 .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
-            conn.set::<_, _, ()>(format!("kels:verified-peer:{}", peer.peer_id), peer_json)
-                .await
-                .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
+            conn.set_ex::<_, _, ()>(
+                format!("kels:verified-peer:{}", peer.peer_prefix),
+                peer_json,
+                3600,
+            )
+            .await
+            .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
         }
     }
 
@@ -708,7 +774,18 @@ pub(crate) async fn get_kels_batch(
                         {
                             Some(e) => e,
                             None => {
-                                // SAID not found (archived by recovery) — fall back to full fetch
+                                // SAID not found — check if it's a composite effective SAID
+                                // for a divergent KEL. If the effective SAID matches, the
+                                // caller is in sync; return empty.
+                                let effective = state
+                                    .repo
+                                    .key_events
+                                    .compute_prefix_effective_said(&prefix)
+                                    .await?;
+                                if effective.as_deref() == Some(since_said.as_str()) {
+                                    return Ok((prefix, b"[]".to_vec()));
+                                }
+                                // Otherwise fall back to full fetch (SAID archived by recovery)
                                 warn!(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix

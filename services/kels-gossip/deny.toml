@@ -9,12 +9,7 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = [
-    # libp2p transitive dependencies - tracked upstream
-    { id = "RUSTSEC-2024-0384", reason = "instant unmaintained - transitive via libp2p/futures-ticker" },
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained - transitive via libp2p/netlink-packet-utils" },
-    { id = "RUSTSEC-2026-0002", reason = "lru unsound - transitive via libp2p, awaiting libp2p update" },
-]
+ignore = []
 
 [licenses]
 allow = [
@@ -27,7 +22,6 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "Unlicense",
-    "Zlib",
     "Unicode-3.0",
 ]
 confidence-threshold = 0.8

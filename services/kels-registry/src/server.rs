@@ -10,15 +10,13 @@ use axum::{
 };
 use kels::shutdown_signal;
 use redis::Client as RedisClient;
-use tower_governor::{
-    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
-};
 use verifiable_storage::RepositoryConnection;
+
+use kels::IdentityClient;
 
 use crate::{
     federation::{FederationConfig, FederationNode},
     handlers::{self, AppState, FederationState, RegistryKelState},
-    identity_client::IdentityClient,
     repository::RegistryRepository,
     store::RegistryStore,
 };
@@ -30,13 +28,6 @@ pub fn create_router(
 ) -> Router {
     // Base router with health endpoint
     let base_router = Router::new().route("/health", get(handlers::health));
-
-    let governor_conf = GovernorConfigBuilder::default()
-        .per_second(200)
-        .burst_size(1000)
-        .key_extractor(SmartIpKeyExtractor)
-        .finish()
-        .unwrap_or_else(|| unreachable!("governor config with valid defaults"));
 
     // Registry KEL route
     let kel_router = Router::new()
@@ -51,9 +42,6 @@ pub fn create_router(
             .route("/api/nodes/register", post(handlers::register_node))
             .route("/api/nodes/deregister", post(handlers::deregister_node))
             .route("/api/nodes/status", post(handlers::update_status))
-            .layer(GovernorLayer {
-                config: Arc::new(governor_conf),
-            })
             .with_state(state);
 
         // Peer discovery
@@ -82,13 +70,12 @@ pub fn create_router(
             )
             .route(
                 "/api/admin/proposals/:proposal_id",
-                get(handlers::admin_get_proposal),
+                post(handlers::admin_get_proposal),
             )
             .route(
                 "/api/admin/proposals/:proposal_id/vote",
                 post(handlers::admin_vote_proposal),
-            )
-            .route("/api/admin/peers", post(handlers::admin_add_regional_peer));
+            );
 
         let fed_router = discovery_router
             .merge(federation_router)
@@ -219,6 +206,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         store,
         repo: repo.clone(),
         federation_node,
+        ip_rate_limits: dashmap::DashMap::new(),
     });
 
     let app = create_router(state, registry_kel_state, federation_state)

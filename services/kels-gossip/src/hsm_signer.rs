@@ -1,326 +1,416 @@
-//! HSM-backed signer for libp2p identity
+//! Identity-backed signers for gossip and registry operations.
 //!
-//! Implements the ExternalSigner trait to allow libp2p to use HSM-stored keys.
+//! Provides:
+//! - `IdentityGossipSigner`: implements `gossip::net::Signer` for gossip protocol handshakes
+//! - `KelsPeerVerifier`: implements `gossip::net::PeerVerifier` for peer authentication
+//! - `IdentityRegistrySigner`: implements `kels::RegistrySigner` for registry API requests
+//!
+//! All signing goes through the identity service, which holds the node's single
+//! cryptographic identity (HSM-backed key pair + KEL).
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64};
 use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
-use libp2p_identity::ExternalSigner;
-use p256::{PublicKey as P256PublicKey, ecdsa::DerSignature, elliptic_curve::sec1::ToEncodedPoint};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use p256::{
+    PublicKey as P256PublicKey,
+    ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
+};
 use thiserror::Error;
-use tokio::runtime::Handle;
+
+use gossip::identity::NodePrefix;
+use gossip::net::{Error as GossipError, PeerVerifier, SignatureBundle, Signer};
+
+use crate::allowlist::SharedAllowlist;
 
 #[derive(Error, Debug)]
-pub enum HsmSignerError {
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("HSM error: {0}")]
-    Hsm(String),
+pub enum SignerError {
+    #[error("Identity service error: {0}")]
+    Identity(String),
     #[error("CESR error: {0}")]
     Cesr(#[from] cesr::CesrError),
     #[error("Key error: {0}")]
     Key(String),
-    #[error("Signature error: {0}")]
-    Signature(String),
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GenerateKeyRequest {
-    label: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GenerateKeyResponse {
-    #[allow(dead_code)]
-    label: String,
-    public_key: String, // CESR qb64
-    #[allow(dead_code)]
-    created: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SignRequest {
-    data: String, // base64-encoded
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SignResponse {
-    signature: String, // CESR qb64
-}
-
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    error: String,
-}
-
-/// HSM-backed signer that implements ExternalSigner for libp2p
-pub struct HsmSigner {
-    hsm_url: String,
-    key_label: String,
-    /// Cached uncompressed public key (65 bytes, SEC1 format)
-    public_key_uncompressed: Vec<u8>,
-    client: Client,
-}
-
-impl HsmSigner {
-    /// Create a new HSM signer, fetching or creating the key
-    pub async fn new(hsm_url: String, key_label: String) -> Result<Self, HsmSignerError> {
-        let client = Client::new();
-
-        // Get or create the key
-        let public_key_cesr = Self::get_or_create_key(&client, &hsm_url, &key_label).await?;
-
-        // Decompress the public key for libp2p (needs uncompressed SEC1 format)
-        let public_key_uncompressed = Self::decompress_public_key(&public_key_cesr)?;
-
-        Ok(Self {
-            hsm_url,
-            key_label,
-            public_key_uncompressed,
-            client,
-        })
+/// Decode a CESR qb64 public key to compressed SEC1 bytes (33 bytes).
+fn cesr_pubkey_to_compressed(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, SignerError> {
+    let raw = cesr_key.raw();
+    if raw.len() != 33 {
+        return Err(SignerError::Key(format!(
+            "Expected 33-byte compressed key, got {} bytes",
+            raw.len()
+        )));
     }
+    Ok(raw.to_vec())
+}
 
-    async fn get_or_create_key(
-        client: &Client,
-        hsm_url: &str,
-        label: &str,
-    ) -> Result<CesrPublicKey, HsmSignerError> {
-        let url = format!("{}/api/hsm/keys", hsm_url);
-        let request = GenerateKeyRequest {
-            label: label.to_string(),
-        };
+// ============================================================================
+// IdentityGossipSigner — implements gossip::net::Signer
+// ============================================================================
 
-        let response = client.post(&url).json(&request).send().await?;
+/// Identity service-backed signer for the gossip protocol handshake.
+///
+/// Signs handshake data via the identity service, which uses the same key
+/// that backs the node's identity KEL. This ensures the handshake public key
+/// matches the KEL public key that peers verify against.
+pub struct IdentityGossipSigner {
+    identity_client: kels::IdentityClient,
+    node_prefix: NodePrefix,
+}
 
-        if !response.status().is_success() {
-            let error: ErrorResponse = response.json().await?;
-            return Err(HsmSignerError::Hsm(error.error));
-        }
-
-        let result: GenerateKeyResponse = response.json().await?;
-        let public_key = CesrPublicKey::from_qb64(&result.public_key)?;
-
-        Ok(public_key)
-    }
-
-    /// Decompress a CESR public key to uncompressed SEC1 format (65 bytes)
-    fn decompress_public_key(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, HsmSignerError> {
-        let compressed = cesr_key.raw();
-        if compressed.len() != 33 {
-            return Err(HsmSignerError::Key(format!(
-                "Expected 33-byte compressed key, got {} bytes",
-                compressed.len()
-            )));
-        }
-
-        // Parse as p256 compressed point and convert to uncompressed
-        let public_key = P256PublicKey::from_sec1_bytes(compressed)
-            .map_err(|e| HsmSignerError::Key(format!("Failed to parse public key: {}", e)))?;
-
-        let uncompressed = public_key.to_encoded_point(false);
-        Ok(uncompressed.as_bytes().to_vec())
-    }
-
-    /// Sign data using the HSM (async version)
-    async fn sign_async(&self, data: &[u8]) -> Result<Vec<u8>, HsmSignerError> {
-        let url = format!("{}/api/hsm/keys/{}/sign", self.hsm_url, self.key_label);
-        let request = SignRequest {
-            data: BASE64.encode(data),
-        };
-
-        let response = self.client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            let error: ErrorResponse = response.json().await?;
-            return Err(HsmSignerError::Hsm(error.error));
-        }
-
-        let result: SignResponse = response.json().await?;
-        let signature = CesrSignature::from_qb64(&result.signature)?;
-
-        // Convert raw signature (r||s, 64 bytes) to DER format
-        let der_signature = Self::raw_to_der(signature.raw())?;
-
-        Ok(der_signature)
-    }
-
-    /// Convert raw ECDSA signature (r||s, 64 bytes) to DER format
-    fn raw_to_der(raw: &[u8]) -> Result<Vec<u8>, HsmSignerError> {
-        if raw.len() != 64 {
-            return Err(HsmSignerError::Signature(format!(
-                "Expected 64-byte raw signature, got {} bytes",
-                raw.len()
-            )));
-        }
-
-        // Split into r and s components
-        let r_bytes: [u8; 32] = raw[..32]
-            .try_into()
-            .map_err(|_| HsmSignerError::Signature("Failed to convert r component".into()))?;
-        let s_bytes: [u8; 32] = raw[32..]
-            .try_into()
-            .map_err(|_| HsmSignerError::Signature("Failed to convert s component".into()))?;
-
-        // Create p256 signature from components and convert to DER
-        let signature = p256::ecdsa::Signature::from_scalars(r_bytes, s_bytes).map_err(|e| {
-            HsmSignerError::Signature(format!("Invalid signature components: {}", e))
+impl IdentityGossipSigner {
+    pub fn new(identity_url: &str, peer_prefix: &str) -> Result<Self, SignerError> {
+        let node_prefix = NodePrefix::option_from_str(peer_prefix).ok_or_else(|| {
+            SignerError::Key(format!(
+                "Invalid peer prefix (expected 44 chars): {}",
+                peer_prefix
+            ))
         })?;
 
-        let der: DerSignature = signature.to_der();
-        Ok(der.as_bytes().to_vec())
-    }
-}
-
-impl ExternalSigner for HsmSigner {
-    fn sign_blocking(&self, data: &[u8]) -> Result<Vec<u8>, libp2p_identity::SigningError> {
-        // Block on the async sign operation
-        tokio::task::block_in_place(|| {
-            Handle::current()
-                .block_on(self.sign_async(data))
-                .map_err(|e| libp2p_identity::SigningError::from_message(e.to_string()))
+        Ok(Self {
+            identity_client: kels::IdentityClient::new(identity_url),
+            node_prefix,
         })
     }
+}
 
-    fn public_key_bytes(&self) -> &[u8] {
-        &self.public_key_uncompressed
+impl Signer for IdentityGossipSigner {
+    fn node_prefix(&self) -> NodePrefix {
+        self.node_prefix
+    }
+
+    async fn ecdh(&self, peer_public_key: &[u8]) -> Result<[u8; 32], GossipError> {
+        let result = self
+            .identity_client
+            .ecdh(peer_public_key)
+            .await
+            .map_err(|e| GossipError::Handshake(format!("Identity ECDH failed: {}", e)))?;
+
+        let mut secret = [0u8; 32];
+        if result.len() != 32 {
+            return Err(GossipError::Handshake(format!(
+                "ECDH shared secret wrong length: {} (expected 32)",
+                result.len()
+            )));
+        }
+        secret.copy_from_slice(&result);
+        Ok(secret)
+    }
+
+    async fn sign(&self, data: &[u8]) -> Result<SignatureBundle, GossipError> {
+        // The handshake data is a JSON string (from transport::handshake_payload)
+        let data_str = std::str::from_utf8(data)
+            .map_err(|e| GossipError::Handshake(format!("Handshake data is not UTF-8: {}", e)))?;
+
+        let result = self
+            .identity_client
+            .sign(data_str)
+            .await
+            .map_err(|e| GossipError::Handshake(format!("Identity sign failed: {}", e)))?;
+
+        // Decode CESR signature to raw bytes (r||s, 64 bytes)
+        let cesr_sig = CesrSignature::from_qb64(&result.signature)
+            .map_err(|e| GossipError::Handshake(format!("CESR signature decode: {}", e)))?;
+        let signature = cesr_sig.raw().to_vec();
+
+        // Decode CESR public key to compressed SEC1 bytes (33 bytes)
+        let cesr_pubkey = CesrPublicKey::from_qb64(&result.public_key)
+            .map_err(|e| GossipError::Handshake(format!("CESR pubkey decode: {}", e)))?;
+        let public_key = cesr_pubkey_to_compressed(&cesr_pubkey)
+            .map_err(|e| GossipError::Handshake(format!("pubkey decompress: {}", e)))?;
+
+        Ok(SignatureBundle {
+            signature,
+            public_key,
+        })
     }
 }
 
-/// Create an HSM-backed libp2p keypair
-pub async fn create_hsm_keypair(
-    hsm_url: &str,
-    node_id: &str,
-) -> Result<libp2p_identity::Keypair, HsmSignerError> {
-    let key_label = format!("kels-gossip-{}", node_id);
-    let signer = HsmSigner::new(hsm_url.to_string(), key_label).await?;
-    let signer_arc: Arc<dyn ExternalSigner> = Arc::new(signer);
+// ============================================================================
+// KelsPeerVerifier — implements gossip::net::PeerVerifier
+// ============================================================================
 
-    libp2p_identity::Keypair::from_external(signer_arc)
-        .map_err(|e| HsmSignerError::Key(format!("Failed to create keypair: {}", e)))
-}
-
-/// HSM sign response containing signature and public key
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HsmSignResponse {
-    signature: String,  // CESR qb64
-    public_key: String, // CESR qb64
-}
-
-/// Registry signer implementation using HSM.
+/// Verifies peer identity during gossip handshake using the allowlist and KEL.
 ///
-/// This wraps the HSM to provide signing for registry API requests.
-/// Each sign call returns the signature, public key, and derived peer ID.
-pub struct HsmRegistrySigner {
-    hsm_url: String,
-    key_label: String,
-    client: Client,
+/// Authorization is checked against the allowlist (prefix only). If the peer is
+/// not in the local allowlist, a one-shot refresh from the registry is attempted
+/// before rejecting.
+/// Authentication is checked against the peer's KEL (public key from last
+/// establishment event). On key mismatch (rotation), re-fetches the KEL and retries.
+pub struct KelsPeerVerifier {
+    allowlist: SharedAllowlist,
+    kels_client: kels::KelsClient,
+    federation_registry_urls: Vec<String>,
+    node_id: String,
 }
 
-impl HsmRegistrySigner {
-    /// Create a new HSM registry signer
-    pub fn new(hsm_url: String, node_id: &str) -> Self {
-        let key_label = format!("kels-gossip-{}", node_id);
+impl KelsPeerVerifier {
+    pub fn new(
+        allowlist: SharedAllowlist,
+        kels_url: &str,
+        federation_registry_urls: Vec<String>,
+        node_id: String,
+    ) -> Self {
         Self {
-            hsm_url,
-            key_label,
-            client: Client::new(),
+            allowlist,
+            kels_client: kels::KelsClient::new(kels_url),
+            federation_registry_urls,
+            node_id,
         }
     }
 
-    /// Sign data and return signature, public key, and peer ID
-    async fn sign_async(&self, data: &[u8]) -> Result<kels::SignResult, HsmSignerError> {
-        let url = format!("{}/api/hsm/keys/{}/sign", self.hsm_url, self.key_label);
-        let request = SignRequest {
-            data: BASE64.encode(data),
+    /// Check if a peer is in the allowlist (without refreshing).
+    async fn is_in_allowlist(&self, prefix: &str) -> Result<bool, GossipError> {
+        let guard = self.allowlist.read().await;
+        Ok(guard.contains_key(prefix))
+    }
+
+    /// Refresh the allowlist from the registry, then check again.
+    async fn is_in_allowlist_refreshed(&self, prefix: &str) -> Result<bool, GossipError> {
+        let mut client = kels::MultiRegistryClient::new(self.federation_registry_urls.clone());
+        if let Err(e) =
+            crate::allowlist::refresh_allowlist(&mut client, &self.allowlist, Some(&self.node_id))
+                .await
+        {
+            tracing::warn!("Allowlist refresh during handshake failed: {}", e);
+        }
+
+        self.is_in_allowlist(prefix).await
+    }
+
+    /// Get the current public key from a peer's KEL as compressed SEC1 bytes.
+    async fn public_key_from_kel(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
+        let kel = self.kels_client.get_kel(prefix).await.map_err(|e| {
+            GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
+        })?;
+
+        let event = kel.last_establishment_event().ok_or_else(|| {
+            GossipError::VerificationFailed(format!("No establishment event in KEL for {}", prefix))
+        })?;
+
+        let qb64_key = event.event.public_key.as_ref().ok_or_else(|| {
+            GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
+        })?;
+
+        let cesr_pubkey = CesrPublicKey::from_qb64(qb64_key).map_err(|e| {
+            GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
+        })?;
+
+        cesr_pubkey_to_compressed(&cesr_pubkey)
+            .map_err(|e| GossipError::VerificationFailed(format!("pubkey for {}: {}", prefix, e)))
+    }
+
+    /// Verify signature using P-256 ECDSA.
+    fn verify_signature(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        public_key: &[u8],
+    ) -> Result<(), GossipError> {
+        let p256_pubkey = P256PublicKey::from_sec1_bytes(public_key)
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)))?;
+        let verifying_key = VerifyingKey::from(&p256_pubkey);
+
+        let sig = P256Signature::from_slice(signature)
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid signature: {}", e)))?;
+
+        verifying_key.verify(data, &sig).map_err(|e| {
+            GossipError::VerificationFailed(format!("Signature verification failed: {}", e))
+        })
+    }
+
+    /// Attempt verification: fetch public key from local KEL, compare with handshake
+    /// key, verify signature. Returns Ok(true) on success, Ok(false) on key mismatch
+    /// or KEL not found (so retry_once! will trigger the refresh path).
+    async fn try_verify(
+        &self,
+        prefix: &str,
+        data: &[u8],
+        signature: &[u8],
+        handshake_key: &[u8],
+    ) -> Result<bool, GossipError> {
+        let kel_key = match self.public_key_from_kel(prefix).await {
+            Ok(key) => key,
+            Err(_) => return Ok(false), // KEL not found locally — trigger refresh
+        };
+        if kel_key != handshake_key {
+            return Ok(false);
+        }
+        self.verify_signature(data, signature, handshake_key)?;
+        Ok(true)
+    }
+
+    /// Re-fetch the peer's KEL from their KELS instance, submit it locally, then verify.
+    async fn try_verify_refreshed(
+        &self,
+        prefix: &str,
+        data: &[u8],
+        signature: &[u8],
+        handshake_key: &[u8],
+    ) -> Result<bool, GossipError> {
+        // Look up the peer's remote KELS URL from the allowlist
+        let peer_kels_url = {
+            let guard = self.allowlist.read().await;
+            guard
+                .get(prefix)
+                .map(|p| p.kels_url.clone())
+                .ok_or_else(|| {
+                    GossipError::VerificationFailed(format!("Peer {} not in allowlist", prefix))
+                })?
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        // Fetch KEL from the peer's KELS instance
+        let remote_client = kels::KelsClient::new(&peer_kels_url);
+        let kel = remote_client.get_kel(prefix).await.map_err(|e| {
+            GossipError::VerificationFailed(format!(
+                "Remote KEL fetch for {} from {}: {}",
+                prefix, peer_kels_url, e
+            ))
+        })?;
 
-        if !response.status().is_success() {
-            let error: ErrorResponse = response.json().await?;
-            return Err(HsmSignerError::Hsm(error.error));
+        // Submit the refreshed KEL to our local KELS instance
+        let events: Vec<_> = kel.events().to_vec();
+        if !events.is_empty() {
+            let _ = self.kels_client.submit_events(&events).await;
         }
 
-        let result: HsmSignResponse = response.json().await?;
+        // Retry verification with the now-updated local KEL
+        self.try_verify(prefix, data, signature, handshake_key)
+            .await
+    }
+}
 
-        // Parse the public key and derive peer ID
-        let cesr_pubkey = CesrPublicKey::from_qb64(&result.public_key)?;
-        let uncompressed = HsmSigner::decompress_public_key(&cesr_pubkey)?;
-        let libp2p_pubkey = libp2p_identity::ecdsa::PublicKey::try_from_bytes(&uncompressed)
-            .map_err(|e| HsmSignerError::Key(format!("Failed to create libp2p key: {}", e)))?;
-        let libp2p_keypair_pubkey = libp2p_identity::PublicKey::from(libp2p_pubkey);
-        let peer_id = libp2p_keypair_pubkey.to_peer_id().to_string();
+impl PeerVerifier for KelsPeerVerifier {
+    async fn verify_peer(
+        &self,
+        peer: &NodePrefix,
+        data: &[u8],
+        signature: &[u8],
+        public_key: &[u8],
+    ) -> Result<(), GossipError> {
+        let prefix_str = peer.to_option_string().ok_or_else(|| {
+            GossipError::VerificationFailed("Invalid peer prefix encoding".to_string())
+        })?;
 
-        Ok(kels::SignResult {
-            signature: result.signature,
-            public_key: result.public_key,
-            peer_id,
-        })
+        // Authorization: check peer is in allowlist, refresh once if not found
+        let authorized = kels::retry_once!(
+            self.is_in_allowlist(&prefix_str),
+            |ok: &bool| *ok,
+            self.is_in_allowlist_refreshed(&prefix_str),
+        )
+        .map_err(|e| {
+            GossipError::VerificationFailed(format!("Allowlist check for {}: {}", prefix_str, e))
+        })?;
+
+        if authorized != Some(true) {
+            return Err(GossipError::VerificationFailed(format!(
+                "Peer {} not in allowlist",
+                prefix_str
+            )));
+        }
+
+        // Authentication: verify against local KEL, refresh from peer on mismatch
+        let verified = kels::retry_once!(
+            self.try_verify(&prefix_str, data, signature, public_key),
+            |ok: &bool| *ok,
+            self.try_verify_refreshed(&prefix_str, data, signature, public_key),
+        )
+        .map_err(|e| {
+            GossipError::VerificationFailed(format!("KEL verification for {}: {}", prefix_str, e))
+        })?;
+
+        match verified {
+            Some(true) => Ok(()),
+            _ => Err(GossipError::VerificationFailed(format!(
+                "Peer {} handshake key does not match KEL",
+                prefix_str
+            ))),
+        }
+    }
+}
+
+// ============================================================================
+// IdentityRegistrySigner — implements kels::RegistrySigner
+// ============================================================================
+
+/// Registry signer implementation using the identity service.
+///
+/// Signs registry API requests via the identity service, ensuring the same
+/// key is used for all signing operations (gossip handshakes, registry requests).
+pub struct IdentityRegistrySigner {
+    identity_client: kels::IdentityClient,
+    peer_prefix: String,
+}
+
+impl IdentityRegistrySigner {
+    pub fn new(identity_url: &str, peer_prefix: String) -> Self {
+        Self {
+            identity_client: kels::IdentityClient::new(identity_url),
+            peer_prefix,
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl kels::RegistrySigner for HsmRegistrySigner {
+impl kels::RegistrySigner for IdentityRegistrySigner {
     async fn sign(&self, data: &[u8]) -> Result<kels::SignResult, kels::KelsError> {
-        self.sign_async(data)
+        let data_str = std::str::from_utf8(data)
+            .map_err(|e| kels::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e)))?;
+
+        let result = self
+            .identity_client
+            .sign(data_str)
             .await
-            .map_err(|e| kels::KelsError::SigningFailed(e.to_string()))
+            .map_err(|e| kels::KelsError::SigningFailed(e.to_string()))?;
+
+        Ok(kels::SignResult {
+            signature: result.signature,
+            peer_prefix: self.peer_prefix.clone(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
     use super::*;
 
+    // ==================== SignerError Display Tests ====================
+
     #[test]
-    fn test_raw_to_der() {
-        // Test with a known signature (all 1s to avoid zero scalar issues)
-        let mut raw = vec![1u8; 64];
-        // Make sure the values are valid scalars (less than curve order)
-        raw[0] = 0x01;
-        raw[32] = 0x01;
-        let result = HsmSigner::raw_to_der(&raw);
-        assert!(result.is_ok());
-        let der = result.unwrap();
-        // DER signatures start with 0x30 (SEQUENCE)
-        assert_eq!(der[0], 0x30);
+    fn test_signer_error_identity_display() {
+        let err = SignerError::Identity("service unavailable".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Identity service error: service unavailable"
+        );
     }
 
     #[test]
-    fn test_raw_to_der_wrong_length_short() {
-        let raw = vec![1u8; 32]; // Too short
-        let result = HsmSigner::raw_to_der(&raw);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, HsmSignerError::Signature(_)));
-        assert!(err.to_string().contains("64-byte"));
+    fn test_signer_error_key_display() {
+        let err = SignerError::Key("Invalid key format".to_string());
+        assert_eq!(err.to_string(), "Key error: Invalid key format");
     }
 
-    #[test]
-    fn test_raw_to_der_wrong_length_long() {
-        let raw = vec![1u8; 128]; // Too long
-        let result = HsmSigner::raw_to_der(&raw);
-        assert!(result.is_err());
-    }
+    // ==================== IdentityRegistrySigner Tests ====================
 
     #[test]
-    fn test_raw_to_der_empty() {
-        let result = HsmSigner::raw_to_der(&[]);
-        assert!(result.is_err());
+    fn test_identity_registry_signer_new() {
+        let signer = IdentityRegistrySigner::new(
+            "http://identity:80",
+            "ETestPeerPrefix_____________________________".to_string(),
+        );
+        assert_eq!(
+            signer.peer_prefix,
+            "ETestPeerPrefix_____________________________"
+        );
     }
 
+    // ==================== cesr_pubkey_to_compressed Tests ====================
+
     #[test]
-    fn test_decompress_public_key_valid() {
-        // Use a valid compressed public key
-        // Generate using p256
+    fn test_cesr_pubkey_to_compressed_valid() {
         use p256::ecdsa::SigningKey;
 
         let seed: [u8; 32] = [
@@ -336,47 +426,62 @@ mod tests {
             CesrPublicKey::from_raw(cesr::KeyCode::Secp256r1, compressed.as_bytes().to_vec())
                 .unwrap();
 
-        let result = HsmSigner::decompress_public_key(&cesr_key);
+        let result = cesr_pubkey_to_compressed(&cesr_key);
         assert!(result.is_ok());
-        let uncompressed = result.unwrap();
-        // Uncompressed SEC1 format is 65 bytes (0x04 || x || y)
-        assert_eq!(uncompressed.len(), 65);
-        assert_eq!(uncompressed[0], 0x04);
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), 33);
+        assert!(bytes[0] == 0x02 || bytes[0] == 0x03);
     }
 
-    // ==================== HsmSignerError Display Tests ====================
+    // ==================== KelsPeerVerifier Tests ====================
 
     #[test]
-    fn test_hsm_signer_error_hsm_display() {
-        let err = HsmSignerError::Hsm("HSM unavailable".to_string());
-        assert_eq!(err.to_string(), "HSM error: HSM unavailable");
-    }
+    fn test_kels_peer_verifier_verify_valid_signature() {
+        use p256::ecdsa::{SigningKey, signature::Signer as _};
 
-    #[test]
-    fn test_hsm_signer_error_key_display() {
-        let err = HsmSignerError::Key("Invalid key format".to_string());
-        assert_eq!(err.to_string(), "Key error: Invalid key format");
-    }
+        let seed: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let signing_key = SigningKey::from_slice(&seed).unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let compressed = verifying_key.to_encoded_point(true);
+        let public_key = compressed.as_bytes();
 
-    #[test]
-    fn test_hsm_signer_error_signature_display() {
-        let err = HsmSignerError::Signature("Bad signature".to_string());
-        assert_eq!(err.to_string(), "Signature error: Bad signature");
-    }
+        let data = b"test data to sign";
+        let sig: P256Signature = signing_key.sign(data);
+        let sig_bytes = sig.to_bytes();
 
-    // ==================== HsmRegistrySigner Tests ====================
+        let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let verifier =
+            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
 
-    #[test]
-    fn test_hsm_registry_signer_new() {
-        let signer = HsmRegistrySigner::new("http://localhost:8080".to_string(), "node-1");
-        assert_eq!(signer.hsm_url, "http://localhost:8080");
-        assert_eq!(signer.key_label, "kels-gossip-node-1");
+        let result = verifier.verify_signature(data, &sig_bytes, public_key);
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_hsm_registry_signer_key_label_format() {
-        let signer = HsmRegistrySigner::new("http://hsm".to_string(), "my-node-id");
-        assert!(signer.key_label.starts_with("kels-gossip-"));
-        assert!(signer.key_label.ends_with("my-node-id"));
+    fn test_kels_peer_verifier_verify_bad_signature() {
+        use p256::ecdsa::SigningKey;
+
+        let seed: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let signing_key = SigningKey::from_slice(&seed).unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let compressed = verifying_key.to_encoded_point(true);
+        let public_key = compressed.as_bytes();
+
+        let bad_sig = vec![1u8; 64];
+
+        let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let verifier =
+            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
+
+        let result = verifier.verify_signature(b"test data", &bad_sig, public_key);
+        assert!(result.is_err());
     }
 }

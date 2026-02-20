@@ -21,8 +21,8 @@ A compromised leader controls what enters the Raft log.
 **Attack:** Leader writes `AddPeer` entries for peers that were never approved through the proposal/voting process, or strips withdrawal records from proposal chains to make withdrawn proposals appear approved.
 
 **Mitigations:**
-- **State machine verification**: On Raft log replay, `apply()` checks every `AddPeer` with `PeerScope::Core` against completed proposals. Each approval vote must pass `vote.verify_said()` (SAID integrity) and have its SAID anchored in the voter's KEL. If verified voters < threshold, the entry is silently rejected.
-- **Registry node authorization**: `verify_and_authorize()` independently verifies core peers on every signed request (register, deregister, status update). Full DAG verification: `AdditionWithVotes::verify()` for structural integrity, explicit withdrawal check, proposal record anchoring in proposer's KEL, and vote anchoring in voters' KELs. Data read from the database is never trusted — it is always re-verified.
+- **State machine verification**: On Raft log replay, `apply()` checks every `AddPeer` against completed proposals. Each approval vote must pass `vote.verify_said()` (SAID integrity) and have its SAID anchored in the voter's KEL. If verified voters < threshold, the entry is silently rejected.
+- **Registry node authorization**: `verify_and_authorize()` independently verifies peers on every signed request (register, deregister, status update). Full DAG verification: `AdditionWithVotes::verify()` for structural integrity, explicit withdrawal check, proposal record anchoring in proposer's KEL, and vote anchoring in voters' KELs. Data read from the database is never trusted — it is always re-verified.
 - **Gossip allowlist**: `refresh_allowlist()` independently fetches completed proposals and performs full DAG verification (`AdditionWithVotes::verify()`), verifies proposal anchoring in proposer's KEL, and verifies each approval vote's anchoring in the voter's KEL. Threshold and member set are derived from compiled-in `trusted_prefixes()`, not from registry responses. Peers without sufficient verified votes are excluded from the allowlist.
 - **Defense-in-depth**: Even if a rogue leader inserts a peer into the database, every consumer independently re-verifies the full proposal chain, votes, and anchoring before trusting it.
 
@@ -46,7 +46,7 @@ A compromised follower cannot directly write to the Raft log but could:
 If an attacker gains access to the HSM service:
 
 **Attack:** Sign valid events as the registry — add rogue peers, cast fraudulent votes, anchor malicious data. Because the attacker holds the real signing key, events chain perfectly from the current tail with valid signatures. There is no cryptographic distinction between attacker-signed and operator-signed events.
-- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access. Critically, compromising a single registry's HSM is insufficient to add rogue peers to the federation — core peer approval requires a minimum of 3 votes regardless of federation size, each anchored in the voter's KEL. Adding a rogue peer requires colluding with at least 3 independently operated registries (and compromising their HSMs), which represents a significant operational barrier. Even if a rogue peer were somehow inserted into the database, every consumer (`verify_and_authorize`, gossip allowlist, Raft replay) independently re-verifies the full proposal chain and vote anchoring before trusting it.
+- **Mitigation:** HSM is pod-internal only (not exposed to the overlay network). Compromise requires pod-level access. Critically, compromising a single registry's HSM is insufficient to add rogue peers to the federation — peer approval requires a minimum of 3 votes regardless of federation size, each anchored in the voter's KEL. Adding a rogue peer requires colluding with at least 3 independently operated registries (and compromising their HSMs), which represents a significant operational barrier. Even if a rogue peer were somehow inserted into the database, every consumer (`verify_and_authorize`, gossip allowlist, Raft replay) independently re-verifies the full proposal chain and vote anchoring before trusting it.
 - **Detection:** No cryptographic detection — events are indistinguishable from legitimate ones. Detection is necessarily out-of-band: operators noticing unexpected events in their registry's KEL, or other federation members observing unauthorized proposals, votes, or peer additions that nobody initiated. A rational attacker would not create divergence (which freezes the KEL and is immediately visible) but instead silently extend the chain.
 - **Recovery:** Once detected, the operator submits a `rec` event (requires rotation + recovery key). The merge protocol truncates the attacker's events from the active chain (archiving them for audit) and resumes from the pre-compromise state under a new key. If the attacker has also compromised the rotation key, recovery still works as long as they don't hold the recovery key. If both rotation and recovery keys are compromised, `cnt` (contest) permanently freezes the KEL — the correct outcome when key compromise is total.
 
@@ -60,11 +60,11 @@ If an attacker gains access to the HSM service:
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip messages between nodes.
-- **Mitigation:** libp2p Noise protocol provides authenticated encryption. Messages are signed with `MessageAuthenticity::Signed`. PeerId is cryptographically derived from the node's public key.
+- **Mitigation:** The gossip protocol uses a three-DH handshake (ephemeral-ephemeral, static-ephemeral via HSM, ephemeral-static locally) with AES-GCM-256 authenticated encryption. Session keys are derived from all three shared secrets via BLAKE3, so an attacker needs both the ephemeral session secret and the HSM-held static private key to derive session keys. Handshake signatures are verified against the peer's KEL public key. NodePrefix is derived from the node's identity KEL.
 
 ### Denial of Service — Allowlist Refresh Trigger
 
-**Attack:** Flood the gossip network with connections from unknown PeerIds, triggering repeated allowlist refreshes.
+**Attack:** Flood the gossip network with connections from unknown PeerPrefixes, triggering repeated allowlist refreshes.
 - **Mitigation:** The `refresh_tx` channel has capacity 1 — multiple triggers coalesce into a single refresh. However, there is no rate limiting on inbound connections at the application level.
 - **Residual risk:** Pending verification set is bounded (max 200 peers, 300s TTL) but a sustained flood could still cause legitimate peers to be evicted before verification completes.
 
@@ -80,23 +80,17 @@ If an attacker gains access to the HSM service:
 **Attack:** Publish gossip announcements for non-existent or stale KELs.
 - **Mitigation:** Receivers fetch the actual KEL via HTTP and verify it. False announcements waste bandwidth but don't corrupt state. The `event_exists()` check prevents processing announcements for already-stored events.
 
-### Scope Confusion
-
-**Attack:** A regional node publishes an announcement with `destination: All`, bypassing scope boundaries.
-- **Mitigation:** Only core nodes rebroadcast cross-scope. Regional nodes' messages are filtered by scope at the receiving end. However, the gossipsub mesh does not enforce scope — filtering is application-level.
-
 ### Selective Message Dropping
 
-**Attack:** A core node selectively drops announcements, preventing propagation to certain regions.
-- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. No real-time detection mechanism.
+**Attack:** A compromised node selectively drops announcements, preventing propagation to certain peers.
+- **Mitigation:** PlumTree broadcast redundancy with lazy push repair. Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. Anti-entropy loop (default 10s) detects and repairs silent divergence via prefix page sampling. No real-time detection mechanism.
 
 ## Admin API
 
-### Localhost Bypass
+### ~~Localhost Bypass~~
 
-**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.
-- **Mitigation:** `is_localhost()` checks `SocketAddr.ip().is_loopback()`. This is a network-level check, not an application-level authentication.
-- **Residual risk:** Container networking or reverse proxy misconfiguration could expose localhost. There is no additional authentication on admin endpoints.
+~~**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.~~
+- **Mitigated:** Admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's own identity KEL. Requires HSM-backed signing via the identity service — network position is no longer sufficient for access.
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
@@ -109,7 +103,7 @@ These endpoints have no authentication and return potentially sensitive informat
 
 | Endpoint | Risk | Justification |
 |----------|------|---------------|
-| `GET /api/peers` | Enumerates all active peers with peer_ids, node_ids, multiaddrs | Needed for peer discovery; peer_ids are public (derived from public keys) |
+| `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
 | `GET /api/registry-kel` | Exposes full KEL history | KELs are public by design — verifiability requires availability |
 | `GET /api/registry-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
 | `GET /api/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
@@ -133,34 +127,31 @@ These are intentionally public. The security model relies on cryptographic verif
 
 ## Summary of Residual Risks
 
-1. **Admin API lacks authentication beyond localhost check** — relies on network isolation
+1. ~~**Admin API lacks authentication beyond localhost check**~~ — mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
-4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
-5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption
-6. ~~**gossipsub scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
+4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
+5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption
+6. (removed)
 
 ## Roadmap
 
 Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
-### Rate limiting (addresses residual risks 3, 4)
+### ~~Rate limiting (addresses residual risks 3, 4)~~
 
 No application-level rate limiting exists on any endpoint. The allowlist pending verification set has no TTL or max size, so a connection flood can grow it unboundedly.
 
-- [x] Add rate limiting middleware to the registry HTTP server (per-IP via GovernorLayer on write endpoints: 200 req/s sustained, 1000 burst; 5 MiB body limit)
+- [x] Add rate limiting to the registry HTTP server (per-IP token bucket on write endpoints: 200 req/s refill, 1000 burst; 5 MiB body limit)
 - [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
 
-### Admin API authentication (addresses residual risk 1)
+### ~~Admin API authentication (addresses residual risk 1)~~
 
-The admin API relies solely on `is_localhost()` for access control. Proposal and vote endpoints intentionally have no localhost check — they are the federation RPC path used by remote registries to submit proposals and votes. KEL anchoring (vote SAID must be signed by the voter's key and anchored in their KEL) is the correct security mechanism for these endpoints.
+~~The admin API relies solely on `is_localhost()` for access control.~~ Mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL via HSM-backed signing. Proposal and vote endpoints use KEL anchoring (SAID anchored in proposer/voter KEL) as the security mechanism.
 
-- [ ] Evaluate whether non-federation admin endpoints need an additional authentication layer (e.g., bearer token, mTLS) for defense-in-depth beyond localhost — relevant if container networking or reverse proxy misconfiguration could expose loopback
+- [x] Replace `is_localhost()` with `SignedRequest<AdminRequest>` verification against the node's own identity KEL
 
 ### ~~TLS between services (addresses residual risk 5)~~
 
-~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses libp2p Noise for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
+~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
 
-### ~~Gossip scope enforcement (addresses residual risk 6)~~
-
-~~Scope filtering (Regional vs Core vs All) is application-level.~~ Not a security concern — scope is a routing optimization, not a security boundary. All nodes replicate the same data. Scope violations at worst cause redundant fetches, handled by existing dedup.

@@ -42,6 +42,7 @@ dependencies:
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
+  redisUrl: "${var.redis.registryUrl}"
   identityUrl: ${var.identity.url}
   federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
   federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
@@ -71,10 +72,10 @@ spec:
 
 ---
 
-# Propose core peer actions (creates proposal, outputs proposal ID)
+# Propose peer addition (pass node name via --var node=<name>)
 
 kind: Run
-name: propose-add-node-a
+name: propose-add-peer
 type: exec
 
 source:
@@ -89,54 +90,14 @@ spec:
   command:
     - bash
     - scripts/propose-add-peer.sh
-    - node-a
+    - ${var.node}
 
 ---
 
-kind: Run
-name: propose-add-node-b
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/propose-add-peer.sh
-    - node-b
-
----
+# Propose peer removal (pass node name via --var node=<name>)
 
 kind: Run
-name: propose-add-node-c
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/propose-add-peer.sh
-    - node-c
-
----
-
-# Propose core peer removal actions (creates removal proposal, outputs proposal ID)
-
-kind: Run
-name: propose-remove-node-a
+name: propose-remove-peer
 type: exec
 
 source:
@@ -151,47 +112,7 @@ spec:
   command:
     - bash
     - scripts/propose-remove-peer.sh
-    - node-a
-
----
-
-kind: Run
-name: propose-remove-node-b
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/propose-remove-peer.sh
-    - node-b
-
----
-
-kind: Run
-name: propose-remove-node-c
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/propose-remove-peer.sh
-    - node-c
+    - ${var.node}
 
 ---
 
@@ -243,6 +164,29 @@ spec:
 
 ---
 
+# Get status of a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: proposal-status
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/proposal-status.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+
+---
+
 # Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
 
 kind: Run
@@ -264,65 +208,3 @@ spec:
     - ${var.proposal}
     - ${environment.namespace}
 
----
-
-# Regional peer actions (direct add, no proposal needed)
-
-kind: Run
-name: add-regional-node-d
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/add-regional-node.sh
-    - node-d
-    - ${environment.namespace}
----
-
-kind: Run
-name: add-regional-node-e
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/add-regional-node.sh
-    - node-e
-    - ${environment.namespace}
----
-
-kind: Run
-name: add-regional-node-f
-type: exec
-
-source:
-  path: ../..
-
-disabled: ${var.envType != "registry"}
-
-dependencies:
-  - deploy.kels-registry
-
-spec:
-  command:
-    - bash
-    - scripts/add-regional-node.sh
-    - node-f
-    - ${environment.namespace}

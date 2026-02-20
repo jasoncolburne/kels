@@ -769,7 +769,7 @@ mod impl_log_store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kels::{Peer, PeerScope, RaftLogEntry};
+    use kels::{Peer, RaftLogEntry};
     use openraft::EntryPayload;
 
     #[test]
@@ -835,7 +835,6 @@ mod tests {
             "node-test".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -874,7 +873,6 @@ mod tests {
             "node-test".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -893,9 +891,9 @@ mod tests {
         assert!(
             matches!(
                 raft_entry.payload,
-                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.peer_id == "12D3KooWTest"
+                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.peer_prefix == "12D3KooWTest"
             ),
-            "Expected Normal payload with AddPeer and matching peer_id"
+            "Expected Normal payload with AddPeer and matching peer_prefix"
         );
     }
 
@@ -924,7 +922,6 @@ mod tests {
             "node-test".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Core,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
@@ -979,12 +976,11 @@ mod tests {
             "node-roundtrip".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Regional,
             "http://node-roundtrip:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
-        let request = FederationRequest::RemovePeer(peer.peer_id.clone());
+        let request = FederationRequest::RemovePeer(peer.peer_prefix.clone());
 
         let original = Entry {
             log_id: LogStore::make_log_id(7, 2, 42),
@@ -1007,9 +1003,9 @@ mod tests {
         assert!(
             matches!(
                 recovered.payload,
-                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer_id)) if peer_id == "12D3KooWRoundtrip"
+                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer_prefix)) if peer_prefix == "12D3KooWRoundtrip"
             ),
-            "Expected Normal payload with RemovePeer and matching peer_id"
+            "Expected Normal payload with RemovePeer and matching peer_prefix"
         );
     }
 }

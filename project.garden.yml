@@ -25,38 +25,31 @@ environments:
     variables:
       envType: node
       devTools: true # testing
-      gossipResyncIntervalSecs: "15" # testing
-      nodeType: core
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       envType: node
       devTools: true # testing
-      nodeType: core
   - name: node-c
     defaultNamespace: kels-node-c
     variables:
       envType: node
       devTools: false
-      nodeType: core
   - name: node-d
     defaultNamespace: kels-node-d
     variables:
       envType: node
       devTools: true # testing
-      nodeType: regional
   - name: node-e
     defaultNamespace: kels-node-e
     variables:
       envType: node
       devTools: false
-      nodeType: regional
   - name: node-f
     defaultNamespace: kels-node-f
     variables:
       envType: node
       devTools: false
-      nodeType: regional
 
 providers:
   - name: local-kubernetes
@@ -68,7 +61,6 @@ providers:
     buildMode: local-docker
 
 variables:
-  gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
   rustLogLevel: info
   postgres:
     user: kels_admin
@@ -79,7 +71,15 @@ variables:
   redis:
     host: redis
     port: 6379
-    url: "redis://${var.redis.host}:${var.redis.port}"
+    kelsPassword: "kels-redis-pass"
+    kelsPasswordHash: "7420117681f7f1de993fd5e0080a464e0232d4db1620e273623148f0ba8ac9d3"
+    gossipPassword: "gossip-redis-pass"
+    gossipPasswordHash: "94f18ec001065c2ae1a41d4d2b3bd0cddd76105264833e267336ab8cd1cff0d3"
+    registryPassword: "registry-redis-pass"
+    registryPasswordHash: "77255fc724b574d56ab8e61e31d2596ae013f8ed93aa1562e2c2fa7941a89204"
+    kelsUrl: "redis://kels:${var.redis.kelsPassword}@${var.redis.host}:${var.redis.port}"
+    gossipUrl: "redis://gossip:${var.redis.gossipPassword}@${var.redis.host}:${var.redis.port}"
+    registryUrl: "redis://registry:${var.redis.registryPassword}@${var.redis.host}:${var.redis.port}"
   kels:
     replicas: 2
     host: kels
@@ -88,10 +88,11 @@ variables:
   gossip:
     replicas: 1
     port: 4001
+    httpListenHost: "0.0.0.0"
     httpPort: "80"
     topic: "kels/events/v1"
-    listenAddress: "/ip4/0.0.0.0/tcp/${var.gossip.port}"
-    resyncIntervalSecs: "300"
+    listenAddress: "0.0.0.0:${var.gossip.port}"
+    antiEntropyIntervalSecs: "10"
   registry:
     replicas: 1
     port: "80"

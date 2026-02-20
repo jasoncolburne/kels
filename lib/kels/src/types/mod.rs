@@ -80,9 +80,8 @@ mod tests {
             "node-a".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Regional,
             "http://node-a:8080".to_string(),
-            "/ip4/127.0.0.1/tcp/4001".to_string(),
+            "127.0.0.1:4001".to_string(),
         )
         .unwrap();
 
@@ -92,25 +91,8 @@ mod tests {
         assert!(!peer.said.is_empty());
         // Prefix is derived from content hash, not manually set
         assert!(!peer.prefix.is_empty());
-        assert_eq!(peer.scope, PeerScope::Regional);
         assert_eq!(peer.kels_url, "http://node-a:8080");
-        assert_eq!(peer.gossip_multiaddr, "/ip4/127.0.0.1/tcp/4001");
-    }
-
-    #[test]
-    fn test_peer_creation_with_core_scope() {
-        let peer = Peer::create(
-            "12D3KooWExample".to_string(),
-            "node-b".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
-            true,
-            PeerScope::Core,
-            "http://node-b:8080".to_string(),
-            "/ip4/127.0.0.1/tcp/4002".to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(peer.scope, PeerScope::Core);
+        assert_eq!(peer.gossip_addr, "127.0.0.1:4001");
     }
 
     #[test]
@@ -120,9 +102,8 @@ mod tests {
             "node-a".to_string(),
             "EAuthorizingKel_____________________________".to_string(),
             true,
-            PeerScope::Regional,
             "http://node-a:8080".to_string(),
-            "/ip4/127.0.0.1/tcp/4001".to_string(),
+            "127.0.0.1:4001".to_string(),
         )
         .unwrap();
 
@@ -1017,7 +998,7 @@ mod tests {
             node_id: "node1".to_string(),
             node_type: NodeType::Kels,
             kels_url: "http://localhost:8080".to_string(),
-            gossip_multiaddr: "/ip4/127.0.0.1/tcp/9000".to_string(),
+            gossip_addr: "127.0.0.1:9000".to_string(),
             registered_at: chrono::Utc::now(),
             last_heartbeat: chrono::Utc::now(),
             status: NodeStatus::Ready,
@@ -1294,102 +1275,5 @@ mod tests {
         assert_eq!(parsed.node_id, audit.node_id);
         assert_eq!(parsed.operation, audit.operation);
         assert_eq!(parsed.entries_json, audit.entries_json);
-    }
-
-    // ==================== PeerScope Tests ====================
-
-    #[test]
-    fn test_peer_scope_as_str() {
-        assert_eq!(PeerScope::Core.as_str(), "core");
-        assert_eq!(PeerScope::Regional.as_str(), "regional");
-    }
-
-    #[test]
-    fn test_peer_scope_display() {
-        assert_eq!(format!("{}", PeerScope::Core), "core");
-        assert_eq!(format!("{}", PeerScope::Regional), "regional");
-    }
-
-    #[test]
-    fn test_peer_scope_from_str() {
-        use std::str::FromStr;
-
-        assert_eq!(PeerScope::from_str("core").unwrap(), PeerScope::Core);
-        assert_eq!(
-            PeerScope::from_str("regional").unwrap(),
-            PeerScope::Regional
-        );
-        assert_eq!(PeerScope::from_str("CORE").unwrap(), PeerScope::Core);
-        assert_eq!(
-            PeerScope::from_str("Regional").unwrap(),
-            PeerScope::Regional
-        );
-        assert_eq!(
-            PeerScope::from_str("REGIONAL").unwrap(),
-            PeerScope::Regional
-        );
-    }
-
-    #[test]
-    fn test_peer_scope_from_str_invalid() {
-        use std::str::FromStr;
-
-        let result = PeerScope::from_str("invalid");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("Unknown peer scope"));
-    }
-
-    #[test]
-    fn test_peer_scope_default() {
-        let scope = PeerScope::default();
-        assert_eq!(scope, PeerScope::Regional);
-    }
-
-    #[test]
-    fn test_peer_scope_serialization() {
-        let core_json = serde_json::to_string(&PeerScope::Core).unwrap();
-        assert_eq!(core_json, "\"core\"");
-
-        let regional_json = serde_json::to_string(&PeerScope::Regional).unwrap();
-        assert_eq!(regional_json, "\"regional\"");
-    }
-
-    #[test]
-    fn test_peer_scope_deserialization() {
-        let core: PeerScope = serde_json::from_str("\"core\"").unwrap();
-        assert_eq!(core, PeerScope::Core);
-
-        let regional: PeerScope = serde_json::from_str("\"regional\"").unwrap();
-        assert_eq!(regional, PeerScope::Regional);
-    }
-
-    #[test]
-    fn test_peer_scope_equality() {
-        assert_eq!(PeerScope::Core, PeerScope::Core);
-        assert_eq!(PeerScope::Regional, PeerScope::Regional);
-        assert_ne!(PeerScope::Core, PeerScope::Regional);
-    }
-
-    #[test]
-    fn test_peer_scope_hash() {
-        use std::collections::HashSet;
-
-        let mut set = HashSet::new();
-        set.insert(PeerScope::Core);
-        set.insert(PeerScope::Regional);
-        set.insert(PeerScope::Core); // Duplicate
-
-        assert_eq!(set.len(), 2);
-        assert!(set.contains(&PeerScope::Core));
-        assert!(set.contains(&PeerScope::Regional));
-    }
-
-    #[test]
-    fn test_peer_scope_copy() {
-        let scope = PeerScope::Core;
-        let copied = scope; // Copy, not move
-        assert_eq!(scope, copied);
-        assert_eq!(scope, PeerScope::Core); // Original still usable
     }
 }

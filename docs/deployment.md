@@ -19,7 +19,8 @@ Each **registry** runs:
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
-- `kels-gossip` — libp2p gossip network for KEL replication
+- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
+- `identity` — the node's own cryptographic identity (KEL + signing + ECDH)
 - `hsm` — key storage for gossip peer identity
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
@@ -72,17 +73,11 @@ The registries now form a Raft cluster. Node 0 (the registry whose `id` is 0 in 
 
 Deploy gossip nodes. Each node needs to be authorized in the peer allowlist before it can join the gossip network.
 
-**Core nodes** (replicate across all registries):
-1. Deploy the node's infrastructure (kels, kels-gossip, postgres, redis, hsm)
-2. Propose the node as a core peer from any registry (`kels-registry-admin peer propose-add-peer`)
-3. Vote from each registry to approve (`kels-registry-admin peer vote`)
-4. Restart kels-gossip so it picks up its authorization
+1. Deploy the node's infrastructure (kels, kels-gossip, identity, hsm, postgres, redis)
+2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
+3. Vote from enough registries to approve (`kels-registry-admin peer vote`)
+4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
 5. The node bootstraps: fetches KELs from existing peers, joins the gossip mesh
-
-**Regional nodes** (replicate within one registry's network only):
-1. Deploy the node's infrastructure
-2. Add directly via the registry's admin API (`kels-registry-admin peer add-regional-peer`) — no proposal/vote needed
-3. Restart kels-gossip
 
 ### Phase 5: Verify
 
@@ -116,6 +111,30 @@ Each registry needs two categories of configuration:
 
 If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or the registry's own prefix is not in the trusted members list, the registry runs in standalone mode (no federation, no peer management). This last case enables deploying a new registry before it has been added to the trust anchor.
 
+## Redis Authentication
+
+Redis uses per-service ACL users with least-privilege command sets and key pattern isolation. The `default` user is disabled — unauthenticated access is rejected.
+
+### ACL Users
+
+| User | Keys | Channels | Commands |
+|------|------|----------|----------|
+| `kels` | `kels:kel:*`, `kels:verified-peer:*`, `kels:gossip:ready` (read-only) | `kel_updates` | `GET`, `SET`, `SETEX`, `DEL`, `PUBLISH`, `PING` |
+| `gossip` | `kels:gossip:*`, `kels:anti_entropy:*` | `kel_updates` | `GET`, `SET`, `DEL`, `SUBSCRIBE`, `HSET`, `HGETALL`, `SADD`, `SREM`, `SISMEMBER`, `PING` |
+| `registry` | `kels-registry:*` | — | `GET`, `SET`, `DEL`, `SADD`, `SREM`, `SMEMBERS`, `MULTI`, `EXEC`, `PING` |
+
+### Connection URLs
+
+Each service connects with its own credentials via the Redis URL format `redis://user:password@host:port`. Passwords are configured in `project.garden.yml` under `var.redis.*Password`. Password hashes (SHA-256) are configured under `var.redis.*PasswordHash` and used in the Redis ACL configuration.
+
+### Eviction Policy
+
+The eviction policy is `volatile-lru`, which only evicts keys that have a TTL set. Cache keys (`kels:kel:*`, `kels:verified-peer:*`) have 1-hour TTLs and are reconstructable from the database on miss. Operational keys (gossip state, anti-entropy tracking, node registrations) have no TTL and are never evicted.
+
+### Persistence
+
+RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a PersistentVolumeClaim. This protects operational state across Redis restarts. At most a few minutes of data loss on crash — acceptable since anti-entropy will rediscover stale prefixes and nodes re-register on startup.
+
 ## Node Configuration
 
 ### KELS Service (`kels`)
@@ -123,7 +142,7 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection URL |
-| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated for core nodes, single URL for regional) |
+| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated) |
 | `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
 | `RUST_LOG` | Logging level |
 
@@ -136,28 +155,29 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
 | `REGISTRY_URL` | Primary registry URL for this node |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
-| `GOSSIP_LISTEN_ADDR` | libp2p listen multiaddr (e.g., `/ip4/0.0.0.0/tcp/4001`) |
-| `GOSSIP_ADVERTISE_ADDR` | libp2p advertised multiaddr |
-| `GOSSIP_TOPIC` | Gossip pubsub topic name |
+| `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |
+| `GOSSIP_TOPIC` | Gossip topic name |
 | `HSM_URL` | HSM service URL for gossip peer identity |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
-| `RESYNC_INTERVAL_SECS` | Periodic resync interval (default: 300) |
+| `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
+| `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
 | `RUST_LOG` | Logging level |
 
-## Core Peer Lifecycle
+## Peer Lifecycle
 
-### Adding a Core Peer
+### Adding a Peer
 
-Core peers require multi-party approval (minimum 3 votes from federation members):
+Peers require multi-party approval (minimum 3 votes from federation members):
 
 ```bash
 # From any registry:
 kels-registry-admin peer propose-add-peer \
-  --peer-id <peer_id> \
+  --peer-id <peer_prefix> \
   --node-id <node_id> \
   --kels-url <kels_url> \
-  --gossip-multiaddr <multiaddr>
+  --gossip-addr <host:port>
 
 # Produces a proposal ID. Vote from each registry:
 kels-registry-admin peer vote --proposal <proposal_id> --approve
@@ -166,33 +186,19 @@ kels-registry-admin peer vote --proposal <proposal_id> --approve
 # Restart the node's kels-gossip to pick up authorization.
 ```
 
-### Removing a Core Peer
+### Removing a Peer
 
-Core peer removal also requires multi-party approval:
+Peer removal also requires multi-party approval:
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-removal --peer-id <peer_id>
+kels-registry-admin peer propose-removal --peer-id <peer_prefix>
 
 # Vote from each registry:
 kels-registry-admin peer vote --proposal <proposal_id> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```
-
-### Regional Peers
-
-Regional peers are added by a single registry without federation consensus:
-
-```bash
-kels-registry-admin peer add-regional-peer \
-  --peer-id <peer_id> \
-  --node-id <node_id> \
-  --kels-url <kels_url> \
-  --gossip-multiaddr <multiaddr>
-```
-
-Regional peers only replicate within that registry's network.
 
 ## Approval Threshold
 

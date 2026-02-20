@@ -22,20 +22,14 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 ### Selective Message Dropping
 
-**Attack:** A compromised gossip node selectively drops announcements, preventing propagation to certain peers or regions.
-- **Mitigation:** gossipsub mesh redundancy (mesh target 3, min 2). Announcements propagate through multiple paths. Bootstrap resync catches events missed during the gap. Periodic bootstrap from Ready peers fills gaps.
-- **Residual risk:** No real-time detection of selective dropping. If a core node drops all messages for a specific region, that region may be delayed until the next resync cycle. Periodic resync partially mitigates this: failed gossip fetches are queued and retried against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers.
+**Attack:** A compromised gossip node selectively drops announcements, preventing propagation to certain peers.
+- **Mitigation:** PlumTree broadcast tree redundancy with lazy push (IHave messages via backup peers). Announcements propagate through eager push peers with lazy repair from other peers. Bootstrap resync catches events missed during the gap. Anti-entropy loop detects and repairs silent divergence via periodic random sampling.
+- **Residual risk:** No real-time detection of selective dropping. Affected peers may be delayed until the next anti-entropy cycle. Failed gossip fetches are recorded as stale prefixes and repaired by anti-entropy Phase 1 (default 10s cycle), recovering missed events from alternative peers. Phase 2 repairs unknown mismatches via random prefix page comparison.
 
-### Scope Confusion
+### Gossip Message ID Collision
 
-**Attack:** A regional node publishes an announcement with `destination: All`, bypassing scope boundaries.
-- **Mitigation:** Scope filtering is application-level — the `handle_announcement` method checks `announcement.destination` against `local_scope` and ignores messages not addressed to its scope. Only core nodes rebroadcast regional-to-core announcements as core-to-all.
-- **Residual risk:** The gossipsub mesh itself does not enforce scope. All peers on the same topic receive all messages; filtering is purely application-level. A rogue node on the mesh sees all announcements regardless of scope.
-
-### Gossipsub Message ID Collision
-
-**Attack:** Craft two different announcements with the same content hash to cause message deduplication to drop the legitimate message.
-- **Mitigation:** Message ID is derived from `DefaultHasher::hash` of the raw message data. Two messages with identical content produce the same ID and are deduplicated, which is correct behavior. Different content produces different IDs. The hash is not cryptographic but collision resistance at 64 bits is sufficient for deduplication.
+**Attack:** Craft two different announcements with the same message ID to cause deduplication to drop the legitimate message.
+- **Mitigation:** PlumTree message IDs are derived from content hashing. Two messages with identical content produce the same ID and are deduplicated, which is correct behavior. Different content produces different IDs.
 
 ### Feedback Loop Amplification
 
@@ -53,7 +47,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Bootstrap Prefix Enumeration
 
 **Attack:** Use the `list_prefixes` endpoint to enumerate all prefixes stored on a node.
-- **Mitigation:** `list_prefixes` requires a signed request (ECDSA P-256 signature over the JSON payload). The signer's peer_id must be in the authorized peer allowlist — which is itself verified via the full proposal DAG (structural integrity, KEL anchoring, threshold from compiled-in `trusted_prefixes()`). A 60-second timestamp window prevents replay. Unknown peer_ids trigger an allowlist refresh and recheck.
+- **Mitigation:** `list_prefixes` requires a signed request (ECDSA P-256 signature over the JSON payload). The signer's peer_prefix must be in the authorized peer allowlist — which is itself verified via the full proposal DAG (structural integrity, KEL anchoring, threshold from compiled-in `trusted_prefixes()`). A 60-second timestamp window prevents replay. Unknown peer_prefixes trigger an allowlist refresh and recheck.
 - **Residual risk:** Any authorized gossip peer can enumerate all prefixes. KELs are public by design, so this is information disclosure but not a confidentiality breach.
 
 ### Bootstrap Response Size Explosion
@@ -69,10 +63,10 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 **Attack:** Intercept HTTP traffic between gossip nodes and KELS services.
 - **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. All data is public by design (KELs must be accessible for verification) and end-verifiable (SAID chaining + cryptographic signatures). A MITM can observe public data or inject modified events that fail signature validation. TLS is not required because there is no confidential data to protect and integrity is already guaranteed at the application layer.
 
-### Man-in-the-Middle (libp2p)
+### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip traffic between nodes.
-- **Mitigation:** libp2p Noise protocol provides authenticated encryption. PeerId is cryptographically derived from the node's public key (secp256r1 via HSM). Messages use `MessageAuthenticity::Signed`. Modifying messages invalidates both the Noise encryption and the gossipsub signature.
+- **Mitigation:** The gossip protocol uses a three-DH handshake (ephemeral-ephemeral, static-ephemeral via HSM, ephemeral-static locally) with AES-GCM-256 authenticated encryption. Session keys are derived from all three shared secrets via BLAKE3, so an attacker needs both the ephemeral session secret and the HSM-held static private key to derive session keys. Each peer's handshake signature is verified against their KEL public key via the verified allowlist. Modifying messages invalidates the AES-GCM authentication tag.
 
 ### Replay Attack (Gossip)
 
@@ -87,7 +81,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Denial of Service — Event Submission Flood
 
 **Attack:** Flood `POST /api/kels/events` with valid-looking but ultimately invalid events.
-- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (GovernorLayer: 200 req/s sustained, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
+- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (token bucket: 200 req/s refill, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
 - **Residual risk:** Valid-format signatures that fail later verification still consume database resources within the rate limits.
 
 ### Denial of Service — Batch Request Abuse
@@ -124,53 +118,51 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 ## Summary of Residual Risks
 
-1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
+1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
 2. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable via signatures and SAID chaining. TLS would add confidentiality for non-confidential data and integrity for data that is already tamper-evident
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
-5. ~~**Gossip scope filtering is application-level**~~ — not a security concern: scope is a routing optimization, not a security boundary. All nodes replicate the same data
-6. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
-7. **Redis state flags lack authentication** — relies on pod-level network isolation; impact limited to availability (all data from Redis is cryptographically re-verified)
-8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, periodic resync with retry queue (failed fetches retried against all known peers on configurable interval), but delayed detection remains
+5. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
+7. ~~**Redis state flags lack authentication**~~ — mitigated: per-service Redis ACL users with least-privilege command sets and key pattern isolation; `volatile-lru` eviction protects operational keys (no TTL) from eviction while cache keys (with TTL) are eviction candidates
+8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, anti-entropy stale prefix repair (failed fetches recorded and retried within the next AE cycle), but delayed detection remains
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
 ## Roadmap
 
 Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
-### Rate limiting (addresses residual risks 1, 3, 9)
+### ~~Rate limiting (addresses residual risks 1, 3, 9)~~
 
 No application-level rate limiting exists on any KELS endpoint. Advisory lock contention under high concurrency has no fairness guarantee. Gossip announcement processing has no per-peer or per-prefix throttling, so sustained injection causes repeated HTTP fetches.
 
-- [x] Add rate limiting middleware to the KELS HTTP server (per-IP for write endpoints via GovernorLayer: 200 req/s sustained, 1000 burst; per-prefix for `submit_events`: 32/min; max 500 events per submission; 5 MiB body limit)
+- [x] Add rate limiting to the KELS HTTP server (per-IP token bucket for write endpoints: 200 req/s refill, 1000 burst; per-prefix for `submit_events`: 32/min; max 500 events per submission; 5 MiB body limit)
 - [x] Add per-peer rate limiting on gossip announcement processing (8192 fetches/min per peer)
 - [x] Add per-prefix submission throttle to `submit_events` (32 submissions/min per prefix, in-memory via DashMap)
 
 ### ~~TLS between services (addresses residual risk 2)~~
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses libp2p Noise for authenticated encryption on the p2p transport.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
-### Gossip protocol hardening (addresses residual risks 8, 9)
+### ~~Gossip protocol hardening (addresses residual risks 8, 9)~~
 
-Scope filtering is application-level. There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
+There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
 - [x] Fix event partitioning for contest propagation — `partition_events` now places contest events (`cnt`) in the second (recovery) batch, ensuring the non-contest fork event establishes divergence first. Previously, `dec + cnt` pairs could be partitioned with `cnt` first, which was rejected by merge ("Contest requires divergence")
-- ~~Evaluate per-scope gossipsub topics~~ — not a security concern: scope filtering is a routing optimization, not a security boundary. All nodes replicate the same data. Scope violations at worst cause redundant fetches, which `event_exists` dedup already handles
-- [x] Add periodic resync with retry queue — failed gossip fetches are cached in Redis and retried against all known peers on a configurable interval (default 5 min), using `event_exists` for cheap pre-check before KEL fetch
+- [x] Failed gossip fetches recorded as stale prefixes for anti-entropy repair (consolidated from former retry queue into the anti-entropy loop)
 
 ### ~~Bootstrap integrity (addresses residual risk 4)~~
 
-~~A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.~~ Accepted risk. Cross-validating against multiple peers is expensive at scale (merging prefix sets across all nodes). The resync phase already catches the gap, and all fetched data is cryptographically verified — the worst case is a temporary delay, not state corruption.
+~~A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.~~ Accepted risk. Cross-validating against multiple peers is expensive at scale (merging prefix sets across all nodes). The anti-entropy loop already catches the gap, and all fetched data is cryptographically verified — the worst case is a temporary delay, not state corruption.
 
-### Redis authentication (addresses residual risk 7)
+### ~~Redis authentication (addresses residual risk 7)~~
 
-Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication. A compromised Redis can manipulate node readiness or peer verification cache. Impact is limited to availability — all data read from Redis is cryptographically re-verified before use, so a compromised Redis cannot influence trust decisions. The remaining risk is stale data or premature readiness signals.
+~~Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication.~~ Mitigated: per-service ACL users (`kels`, `gossip`, `registry`) with least-privilege command sets and key pattern isolation. The `default` user is disabled. Cache keys have 1-hour TTLs and `volatile-lru` eviction ensures operational keys (no TTL) are never evicted. All data read from Redis is still cryptographically re-verified before use.
 
-- [ ] Enable Redis AUTH (password or ACL) for all Redis connections
-- [ ] Evaluate signing Redis state values with the node's HSM key — allows consumers to verify state integrity even if Redis is compromised
+- [x] Enable Redis AUTH + per-service ACLs for all Redis connections
+- [ ] ~~Evaluate signing Redis state values with the node's HSM key — allows consumers to verify state integrity even if Redis is compromised~~ Overkill given auth
 
-### Signed request replay window (addresses residual risk 6)
+### ~~Signed request replay window (addresses residual risk 6)~~
 
-~~`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.~~
+`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.
 
 - [x] Add server-side nonce tracking — each `PrefixesRequest` includes a BLAKE3-hashed cryptographic nonce. The server rejects duplicate nonces within the 60s timestamp window, evicting expired entries on each request. Nonce storage is bounded by `max_peers × max_requests_per_peer_per_minute`.

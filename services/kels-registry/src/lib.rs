@@ -7,8 +7,7 @@
 //! # Federation Support
 //!
 //! The registry supports federation across multiple independent registries.
-//! - **Core peers**: Replicated across all registries via Raft consensus
-//! - **Regional peers**: Local to each registry
+//! - **Peers**: Replicated across all registries via Raft consensus
 //! - **Automatic failover**: Leader election handles node failures
 
 #![cfg_attr(
@@ -18,12 +17,10 @@
 
 pub mod federation;
 pub mod handlers;
-pub mod identity_client;
 pub mod peer_store;
 pub mod raft_store;
 pub mod repository;
 pub mod server;
-pub mod signature;
 pub mod store;
 
 pub use federation::{

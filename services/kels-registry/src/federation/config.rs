@@ -136,7 +136,7 @@ impl FederationConfig {
         self.members.iter().any(|m| m.prefix == prefix)
     }
 
-    /// Calculate approval threshold for core peer proposals.
+    /// Calculate approval threshold for peer proposals.
     ///
     /// Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), adapted
     /// with judgement to require unanimity in small federations and a smooth

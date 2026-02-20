@@ -21,7 +21,7 @@ use super::{
     config::FederationConfig,
     types::{FederationError, FederationNodeId, TypeConfig},
 };
-use crate::identity_client::IdentityClient;
+use kels::IdentityClient;
 
 /// Snapshot transfer data for federation RPC.
 ///

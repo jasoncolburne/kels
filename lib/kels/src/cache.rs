@@ -361,13 +361,13 @@ impl ServerKelCache {
 
         let json = serde_json::to_vec(events)?;
 
-        // Store in Redis
+        // Store in Redis with 1-hour TTL (reconstructable from DB on miss)
         let mut conn = self.conn.clone();
         let redis_key = self.redis_key(prefix);
         let _: () = conn
-            .set(&redis_key, &json)
+            .set_ex(&redis_key, &json, 3600)
             .await
-            .map_err(|e| KelsError::CacheError(format!("Redis SET failed: {}", e)))?;
+            .map_err(|e| KelsError::CacheError(format!("Redis SETEX failed: {}", e)))?;
 
         // Update local cache
         {

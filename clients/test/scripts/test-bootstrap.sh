@@ -5,12 +5,10 @@
 # This script tests the KELS peer allowlist and bootstrap sync protocol:
 # 1. Registry lists peers in allowlist
 # 2. Nodes sync KELs during bootstrap
-# 3. Events submitted to regional nodes propagate to core nodes
+# 3. Events submitted to any node propagate to all nodes
 #
 # Node topology:
-#   Registry A: nodes a (core), d (regional)
-#   Registry B: node b (core)
-#   Registry C: node c (core)
+#   All nodes added via proposal/vote through the federation
 #
 # Usage: test-bootstrap.sh
 #
@@ -43,6 +41,8 @@ NODE_D_URL="http://${NODE_D_KELS_HOST}"
 NODE_E_URL="http://${NODE_E_KELS_HOST}"
 NODE_F_URL="http://${NODE_F_KELS_HOST}"
 REGISTRY_URL="http://${REGISTRY_HOST}"
+
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 
 # Test state
 TESTS_PASSED=0
@@ -84,17 +84,83 @@ get_peer_count() {
 }
 
 peer_exists() {
-    local peer_id="$1"
-    curl -s "$REGISTRY_URL/api/peers" | jq -e ".peers[].records[-1] | select(.peerId == \"$peer_id\")" > /dev/null
+    local peer_prefix="$1"
+    curl -s "$REGISTRY_URL/api/peers" | jq -e ".peers[].records[-1] | select(.peerPrefix == \"$peer_prefix\")" > /dev/null
 }
 
 get_prefix_count() {
     local url="$1"
     local body
-    body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:1000},peerId:"test",publicKey:"test",signature:"test"}')
+    body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:1000},peerPrefix:"test",publicKey:"test",signature:"test"}')
     local count
     count=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/kels/prefixes" | jq '.prefixes | length')
     echo "${count:-0}"
+}
+
+kel_exists_on_node() {
+    local url="$1"
+    local prefix="$2"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    while [ $SECONDS -lt $deadline ]; do
+        if curl -s -w "\n%{http_code}" "$url/api/kels/kel/$prefix" | tail -n1 | grep -q "200"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+get_kel_length() {
+    local url="$1"
+    local prefix="$2"
+    local resp
+    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
+    echo "$resp" | jq 'if type == "array" then length else 0 end'
+}
+
+# Poll until prefix counts match between two nodes (or timeout)
+wait_for_prefix_counts_match() {
+    local url_a="$1"
+    local url_b="$2"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for prefix counts to match (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local count_a count_b
+        count_a=$(get_prefix_count "$url_a")
+        count_b=$(get_prefix_count "$url_b")
+        if [ "$count_a" = "$count_b" ]; then
+            echo "Prefix counts match: $count_a"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: counts A=$(get_prefix_count "$url_a") B=$(get_prefix_count "$url_b")"
+    return 1
+}
+
+# Poll until KEL length matches across all 6 nodes (or timeout)
+wait_for_kel_length_on_all_nodes() {
+    local prefix="$1"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for KEL $prefix to have matching length on all nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local len_a len_b len_c len_d len_e len_f
+        len_a=$(get_kel_length "$NODE_A_URL" "$prefix")
+        len_b=$(get_kel_length "$NODE_B_URL" "$prefix")
+        len_c=$(get_kel_length "$NODE_C_URL" "$prefix")
+        len_d=$(get_kel_length "$NODE_D_URL" "$prefix")
+        len_e=$(get_kel_length "$NODE_E_URL" "$prefix")
+        len_f=$(get_kel_length "$NODE_F_URL" "$prefix")
+        if [ "$len_a" = "$len_b" ] && [ "$len_b" = "$len_c" ] \
+            && [ "$len_c" = "$len_d" ] && [ "$len_d" = "$len_e" ] \
+            && [ "$len_e" = "$len_f" ] && [ "$len_a" -gt 0 ]; then
+            echo "All nodes have KEL length: $len_a"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: A=$(get_kel_length "$NODE_A_URL" "$prefix") B=$(get_kel_length "$NODE_B_URL" "$prefix") C=$(get_kel_length "$NODE_C_URL" "$prefix") D=$(get_kel_length "$NODE_D_URL" "$prefix") E=$(get_kel_length "$NODE_E_URL" "$prefix") F=$(get_kel_length "$NODE_F_URL" "$prefix")"
+    return 1
 }
 
 echo "========================================="
@@ -193,7 +259,7 @@ echo "Created: $PREFIX1, $PREFIX2"
 
 # Test prefix listing (POST with mock signed request — dev-tools skips auth)
 RESPONSE=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:10},peerId:"test",publicKey:"test",signature:"test"}')" \
+    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:10},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
     "$NODE_A_URL/api/kels/prefixes")
 echo "Prefix list response: $RESPONSE"
 
@@ -220,7 +286,7 @@ done
 
 # Test pagination with limit=2
 PAGE1=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:2},peerId:"test",publicKey:"test",signature:"test"}')" \
+    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:2},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
     "$NODE_A_URL/api/kels/prefixes")
 CURSOR=$(echo "$PAGE1" | jq -r '.nextCursor // empty')
 PAGE1_COUNT=$(echo "$PAGE1" | jq '.prefixes | length')
@@ -229,7 +295,7 @@ echo "Page 1: $PAGE1_COUNT prefixes, cursor: ${CURSOR:-none}"
 
 if [ -n "$CURSOR" ]; then
     PAGE2=$(curl -s -X POST -H 'Content-Type: application/json' \
-        -d "$(jq -n --arg since "$CURSOR" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:$since,limit:2},peerId:"test",publicKey:"test",signature:"test"}')" \
+        -d "$(jq -n --arg since "$CURSOR" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:$since,limit:2},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
         "$NODE_A_URL/api/kels/prefixes")
     PAGE2_COUNT=$(echo "$PAGE2" | jq '.prefixes | length')
     echo "Page 2: $PAGE2_COUNT prefixes"
@@ -249,25 +315,8 @@ echo -e "${CYAN}=== Scenario 6: Bootstrap Sync Verification ===${NC}"
 echo "Verify KELs created on node-a are visible on node-b"
 echo ""
 
-# Wait for gossip propagation
-sleep 2
-
-# Compare prefix counts
-COUNT_A=$(get_prefix_count "$NODE_A_URL")
-COUNT_B=$(get_prefix_count "$NODE_B_URL")
-
-echo "Node-A prefix count: $COUNT_A"
-echo "Node-B prefix count: $COUNT_B"
-
-# They should be equal after bootstrap sync
-run_test "Prefix counts match between nodes" [ "$COUNT_A" = "$COUNT_B" ]
-
-# Verify specific prefix exists on both
-kel_exists_on_node() {
-    local url="$1"
-    local prefix="$2"
-    curl -s -w "\n%{http_code}" "$url/api/kels/kel/$prefix" | tail -n1 | grep -q "200"
-}
+# Poll until prefix counts match between nodes
+run_test "Prefix counts match between nodes" wait_for_prefix_counts_match "$NODE_A_URL" "$NODE_B_URL"
 
 run_test "Created KEL exists on node-a" kel_exists_on_node "$NODE_A_URL" "$PREFIX1"
 run_test "Created KEL synced to node-b" kel_exists_on_node "$NODE_B_URL" "$PREFIX1"
@@ -280,15 +329,8 @@ echo ""
 # Scenario 7: Cross-Node Event Propagation
 # ========================================
 echo -e "${CYAN}=== Scenario 7: Cross-Node Event Propagation ===${NC}"
-echo "Submit events via node-d (regional peer), verify propagation to nodes b and c"
+echo "Submit events via node-d, verify propagation to all nodes"
 echo ""
-
-# Get the current KEL length on node A (source of truth for this KEL)
-get_kel_length() {
-    local url="$1"
-    local prefix="$2"
-    curl -s "$url/api/kels/kel/$prefix" | jq 'length'
-}
 
 INITIAL_LENGTH_A=$(get_kel_length "$NODE_A_URL" "$PREFIX1")
 echo "Initial KEL length on node-a: $INITIAL_LENGTH_A"
@@ -308,33 +350,12 @@ else
     run_test "Anchor event submitted via node-d" false
 fi
 
-# Wait for gossip propagation
-echo "Waiting for gossip propagation..."
-sleep 6
+# Poll until all nodes have matching KEL length
+run_test "Anchor propagated to all nodes" wait_for_kel_length_on_all_nodes "$PREFIX1"
 
-# Verify KEL length increased on all nodes
+# Verify KEL actually grew
 NEW_LENGTH_A=$(get_kel_length "$NODE_A_URL" "$PREFIX1")
-NEW_LENGTH_B=$(get_kel_length "$NODE_B_URL" "$PREFIX1")
-NEW_LENGTH_C=$(get_kel_length "$NODE_C_URL" "$PREFIX1")
-NEW_LENGTH_D=$(get_kel_length "$NODE_D_URL" "$PREFIX1")
-NEW_LENGTH_E=$(get_kel_length "$NODE_E_URL" "$PREFIX1")
-NEW_LENGTH_F=$(get_kel_length "$NODE_F_URL" "$PREFIX1")
-
-echo "KEL lengths after anchor:"
-echo "  Node-A: $NEW_LENGTH_A"
-echo "  Node-B: $NEW_LENGTH_B"
-echo "  Node-C: $NEW_LENGTH_C"
-echo "  Node-D: $NEW_LENGTH_D"
-echo "  Node-E: $NEW_LENGTH_E"
-echo "  Node-F: $NEW_LENGTH_F"
-
-# All nodes should have the same KEL length, greater than initial
-run_test "KEL grew after anchor on node-a" [ "$NEW_LENGTH_A" -gt "$INITIAL_LENGTH_A" ]
-run_test "Anchor propagated to node-b" [ "$NEW_LENGTH_B" = "$NEW_LENGTH_A" ]
-run_test "Anchor propagated to node-c" [ "$NEW_LENGTH_C" = "$NEW_LENGTH_A" ]
-run_test "Anchor propagated to node-d" [ "$NEW_LENGTH_D" = "$NEW_LENGTH_A" ]
-run_test "Anchor propagated to node-e" [ "$NEW_LENGTH_E" = "$NEW_LENGTH_A" ]
-run_test "Anchor propagated to node-f" [ "$NEW_LENGTH_F" = "$NEW_LENGTH_A" ]
+run_test "KEL grew after anchor" [ "$NEW_LENGTH_A" -gt "$INITIAL_LENGTH_A" ]
 
 echo ""
 
