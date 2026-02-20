@@ -131,7 +131,7 @@ These are intentionally public. The security model relies on cryptographic verif
 1. **Admin API lacks authentication beyond localhost check** — relies on network isolation
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
-4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), 5 MiB body limit
+4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
 5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption
 6. (removed)
 
@@ -143,7 +143,7 @@ Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
 No application-level rate limiting exists on any endpoint. The allowlist pending verification set has no TTL or max size, so a connection flood can grow it unboundedly.
 
-- [x] Add rate limiting middleware to the registry HTTP server (per-IP via GovernorLayer on write endpoints: 200 req/s sustained, 1000 burst; 5 MiB body limit)
+- [x] Add rate limiting to the registry HTTP server (per-IP token bucket on write endpoints: 200 req/s refill, 1000 burst; 5 MiB body limit)
 - [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
 
 ### Admin API authentication (addresses residual risk 1)

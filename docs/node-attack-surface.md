@@ -81,7 +81,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Denial of Service — Event Submission Flood
 
 **Attack:** Flood `POST /api/kels/events` with valid-looking but ultimately invalid events.
-- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (GovernorLayer: 200 req/s sustained, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
+- **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (token bucket: 200 req/s refill, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
 - **Residual risk:** Valid-format signatures that fail later verification still consume database resources within the rate limits.
 
 ### Denial of Service — Batch Request Abuse
@@ -118,7 +118,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 ## Summary of Residual Risks
 
-1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (GovernorLayer), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
+1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
 2. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable via signatures and SAID chaining. TLS would add confidentiality for non-confidential data and integrity for data that is already tamper-evident
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
@@ -135,7 +135,7 @@ Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
 No application-level rate limiting exists on any KELS endpoint. Advisory lock contention under high concurrency has no fairness guarantee. Gossip announcement processing has no per-peer or per-prefix throttling, so sustained injection causes repeated HTTP fetches.
 
-- [x] Add rate limiting middleware to the KELS HTTP server (per-IP for write endpoints via GovernorLayer: 200 req/s sustained, 1000 burst; per-prefix for `submit_events`: 32/min; max 500 events per submission; 5 MiB body limit)
+- [x] Add rate limiting to the KELS HTTP server (per-IP token bucket for write endpoints: 200 req/s refill, 1000 burst; per-prefix for `submit_events`: 32/min; max 500 events per submission; 5 MiB body limit)
 - [x] Add per-peer rate limiting on gossip announcement processing (8192 fetches/min per peer)
 - [x] Add per-prefix submission throttle to `submit_events` (32 submissions/min per prefix, in-memory via DashMap)
 

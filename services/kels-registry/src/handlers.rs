@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
+    time::Instant,
 };
 
 use axum::{
@@ -12,6 +13,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use dashmap::DashMap;
 use kels::{
     AdditionHistory, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel,
     NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
@@ -33,10 +35,18 @@ use crate::{
     store::{RegistryStore, StoreError},
 };
 
+/// Maximum write requests per IP per second (token bucket: refill rate).
+const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+
+/// Burst capacity for per-IP write rate limiting.
+const IP_RATE_LIMIT_BURST: u32 = 1000;
+
 pub struct AppState {
     pub store: RegistryStore,
     pub repo: Arc<RegistryRepository>,
     pub federation_node: Option<Arc<FederationNode>>,
+    /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
+    pub ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -91,6 +101,37 @@ impl ApiError {
             }),
         )
     }
+
+    fn rate_limited(msg: impl Into<String>) -> Self {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: msg.into(),
+                code: ErrorCode::RateLimited,
+            }),
+        )
+    }
+}
+
+/// Per-IP write rate limiting using a token bucket.
+/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+fn check_ip_rate_limit(
+    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.1 = now;
+    }
+    if entry.0 == 0 {
+        return Err(ApiError::rate_limited("Too many requests"));
+    }
+    entry.0 -= 1;
+    Ok(())
 }
 
 impl From<StoreError> for ApiError {
@@ -248,8 +289,10 @@ pub async fn health() -> StatusCode {
 
 pub async fn register_node(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -272,8 +315,10 @@ pub async fn register_node(
 
 pub async fn deregister_node(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
 ) -> Result<StatusCode, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -290,8 +335,10 @@ pub async fn deregister_node(
 
 pub async fn update_status(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
 ) -> Result<Json<NodeRegistration>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     let peer = verify_and_authorize(&state, &signed_request).await?;
     let request = signed_request.payload;
 
@@ -1048,6 +1095,14 @@ mod tests {
         let err = ApiError::internal_error("server crash");
         assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.1.error, "server crash");
+    }
+
+    #[test]
+    fn test_api_error_rate_limited() {
+        let err = ApiError::rate_limited("Too many requests");
+        assert_eq!(err.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.1.code, ErrorCode::RateLimited);
+        assert_eq!(err.1.error, "Too many requests");
     }
 
     // ==================== ApiError From<StoreError> Tests ====================
