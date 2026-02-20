@@ -2,7 +2,7 @@
 
 ## Problem
 
-The approval threshold for core peer proposals is `ceil(n/3)` (minimum 3). With 21 federation members this is 7. Without a rejection mechanism, 7 approvals would add a peer to the core set even if the remaining 14 members all voted to reject. A supermajority saying "no" should not be overridden by a minority saying "yes."
+The approval threshold for peer proposals is `ceil(n/3)` (minimum 3). With 21 federation members this is 7. Without a rejection mechanism, 7 approvals would add a peer even if the remaining 14 members all voted to reject. A supermajority saying "no" should not be overridden by a minority saying "yes."
 
 More concretely: the approval threshold exists to prevent unilateral action by a single compromised registry. But it does nothing to prevent a colluding minority from pushing through a proposal over the objections of the majority. Rejection votes were recorded but had no effect on outcomes — proposals either reached threshold or expired.
 
@@ -14,7 +14,7 @@ Once the second rejection vote is recorded, the proposal is moved to the complet
 
 ## Rationale
 
-**Why not 1?** A single rejection would give any lone federation member veto power over all proposals. This creates a griefing vector — one compromised or uncooperative registry could block all core peer changes indefinitely. The federation would have no recourse short of removing that member from the trusted prefix set (which requires a full redeployment).
+**Why not 1?** A single rejection would give any lone federation member veto power over all proposals. This creates a griefing vector — one compromised or uncooperative registry could block all peer changes indefinitely. The federation would have no recourse short of removing that member from the trusted prefix set (which requires a full redeployment).
 
 **Why not a majority?** Requiring `ceil(n/2)` rejections to block means stopping a colluding minority requires coordinating a majority — exactly as hard as approving the proposal in the first place. If collusion is detected, the honest members shouldn't need to mobilize more people to block than the colluders needed to approve.
 

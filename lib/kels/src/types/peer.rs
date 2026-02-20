@@ -163,12 +163,12 @@ pub struct PeersResponse {
     pub peers: Vec<PeerHistory>,
 }
 
-/// Status of a core peer proposal.
+/// Status of a peer proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProposalStatus {
     /// Proposal is waiting for votes.
     Pending,
-    /// Threshold met, peer was added/removed from core set.
+    /// Threshold met, peer was added/removed.
     Approved,
     /// Proposal was rejected (majority rejected or expired).
     Rejected,
@@ -430,7 +430,7 @@ pub trait ProposalWithVotesMethods {
     }
 }
 
-/// A proposal to add a core peer, requiring multi-party approval.
+/// A proposal to add a peer, requiring multi-party approval.
 ///
 /// Uses chaining for tamper-evident audit trail:
 /// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_id
@@ -476,7 +476,7 @@ impl PeerAdditionProposal {
     /// Create a new empty proposal (v0, no votes yet).
     ///
     /// The prefix (proposal ID) is derived from content - no UUID needed.
-    /// The proposer must submit their vote separately via VoteCorePeer.
+    /// The proposer must submit their vote separately via VotePeer.
     pub fn empty(
         peer_prefix: &str,
         node_id: &str,
@@ -574,7 +574,7 @@ pub enum ProposalWithVotes {
     Removal(RemovalWithVotes),
 }
 
-/// A proposal to remove a core peer, requiring multi-party approval.
+/// A proposal to remove a peer, requiring multi-party approval.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 pub struct PeerRemovalProposal {
     #[said]

@@ -511,7 +511,7 @@ pub async fn list_completed_proposals(
 
     let active_peer_prefixes: HashSet<String> = state
         .node
-        .core_peers()
+        .peers()
         .await
         .into_iter()
         .filter(|p| p.active)
@@ -574,7 +574,7 @@ async fn verify_admin_request<T: Serialize>(
     Ok(())
 }
 
-/// Request to add a core peer.
+/// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
     pub peer_prefix: String,
@@ -945,7 +945,7 @@ pub async fn admin_vote_proposal(
 
     let response = state
         .node
-        .vote_core_peer(proposal_id.clone(), vote)
+        .vote_peer(proposal_id.clone(), vote)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -967,10 +967,7 @@ pub async fn admin_vote_proposal(
             peer,
         } => {
             let message = if approved {
-                format!(
-                    "Proposal approved! Peer {:?} added to core set.",
-                    peer.map(|p| p.said)
-                )
+                format!("Proposal approved! Peer {:?} added.", peer.map(|p| p.said))
             } else {
                 format!(
                     "Vote recorded. {} of {} approvals.",
@@ -999,10 +996,7 @@ pub async fn admin_vote_proposal(
             status: "removal_approved".to_string(),
             votes_needed,
             current_votes,
-            message: format!(
-                "Removal approved! Peer {} removed from core set.",
-                peer_prefix
-            ),
+            message: format!("Removal approved! Peer {} removed.", peer_prefix),
         })),
         FederationResponse::ProposalNotFound(id) => {
             Err(ApiError::not_found(format!("Proposal not found: {}", id)))
@@ -1034,7 +1028,7 @@ pub async fn admin_vote_proposal(
 pub async fn list_peers_federated(
     State(state): State<Arc<FederationState>>,
 ) -> Result<Json<PeersResponse>, ApiError> {
-    let core_peers = state.node.core_peers().await;
+    let core_peers = state.node.peers().await;
 
     let histories: Vec<PeerHistory> = core_peers
         .into_iter()

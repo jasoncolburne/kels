@@ -553,7 +553,7 @@ impl MultiRegistryClient {
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
     ///
     /// Performs full verification: structural integrity, peer anchoring in registry KEL,
-    /// and core peer vote verification. Peers that fail any check are excluded.
+    /// and peer vote verification. Peers that fail any check are excluded.
     pub async fn list_verified_nodes_info(
         &mut self,
         prefix: &str,
@@ -600,7 +600,7 @@ impl MultiRegistryClient {
 
                     // Verify proposal + votes
                     if !self
-                        .verify_core_peer_votes(&peer.peer_prefix, &proposals_response)
+                        .verify_peer_votes(&peer.peer_prefix, &proposals_response)
                         .await
                     {
                         warn!(
@@ -681,20 +681,20 @@ impl MultiRegistryClient {
         Ok(maybe_kel.is_some())
     }
 
-    /// Verify that a core peer has an approved proposal backed by sufficient anchored votes.
+    /// Verify that a peer has an approved proposal backed by sufficient anchored votes.
     ///
     /// Performs full DAG verification:
     /// 1. Structural: proposal chain integrity, vote SAIDs, vote references
     /// 2. Proposal anchoring: each proposal record's SAID anchored in proposer's KEL
     /// 3. Vote anchoring: each approval vote's SAID anchored in voter's KEL
     /// 4. Status: must be Approved with threshold verified votes
-    pub async fn verify_core_peer_votes(
+    pub async fn verify_peer_votes(
         &mut self,
         peer_prefix: &str,
         proposals_response: &Option<CompletedProposalsResponse>,
     ) -> bool {
         let Some(response) = proposals_response else {
-            warn!(peer_prefix = %peer_prefix, "No proposals available for core peer vote verification");
+            warn!(peer_prefix = %peer_prefix, "No proposals available for peer vote verification");
             return false;
         };
 
@@ -735,7 +735,7 @@ impl MultiRegistryClient {
         }
 
         if candidates.is_empty() {
-            info!(peer_prefix = %peer_prefix, "No approved proposal found for core peer");
+            info!(peer_prefix = %peer_prefix, "No approved proposal found for peer");
             return false;
         }
 
@@ -802,7 +802,7 @@ impl MultiRegistryClient {
             warn!(peer_prefix = %peer_prefix, kind = kind, "Proposal failed verification, trying next");
         }
 
-        warn!(peer_prefix = %peer_prefix, "No proposal passed verification for core peer");
+        warn!(peer_prefix = %peer_prefix, "No proposal passed verification for peer");
         false
     }
 
@@ -913,7 +913,7 @@ impl MultiRegistryClient {
                 peer_prefix = %peer_prefix,
                 verified = verified_voters.len(),
                 threshold = threshold,
-                "Insufficient verified votes for {} of core peer", kind
+                "Insufficient verified votes for {} of peer", kind
             );
             return false;
         }

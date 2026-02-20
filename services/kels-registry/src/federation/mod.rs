@@ -2,8 +2,7 @@
 //!
 //! This module implements registry federation using OpenRaft for consensus.
 //! Multiple registries can form a federation where:
-//! - Core peers are replicated across all registries via Raft consensus
-//! - Regional peers remain local to each registry
+//! - Peers are replicated across all registries via Raft consensus
 //! - Leader election handles automatic failover
 //!
 //! # Architecture
@@ -12,7 +11,7 @@
 //!     Registry A (Leader) ◄──► Registry B (Follower) ◄──► Registry C (Follower)
 //!            │                        │                        │
 //!            └────────────────────────┴────────────────────────┘
-//!                      Core Peer Set (replicated via Raft)
+//!                        Peer Set (replicated via Raft)
 //! ```
 
 mod config;
@@ -52,7 +51,7 @@ use crate::repository::RegistryRepository;
 ///
 /// Each registry runs a FederationNode that:
 /// - Participates in Raft consensus with other registries
-/// - Replicates core peer set changes
+/// - Replicates peer set changes
 /// - Caches member KELs for signature verification
 pub struct FederationNode {
     /// The Raft consensus instance
@@ -240,10 +239,10 @@ impl FederationNode {
         &self.config
     }
 
-    /// Propose adding a core peer (leader only).
+    /// Propose adding a peer (leader only).
     ///
     /// This will replicate the peer to all registries via Raft consensus.
-    pub async fn add_core_peer(&self, peer: Peer) -> Result<(), FederationError> {
+    pub async fn add_peer(&self, peer: Peer) -> Result<(), FederationError> {
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
                 leader_prefix: self.leader_prefix().await,
@@ -260,8 +259,8 @@ impl FederationNode {
         Ok(())
     }
 
-    /// Propose removing a core peer (leader only).
-    pub async fn remove_core_peer(&self, peer_prefix: &str) -> Result<(), FederationError> {
+    /// Propose removing a peer (leader only).
+    pub async fn remove_peer(&self, peer_prefix: &str) -> Result<(), FederationError> {
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
                 leader_prefix: self.leader_prefix().await,
@@ -327,8 +326,8 @@ impl FederationNode {
         Ok(result.response().clone())
     }
 
-    /// Vote on a core peer proposal (leader only).
-    pub async fn vote_core_peer(
+    /// Vote on a peer proposal (leader only).
+    pub async fn vote_peer(
         &self,
         proposal_id: String,
         vote: Vote,
@@ -340,7 +339,7 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::VoteCorePeer { proposal_id, vote };
+        let request = FederationRequest::VotePeer { proposal_id, vote };
 
         let result = self
             .raft
@@ -524,8 +523,8 @@ impl FederationNode {
         self.config.approval_threshold()
     }
 
-    /// Get the current core peer set from the state machine.
-    pub async fn core_peers(&self) -> Vec<Peer> {
+    /// Get the current peer set from the state machine.
+    pub async fn peers(&self) -> Vec<Peer> {
         self.state_machine.inner().lock().await.peers()
     }
 

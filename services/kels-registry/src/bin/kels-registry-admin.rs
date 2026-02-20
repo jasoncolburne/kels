@@ -76,7 +76,7 @@ enum PeerAction {
     },
     /// List all peers in the allowlist
     List,
-    /// Propose a new core peer (requires multi-party approval)
+    /// Propose a new peer (requires multi-party approval)
     Propose {
         /// Peer identity (KELS prefix)
         #[arg(long)]
@@ -91,9 +91,9 @@ enum PeerAction {
         #[arg(long)]
         gossip_addr: String,
     },
-    /// Propose removing a core peer (requires multi-party approval)
+    /// Propose removing a peer (requires multi-party approval)
     ProposeRemoval {
-        /// Peer ID of the core peer to remove
+        /// Peer prefix of the peer to remove
         #[arg(long)]
         peer_prefix: String,
     },
@@ -610,9 +610,9 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
                 result.current_votes, result.votes_needed
             );
             if result.status == "approved" {
-                println!("Peer has been added to the core set.");
+                println!("Peer has been added.");
             } else if result.status == "removal_approved" {
-                println!("Peer has been removed from the core set.");
+                println!("Peer has been removed.");
             }
             return Ok(());
         }

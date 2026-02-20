@@ -31,7 +31,7 @@ pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
 /// 1. Fetches the registry's KEL and verifies its integrity
 /// 2. Checks that the registry prefix matches the expected trust anchor
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
-/// 4. For core peers: verifies an approved proposal exists with sufficient votes,
+/// 4. For peers: verifies an approved proposal exists with sufficient votes,
 ///    where each vote passes SAID integrity (`verify()`) and KEL anchoring checks
 ///
 /// Returns the number of authorized peers in the updated allowlist.
@@ -51,7 +51,7 @@ pub async fn refresh_allowlist(
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
 
-    // Fetch completed proposals for core peer vote verification
+    // Fetch completed proposals for peer vote verification
     let proposals_response = registry_client.fetch_completed_proposals().await.ok();
 
     let mut authorized_peers = HashMap::new();
@@ -93,7 +93,7 @@ pub async fn refresh_allowlist(
 
             // Verify the proposal has sufficient verified votes
             if !registry_client
-                .verify_core_peer_votes(&latest.peer_prefix, &proposals_response)
+                .verify_peer_votes(&latest.peer_prefix, &proposals_response)
                 .await
             {
                 warn!(

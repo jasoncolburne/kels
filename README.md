@@ -163,12 +163,10 @@ This is the flow:
 3. Rebuild all software to bake prefixes in
 4. Update environment variables as required
 5. Re-deploy registries
-6. Deploy core nodes
-7. Gather node ids
-8. Propose core nodes
-9. Approve core nodes
-10. Deploy regional nodes
-11. Add regional nodes to respective registries
+6. Deploy peers
+7. Gather peer prefixes
+8. Propose peers
+9. Approve peers
 
 This system assumes operators of registries are coordinated.
 

@@ -1,4 +1,4 @@
-//! Raft state machine for the core peer set.
+//! Raft state machine for the peer set.
 
 use std::{
     collections::HashMap,
@@ -20,13 +20,13 @@ use verifiable_storage_postgres::{Order, Query, QueryExecutor};
 
 use super::{
     config::FederationConfig,
-    types::{CorePeerSnapshot, FederationRequest, FederationResponse, TypeConfig},
+    types::{FederationRequest, FederationResponse, PeerSnapshot, TypeConfig},
 };
 use kels::IdentityClient;
 
 use crate::peer_store::PeerRepository;
 
-/// State machine that manages the core peer set.
+/// State machine that manages the peer set.
 ///
 /// This is the replicated state - all federation members maintain
 /// an identical copy through Raft consensus.
@@ -36,7 +36,7 @@ pub struct StateMachineData {
     pub last_applied_log: Option<LogId<TypeConfig>>,
     /// Last membership configuration
     pub last_membership: StoredMembership<TypeConfig>,
-    /// The core peer set (keyed by peer_prefix for efficient lookup)
+    /// The peer set (keyed by peer_prefix for efficient lookup)
     pub peers: HashMap<String, Peer>,
     /// Pending addition proposals awaiting votes (keyed by proposal prefix/proposal_id)
     pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
@@ -56,7 +56,7 @@ impl StateMachineData {
         Self::default()
     }
 
-    /// Get all core peers.
+    /// Get all peers.
     pub fn peers(&self) -> Vec<Peer> {
         self.peers.values().cloned().collect()
     }
@@ -66,7 +66,7 @@ impl StateMachineData {
         self.peers.get(peer_prefix)
     }
 
-    /// Check whether a core peer has an approved proposal backed by sufficient
+    /// Check whether a peer has an approved proposal backed by sufficient
     /// unique votes from trusted member prefixes.
     ///
     /// Returns the set of verified voter prefixes if a valid proposal exists,
@@ -164,7 +164,7 @@ impl StateMachineData {
             }
             FederationRequest::RemovePeer(peer_prefix) => {
                 if self.peers.remove(&peer_prefix).is_some() {
-                    info!("Removed core peer: {}", peer_prefix);
+                    info!("Removed peer: {}", peer_prefix);
                     FederationResponse::PeerRemoved(peer_prefix)
                 } else {
                     debug!("Peer not found for removal: {}", peer_prefix);
@@ -194,7 +194,7 @@ impl StateMachineData {
                         proposal_id = %proposal_id,
                         peer_prefix = %submitted.peer_prefix,
                         proposer = %submitted.proposer,
-                        "Created core peer addition proposal (v0, awaiting votes)"
+                        "Created peer addition proposal (v0, awaiting votes)"
                     );
 
                     self.pending_addition_proposals
@@ -293,7 +293,7 @@ impl StateMachineData {
                         proposal_id = %proposal_id,
                         peer_prefix = %submitted.peer_prefix,
                         proposer = %submitted.proposer,
-                        "Created core peer removal proposal (v0, awaiting votes)"
+                        "Created peer removal proposal (v0, awaiting votes)"
                     );
 
                     self.pending_removal_proposals
@@ -366,7 +366,7 @@ impl StateMachineData {
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
-            FederationRequest::VoteCorePeer { proposal_id, vote } => {
+            FederationRequest::VotePeer { proposal_id, vote } => {
                 let voter = vote.voter.clone();
                 let approve = vote.approve;
                 let vote_said = vote.said.clone();
@@ -473,7 +473,7 @@ impl StateMachineData {
                         info!(
                             proposal_id = %proposal_id,
                             peer_prefix = %peer_prefix,
-                            "Proposal approved - adding peer to core set"
+                            "Proposal approved - adding peer"
                         );
 
                         let peer = match Peer::create(
@@ -518,7 +518,7 @@ impl StateMachineData {
                         info!(
                             proposal_id = %proposal_id,
                             peer_prefix = %peer_prefix,
-                            "Removal proposal approved - removing peer from core set"
+                            "Removal proposal approved - removing peer"
                         );
 
                         self.peers.remove(&peer_prefix);
@@ -545,8 +545,8 @@ impl StateMachineData {
     }
 
     /// Create a snapshot of the current state.
-    fn snapshot(&self) -> CorePeerSnapshot {
-        CorePeerSnapshot {
+    fn snapshot(&self) -> PeerSnapshot {
+        PeerSnapshot {
             peers: self.peers(),
             pending_addition_proposals: self.pending_addition_proposals.values().cloned().collect(),
             completed_addition_proposals: self.completed_addition_proposals.clone(),
@@ -575,7 +575,7 @@ impl StateMachineData {
     }
 
     /// Restore state from a snapshot and its metadata.
-    fn restore(&mut self, snapshot: CorePeerSnapshot, meta: &SnapshotMeta<TypeConfig>) {
+    fn restore(&mut self, snapshot: PeerSnapshot, meta: &SnapshotMeta<TypeConfig>) {
         self.last_applied_log = meta.last_log_id;
         self.last_membership = meta.last_membership.clone();
         self.peers = snapshot
@@ -601,7 +601,7 @@ impl StateMachineData {
             .map(|v| (v.said.clone(), v))
             .collect();
         info!(
-            "Restored {} core peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes from snapshot",
+            "Restored {} peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes from snapshot",
             self.peers.len(),
             self.pending_addition_proposals.len(),
             self.completed_addition_proposals.len(),
@@ -800,7 +800,7 @@ impl StateMachineStore {
             .await
             .map_err(|e| e.to_string())?;
 
-        info!(peer_prefix = %peer.peer_prefix, "Wrote core peer to local DB");
+        info!(peer_prefix = %peer.peer_prefix, "Wrote peer to local DB");
         Ok(())
     }
 }
@@ -860,7 +860,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             let response = match entry.payload.clone() {
                 EntryPayload::Blank => FederationResponse::Ok,
                 EntryPayload::Normal(request) => {
-                    // For AddPeer, verify votes (core peers) and KEL anchoring
+                    // For AddPeer, verify votes and KEL anchoring
                     if let FederationRequest::AddPeer(ref peer) = request {
                         let threshold = self.config.approval_threshold();
                         let member_prefixes: std::collections::HashSet<&str> = self
@@ -905,7 +905,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 peer_prefix = %peer.peer_prefix,
                                 verified = verified_voters.len(),
                                 threshold = threshold,
-                                "Core peer not backed by sufficient verified votes - rejecting"
+                                "Peer not backed by sufficient verified votes - rejecting"
                             );
                             if let Some(r) = responder {
                                 r.send(FederationResponse::Ok);
@@ -960,7 +960,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     }
 
                     // Verify vote anchoring
-                    if let FederationRequest::VoteCorePeer {
+                    if let FederationRequest::VotePeer {
                         ref proposal_id,
                         ref vote,
                     } = request
@@ -1156,7 +1156,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                             "Failed to deactivate peer in local DB"
                                         );
                                     } else {
-                                        info!(peer_prefix = %peer_prefix, "Deactivated removed core peer in local DB");
+                                        info!(peer_prefix = %peer_prefix, "Deactivated removed peer in local DB");
                                     }
                                 }
                                 Err(e) => {
@@ -1200,7 +1200,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         snapshot: Cursor<Vec<u8>>,
     ) -> Result<(), io::Error> {
         let data = snapshot.into_inner();
-        let mut core_snapshot: CorePeerSnapshot = serde_json::from_slice(&data)
+        let mut core_snapshot: PeerSnapshot = serde_json::from_slice(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Verify all addition proposal chains before restoring
@@ -1372,7 +1372,7 @@ mod tests {
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_a,
             },
@@ -1382,7 +1382,7 @@ mod tests {
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_b,
             },
@@ -1607,7 +1607,7 @@ mod tests {
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_a,
             },
@@ -1617,7 +1617,7 @@ mod tests {
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_b,
             },
@@ -1655,7 +1655,7 @@ mod tests {
 
         let vote = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote,
             },
@@ -1665,7 +1665,7 @@ mod tests {
 
         let vote2 = make_test_vote(&proposal_id, "ERegistryA", true);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id,
                 vote: vote2,
             },
@@ -1745,7 +1745,7 @@ mod tests {
         // Cast a vote first
         let vote = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote,
             },
@@ -1772,7 +1772,7 @@ mod tests {
         let mut sm = StateMachineData::new();
         let vote = make_test_vote("nonexistent", "ERegistryA", true);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: "nonexistent".to_string(),
                 vote,
             },
@@ -1790,7 +1790,7 @@ mod tests {
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_a,
             },
@@ -1800,7 +1800,7 @@ mod tests {
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id,
                 vote: vote_b,
             },
@@ -1831,7 +1831,7 @@ mod tests {
         // First rejection — still pending
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", false);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_a,
             },
@@ -1843,7 +1843,7 @@ mod tests {
         // Second rejection — proposal rejected
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_b,
             },
@@ -1866,7 +1866,7 @@ mod tests {
         // Further votes fail (proposal not found)
         let vote_c = make_test_vote(&proposal_id, "ERegistryC", true);
         let response = sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_c,
             },
@@ -1953,7 +1953,7 @@ mod tests {
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id,
                 vote: vote_a,
             },
@@ -1976,7 +1976,7 @@ mod tests {
 
         let vote_a = make_test_vote(&proposal_id, "ERegistryA", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id: proposal_id.clone(),
                 vote: vote_a,
             },
@@ -1986,7 +1986,7 @@ mod tests {
 
         let vote_c = make_test_vote(&proposal_id, "ERegistryC", true);
         sm.apply(
-            FederationRequest::VoteCorePeer {
+            FederationRequest::VotePeer {
                 proposal_id,
                 vote: vote_c,
             },

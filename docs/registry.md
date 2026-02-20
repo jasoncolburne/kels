@@ -99,7 +99,7 @@ services/kels-registry/
     │   ├── mod.rs        # FederationNode entry point
     │   ├── config.rs     # Federation configuration
     │   ├── network.rs    # HTTP transport for Raft RPCs
-    │   ├── state_machine.rs # Raft state machine (core peer set)
+    │   ├── state_machine.rs # Raft state machine (peer set)
     │   ├── storage.rs    # Raft log/vote storage (PostgreSQL)
     │   └── types.rs      # Federation message types
     └── bin/
@@ -129,7 +129,7 @@ Peer discovery:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/peers` | Get peer allowlist (core from Raft + regional from local DB) |
+| `GET` | `/api/peers` | Get peer allowlist (from Raft) |
 | `GET` | `/api/registry-kels` | Get KELs for all federation members |
 
 Federation protocol:
@@ -140,15 +140,15 @@ Federation protocol:
 | `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
 | `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
 
-Admin API (localhost only):
+Admin API (signed requests):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/admin/addition-proposals` | Propose a new core peer (addition) |
-| `POST` | `/api/admin/removal-proposals` | Propose removal of a core peer |
+| `POST` | `/api/admin/addition-proposals` | Propose a new peer (addition) |
+| `POST` | `/api/admin/removal-proposals` | Propose removal of a peer |
 | `GET` | `/api/admin/proposals/:proposal_id` | Get proposal details |
 | `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
-| `POST` | `/api/admin/peers` | Add a regional peer |
+| `POST` | `/api/admin/peers` | Add a peer |
 
 > **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
 

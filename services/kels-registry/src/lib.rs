@@ -7,8 +7,7 @@
 //! # Federation Support
 //!
 //! The registry supports federation across multiple independent registries.
-//! - **Core peers**: Replicated across all registries via Raft consensus
-//! - **Regional peers**: Local to each registry
+//! - **Peers**: Replicated across all registries via Raft consensus
 //! - **Automatic failover**: Leader election handles node failures
 
 #![cfg_attr(

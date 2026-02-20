@@ -56,8 +56,8 @@ pub enum FederationRequest {
     /// Submit a removal proposal (create or withdraw).
     SubmitRemovalProposal(PeerRemovalProposal),
 
-    /// Vote on a core peer proposal.
-    VoteCorePeer {
+    /// Vote on a peer proposal.
+    VotePeer {
         /// The proposal being voted on.
         proposal_id: String,
         /// The signed vote.
@@ -100,10 +100,10 @@ impl fmt::Display for FederationRequest {
                     )
                 }
             }
-            FederationRequest::VoteCorePeer { proposal_id, vote } => {
+            FederationRequest::VotePeer { proposal_id, vote } => {
                 write!(
                     f,
-                    "VoteCorePeer({}, voter={}, approve={})",
+                    "VotePeer({}, voter={}, approve={})",
                     proposal_id, vote.voter, vote.approve
                 )
             }
@@ -150,9 +150,9 @@ pub enum FederationResponse {
     ProposalWithdrawn(String),
     /// Not authorized (e.g., only proposer can withdraw).
     NotAuthorized(String),
-    /// Peer already exists in core set or pending proposal.
+    /// Peer already exists or has a pending proposal.
     PeerAlreadyExists(String),
-    /// Removal proposal approved — peer should be removed from core set.
+    /// Removal proposal approved — peer should be removed.
     RemovalApproved {
         proposal_id: String,
         peer_prefix: String,
@@ -234,13 +234,13 @@ openraft::declare_raft_types!(
         R = FederationResponse,
 );
 
-/// Snapshot data for the core peer set.
+/// Snapshot data for the peer set.
 ///
 /// Note: Metadata (last_applied_log, last_membership) is stored in SnapshotMeta,
 /// not duplicated here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CorePeerSnapshot {
-    /// The core peer set data.
+pub struct PeerSnapshot {
+    /// The peer set data.
     pub peers: Vec<Peer>,
     /// Pending addition proposals awaiting votes.
     #[serde(default)]
@@ -408,13 +408,13 @@ mod tests {
     }
 
     #[test]
-    fn test_core_peer_snapshot_default() {
-        let snapshot = CorePeerSnapshot::default();
+    fn test_peer_snapshot_default() {
+        let snapshot = PeerSnapshot::default();
         assert!(snapshot.peers.is_empty());
     }
 
     #[test]
-    fn test_core_peer_snapshot_serialization() {
+    fn test_peer_snapshot_serialization() {
         let peer = Peer::create(
             "peer-1".to_string(),
             "node-1".to_string(),
@@ -424,7 +424,7 @@ mod tests {
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
-        let snapshot = CorePeerSnapshot {
+        let snapshot = PeerSnapshot {
             peers: vec![peer.clone()],
             pending_addition_proposals: vec![],
             completed_addition_proposals: vec![],
@@ -434,7 +434,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();
-        let parsed: CorePeerSnapshot = serde_json::from_str(&json).unwrap();
+        let parsed: PeerSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.peers.len(), 1);
         assert_eq!(parsed.peers[0].peer_prefix, "peer-1");

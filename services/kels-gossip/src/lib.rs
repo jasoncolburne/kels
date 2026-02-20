@@ -81,7 +81,7 @@ pub struct Config {
     pub identity_url: String,
     /// Registry service URL (runtime)
     pub registry_url: String,
-    /// All federation registry URLs (for core nodes to discover all peers)
+    /// All federation registry URLs (for peer discovery)
     pub federation_registry_urls: Vec<String>,
     /// Gossip listen address (e.g., 0.0.0.0:4001)
     pub listen_addr: SocketAddr,
@@ -285,7 +285,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Local registry URL for authenticated operations (registration, etc.)
     let registry_urls: Vec<String> = vec![config.registry_url.clone()];
-    // All federation registry URLs for peer discovery (core nodes use all)
+    // All federation registry URLs for peer discovery
     let federation_registry_urls = config.federation_registry_urls.clone();
 
     // Registry client with signer
