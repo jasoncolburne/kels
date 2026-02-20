@@ -164,6 +164,29 @@ spec:
 
 ---
 
+# Get status of a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: proposal-status
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.kels-registry
+
+spec:
+  command:
+    - bash
+    - scripts/proposal-status.sh
+    - ${var.proposal}
+    - ${environment.namespace}
+
+---
+
 # Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
 
 kind: Run

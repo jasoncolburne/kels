@@ -87,11 +87,10 @@ If an attacker gains access to the HSM service:
 
 ## Admin API
 
-### Localhost Bypass
+### ~~Localhost Bypass~~
 
-**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.
-- **Mitigation:** `is_localhost()` checks `SocketAddr.ip().is_loopback()`. This is a network-level check, not an application-level authentication.
-- **Residual risk:** Container networking or reverse proxy misconfiguration could expose localhost. There is no additional authentication on admin endpoints.
+~~**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.~~
+- **Mitigated:** Admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's own identity KEL. Requires HSM-backed signing via the identity service — network position is no longer sufficient for access.
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
@@ -128,7 +127,7 @@ These are intentionally public. The security model relies on cryptographic verif
 
 ## Summary of Residual Risks
 
-1. **Admin API lacks authentication beyond localhost check** — relies on network isolation
+1. ~~**Admin API lacks authentication beyond localhost check**~~ — mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
@@ -146,11 +145,11 @@ No application-level rate limiting exists on any endpoint. The allowlist pending
 - [x] Add rate limiting to the registry HTTP server (per-IP token bucket on write endpoints: 200 req/s refill, 1000 burst; 5 MiB body limit)
 - [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
 
-### Admin API authentication (addresses residual risk 1)
+### ~~Admin API authentication (addresses residual risk 1)~~
 
-The admin API relies solely on `is_localhost()` for access control. Proposal and vote endpoints intentionally have no localhost check — they are the federation RPC path used by remote registries to submit proposals and votes. KEL anchoring (vote SAID must be signed by the voter's key and anchored in their KEL) is the correct security mechanism for these endpoints.
+~~The admin API relies solely on `is_localhost()` for access control.~~ Mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL via HSM-backed signing. Proposal and vote endpoints use KEL anchoring (SAID anchored in proposer/voter KEL) as the security mechanism.
 
-- [ ] Evaluate whether non-federation admin endpoints need an additional authentication layer (e.g., bearer token, mTLS) for defense-in-depth beyond localhost — relevant if container networking or reverse proxy misconfiguration could expose loopback
+- [x] Replace `is_localhost()` with `SignedRequest<AdminRequest>` verification against the node's own identity KEL
 
 ### ~~TLS between services (addresses residual risk 5)~~
 

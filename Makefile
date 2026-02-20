@@ -153,16 +153,25 @@ test-voting:
 
 	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
-	# Test 1: propose and propose again (same node, should fail)
+	# Test 1a: unauthenticated GET to admin proposals endpoint should fail (method not allowed)
+	! kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/admin/proposals/$$(cat /tmp/proposal-a.txt)
+
+	# Test 1b: unauthenticated POST to admin proposals endpoint should fail (missing signed body)
+	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://kels-registry.kels-registry-a.kels/api/admin/proposals/$$(cat /tmp/proposal-a.txt)
+
+	# Test 1c: authenticated proposal-status via admin CLI should succeed
+	garden run proposal-status --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
+
+	# Test 2: propose and propose again (same node, should fail)
 	! garden run propose-add-peer --var node=node-a 2>&1
 
-	# Test 2: propose then withdraw (no votes — should succeed)
+	# Test 3: propose then withdraw (no votes — should succeed)
 	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 
 	# Re-propose (same node, previous proposal was withdrawn)
 	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
-	# Test 3: two rejections kill the proposal, further votes fail
+	# Test 4: two rejections kill the proposal, further votes fail
 	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	! garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
@@ -170,7 +179,7 @@ test-voting:
 	# Re-propose (same node, previous proposal was rejected)
 	garden run propose-add-peer --var node=node-a 2>&1 | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
-	# Test 4: vote then try to withdraw (has votes — should fail)
+	# Test 5: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 	! garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 

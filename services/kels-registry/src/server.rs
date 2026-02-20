@@ -70,7 +70,7 @@ pub fn create_router(
             )
             .route(
                 "/api/admin/proposals/:proposal_id",
-                get(handlers::admin_get_proposal),
+                post(handlers::admin_get_proposal),
             )
             .route(
                 "/api/admin/proposals/:proposal_id/vote",

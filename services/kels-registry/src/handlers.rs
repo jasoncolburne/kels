@@ -15,10 +15,11 @@ use axum::{
 };
 use dashmap::DashMap;
 use kels::{
-    AdditionHistory, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, Kel,
-    NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
-    Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest,
-    RemovalHistory, SignedRequest, StatusUpdateRequest, Vote,
+    AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest, ErrorCode,
+    ErrorResponse, Kel, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
+    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedRequest,
+    StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
@@ -543,9 +544,34 @@ pub async fn list_completed_proposals(
 
 // ==================== Admin API ====================
 
-/// Check if request is from localhost.
-fn is_localhost(addr: &SocketAddr) -> bool {
-    addr.ip().is_loopback()
+/// Verify a signed admin request against this node's own identity.
+///
+/// Checks that the request was signed by this node's identity key by:
+/// 1. Confirming the signer prefix matches our own
+/// 2. Verifying the signature against our KEL's current public key
+async fn verify_admin_request<T: Serialize>(
+    signed_request: &SignedRequest<T>,
+    identity_client: &IdentityClient,
+) -> Result<(), ApiError> {
+    let our_prefix = identity_client
+        .get_prefix()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Identity error: {}", e)))?;
+
+    if signed_request.peer_prefix != our_prefix {
+        return Err(ApiError::forbidden("Not signed by this node's identity"));
+    }
+
+    let kel = identity_client
+        .get_kel()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
+
+    signed_request
+        .verify_signature(&kel)
+        .map_err(|_| ApiError::unauthorized("Admin signature verification failed"))?;
+
+    Ok(())
 }
 
 /// Request to add a core peer.
@@ -567,16 +593,18 @@ pub struct ProposalResponse {
     pub message: String,
 }
 
-/// Get a specific proposal with votes (admin, localhost only).
+/// Get a specific proposal with votes (admin, signed request required).
 /// Returns either an addition or removal proposal.
+///
+/// This endpoint uses `SignedRequest<AdminRequest>` for authentication — the admin
+/// CLI signs the request via the identity service (HSM-backed). If we add more admin
+/// query endpoints, they should follow this same pattern.
 pub async fn admin_get_proposal(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
+    Json(signed_request): Json<SignedRequest<AdminRequest>>,
 ) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
-    if !is_localhost(&addr) {
-        return Err(ApiError::forbidden("Admin API is localhost only"));
-    }
+    verify_admin_request(&signed_request, &state.identity_client).await?;
 
     if let Some(addition) = state
         .node

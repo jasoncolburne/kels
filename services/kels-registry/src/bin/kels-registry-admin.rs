@@ -14,8 +14,8 @@ use verifiable_storage_postgres::PgPool;
 
 use kels::IdentityClient;
 use kels::{
-    CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal, ProposalHistory,
-    ProposalWithVotes, ProposalWithVotesMethods, Vote,
+    AdminRequest, CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal,
+    ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
 };
 use kels_registry::{federation::FederationStatus, peer_store::PeerRepository};
 
@@ -248,6 +248,50 @@ impl AdminContext {
             }
         }
     }
+}
+
+/// Signs admin requests via the identity service (HSM-backed).
+struct AdminSigner {
+    identity_client: IdentityClient,
+    self_prefix: String,
+}
+
+#[async_trait::async_trait]
+impl kels::RegistrySigner for AdminSigner {
+    async fn sign(&self, data: &[u8]) -> Result<kels::SignResult, kels::KelsError> {
+        let data_str = std::str::from_utf8(data)
+            .map_err(|e| kels::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e)))?;
+
+        let result = self
+            .identity_client
+            .sign(data_str)
+            .await
+            .map_err(|e| kels::KelsError::SigningFailed(e.to_string()))?;
+
+        Ok(kels::SignResult {
+            signature: result.signature,
+            peer_prefix: self.self_prefix.clone(),
+        })
+    }
+}
+
+/// Build a signed admin request using the identity service.
+async fn sign_admin_request(
+    ctx: &AdminContext,
+) -> anyhow::Result<kels::SignedRequest<AdminRequest>> {
+    let request = AdminRequest {
+        timestamp: chrono::Utc::now().timestamp(),
+        nonce: kels::generate_nonce(),
+    };
+    let signer = AdminSigner {
+        identity_client: IdentityClient::new(
+            &std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity".to_string()),
+        ),
+        self_prefix: ctx.self_prefix.clone(),
+    };
+    kels::sign_request(&signer, &request)
+        .await
+        .map_err(|e| anyhow!("Failed to sign admin request: {}", e))
 }
 
 async fn add_peer(
@@ -659,8 +703,9 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
+    let signed = sign_admin_request(ctx).await?;
     let url = format!("{}/api/admin/proposals/{}", ctx.registry_url, proposal_id);
-    let resp = ctx.http_client.get(&url).send().await?;
+    let resp = ctx.http_client.post(&url).json(&signed).send().await?;
 
     if resp.status().is_success() {
         let proposal: ProposalWithVotes = resp.json().await?;
@@ -724,8 +769,14 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
 
     // 1. Fetch the current proposal from the registry
     let mut target_url = ctx.get_leader_url().await?;
+    let signed = sign_admin_request(ctx).await?;
     let fetch_url = format!("{}/api/admin/proposals/{}", target_url, proposal_id);
-    let resp = ctx.http_client.get(&fetch_url).send().await?;
+    let resp = ctx
+        .http_client
+        .post(&fetch_url)
+        .json(&signed)
+        .send()
+        .await?;
 
     if !resp.status().is_success() {
         let error: serde_json::Value = resp.json().await.unwrap_or_default();

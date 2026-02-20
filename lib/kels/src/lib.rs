@@ -68,8 +68,8 @@ pub use error::KelsError;
 pub use repository::SignedEventRepository;
 pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
-    AdditionHistory, AdditionWithVotes, BatchKelsRequest, BatchSubmitResponse, CachedKel,
-    CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
+    AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
+    CachedKel, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
     EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
     NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
