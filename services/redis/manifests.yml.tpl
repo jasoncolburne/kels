@@ -1,3 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  labels:
+    app: redis
+data:
+  redis.conf: |
+    # RDB persistence
+    save 300 1
+    save 60 100
+
+    # Memory - volatile-lfu to match local W-TinyLFU eviction policy
+    maxmemory 200mb
+    maxmemory-policy volatile-lfu
+    lfu-log-factor 10
+    lfu-decay-time 1
+
+    # ACL: KELS service
+    user kels on #${var.redis.kelsPasswordHash} ~kels:kel:* ~kels:verified-peer:* %R~kels:gossip:ready &kel_updates +get +set +setex +del +publish +subscribe +ping
+
+    # ACL: Gossip service
+    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates +get +set +del +subscribe +hset +hgetall +sadd +srem +sismember +ping
+
+    # ACL: Registry service
+    user registry on #${var.redis.registryPasswordHash} ~kels-registry:* +get +set +del +sadd +srem +smembers +multi +exec +ping
+
+    # Disable default user
+    user default off
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  labels:
+    app: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 256Mi
+
+---
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,14 +69,7 @@ spec:
               name: redis
           args:
             - redis-server
-            - --appendonly
-            - "no"
-            - --appendfsync
-            - "everysec"
-            - --maxmemory
-            - "200mb"
-            - --maxmemory-policy
-            - "allkeys-lru"
+            - /etc/redis/redis.conf
           resources:
             requests:
               cpu: 100m
@@ -41,6 +81,11 @@ spec:
             exec:
               command:
                 - redis-cli
+                - --user
+                - kels
+                - -a
+                - "${var.redis.kelsPassword}"
+                - --no-auth-warning
                 - ping
             initialDelaySeconds: 2
             periodSeconds: 10
@@ -48,9 +93,28 @@ spec:
             exec:
               command:
                 - redis-cli
+                - --user
+                - kels
+                - -a
+                - "${var.redis.kelsPassword}"
+                - --no-auth-warning
                 - ping
             initialDelaySeconds: 2
             periodSeconds: 5
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis/redis.conf
+              subPath: redis.conf
+              readOnly: true
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data
 
 ---
 

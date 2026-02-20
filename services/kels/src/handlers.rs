@@ -701,9 +701,10 @@ async fn refresh_verified_peers(
         {
             let peer_json = serde_json::to_string(peer)
                 .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
-            conn.set::<_, _, ()>(
+            conn.set_ex::<_, _, ()>(
                 format!("kels:verified-peer:{}", peer.peer_prefix),
                 peer_json,
+                3600,
             )
             .await
             .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;

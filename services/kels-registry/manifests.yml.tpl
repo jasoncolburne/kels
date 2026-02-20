@@ -58,7 +58,7 @@ spec:
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
             - name: REDIS_URL
-              value: "${var.redis.url}"
+              value: "${var.redisUrl}"
             - name: DATABASE_URL
               value: "${var.kelsRegistryDatabaseUrl}"
             - name: IDENTITY_URL

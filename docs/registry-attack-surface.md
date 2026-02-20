@@ -139,7 +139,7 @@ These are intentionally public. The security model relies on cryptographic verif
 
 Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
-### Rate limiting (addresses residual risks 3, 4)
+### ~~Rate limiting (addresses residual risks 3, 4)~~
 
 No application-level rate limiting exists on any endpoint. The allowlist pending verification set has no TTL or max size, so a connection flood can grow it unboundedly.
 

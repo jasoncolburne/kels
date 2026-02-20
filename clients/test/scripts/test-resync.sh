@@ -66,13 +66,20 @@ run_test() {
     fi
 }
 
-# Redis helpers
+# Redis helpers (authenticate as gossip user — accesses kels:anti_entropy:* keys)
 redis_cmd() {
-    redis-cli -h "$REDIS_HOST" "$@"
+    redis-cli -h "$REDIS_HOST" --user gossip -a "${REDIS_PASSWORD:-gossip-redis-pass}" --no-auth-warning "$@"
 }
 
 stale_count() {
-    redis_cmd HLEN "$STALE_PREFIX_KEY"
+    # Use HGETALL + count pairs instead of HLEN (not in gossip ACL)
+    local entries
+    entries=$(redis_cmd HGETALL "$STALE_PREFIX_KEY")
+    if [ -z "$entries" ]; then
+        echo 0
+    else
+        echo "$entries" | wc -l | awk '{print int($1/2)}'
+    fi
 }
 
 stale_add() {

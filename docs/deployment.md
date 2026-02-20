@@ -111,6 +111,30 @@ Each registry needs two categories of configuration:
 
 If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or the registry's own prefix is not in the trusted members list, the registry runs in standalone mode (no federation, no peer management). This last case enables deploying a new registry before it has been added to the trust anchor.
 
+## Redis Authentication
+
+Redis uses per-service ACL users with least-privilege command sets and key pattern isolation. The `default` user is disabled — unauthenticated access is rejected.
+
+### ACL Users
+
+| User | Keys | Channels | Commands |
+|------|------|----------|----------|
+| `kels` | `kels:kel:*`, `kels:verified-peer:*`, `kels:gossip:ready` (read-only) | `kel_updates` | `GET`, `SET`, `SETEX`, `DEL`, `PUBLISH`, `PING` |
+| `gossip` | `kels:gossip:*`, `kels:anti_entropy:*` | `kel_updates` | `GET`, `SET`, `DEL`, `SUBSCRIBE`, `HSET`, `HGETALL`, `SADD`, `SREM`, `SISMEMBER`, `PING` |
+| `registry` | `kels-registry:*` | — | `GET`, `SET`, `DEL`, `SADD`, `SREM`, `SMEMBERS`, `MULTI`, `EXEC`, `PING` |
+
+### Connection URLs
+
+Each service connects with its own credentials via the Redis URL format `redis://user:password@host:port`. Passwords are configured in `project.garden.yml` under `var.redis.*Password`. Password hashes (SHA-256) are configured under `var.redis.*PasswordHash` and used in the Redis ACL configuration.
+
+### Eviction Policy
+
+The eviction policy is `volatile-lru`, which only evicts keys that have a TTL set. Cache keys (`kels:kel:*`, `kels:verified-peer:*`) have 1-hour TTLs and are reconstructable from the database on miss. Operational keys (gossip state, anti-entropy tracking, node registrations) have no TTL and are never evicted.
+
+### Persistence
+
+RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a PersistentVolumeClaim. This protects operational state across Redis restarts. At most a few minutes of data loss on crash — acceptable since anti-entropy will rediscover stale prefixes and nodes re-register on startup.
+
 ## Node Configuration
 
 ### KELS Service (`kels`)

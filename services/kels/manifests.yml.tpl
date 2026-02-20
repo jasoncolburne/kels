@@ -49,7 +49,7 @@ spec:
             - name: DATABASE_URL
               value: "${var.kelsDatabaseUrl}"
             - name: REDIS_URL
-              value: "${var.redis.url}"
+              value: "${var.redisUrl}"
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
           livenessProbe:

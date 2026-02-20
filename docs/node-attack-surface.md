@@ -123,7 +123,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
 5. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
-7. **Redis state flags lack authentication** — relies on pod-level network isolation; impact limited to availability (all data from Redis is cryptographically re-verified)
+7. ~~**Redis state flags lack authentication**~~ — mitigated: per-service Redis ACL users with least-privilege command sets and key pattern isolation; `volatile-lru` eviction protects operational keys (no TTL) from eviction while cache keys (with TTL) are eviction candidates
 8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, anti-entropy stale prefix repair (failed fetches recorded and retried within the next AE cycle), but delayed detection remains
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
@@ -131,7 +131,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 
-### Rate limiting (addresses residual risks 1, 3, 9)
+### ~~Rate limiting (addresses residual risks 1, 3, 9)~~
 
 No application-level rate limiting exists on any KELS endpoint. Advisory lock contention under high concurrency has no fairness guarantee. Gossip announcement processing has no per-peer or per-prefix throttling, so sustained injection causes repeated HTTP fetches.
 
@@ -143,7 +143,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 
 ~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
-### Gossip protocol hardening (addresses residual risks 8, 9)
+### ~~Gossip protocol hardening (addresses residual risks 8, 9)~~
 
 There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
@@ -152,17 +152,17 @@ There is no real-time detection of selective message dropping. Announcement inje
 
 ### ~~Bootstrap integrity (addresses residual risk 4)~~
 
-~~A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.~~ Accepted risk. Cross-validating against multiple peers is expensive at scale (merging prefix sets across all nodes). The resync phase already catches the gap, and all fetched data is cryptographically verified — the worst case is a temporary delay, not state corruption.
+~~A malicious bootstrap peer can serve a valid but outdated snapshot. The resync phase catches the gap but creates a window where the node has stale data.~~ Accepted risk. Cross-validating against multiple peers is expensive at scale (merging prefix sets across all nodes). The anti-entropy loop already catches the gap, and all fetched data is cryptographically verified — the worst case is a temporary delay, not state corruption.
 
-### Redis authentication (addresses residual risk 7)
+### ~~Redis authentication (addresses residual risk 7)~~
 
-Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication. A compromised Redis can manipulate node readiness or peer verification cache. Impact is limited to availability — all data read from Redis is cryptographically re-verified before use, so a compromised Redis cannot influence trust decisions. The remaining risk is stale data or premature readiness signals.
+~~Redis state flags (`kels:gossip:ready`, `kels:verified-peer:*`) have no authentication.~~ Mitigated: per-service ACL users (`kels`, `gossip`, `registry`) with least-privilege command sets and key pattern isolation. The `default` user is disabled. Cache keys have 1-hour TTLs and `volatile-lru` eviction ensures operational keys (no TTL) are never evicted. All data read from Redis is still cryptographically re-verified before use.
 
-- [ ] Enable Redis AUTH (password or ACL) for all Redis connections
-- [ ] Evaluate signing Redis state values with the node's HSM key — allows consumers to verify state integrity even if Redis is compromised
+- [x] Enable Redis AUTH + per-service ACLs for all Redis connections
+- [ ] ~~Evaluate signing Redis state values with the node's HSM key — allows consumers to verify state integrity even if Redis is compromised~~ Overkill given auth
 
-### Signed request replay window (addresses residual risk 6)
+### ~~Signed request replay window (addresses residual risk 6)~~
 
-~~`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.~~
+`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.
 
 - [x] Add server-side nonce tracking — each `PrefixesRequest` includes a BLAKE3-hashed cryptographic nonce. The server rejects duplicate nonces within the 60s timestamp window, evicting expired entries on each request. Nonce storage is bounded by `max_peers × max_requests_per_peer_per_minute`.

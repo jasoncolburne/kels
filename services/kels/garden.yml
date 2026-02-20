@@ -43,6 +43,7 @@ dependencies:
 
 variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
+  redisUrl: "${var.redis.kelsUrl}"
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
 
 spec:

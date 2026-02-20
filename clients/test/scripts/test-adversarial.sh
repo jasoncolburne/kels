@@ -85,6 +85,19 @@ run_test_expect_fail() {
     fi
 }
 
+# Helper: wait for expected KEL status (handles eventual consistency across replicas)
+await_kel_status() {
+    local prefix="$1"
+    local expected="$2"
+    for _ in $(seq 1 10); do
+        local actual
+        actual=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
+        [ "$actual" = "$expected" ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
 # Test that expects divergence to be caused (returns error but with "Divergence detected" message)
 run_test_expect_divergence() {
     local name="$1"
@@ -93,15 +106,14 @@ run_test_expect_divergence() {
     echo -e "${YELLOW}Testing (expect divergence): ${name}${NC}"
     # Run the command (expected to fail)
     "$@" 2>&1 || true
-    sleep 0.03
-    # Check server state for divergence
-    local status
-    status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
-    if [ "$status" = "DIVERGENT" ]; then
+    # Check server state for divergence (retry for eventual consistency)
+    if await_kel_status "$prefix" "DIVERGENT"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         ((TESTS_PASSED++))
         return 0
     else
+        local status
+        status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
         echo "Expected status DIVERGENT but got: $status"
         echo -e "${RED}FAILED: ${name} (expected divergence but not detected)${NC}"
         ((TESTS_FAILED++))
@@ -135,27 +147,31 @@ run_test_expect_recovery_protected() {
 check_kel_status() {
     local prefix="$1"
     local expected_status="$2"
-    local actual_status
-    # Use "get" to query server directly (not local storage)
-    # Strip ANSI color codes before comparing (sed removes escape sequences)
-    actual_status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
-    [ "$actual_status" = "$expected_status" ]
+    await_kel_status "$prefix" "$expected_status"
 }
 
 check_kel_event_count() {
     local prefix="$1"
     local expected_count="$2"
     local actual_count
-    actual_count=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "Events:" | awk '{print $2}')
-    [ "$actual_count" = "$expected_count" ]
+    for _ in $(seq 1 10); do
+        actual_count=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "Events:" | awk '{print $2}')
+        [ "$actual_count" = "$expected_count" ] && return 0
+        sleep 0.2
+    done
+    return 1
 }
 
 check_server_kel_event_count() {
     local prefix="$1"
     local expected_count="$2"
     local actual_count
-    actual_count=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq '. | length')
-    [ "$actual_count" = "$expected_count" ]
+    for _ in $(seq 1 10); do
+        actual_count=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq '. | length')
+        [ "$actual_count" = "$expected_count" ] && return 0
+        sleep 0.2
+    done
+    return 1
 }
 
 # Check that the last N events have specific kinds (comma-separated)
@@ -168,21 +184,20 @@ check_kel_ends_with() {
     IFS=',' read -ra expected_array <<< "$expected_kinds"
     local expected_count=${#expected_array[@]}
 
-    # Get last N events from server
+    # Retry for eventual consistency across replicas
     local actual_kinds
-    actual_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r ".[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
+    for _ in $(seq 1 10); do
+        actual_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r ".[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
+        [ "$actual_kinds" = "$expected_kinds" ] && return 0
+        sleep 0.2
+    done
 
-    if [ "$actual_kinds" = "$expected_kinds" ]; then
-        return 0
-    else
-        echo "Expected last $expected_count events to be: $expected_kinds"
-        echo "Actual last $expected_count events are: $actual_kinds"
-        # Also show full KEL event kinds for context
-        local all_kinds
-        all_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r '.[].event.kind' | tr '\n' ',' | sed 's/,$//')
-        echo "Full KEL event kinds: $all_kinds"
-        return 1
-    fi
+    echo "Expected last $expected_count events to be: $expected_kinds"
+    echo "Actual last $expected_count events are: $actual_kinds"
+    local all_kinds
+    all_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r '.[].event.kind' | tr '\n' ',' | sed 's/,$//')
+    echo "Full KEL event kinds: $all_kinds"
+    return 1
 }
 
 echo "========================================="

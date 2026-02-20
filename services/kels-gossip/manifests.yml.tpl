@@ -83,7 +83,7 @@ spec:
             - name: KELS_ADVERTISE_URL
               value: "${var.kelsAdvertiseUrl}"
             - name: REDIS_URL
-              value: "${var.redis.url}"
+              value: "${var.redisUrl}"
             - name: HSM_URL
               value: "${var.hsm.url}"
             - name: IDENTITY_URL

@@ -286,6 +286,7 @@ wait-for-gossip:
 test-suite:
 	$(MAKE) wait-for-gossip
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
+	kubectl exec -n kels-node-a -it test-client -- ./test-redis-acl.sh
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 3
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
