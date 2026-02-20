@@ -60,10 +60,6 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
-### Failed Fetch Retry
-
-When a gossip fetch fails (timeout, HTTP error, connection refused), the `prefix:said` pair is added to a Redis-backed retry queue (`kels:resync:retry`). A periodic resync loop drains this queue on a configurable interval (default 5 min), attempting each entry against all known peers in shuffled order. Uses `event_exists` as a cheap pre-check before fetching. Entries where all peers return 404 are dropped (SAID was superseded). Entries that fail again are re-queued for the next cycle.
-
 ### Why SAID comparison?
 
 - Simple equality check - if SAIDs match, nodes are in sync
@@ -86,7 +82,7 @@ services/kels-gossip/
     ├── lib.rs        # Service orchestration
     ├── gossip_layer.rs # Custom gossip protocol wrapper (HyParView + PlumTree)
     ├── server.rs       # HTTP server for ready endpoint
-    ├── sync.rs         # Redis subscriber, sync handler, resync loop, anti-entropy loop
+    ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
     ├── protocol.rs     # Message types (KelAnnouncement)
     ├── allowlist.rs    # Connection filtering based on verified peer allowlist
     ├── bootstrap.rs    # Bootstrap sync from existing peers
@@ -123,7 +119,6 @@ struct KelAnnouncement {
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
 | `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |
-| `RESYNC_INTERVAL_SECS` | Periodic resync interval for retrying failed fetches | `300` (5 min) |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval | `60` |
 
@@ -210,14 +205,14 @@ If your Kubernetes distribution uses a different DNS provider or configuration m
 
 ## Anti-Entropy Repair
 
-Gossip propagation can miss events due to timing gaps (e.g., between bootstrap preload and gossip join, DNS issues, connection failures). The anti-entropy loop detects and repairs silent divergence — where a node is missing events it never learned about.
+Gossip propagation can miss events due to timing gaps (e.g., between bootstrap preload and gossip join, DNS issues, connection failures). The anti-entropy loop detects and repairs silent divergence — where a node is missing events it never learned about. It also handles failed gossip fetches: when a fetch fails, the prefix is recorded as stale and picked up by Phase 1 within the next cycle.
 
 ### Two-phase repair (every `ANTI_ENTROPY_INTERVAL_SECS`, default 10s)
 
 **Phase 1 — Targeted repair of known-stale prefixes:**
 - Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → source_node_prefix` entries
 - For each entry, fetches the KEL from the source peer and submits locally
-- Failures are re-queued for the next cycle
+- Failures are not re-queued (Phase 2 rediscovers if still needed)
 - If any stale entries were processed, Phase 2 is skipped (spread work across cycles)
 
 **Phase 2 — Random sampling (only when no stale entries):**
@@ -263,10 +258,10 @@ The gossip layer doesn't need special divergence logic - KELS handles all verifi
 - MD5 digest of each KEL matches across all nodes (signatures normalized by publicKey before hashing)
 - Behavioral state consistency for any mismatched KELs
 
-`clients/test/scripts/test-resync.sh` verifies the periodic resync / retry queue:
-- Fake retry queue entries are dropped when all peers return 404
-- Real fetch failures (caused by broken DNS) populate the retry queue
-- After DNS repair, the resync loop resolves pending entries
-- Retry queue is empty after resolution
+`clients/test/scripts/test-resync.sh` verifies anti-entropy stale prefix repair:
+- Fake stale prefix entries are dropped when all peers return 404
+- Real fetch failures (caused by broken DNS) populate the stale prefix hash
+- After DNS repair, the anti-entropy loop resolves stale entries
+- Stale prefix hash is empty after resolution
 
-The resync test is orchestrated by `make test-resync` which breaks CoreDNS for node-b (so gossip HTTP fetches fail while gossip announcements still flow over existing TCP connections), runs the setup phase, repairs DNS, then runs the verify phase.
+The test is orchestrated by `make test-resync` which breaks CoreDNS for node-b (so gossip HTTP fetches fail while gossip announcements still flow over existing TCP connections), runs the setup phase, repairs DNS, then runs the verify phase.

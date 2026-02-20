@@ -1,6 +1,6 @@
 #!/bin/bash
-# test-resync.sh - Periodic Resync / Retry Queue Integration Tests
-# Tests that failed gossip fetches are queued and resolved by the resync loop.
+# test-resync.sh - Anti-Entropy Stale Prefix Repair Integration Tests
+# Tests that failed gossip fetches are recorded as stale and resolved by anti-entropy.
 #
 # Two modes:
 #   test-resync.sh setup   — run with node-b DNS already broken
@@ -13,7 +13,7 @@
 # Environment variables:
 #   NODE_A_KELS_HOST  - node-a KELS hostname (default: kels)
 #   NODE_A_REDIS_HOST - node-a Redis hostname (default: redis)
-#   RESYNC_WAIT       - seconds to wait for resync loop (default: 20)
+#   RESYNC_WAIT       - seconds to wait for anti-entropy loop (default: 30)
 
 MODE="${1:-}"
 if [ "$MODE" != "setup" ] && [ "$MODE" != "verify" ]; then
@@ -33,7 +33,7 @@ NODE_A_URL="http://${NODE_A_KELS_HOST:-kels}"
 NODE_B_FQDN_URL="http://kels.kels-node-b.svc.cluster.local"
 REDIS_HOST="${NODE_A_REDIS_HOST:-redis}"
 RESYNC_WAIT="${RESYNC_WAIT:-30}"
-RETRY_QUEUE_KEY="kels:resync:retry"
+STALE_PREFIX_KEY="kels:anti_entropy:stale"
 STATE_FILE="/tmp/resync-test-state"
 
 # Test state
@@ -71,20 +71,21 @@ redis_cmd() {
     redis-cli -h "$REDIS_HOST" "$@"
 }
 
-queue_count() {
-    redis_cmd SCARD "$RETRY_QUEUE_KEY"
+stale_count() {
+    redis_cmd HLEN "$STALE_PREFIX_KEY"
 }
 
-queue_add() {
-    redis_cmd SADD "$RETRY_QUEUE_KEY" "$1"
+stale_add() {
+    # HSET key field value — field is the kel_prefix, value is the source_node_prefix
+    redis_cmd HSET "$STALE_PREFIX_KEY" "$1" "$2"
 }
 
-queue_clear() {
-    redis_cmd DEL "$RETRY_QUEUE_KEY"
+stale_clear() {
+    redis_cmd DEL "$STALE_PREFIX_KEY"
 }
 
-queue_members() {
-    redis_cmd SMEMBERS "$RETRY_QUEUE_KEY"
+stale_entries() {
+    redis_cmd HGETALL "$STALE_PREFIX_KEY"
 }
 
 # KEL helpers
@@ -124,7 +125,7 @@ print_summary() {
 # =====================================================================
 if [ "$MODE" = "setup" ]; then
     echo "========================================="
-    echo "KELS Resync Test Suite — Setup Phase"
+    echo "KELS Anti-Entropy Stale Repair — Setup Phase"
     echo "========================================="
     echo "Node-A URL:       $NODE_A_URL"
     echo "Node-B FQDN URL:  $NODE_B_FQDN_URL"
@@ -153,15 +154,16 @@ if [ "$MODE" = "setup" ]; then
     # Scenario 1: Seed fake entry
     # ========================================
     echo -e "${CYAN}=== Scenario 1: Seed Fake Entry ===${NC}"
-    echo "Add a fake retry queue entry (should be dropped during verify)"
+    echo "Add a fake stale prefix entry (should be dropped during verify)"
     echo ""
 
-    queue_clear > /dev/null
-    FAKE_ENTRY="fakeprefix:Efakesaid000000000000000000000000000000000000"
-    queue_add "$FAKE_ENTRY" > /dev/null
+    stale_clear > /dev/null
+    FAKE_PREFIX="fakeprefix"
+    FAKE_SOURCE="Efakesource0000000000000000000000000000000000"
+    stale_add "$FAKE_PREFIX" "$FAKE_SOURCE" > /dev/null
 
-    COUNT=$(queue_count)
-    run_test "Fake entry seeded (SCARD == 1)" [ "$COUNT" = "1" ]
+    COUNT=$(stale_count)
+    run_test "Fake entry seeded (HLEN == 1)" [ "$COUNT" = "1" ]
 
     echo ""
 
@@ -226,11 +228,10 @@ if [ "$MODE" = "setup" ]; then
     # Wait for the gossip handler to process the sync announcement.
     # Two possible outcomes:
     #   - Fetch succeeded (DNS cache/connection pool still alive): node-a count == 2
-    #   - Fetch failed (DNS properly broken): entry appears in retry queue
+    #   - Fetch failed (DNS properly broken): entry appears in stale prefix hash
     # Either way, the gossip handler has finished with the sync event.
     echo "Waiting for sync event to be processed..."
     SYNC_FETCHED=false
-    SYNC_ENTRY="${PREFIX}:${SYNC_EVENT_SAID}"
     for i in {1..30}; do
         NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
         if [ "$NODE_A_COUNT" = "2" ]; then
@@ -238,9 +239,9 @@ if [ "$MODE" = "setup" ]; then
             SYNC_FETCHED=true
             break
         fi
-        MEMBERS=$(queue_members 2>/dev/null)
-        if echo "$MEMBERS" | grep -qF "$SYNC_ENTRY"; then
-            echo "  Sync event queued (DNS confirmed broken) after ${i}s"
+        ENTRIES=$(stale_entries 2>/dev/null)
+        if echo "$ENTRIES" | grep -qF "$PREFIX"; then
+            echo "  Sync event recorded as stale (DNS confirmed broken) after ${i}s"
             break
         fi
         sleep 1
@@ -260,9 +261,9 @@ if [ "$MODE" = "setup" ]; then
     echo "Waiting for gossip announcement + fetch failure..."
     sleep 5
 
-    # Log retry queue state (informational — may be empty if resync loop is mid-cycle)
-    COUNT=$(queue_count)
-    echo "Retry queue size: $COUNT"
+    # Log stale prefix state (informational — may be empty if anti-entropy loop is mid-cycle)
+    COUNT=$(stale_count)
+    echo "Stale prefix count: $COUNT"
 
     # Verify node-a does NOT have the test ixn yet.
     # Expected count depends on whether the sync event's fetch succeeded:
@@ -281,11 +282,11 @@ if [ "$MODE" = "setup" ]; then
     echo "$PREFIX" > "$STATE_FILE"
 
     echo ""
-    echo "Queue contents:"
-    queue_members
+    echo "Stale prefix entries:"
+    stale_entries
     echo ""
 
-    print_summary "Resync Setup Phase Summary"
+    print_summary "Anti-Entropy Stale Repair Setup Summary"
 
     if [ $TESTS_FAILED -gt 0 ]; then
         exit 1
@@ -297,7 +298,7 @@ fi
 # =====================================================================
 if [ "$MODE" = "verify" ]; then
     echo "========================================="
-    echo "KELS Resync Test Suite — Verify Phase"
+    echo "KELS Anti-Entropy Stale Repair — Verify Phase"
     echo "========================================="
     echo "Node-A URL:      $NODE_A_URL"
     echo "Redis Host:       $REDIS_HOST"
@@ -315,17 +316,17 @@ if [ "$MODE" = "verify" ]; then
     echo ""
 
     # ========================================
-    # Wait for resync loop (poll instead of fixed sleep)
+    # Wait for anti-entropy loop (poll instead of fixed sleep)
     # ========================================
-    echo -e "${CYAN}=== Waiting for Resync Loop ===${NC}"
-    echo "Polling up to ${RESYNC_WAIT}s for the periodic resync loop to resolve entries..."
+    echo -e "${CYAN}=== Waiting for Anti-Entropy Loop ===${NC}"
+    echo "Polling up to ${RESYNC_WAIT}s for anti-entropy to resolve stale entries..."
 
     RESYNC_RESOLVED=false
     for i in $(seq 1 "$RESYNC_WAIT"); do
         NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
-        QUEUE_SIZE=$(queue_count)
-        if [ "$NODE_A_COUNT" = "3" ] && [ "$QUEUE_SIZE" = "0" ]; then
-            echo "  Resync resolved after ${i}s"
+        STALE_SIZE=$(stale_count)
+        if [ "$NODE_A_COUNT" = "3" ] && [ "$STALE_SIZE" = "0" ]; then
+            echo "  Anti-entropy resolved after ${i}s"
             RESYNC_RESOLVED=true
             break
         fi
@@ -333,7 +334,7 @@ if [ "$MODE" = "verify" ]; then
     done
 
     if [ "$RESYNC_RESOLVED" = "false" ]; then
-        echo "  Resync did not fully resolve within ${RESYNC_WAIT}s"
+        echo "  Anti-entropy did not fully resolve within ${RESYNC_WAIT}s"
     fi
     echo ""
 
@@ -341,23 +342,23 @@ if [ "$MODE" = "verify" ]; then
     # Verify: All entries resolved
     # ========================================
     echo -e "${CYAN}=== Verify: All Entries Resolved ===${NC}"
-    echo "Node-a should have all events and retry queue should be empty"
+    echo "Node-a should have all events and stale prefix hash should be empty"
     echo ""
 
     NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
     echo "Node-A event count: $NODE_A_COUNT (should be 3)"
     run_test "Node-A has all events (count == 3)" [ "$NODE_A_COUNT" = "3" ]
 
-    COUNT=$(queue_count)
-    echo "Retry queue size: $COUNT"
+    COUNT=$(stale_count)
+    echo "Stale prefix count: $COUNT"
     if [ "$COUNT" != "0" ]; then
-        echo "Remaining queue contents:"
-        queue_members
+        echo "Remaining stale entries:"
+        stale_entries
     fi
-    run_test "Retry queue is empty" [ "$COUNT" = "0" ]
+    run_test "Stale prefix hash is empty" [ "$COUNT" = "0" ]
 
     echo ""
-    print_summary "Resync Verify Phase Summary"
+    print_summary "Anti-Entropy Stale Repair Verify Summary"
 
     # Clean up state file
     rm -f "$STATE_FILE"

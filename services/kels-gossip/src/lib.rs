@@ -95,8 +95,6 @@ pub struct Config {
     pub http_listen_host: String,
     /// HTTP server listen port (e.g., 80)
     pub http_listen_port: u16,
-    /// Periodic resync interval in seconds (retries failed gossip fetches)
-    pub resync_interval_secs: u64,
     /// Periodic anti-entropy interval in seconds (repairs silent divergence)
     pub anti_entropy_interval_secs: u64,
 }
@@ -118,7 +116,6 @@ pub struct EnvValues {
     pub allowlist_refresh_interval_secs: Option<u64>,
     pub http_listen_host: Option<String>,
     pub http_listen_port: Option<u16>,
-    pub resync_interval_secs: Option<u64>,
     pub anti_entropy_interval_secs: Option<u64>,
 }
 
@@ -172,7 +169,6 @@ impl Config {
                 .http_listen_host
                 .unwrap_or_else(|| "0.0.0.0".to_string()),
             http_listen_port: env.http_listen_port.unwrap_or(80),
-            resync_interval_secs: env.resync_interval_secs.unwrap_or(300),
             anti_entropy_interval_secs: env.anti_entropy_interval_secs.unwrap_or(10),
         })
     }
@@ -196,9 +192,6 @@ impl Config {
                 .and_then(|s| s.parse().ok()),
             http_listen_host: std::env::var("HTTP_LISTEN_HOST").ok(),
             http_listen_port: std::env::var("HTTP_LISTEN_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-            resync_interval_secs: std::env::var("RESYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
             anti_entropy_interval_secs: std::env::var("ANTI_ENTROPY_INTERVAL_SECS")
@@ -526,8 +519,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
     });
 
-    // Reuse the Redis connection manager created earlier for retry/anti-entropy queues
-    let retry_queue: sync::OptionalRetryQueue = redis_conn_manager.clone();
+    // Reuse the Redis connection manager created earlier for sync and anti-entropy
+    let redis_for_sync: sync::OptionalRedis = redis_conn_manager.clone();
 
     // Start sync handler BEFORE waiting for PeerConnected so no gossip events are dropped.
     // The sync handler processes all events (announcements, peer connects/disconnects) as
@@ -536,7 +529,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let kels_url = config.kels_url.clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
-    let sync_retry_queue = retry_queue.clone();
+    let sync_redis = redis_for_sync.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
@@ -544,7 +537,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync_command_tx,
             sync_allowlist,
             recently_stored,
-            sync_retry_queue,
+            sync_redis,
             if has_ready_peers {
                 Some(peer_connected_tx)
             } else {
@@ -593,24 +586,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Spawn periodic resync loop (retries failed gossip fetches)
-    if let Some(ref rq) = retry_queue {
-        let resync_retry_queue = rq.clone();
-        let resync_allowlist = allowlist.clone();
-        let resync_kels_url = config.kels_url.clone();
-        let resync_interval = Duration::from_secs(config.resync_interval_secs);
-        tokio::spawn(async move {
-            sync::run_resync_loop(
-                resync_retry_queue,
-                resync_allowlist,
-                resync_kels_url,
-                resync_interval,
-            )
-            .await;
-        });
-
-        // Spawn periodic anti-entropy loop (repairs silent divergence)
-        let ae_redis = rq.clone();
+    // Spawn periodic anti-entropy loop (repairs silent divergence and failed gossip fetches)
+    if let Some(ref redis) = redis_for_sync {
+        let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
         let ae_kels_url = config.kels_url.clone();
         let ae_signer = registry_signer.clone();

@@ -24,7 +24,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 **Attack:** A compromised gossip node selectively drops announcements, preventing propagation to certain peers.
 - **Mitigation:** PlumTree broadcast tree redundancy with lazy push (IHave messages via backup peers). Announcements propagate through eager push peers with lazy repair from other peers. Bootstrap resync catches events missed during the gap. Anti-entropy loop detects and repairs silent divergence via periodic random sampling.
-- **Residual risk:** No real-time detection of selective dropping. Affected peers may be delayed until the next anti-entropy or resync cycle. Periodic resync partially mitigates this: failed gossip fetches are queued and retried against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. Anti-entropy (default 10s) repairs unknown mismatches via prefix page comparison.
+- **Residual risk:** No real-time detection of selective dropping. Affected peers may be delayed until the next anti-entropy cycle. Failed gossip fetches are recorded as stale prefixes and repaired by anti-entropy Phase 1 (default 10s cycle), recovering missed events from alternative peers. Phase 2 repairs unknown mismatches via random prefix page comparison.
 
 ### Gossip Message ID Collision
 
@@ -124,7 +124,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
 5. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
 7. **Redis state flags lack authentication** — relies on pod-level network isolation; impact limited to availability (all data from Redis is cryptographically re-verified)
-8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, periodic resync with retry queue (failed fetches retried against all known peers on configurable interval), but delayed detection remains
+8. **No real-time detection of selective message dropping** — mitigated by mesh redundancy, anti-entropy stale prefix repair (failed fetches recorded and retried within the next AE cycle), but delayed detection remains
 9. ~~**Sustained announcement injection causes repeated HTTP fetches**~~ — mitigated: per-peer rate limiting (8192 fetches/min) on gossip processing
 
 ## Roadmap
@@ -148,7 +148,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
 - [x] Fix event partitioning for contest propagation — `partition_events` now places contest events (`cnt`) in the second (recovery) batch, ensuring the non-contest fork event establishes divergence first. Previously, `dec + cnt` pairs could be partitioned with `cnt` first, which was rejected by merge ("Contest requires divergence")
-- [x] Add periodic resync with retry queue — failed gossip fetches are cached in Redis and retried against all known peers on a configurable interval (default 5 min), using `event_exists` for cheap pre-check before KEL fetch
+- [x] Failed gossip fetches recorded as stale prefixes for anti-entropy repair (consolidated from former retry queue into the anti-entropy loop)
 
 ### ~~Bootstrap integrity (addresses residual risk 4)~~
 

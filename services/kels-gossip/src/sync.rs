@@ -32,11 +32,11 @@ use crate::{
 /// When gossip stores events, KELS publishes to Redis, which would re-trigger announcement.
 pub type RecentlyStoredFromGossip = Arc<RwLock<HashMap<String, Instant>>>;
 
-/// Shared Redis connection for the retry queue (failed gossip fetches).
-pub type RetryQueue = Arc<redis::aio::ConnectionManager>;
+/// Shared Redis connection manager.
+pub type RedisConnection = Arc<redis::aio::ConnectionManager>;
 
-/// Optional retry queue — None in tests where Redis is unavailable.
-pub type OptionalRetryQueue = Option<RetryQueue>;
+/// Optional Redis connection — None in tests where Redis is unavailable.
+pub type OptionalRedis = Option<RedisConnection>;
 
 const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
 
@@ -110,9 +110,6 @@ pub async fn run_redis_subscriber(
 /// Maximum fetches per peer per minute
 const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
 
-/// Redis key for the retry queue set
-const RETRY_QUEUE_KEY: &str = "kels:resync:retry";
-
 /// Redis hash key for anti-entropy stale prefix tracking.
 /// Maps kel_prefix → source_node_prefix.
 const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
@@ -142,8 +139,8 @@ pub struct SyncHandler {
     recently_stored: RecentlyStoredFromGossip,
     /// Per-peer fetch rate limiting: maps peer_prefix -> (count, window_start)
     peer_fetch_counts: HashMap<String, (u32, Instant)>,
-    /// Redis-backed retry queue for failed gossip fetches
-    retry_queue: OptionalRetryQueue,
+    /// Redis connection for recording stale prefixes
+    redis: OptionalRedis,
 }
 
 impl SyncHandler {
@@ -151,7 +148,7 @@ impl SyncHandler {
         kels_url: &str,
         allowlist: SharedAllowlist,
         recently_stored: RecentlyStoredFromGossip,
-        retry_queue: OptionalRetryQueue,
+        redis: OptionalRedis,
     ) -> Self {
         Self {
             kels_client: KelsClient::new(kels_url),
@@ -159,18 +156,15 @@ impl SyncHandler {
             allowlist,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
-            retry_queue,
+            redis,
         }
     }
 
-    /// Queue a failed fetch for later retry via the periodic resync loop.
-    async fn queue_retry(&self, prefix: &str, said: &str) {
-        let Some(ref retry_queue) = self.retry_queue else {
-            return;
-        };
-        let entry = format!("{}:{}", prefix, said);
-        requeue_entry(retry_queue.as_ref(), &entry).await;
-        debug!("Queued retry for {}", entry);
+    /// Record a prefix as stale for anti-entropy repair.
+    async fn record_stale(&self, prefix: &str, source_node_prefix: &str) {
+        if let Some(ref redis) = self.redis {
+            record_stale_prefix(redis.as_ref(), prefix, source_node_prefix).await;
+        }
     }
 
     /// Partition events into two branches based on content analysis.
@@ -513,12 +507,8 @@ impl SyncHandler {
         }
 
         let Some((events, kels_url)) = fetched_events else {
-            // No peer had the events — queue for retry
-            self.queue_retry(prefix, remote_effective_said).await;
-            // Also record as stale for anti-entropy repair
-            if let Some(ref rq) = self.retry_queue {
-                record_stale_prefix(rq.as_ref(), prefix, &announcement.origin).await;
-            }
+            // No peer had the events — record as stale for anti-entropy repair
+            self.record_stale(prefix, &announcement.origin).await;
             return Ok(());
         };
 
@@ -564,7 +554,7 @@ impl SyncHandler {
                         .unwrap_or(false),
                     Err(e) => {
                         warn!("Failed to fetch full KEL for retry: {}", e);
-                        self.queue_retry(prefix, remote_effective_said).await;
+                        self.record_stale(prefix, &announcement.origin).await;
                         false
                     }
                 }
@@ -827,10 +817,10 @@ pub async fn run_sync_handler(
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
     recently_stored: RecentlyStoredFromGossip,
-    retry_queue: OptionalRetryQueue,
+    redis: OptionalRedis,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, retry_queue);
+    let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, redis);
 
     while let Some(event) = event_rx.recv().await {
         // Signal first PeerConnected to the bootstrap flow
@@ -847,213 +837,6 @@ pub async fn run_sync_handler(
 
     warn!("Event receiver closed");
     Ok(())
-}
-
-/// Periodically retries failed gossip fetches from the Redis retry queue.
-///
-/// Each cycle: reads all pending `prefix:said` entries, clears the queue,
-/// then tries each entry against shuffled peers. Entries that fail again
-/// (non-404) are re-added for the next cycle. Entries where all peers
-/// return 404 are dropped (SAID was likely superseded).
-pub async fn run_resync_loop(
-    retry_queue: RetryQueue,
-    allowlist: SharedAllowlist,
-    local_kels_url: String,
-    interval: Duration,
-) {
-    let local_client = KelsClient::new(&local_kels_url);
-
-    loop {
-        tokio::time::sleep(interval).await;
-
-        // Read and clear all pending entries
-        let Some(entries) = drain_retry_queue(retry_queue.as_ref()).await else {
-            continue;
-        };
-
-        info!("Resync loop: processing {} pending entries", entries.len());
-
-        // Collect all peers with their kels_url
-        let peers: Vec<(String, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.peer_prefix.clone(), p.kels_url.clone()))
-                .collect()
-        };
-
-        if peers.is_empty() {
-            warn!("Resync loop: no peers available, re-queuing all entries");
-            requeue_entries(retry_queue.as_ref(), &entries).await;
-            continue;
-        }
-
-        // Shuffle peers for load distribution
-        let mut shuffled_peers = peers.clone();
-        {
-            let mut rng = rand::thread_rng();
-            shuffled_peers.shuffle(&mut rng);
-        }
-
-        for entry in &entries {
-            // Parse prefix:said
-            let Some((prefix, said)) = entry.split_once(':') else {
-                warn!("Resync loop: invalid entry format: {}", entry);
-                continue;
-            };
-
-            let mut all_not_found = true;
-            let mut resolved = false;
-
-            for (_peer_prefix, kels_url) in &shuffled_peers {
-                let peer_client = KelsClient::new(kels_url);
-
-                // Cheap pre-check: does the peer have this event?
-                match peer_client.event_exists(said).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // Peer doesn't have it — try next
-                        continue;
-                    }
-                    Err(_) => {
-                        // Peer is down — try next
-                        all_not_found = false;
-                        continue;
-                    }
-                }
-
-                all_not_found = false;
-
-                // Peer has the event — fetch the KEL
-                // Check if we have local state for this prefix
-                let local_events = match local_client.get_kel(prefix).await {
-                    Ok(kel) => Some(kel),
-                    Err(KelsError::KeyNotFound(_)) => None,
-                    Err(e) => {
-                        warn!("Resync loop: failed to get local KEL for {}: {}", prefix, e);
-                        break;
-                    }
-                };
-
-                let events = if let Some(ref kel) = local_events
-                    && let Some(last) = kel.events().last()
-                {
-                    // Delta fetch
-                    match peer_client.fetch_kel_since(prefix, &last.event.said).await {
-                        Ok(events) => events,
-                        Err(KelsError::KeyNotFound(_)) => {
-                            // Since SAID not found — try full fetch
-                            match peer_client.get_kel(prefix).await {
-                                Ok(kel) => kel.events().to_vec(),
-                                Err(_) => continue,
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-                } else {
-                    // No local state — full fetch
-                    match peer_client.get_kel(prefix).await {
-                        Ok(kel) => kel.events().to_vec(),
-                        Err(KelsError::KeyNotFound(_)) => continue,
-                        Err(_) => continue,
-                    }
-                };
-
-                if events.is_empty() {
-                    // Delta was empty — local already has all events for this prefix
-                    resolved = true;
-                    break;
-                }
-
-                // Submit to local KELS
-                match local_client.submit_events(&events).await {
-                    Ok(result) => {
-                        if result.applied {
-                            info!(
-                                "Resync loop: applied {} events for prefix {}",
-                                events.len(),
-                                prefix
-                            );
-                        } else {
-                            debug!(
-                                "Resync loop: events not applied for prefix {} (possibly already synced)",
-                                prefix
-                            );
-                        }
-                        resolved = true;
-                        break;
-                    }
-                    Err(KelsError::ContestedKel(msg)) => {
-                        warn!("Resync loop: KEL contested for {}: {}", prefix, msg);
-                        resolved = true;
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("Resync loop: submit failed for {}: {}", prefix, e);
-                        continue;
-                    }
-                }
-            }
-
-            // If all peers returned 404, drop the entry (SAID superseded)
-            if all_not_found {
-                debug!(
-                    "Resync loop: all peers returned 404 for {}, dropping entry",
-                    entry
-                );
-                continue;
-            }
-
-            // If not resolved, re-add to retry queue for next cycle
-            if !resolved {
-                requeue_entry(retry_queue.as_ref(), entry).await;
-            }
-        }
-    }
-}
-
-/// Drain all entries from the retry queue, returning them and clearing the set atomically.
-/// Returns `None` if the queue is empty or on error.
-async fn drain_retry_queue(redis: &redis::aio::ConnectionManager) -> Option<Vec<String>> {
-    let mut conn = redis.clone();
-    let entries: Vec<String> = redis::cmd("SMEMBERS")
-        .arg(RETRY_QUEUE_KEY)
-        .query_async(&mut conn)
-        .await
-        .ok()?;
-
-    if entries.is_empty() {
-        return None;
-    }
-
-    let _ = redis::cmd("DEL")
-        .arg(RETRY_QUEUE_KEY)
-        .query_async::<()>(&mut conn)
-        .await;
-
-    Some(entries)
-}
-
-/// Add a single entry back to the retry queue.
-async fn requeue_entry(redis: &redis::aio::ConnectionManager, entry: &str) {
-    let mut conn = redis.clone();
-    let _ = redis::cmd("SADD")
-        .arg(RETRY_QUEUE_KEY)
-        .arg(entry)
-        .query_async::<()>(&mut conn)
-        .await;
-}
-
-/// Add multiple entries back to the retry queue.
-async fn requeue_entries(redis: &redis::aio::ConnectionManager, entries: &[String]) {
-    let mut conn = redis.clone();
-    for entry in entries {
-        let _ = redis::cmd("SADD")
-            .arg(RETRY_QUEUE_KEY)
-            .arg(entry)
-            .query_async::<()>(&mut conn)
-            .await;
-    }
 }
 
 /// Record a stale prefix for anti-entropy repair.
@@ -1302,9 +1085,9 @@ pub async fn run_anti_entropy_loop(
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
                     }
                     RepairResult::Failed => {
-                        // Don't re-add — Phase 2 or the resync loop will rediscover
-                        // if still needed. Re-adding causes a hot retry loop when the
-                        // source peer is unreachable.
+                        // Don't re-add — Phase 2 will rediscover if still needed.
+                        // Re-adding causes a hot retry loop when the source peer
+                        // is unreachable.
                         warn!("Anti-entropy: failed to repair stale prefix {}", kel_prefix);
                     }
                     RepairResult::NoOp => {}

@@ -47,7 +47,6 @@ variables:
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
   gossipAdvertiseAddress: "kels-gossip.kels-${environment.name}.kels:${var.gossip.port}"
   gossipAntiEntropyIntervalSecs: "${var.gossip.antiEntropyIntervalSecs}"
-  gossipResyncIntervalSecs: "${var.gossip.resyncIntervalSecs}"
   identityUrl: ${var.identity.url}
   kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
   registryUrl: ${actions.run.federation-read-url.outputs.log}

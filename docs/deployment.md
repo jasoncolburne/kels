@@ -137,7 +137,6 @@ If `TRUSTED_REGISTRY_MEMBERS` is empty, `FEDERATION_SELF_PREFIX` is unset, or th
 | `HSM_URL` | HSM service URL for gossip peer identity |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
-| `RESYNC_INTERVAL_SECS` | Periodic resync interval (default: 300) |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
 | `RUST_LOG` | Logging level |

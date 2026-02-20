@@ -98,8 +98,6 @@ spec:
               value: "${var.gossipAdvertiseAddress}"
             - name: GOSSIP_TOPIC
               value: "${var.gossip.topic}"
-            - name: RESYNC_INTERVAL_SECS
-              value: "${var.gossipResyncIntervalSecs}"
             - name: ANTI_ENTROPY_INTERVAL_SECS
               value: "${var.gossipAntiEntropyIntervalSecs}"
           livenessProbe:
