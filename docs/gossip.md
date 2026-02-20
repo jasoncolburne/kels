@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with three-DH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events from any peer in the allowlist that has the event via HTTP.
+The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with three-DH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
