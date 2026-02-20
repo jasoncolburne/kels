@@ -51,6 +51,16 @@ impl HsmBindingRepository {
             .limit(1);
         self.pool.fetch_optional(query).await
     }
+
+    pub async fn get_all_by_kel_prefix(
+        &self,
+        kel_prefix: &str,
+    ) -> Result<Vec<HsmKeyBinding>, StorageError> {
+        let query = Query::<HsmKeyBinding>::for_table(Self::TABLE_NAME)
+            .eq("kel_prefix", kel_prefix)
+            .order_by("version", Order::Asc);
+        self.pool.fetch(query).await
+    }
 }
 
 pub const AUTHORITY_IDENTITY_NAME: &str = "identity";

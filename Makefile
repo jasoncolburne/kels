@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-comprehensive wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-rotation test-comprehensive wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -292,6 +292,20 @@ wait-for-gossip:
 		echo "Timeout waiting for gossip nodes"; \
 		exit 1'
 
+test-rotation:
+	# Run scheduled-rotate 4 times on registry-a identity
+	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	# Verify KEL event types from test-client
+	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=kels-registry-a ./test-scheduled-rotation.sh'
+	# Rotate on node-a identity and let gossip propagate
+	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	sleep 10
+	# Verify cross-node ops still work after rotation (no restarts)
+	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+
 test-suite:
 	$(MAKE) wait-for-gossip
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
@@ -300,6 +314,7 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+	$(MAKE) test-rotation
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-grow-federation
