@@ -1,15 +1,17 @@
 //! Identity Service HTTP Server
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use axum::{
     Router,
     routing::{get, post},
 };
 use kels::{KelStore, RepositoryKelStore, shutdown_signal};
-use verifiable_storage::{ChainedRepository, RepositoryConnection};
+use verifiable_storage::{
+    Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
+};
 
 use crate::{
     handlers::{self, AppState},
@@ -131,27 +133,36 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         // Get generation counters from the provider (2 signing keys and 1 recovery key were created)
         let signing_gen = builder.key_provider().signing_generation().await;
         let recovery_gen = builder.key_provider().recovery_generation().await;
-        let binding = HsmKeyBinding::new(
+        let binding = HsmKeyBinding::create(
             icp.event.prefix.clone(),
             current_handle.clone(),
             next_handle.clone(),
             recovery_handle.clone(),
             signing_gen,
             recovery_gen,
-        );
+        )
+        .map_err(|e| format!("Failed to create HSM binding: {}", e))?;
         repo.hsm_bindings
-            .create(binding)
+            .insert(binding.clone())
             .await
-            .map_err(|e| format!("Failed to create HSM binding: {}", e))?;
+            .map_err(|e| format!("Failed to store HSM binding: {}", e))?;
 
-        repo.authority
-            .create(AuthorityMapping::new(
-                AUTHORITY_IDENTITY_NAME.to_string(),
-                icp.event.prefix.clone(),
-                icp.event.said.clone(),
-            ))
+        // Anchor the binding SAID in the KEL so it can't be faked by DB-only attacker
+        builder
+            .interact(&binding.said)
             .await
-            .map_err(|e| format!("Failed to set authority prefix: {}", e))?;
+            .map_err(|e| format!("Failed to anchor HSM binding: {}", e))?;
+
+        let authority = AuthorityMapping::create(
+            AUTHORITY_IDENTITY_NAME.to_string(),
+            icp.event.prefix.clone(),
+            icp.event.said.clone(),
+        )
+        .map_err(|e| format!("Failed to create authority mapping: {}", e))?;
+        repo.authority
+            .insert(authority)
+            .await
+            .map_err(|e| format!("Failed to store authority prefix: {}", e))?;
 
         builder
     };
@@ -160,6 +171,20 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
+    });
+
+    let rotation_state = state.clone();
+    let rotation_hsm = hsm.clone();
+    let rotation_key_prefix = key_handle_prefix.clone();
+    let rotation_kel_store = kel_store.clone();
+    tokio::spawn(async move {
+        auto_rotation_loop(
+            rotation_state,
+            rotation_hsm,
+            rotation_key_prefix,
+            rotation_kel_store,
+        )
+        .await;
     });
 
     let app = create_router(state);
@@ -176,4 +201,190 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .await?;
 
     Ok(())
+}
+
+const ROTATION_INTERVAL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
+const LOOP_PERIOD: Duration = Duration::from_secs(6 * 3600); // 6 hours
+
+async fn auto_rotation_loop(
+    state: Arc<AppState>,
+    hsm: Arc<HsmClient>,
+    key_handle_prefix: String,
+    kel_store: Arc<dyn KelStore>,
+) {
+    // Stabilize on startup
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    let mut interval = tokio::time::interval(LOOP_PERIOD);
+    let mut last_rotation: Option<tokio::time::Instant> = None;
+
+    loop {
+        interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
+
+        // Cooldown: skip if we rotated recently (keys are fresh for ROTATION_INTERVAL)
+        if let Some(last) = last_rotation
+            && last.elapsed() < ROTATION_INTERVAL
+        {
+            continue;
+        }
+
+        match check_and_rotate(&state, &hsm, &key_handle_prefix, &kel_store).await {
+            Ok(rotated) => {
+                if rotated {
+                    info!("Auto-rotation completed successfully");
+                    last_rotation = Some(tokio::time::Instant::now());
+                }
+            }
+            Err(e) => {
+                warn!("Auto-rotation check failed: {}", e);
+            }
+        }
+    }
+}
+
+async fn check_and_rotate(
+    state: &Arc<AppState>,
+    hsm: &Arc<HsmClient>,
+    key_handle_prefix: &str,
+    kel_store: &Arc<dyn KelStore>,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::hsm::HsmKeyProvider;
+    use kels::KeyEventBuilder;
+
+    let mapping = state
+        .repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or("Identity not initialized")?;
+
+    let prefix = &mapping.kel_prefix;
+
+    let bindings = state
+        .repo
+        .hsm_bindings
+        .get_all_by_kel_prefix(prefix)
+        .await?;
+
+    if bindings.is_empty() {
+        return Err("No HSM bindings found".into());
+    }
+
+    let kel = state.kel_repo.get_kel(prefix).await?;
+
+    // Verify KEL integrity
+    kel.verify()?;
+
+    // Verify binding chain integrity
+    let should_rotate = match verify_binding_chain(&bindings, &kel) {
+        Ok(needs_rotation) => needs_rotation,
+        Err(e) => {
+            warn!(
+                "Binding chain verification failed ({}), rotating immediately",
+                e
+            );
+            true
+        }
+    };
+
+    if should_rotate {
+        info!("Triggering scheduled rotation");
+        let output = tokio::process::Command::new("/app/identity-admin")
+            .args(["--json", "scheduled-rotate"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("scheduled-rotate failed: {}", stderr).into());
+        }
+
+        // Reconstruct builder with updated key handles from the database
+        let binding = state
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix(prefix)
+            .await?
+            .ok_or("HSM binding not found after rotation")?;
+
+        let key_provider = HsmKeyProvider::with_handles(
+            hsm.clone(),
+            key_handle_prefix,
+            binding.signing_generation,
+            binding.recovery_generation,
+            binding.current_key_handle.into(),
+            binding.next_key_handle.into(),
+            binding.recovery_key_handle.into(),
+        );
+
+        let new_builder = KeyEventBuilder::with_dependencies(
+            key_provider,
+            None,
+            Some(kel_store.clone()),
+            Some(prefix),
+        )
+        .await
+        .map_err(|e| format!("Failed to rebuild builder after rotation: {}", e))?;
+
+        let mut builder = state.builder.write().await;
+        *builder = new_builder;
+
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn verify_binding_chain(
+    bindings: &[HsmKeyBinding],
+    kel: &kels::Kel,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    // Verify each binding's SAID
+    for binding in bindings {
+        binding.verify_said()?;
+    }
+
+    // Verify chain links: first has no previous, rest link correctly
+    if bindings[0].get_previous().is_some() {
+        return Err("First binding has unexpected previous pointer".into());
+    }
+
+    for i in 1..bindings.len() {
+        let expected_prev = Some(bindings[i - 1].get_said());
+        if bindings[i].get_previous() != expected_prev {
+            return Err(
+                format!("Binding {} has wrong previous pointer", bindings[i].version).into(),
+            );
+        }
+    }
+
+    // Verify versions increment by 1
+    for i in 1..bindings.len() {
+        if bindings[i].version != bindings[i - 1].version + 1 {
+            return Err(format!(
+                "Binding version gap: {} -> {}",
+                bindings[i - 1].version,
+                bindings[i].version
+            )
+            .into());
+        }
+    }
+
+    // Verify all binding SAIDs are anchored in the KEL
+    let binding_saids: Vec<&str> = bindings.iter().map(|b| b.said.as_str()).collect();
+    if !kel.contains_anchors(&binding_saids) {
+        return Err("Not all binding SAIDs are anchored in KEL".into());
+    }
+
+    // All checks passed — check if latest binding is older than rotation interval
+    let latest = &bindings[bindings.len() - 1];
+    let latest_ts = latest
+        .get_created_at()
+        .ok_or("Missing created_at on latest binding")?;
+    let now = StorageDatetime::now();
+    let age = (*now.inner() - *latest_ts.inner())
+        .to_std()
+        .unwrap_or(Duration::ZERO);
+
+    Ok(age > ROTATION_INTERVAL)
 }

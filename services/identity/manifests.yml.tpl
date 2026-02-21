@@ -52,6 +52,8 @@ spec:
               value: "${var.identityDatabaseUrl}"
             - name: HSM_URL
               value: "${var.hsm.url}"
+            - name: KELS_URL
+              value: "${var.envType == 'registry' ? '' : var.kels.url}"
           livenessProbe:
             httpGet:
               path: /health

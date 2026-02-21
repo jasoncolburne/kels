@@ -163,6 +163,6 @@ There is no real-time detection of selective message dropping. Announcement inje
 
 ### ~~Signed request replay window (addresses residual risk 6)~~
 
-`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.
+~~`list_prefixes` signed requests have a 60-second replay window. While the endpoint is read-only, reducing the window or adding nonce-based deduplication would eliminate replay entirely.~~
 
 - [x] Add server-side nonce tracking — each `PrefixesRequest` includes a BLAKE3-hashed cryptographic nonce. The server rejects duplicate nonces within the 60s timestamp window, evicting expired entries on each request. Nonce storage is bounded by `max_peers × max_requests_per_peer_per_minute`.
