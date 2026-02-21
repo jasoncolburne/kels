@@ -55,7 +55,7 @@ Client                              KELS Server
   │                                      │ check for divergence
   │                                      │ store event
   │<──── BatchSubmitResponse ────────────│
-  │      { accepted: true,               │
+  │      { applied: true,                │
   │        diverged_at: None }           │
   │                                      │
 ```
@@ -69,7 +69,7 @@ Client                              KELS Server
   │                                      │ detect SAID mismatch at generation N
   │                                      │ store as divergent event
   │<──── BatchSubmitResponse ────────────│
-  │      { accepted: true,               │
+  │      { applied: true,                │
   │        diverged_at: Some(N) }        │
   │                                      │
   │───── get_kel() ─────────────────────>│
@@ -82,7 +82,7 @@ Client                              KELS Server
   │                                      │ archive adversary events
   │                                      │ store rec
   │<──── BatchSubmitResponse ────────────│
-  │      { accepted: true }              │
+  │      { applied: true }               │
 ```
 
 When KEL is already frozen (submitting to a divergent KEL):
@@ -94,7 +94,7 @@ Client                              KELS Server
   │                                      │ KEL already divergent
   │                                      │ reject event (not stored)
   │<──── BatchSubmitResponse ────────────│
-  │      { accepted: false,              │
+  │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
   │───── get_kel() ─────────────────────>│
@@ -219,7 +219,7 @@ Content-Type: application/json
 
 Response:
 {
-  "accepted": true,
+  "applied": true,
   "divergedAt": <generation> | null
 }
 ```
@@ -291,15 +291,14 @@ The `adversary inject` command submits events to the server without updating loc
 Once divergence is detected, the KEL is frozen:
 - No new events accepted except `rec` or `cnt`
 - Prevents adversary from extending their fork
-- Server returns `{ accepted: false, diverged_at: N }` for rejected submissions, allowing client to sync
+- Server returns `{ applied: false, diverged_at: N }` for rejected submissions, allowing client to sync
 
 ### Recovery Protection
 
-Any recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at generation N protects generation N and all earlier generations:
-- All events except `cnt` at generation <= N are rejected with `RecoveryProtected`
-- Prevents re-divergence at the recovery generation
-- Enables proactive protection: rotating recovery key (`ror`) prevents adversary from injecting events at earlier generations
-- Only contest (`cnt`) events are allowed through - once anyone reveals recovery, the only valid response is to contest
+Protection is based on whether existing divergent events reveal the recovery key, not on generation comparison:
+- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), all non-contest submissions are rejected with `Protected`
+- Only contest (`cnt`) events are allowed through -- once anyone reveals recovery, the only valid response is to contest
+- Enables proactive protection: rotating recovery key (`ror`) causes future adversary submissions to require contest
 
 ### Contest Finality
 

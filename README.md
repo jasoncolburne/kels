@@ -1,4 +1,4 @@
-# KELS - Key Event Log Storage
+# KELS - Key Event Log System
 
 KELS is a federated decentralized key management infrastructure (DKMI). It provides cryptographically verifiable identity management through key event logs with pre-rotation commitment, divergence detection, and recovery mechanisms — offering protection against key compromise without relying on certificate authorities or centralized trust.
 
@@ -86,7 +86,7 @@ kels/
   - Native (Linux, macOS, Windows)
   - WebAssembly (browser/wasm targets)
 
-- **Server-side caching**: Optional Redis + Local LRU caching for high-throughput deployments (enabled by default for the garden example)
+- **Server-side caching**: Optional Redis + W-TinyLFU local caching for high-throughput deployments (enabled by default for the garden example)
 
 - **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) synchronizes KELs between independent deployments for high availability
 
@@ -147,6 +147,7 @@ First, add the following entries to `/etc/hosts` to enable local hostname resolu
 127.0.0.1 kels-registry.kels-registry-a.kels
 127.0.0.1 kels-registry.kels-registry-b.kels
 127.0.0.1 kels-registry.kels-registry-c.kels
+127.0.0.1 kels-registry.kels-registry-d.kels
 ```
 
 This allows the CLI and iOS app to connect to the local KELS nodes and registries using their service names.
@@ -233,6 +234,7 @@ While these protocols could be upgraded with quantum-safe signature algorithms, 
 | `POST` | `/api/kels/events` | Submit signed events |
 | `GET` | `/api/kels/kel/:prefix` | Fetch KEL by prefix |
 | `GET` | `/api/kels/kel/:prefix?audit=true` | Fetch KEL with audit records |
+| `GET` | `/api/kels/events/:said/exists` | Check if event exists by SAID |
 | `POST` | `/api/kels/kels` | Batch fetch multiple KELs |
 | `POST` | `/api/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
@@ -305,6 +307,9 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [API Endpoints](docs/endpoints.md) - Full endpoint reference
 - [Node Attack Surface](docs/node-attack-surface.md) - Security analysis of KELS data-plane services
 - [Registry Attack Surface](docs/registry-attack-surface.md) - Security analysis of federation and registry
+- [Protocol Attack Surface](docs/protocol-attack-surface.md) - Security analysis of KEL protocol
+- [Registry Removal](docs/registry-removal.md) - Federation member decommission procedure
+- [Rejection Threshold](docs/rejection-threshold.md) - Peer proposal rejection mechanics
 
 ## Production Readiness
 

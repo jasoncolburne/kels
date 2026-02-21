@@ -91,9 +91,8 @@ services/kels-registry/
     ├── server.rs         # HTTP router and startup
     ├── handlers.rs       # All handlers (nodes, peers, registry KEL, federation)
     ├── store.rs          # Redis-backed node storage
-    ├── signature.rs      # Signature verification
-    ├── identity_client.rs # Client for identity service
     ├── peer_store.rs     # PostgreSQL peer repository
+    ├── raft_store.rs     # Raft persistent storage helpers
     ├── repository.rs     # Combined repository
     ├── federation/       # Multi-registry federation (Raft consensus)
     │   ├── mod.rs        # FederationNode entry point
@@ -148,9 +147,8 @@ Admin API (signed requests):
 |--------|------|-------------|
 | `POST` | `/api/admin/addition-proposals` | Propose a new peer (addition) |
 | `POST` | `/api/admin/removal-proposals` | Propose removal of a peer |
-| `GET` | `/api/admin/proposals/:proposal_id` | Get proposal details |
+| `POST` | `/api/admin/proposals/:proposal_id` | Get proposal details |
 | `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
-| `POST` | `/api/admin/peers` | Add a peer |
 
 > **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
 
@@ -212,23 +210,22 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PORT` | HTTP listen port | `8092` |
+| `PORT` | HTTP listen port | `80` |
 | `REDIS_URL` | Redis connection URL | `redis://redis:6379` |
 | `DATABASE_URL` | PostgreSQL connection URL | `postgres://postgres:postgres@postgres:5432/kels` |
 | `IDENTITY_URL` | Identity service URL | `http://identity:80` |
-| `RUST_LOG` | Log level | `kels_registry=info` |
+| `RUST_LOG` | Log level | `kels_registry=debug` |
 
 ### Gossip Service
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REGISTRY_URL` | Registry HTTP endpoint | (optional) |
-| `NODE_ID` | Unique node identifier | (required) |
-| `DATABASE_URL` | PostgreSQL URL for peer cache | (required) |
-| `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
+| `REGISTRY_URL` | Registry HTTP endpoint | (required) |
+| `NODE_ID` | Unique node identifier | `node-unknown` |
+| `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address | `0.0.0.0:4001` |
-| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections | (required) |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections | listen address |
 
 ## Design Decisions
 

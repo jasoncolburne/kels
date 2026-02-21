@@ -60,7 +60,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires ECDSA signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
 - `get_kel` uses Redis cache with pub/sub invalidation; falls back to DB on miss. The `?since=SAID` parameter returns only events after the given SAID. If the SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty array is returned. This allows divergent KELs to be correctly recognized as in-sync without requiring a full fetch.
-- Error codes: `NotFound`, `BadRequest`, `Unauthorized`, `Frozen`, `Contested`, `RecoveryProtected`, `InternalError`
+- Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `RecoveryProtected`, `RateLimited`, `InternalError`
 
 ## KELS Registry Service
 
@@ -127,6 +127,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/ready` | None | Readiness check (has bootstrap completed?) |
+| GET | `/healthz` | None | Liveness probe |
 
 ### Gossip Protocols
 
@@ -154,7 +155,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 |--------|-----------|-----------|
 | **Signed request** | Node registration, prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
-| **Localhost only** | Admin API | `SocketAddr.ip().is_loopback()` check |
+| **Signed admin request** | Admin API | SignedRequest<AdminRequest> verified against own identity KEL |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
 | **Gossip handshake** | Gossip connections | Three-DH pattern (ee + se + es) with AES-GCM-256; signature verified against peer's KEL; static key operations via HSM |
 | **Allowlist** | Gossip connections | NodePrefix checked against verified peer allowlist with full KEL verification |
