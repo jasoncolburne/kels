@@ -40,12 +40,19 @@ pub struct StateMachineData {
     pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     pub votes: HashMap<String, Vote>,
+    pub member_kels: HashMap<String, Kel>,
 }
 ```
 
 ### Peers
 
 The `peers` HashMap is the peer set, keyed by `peer_prefix`. These are the peers trusted across all federation members.
+
+### Member KELs
+
+The `member_kels` HashMap stores Raft-replicated KELs for each federation member, keyed by prefix. Members submit their own key events via `SubmitKeyEvents` (forwarded to the leader if submitted on a follower). On `apply()`, events are verified against the existing KEL using `Kel::merge()` — this handles deduplication, chain verification, and divergence detection. Member KELs are included in snapshots and survive restarts.
+
+A background sync loop on every node fetches the local identity KEL every 30 seconds and submits any new events to Raft. The admin CLI also eagerly submits events after each `anchor()` call.
 
 ### Proposals and Votes
 
@@ -67,6 +74,7 @@ Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in 
 | `SubmitAdditionProposal` | Create or withdraw a proposal for a new peer | Any member |
 | `SubmitRemovalProposal` | Create or withdraw a proposal to remove a peer | Any member |
 | `VotePeer` | Vote on a pending proposal (addition or removal) | Any member |
+| `SubmitKeyEvents` | Submit member KEL events to Raft state | Any member (forwarded to leader) |
 
 ## Synchronous Apply (Pure State Machine)
 
@@ -77,6 +85,7 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
 - **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
 - **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
 - **VotePeer**: Records vote, checks threshold. For additions: auto-adds peer to peer set on approval. For removals: auto-removes peer from peer set on approval. Moves proposal to completed.
+- **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix using `Kel::merge()`
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -107,6 +116,14 @@ Before applying a proposal:
 
 1. **Threshold check**: Verify the proposal's `threshold` field matches the current `approval_threshold()` — ensures proposer and federation agree on membership size
 2. **Proposal anchoring**: Verify the proposal's SAID is anchored in the proposer's KEL
+
+### SubmitKeyEvents Verification
+
+Before applying key events:
+
+1. **Member check**: Verify the event prefix belongs to a federation member (`config.is_member(prefix)`)
+2. **KEL merge**: Merge events into the existing member KEL using `Kel::merge()` — handles dedup, chain verification, divergence detection
+3. **Security events**: Log divergence/contest at error level as critical security events (indicates compromised registry signing key)
 
 ### Approved Proposal Side Effects
 
@@ -160,8 +177,8 @@ The peer set flows to multiple consumers:
 
 The state machine supports snapshotting for efficient Raft log compaction:
 
-- **Snapshot**: Serializes `peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, and `votes` to JSON
-- **Restore**: Deserializes and verifies all proposal chains before accepting. Proposals with invalid chains are dropped during restore.
+- **Snapshot**: Serializes `peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_kels` to JSON
+- **Restore**: Deserializes and verifies all proposal chains and member KELs before accepting. Proposals with invalid chains are dropped during restore. Member KELs are verified with `kel.verify()` before restoring.
 
 ## DB Sync Loop
 

@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -375,6 +375,76 @@ pub struct FederationState {
     pub identity_client: Arc<IdentityClient>,
 }
 
+/// Eagerly sync own KEL to Raft if there are new events.
+///
+/// The admin CLI anchors SAIDs in the identity KEL, then submits requests
+/// that need anchoring verification against Raft state. Without this sync,
+/// the 30-second background loop may not have picked up the new anchor yet.
+async fn ensure_own_kel_synced(state: &FederationState) {
+    let fut = async {
+        if let Ok(own_kel) = state.identity_client.get_kel().await
+            && let Some(prefix) = own_kel.prefix()
+        {
+            let raft_count = state
+                .node
+                .get_member_kel(prefix)
+                .await
+                .map(|k| k.events().len())
+                .unwrap_or(0);
+            let all_events = own_kel.events();
+            if all_events.len() > raft_count {
+                let events = all_events[raft_count..].to_vec();
+                let _ = state.node.submit_key_events(events).await;
+            }
+        }
+    };
+
+    if tokio::time::timeout(Duration::from_secs(5), fut)
+        .await
+        .is_err()
+    {
+        tracing::warn!("Timed out syncing own KEL to Raft (no quorum?)");
+    }
+}
+
+/// Accept key events from any federation member and submit to Raft.
+///
+/// No signature auth needed — the events are self-verifying (signed key events)
+/// and apply() checks the prefix is a trusted member. This endpoint allows
+/// followers to forward their KEL events to the leader for Raft consensus.
+pub async fn federation_submit_key_events(
+    State(state): State<Arc<FederationState>>,
+    Json(events): Json<Vec<kels::SignedKeyEvent>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if events.is_empty() {
+        return Err(ApiError::bad_request("No events provided"));
+    }
+
+    // Verify prefix is a trusted member before forwarding to Raft
+    let prefix = &events[0].event.prefix;
+    if !state.node.config().is_member(prefix) {
+        return Err(ApiError::forbidden(format!(
+            "Not a trusted member: {}",
+            prefix
+        )));
+    }
+
+    match state.node.submit_key_events(events).await {
+        Ok(FederationResponse::KeyEventsAccepted { prefix, new_count }) => {
+            Ok(Json(serde_json::json!({
+                "status": "accepted",
+                "prefix": prefix,
+                "new_count": new_count
+            })))
+        }
+        Ok(FederationResponse::KeyEventsRejected(reason)) => {
+            Err(ApiError::bad_request(format!("Rejected: {}", reason)))
+        }
+        Ok(_) => Err(ApiError::internal_error("Unexpected response")),
+        Err(e) => Err(ApiError::internal_error(e.to_string())),
+    }
+}
+
 /// Handle incoming Raft RPC from federation members.
 ///
 /// Verifies the sender is a known federation member and validates
@@ -413,23 +483,48 @@ pub async fn federation_rpc(
             .map_err(|_| ApiError::unauthorized("Signature verification failed"))
     };
 
-    // Try with cached KEL first
-    let verified = if let Some(kel) = state.node.get_member_kel(&signed_rpc.sender_prefix).await {
-        verify_with_kel(&kel).is_ok()
-    } else {
-        false
+    // Try Raft state first, fall back to HTTP fetch during bootstrap
+    // (chicken-and-egg: KELs are replicated via Raft, but Raft RPCs need KELs to auth)
+    let kel = match state.node.get_member_kel(&signed_rpc.sender_prefix).await {
+        Some(kel) => kel,
+        None => {
+            let member = state
+                .node
+                .config()
+                .member_by_prefix(&signed_rpc.sender_prefix)
+                .ok_or_else(|| {
+                    ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
+                })?;
+            let url = format!("{}/api/registry-kel", member.url.trim_end_matches('/'));
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| ApiError::internal_error(e.to_string()))?;
+            let resp = client.get(&url).send().await.map_err(|e| {
+                ApiError::unauthorized(format!("Failed to fetch sender KEL: {}", e))
+            })?;
+            if !resp.status().is_success() {
+                return Err(ApiError::unauthorized(format!(
+                    "Failed to fetch sender KEL: {}",
+                    resp.status()
+                )));
+            }
+            let fetched_kel: kels::Kel = resp.json().await.map_err(|e| {
+                ApiError::unauthorized(format!("Failed to parse sender KEL: {}", e))
+            })?;
+            fetched_kel
+                .verify()
+                .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
+            if fetched_kel.prefix() != Some(&signed_rpc.sender_prefix) {
+                return Err(ApiError::unauthorized(
+                    "Fetched KEL prefix does not match sender",
+                ));
+            }
+            fetched_kel
+        }
     };
 
-    // If not verified, refresh KEL and try again
-    if !verified {
-        let kel = state
-            .node
-            .refresh_member_kel(&signed_rpc.sender_prefix)
-            .await
-            .map_err(|e| ApiError::unauthorized(format!("Failed to fetch sender KEL: {}", e)))?;
-
-        verify_with_kel(&kel)?;
-    }
+    verify_with_kel(&kel)?;
 
     // Parse the verified payload
     let rpc: FederationRpc = serde_json::from_str(&signed_rpc.payload)
@@ -673,6 +768,7 @@ pub async fn admin_submit_addition_proposal(
         .map_err(|e| ApiError::bad_request(format!("Proposal chain verification failed: {}", e)))?;
 
     // 3. Verify each record's SAID is anchored in proposer's KEL
+    ensure_own_kel_synced(&state).await;
     for record in &history.records {
         state
             .node
@@ -778,6 +874,7 @@ pub async fn admin_submit_removal_proposal(
     })?;
 
     // 3. Verify each record's SAID is anchored in proposer's KEL
+    ensure_own_kel_synced(&state).await;
     for record in &history.records {
         state
             .node
@@ -937,6 +1034,7 @@ pub async fn admin_vote_proposal(
     }
 
     // 5. Verify vote SAID is anchored in voter's KEL
+    ensure_own_kel_synced(&state).await;
     state
         .node
         .verify_anchoring(&vote.said, &vote.voter)
@@ -1009,6 +1107,29 @@ pub async fn admin_vote_proposal(
                                     e
                                 ))
                             })?;
+
+                        // Eagerly submit own KEL to Raft after anchoring
+                        // (best-effort, background sync catches misses)
+                        if let Ok(own_kel) = state.identity_client.get_kel().await
+                            && let Some(prefix) = own_kel.prefix()
+                        {
+                            let raft_count = state
+                                .node
+                                .get_member_kel(prefix)
+                                .await
+                                .map(|k| k.events().len())
+                                .unwrap_or(0);
+                            let all_events = own_kel.events();
+                            if all_events.len() > raft_count {
+                                let events = all_events[raft_count..].to_vec();
+                                if let Err(e) = state.node.submit_key_events(events).await {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Failed to eagerly submit own KEL to Raft after anchor"
+                                    );
+                                }
+                            }
+                        }
 
                         state.node.add_peer(peer.clone()).await.map_err(|e| {
                             ApiError::internal_error(format!("Failed to add peer via Raft: {}", e))

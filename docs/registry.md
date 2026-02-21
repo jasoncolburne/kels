@@ -101,6 +101,7 @@ services/kels-registry/
     │   ├── network.rs    # HTTP transport for Raft RPCs
     │   ├── state_machine.rs # Raft state machine (peer set)
     │   ├── storage.rs    # Raft log/vote storage (PostgreSQL)
+    │   ├── sync.rs       # Background sync loops (KEL sync, leader DB sync)
     │   └── types.rs      # Federation message types
     └── bin/
         └── kels-registry-admin.rs # Admin CLI for peer management
@@ -139,6 +140,7 @@ Federation protocol:
 | `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
 | `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
 | `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
+| `POST` | `/api/federation/key-events` | Submit member KEL events to Raft (forwarded to leader) |
 
 Admin API (signed requests):
 

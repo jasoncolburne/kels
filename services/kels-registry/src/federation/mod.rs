@@ -39,10 +39,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
-use kels::Peer;
+use kels::{Peer, SignedKeyEvent};
 use openraft::Raft;
 
 use crate::repository::RegistryRepository;
@@ -52,7 +51,7 @@ use crate::repository::RegistryRepository;
 /// Each registry runs a FederationNode that:
 /// - Participates in Raft consensus with other registries
 /// - Replicates peer set changes
-/// - Caches member KELs for signature verification
+/// - Stores member KELs in Raft-replicated state
 pub struct FederationNode {
     /// The Raft consensus instance
     raft: Raft<TypeConfig>,
@@ -60,8 +59,6 @@ pub struct FederationNode {
     config: FederationConfig,
     /// State machine store (for reading state)
     state_machine: StateMachineStore,
-    /// Cached KELs for federation members (for signature verification)
-    member_kels: Arc<RwLock<HashMap<String, kels::Kel>>>,
 }
 
 impl FederationNode {
@@ -78,9 +75,6 @@ impl FederationNode {
     ) -> Result<Self, FederationError> {
         let node_id = config.self_node_id()?;
 
-        // Create member KELs cache (shared with state machine for verification)
-        let member_kels = Arc::new(RwLock::new(HashMap::new()));
-
         // Create storage components (PostgreSQL-backed for persistence)
         let log_store = LogStore::new(
             Arc::new(repository.raft_votes.clone()),
@@ -88,11 +82,8 @@ impl FederationNode {
             Arc::new(repository.raft_state.clone()),
             node_id,
         );
-        let state_machine = StateMachineStore::new(
-            member_kels.clone(),
-            config.clone(),
-            Arc::new(repository.peers.clone()),
-        );
+        let state_machine =
+            StateMachineStore::new(config.clone(), Arc::new(repository.peers.clone()));
 
         // Create network layer (with signing capability)
         let network = FederationNetwork::new(config.clone(), identity_client);
@@ -120,7 +111,6 @@ impl FederationNode {
             raft,
             config,
             state_machine,
-            member_kels,
         })
     }
 
@@ -358,7 +348,7 @@ impl FederationNode {
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
     pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
         self.state_machine
-            .verify_member_anchoring(said, member_prefix)
+            .verify_member_anchoring_with_lock(said, member_prefix)
             .await
     }
 
@@ -613,95 +603,78 @@ impl FederationNode {
         }
     }
 
-    /// Populate member KEL cache on startup.
-    pub async fn populate_member_kel_cache(&self) -> Result<(), FederationError> {
-        info!("Populating member KEL cache...");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-        for member in &self.config.members {
-            match fetch_member_kel(&client, &member.url).await {
-                Ok(kel) => {
-                    info!("Cached KEL for member {}", member.prefix);
-                    self.member_kels
-                        .write()
-                        .await
-                        .insert(member.prefix.clone(), kel);
-                }
-                Err(e) => {
-                    warn!("Failed to fetch KEL for member {}: {}", member.prefix, e);
-                }
-            }
+    /// Submit key events to Raft for a member's KEL.
+    ///
+    /// On the leader, writes directly to Raft. On followers, forwards via HTTP
+    /// to the leader's `/api/federation/key-events` endpoint.
+    pub async fn submit_key_events(
+        &self,
+        events: Vec<SignedKeyEvent>,
+    ) -> Result<FederationResponse, FederationError> {
+        if self.is_leader().await {
+            let request = FederationRequest::SubmitKeyEvents(events);
+            let result = self
+                .raft
+                .client_write(request)
+                .await
+                .map_err(|e| FederationError::RaftError(e.to_string()))?;
+            return Ok(result.response().clone());
         }
 
-        Ok(())
-    }
+        // Forward to leader via HTTP
+        let leader_url = self
+            .leader_url()
+            .await
+            .ok_or_else(|| FederationError::RaftError("No leader known".to_string()))?;
 
-    /// Refresh a specific member's KEL (called on verification failure).
-    pub async fn refresh_member_kel(&self, prefix: &str) -> Result<kels::Kel, FederationError> {
-        let member = self
-            .config
-            .members
-            .iter()
-            .find(|m| m.prefix == prefix)
-            .ok_or_else(|| FederationError::UnknownMember(prefix.to_string()))?;
-
+        let url = format!(
+            "{}/api/federation/key-events",
+            leader_url.trim_end_matches('/')
+        );
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| FederationError::NetworkError(e.to_string()))?;
 
-        let kel = fetch_member_kel(&client, &member.url).await?;
-        self.member_kels
-            .write()
+        let resp = client
+            .post(&url)
+            .json(&events)
+            .send()
             .await
-            .insert(prefix.to_string(), kel.clone());
+            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
 
-        Ok(kel)
+        if resp.status().is_success() {
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| FederationError::NetworkError(e.to_string()))?;
+            let prefix = body["prefix"].as_str().unwrap_or("").to_string();
+            let new_count = body["new_count"].as_u64().unwrap_or(0) as usize;
+            Ok(FederationResponse::KeyEventsAccepted { prefix, new_count })
+        } else {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let error = body["error"]
+                .as_str()
+                .unwrap_or("unknown error")
+                .to_string();
+            Ok(FederationResponse::KeyEventsRejected(error))
+        }
     }
 
-    /// Get a cached member KEL.
+    /// Get a member KEL from Raft-replicated state.
     pub async fn get_member_kel(&self, prefix: &str) -> Option<kels::Kel> {
-        self.member_kels.read().await.get(prefix).cloned()
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .member_kel(prefix)
+            .cloned()
     }
 
-    /// Get all cached member KELs.
+    /// Get all member KELs from Raft-replicated state.
     pub async fn get_all_member_kels(&self) -> HashMap<String, kels::Kel> {
-        self.member_kels.read().await.clone()
+        self.state_machine.inner().lock().await.all_member_kels()
     }
-}
-
-/// Fetch a member's KEL from their registry.
-async fn fetch_member_kel(
-    client: &reqwest::Client,
-    registry_url: &str,
-) -> Result<kels::Kel, FederationError> {
-    let url = format!("{}/api/registry-kel", registry_url.trim_end_matches('/'));
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(FederationError::NetworkError(format!(
-            "Failed to fetch KEL: {}",
-            response.status()
-        )));
-    }
-
-    let kel: kels::Kel = response
-        .json()
-        .await
-        .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-    // Verify KEL integrity
-    kel.verify()
-        .map_err(|e| FederationError::VerificationFailed(e.to_string()))?;
-
-    Ok(kel)
 }
 
 /// Federation status information.

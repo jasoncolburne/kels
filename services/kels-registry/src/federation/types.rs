@@ -4,7 +4,9 @@
 
 use std::fmt;
 
-use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
+use std::collections::HashMap;
+
+use kels::{Kel, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Vote};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -63,6 +65,9 @@ pub enum FederationRequest {
         /// The signed vote.
         vote: Vote,
     },
+
+    /// Submit key events for a member's KEL.
+    SubmitKeyEvents(Vec<SignedKeyEvent>),
 }
 
 impl fmt::Display for FederationRequest {
@@ -105,6 +110,18 @@ impl fmt::Display for FederationRequest {
                     f,
                     "VotePeer({}, voter={}, approve={})",
                     proposal_id, vote.voter, vote.approve
+                )
+            }
+            FederationRequest::SubmitKeyEvents(events) => {
+                let prefix = events
+                    .first()
+                    .map(|e| e.event.prefix.as_str())
+                    .unwrap_or("empty");
+                write!(
+                    f,
+                    "SubmitKeyEvents(prefix={}, count={})",
+                    prefix,
+                    events.len()
                 )
             }
         }
@@ -166,6 +183,10 @@ pub enum FederationResponse {
     HasVotes(String),
     /// Internal error
     InternalError(String),
+    /// Key events accepted into Raft state.
+    KeyEventsAccepted { prefix: String, new_count: usize },
+    /// Key events rejected.
+    KeyEventsRejected(String),
 }
 
 impl fmt::Display for FederationResponse {
@@ -223,6 +244,16 @@ impl fmt::Display for FederationResponse {
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
             FederationResponse::InternalError(msg) => write!(f, "InternalError({})", msg),
+            FederationResponse::KeyEventsAccepted { prefix, new_count } => {
+                write!(
+                    f,
+                    "KeyEventsAccepted(prefix={}, count={})",
+                    prefix, new_count
+                )
+            }
+            FederationResponse::KeyEventsRejected(msg) => {
+                write!(f, "KeyEventsRejected({})", msg)
+            }
         }
     }
 }
@@ -240,7 +271,7 @@ openraft::declare_raft_types!(
 /// Note: Metadata (last_applied_log, last_membership) is stored in SnapshotMeta,
 /// not duplicated here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PeerSnapshot {
+pub struct MemberSnapshot {
     /// The peer set data.
     pub peers: Vec<Peer>,
     /// Pending addition proposals awaiting votes.
@@ -256,6 +287,9 @@ pub struct PeerSnapshot {
     /// Votes stored by SAID.
     #[serde(default)]
     pub votes: Vec<Vote>,
+    /// Federation member KELs (replicated via Raft).
+    #[serde(default)]
+    pub member_kels: HashMap<String, Kel>,
 }
 
 #[cfg(test)]
@@ -410,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_peer_snapshot_default() {
-        let snapshot = PeerSnapshot::default();
+        let snapshot = MemberSnapshot::default();
         assert!(snapshot.peers.is_empty());
     }
 
@@ -425,17 +459,18 @@ mod tests {
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
-        let snapshot = PeerSnapshot {
+        let snapshot = MemberSnapshot {
             peers: vec![peer.clone()],
             pending_addition_proposals: vec![],
             completed_addition_proposals: vec![],
             pending_removal_proposals: vec![],
             completed_removal_proposals: vec![],
             votes: vec![],
+            member_kels: HashMap::new(),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();
-        let parsed: PeerSnapshot = serde_json::from_str(&json).unwrap();
+        let parsed: MemberSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.peers.len(), 1);
         assert_eq!(parsed.peers[0].peer_prefix, "peer-1");

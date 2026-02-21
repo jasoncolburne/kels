@@ -223,11 +223,13 @@ After approval, the peer is removed from the Raft state machine and deactivated 
 - Recipients verify signatures against the sender's KEL
 - Messages from prefixes not in `TRUSTED_REGISTRY_PREFIXES` are rejected
 
-### Member KEL Caching
+### Member KEL Replication
 
-- Federation members cache each other's KELs on startup
-- Cache is refreshed on signature verification failure (handles key rotation)
-- No periodic refresh - only on-demand when needed
+- Member KELs are replicated via Raft consensus (not ephemeral HTTP caches)
+- Each member submits its own KEL to Raft via a periodic sync loop (every 30s)
+- KELs survive registry restarts since they are part of the Raft-replicated state and snapshots
+- Verification of anchored data uses the Raft-replicated KELs as the single source of truth
+- See [Registry Removal](registry-removal.md) for decommission procedures
 
 ## Disaster Recovery
 
