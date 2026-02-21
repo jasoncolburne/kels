@@ -306,6 +306,10 @@ test-rotation:
 	# Verify cross-node ops still work after rotation (no restarts)
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 
+rotate-registry-b:
+	# If there are issues with verification after rotation, this will break voting
+	kubectl exec -n kels-registry-b deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+
 test-suite:
 	$(MAKE) wait-for-gossip
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
@@ -321,4 +325,4 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels vote-nodes restart-nodes test-suite
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-nodes test-suite

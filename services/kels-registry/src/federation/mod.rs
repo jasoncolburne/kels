@@ -89,7 +89,6 @@ impl FederationNode {
             node_id,
         );
         let state_machine = StateMachineStore::new(
-            identity_client.clone(),
             member_kels.clone(),
             config.clone(),
             Arc::new(repository.peers.clone()),
@@ -237,6 +236,11 @@ impl FederationNode {
     /// Get the federation configuration.
     pub fn config(&self) -> &FederationConfig {
         &self.config
+    }
+
+    /// Get the state machine store.
+    pub fn state_machine(&self) -> &StateMachineStore {
+        &self.state_machine
     }
 
     /// Propose adding a peer (leader only).

@@ -1,8 +1,8 @@
 //! kels-registry-admin CLI - Peer allowlist management
 //!
 //! This CLI manages the peer allowlist in the kels-registry.
-//! For proposals in federation mode, it connects via localhost HTTP to the registry.
-//! For direct peer additions, it writes directly to PostgreSQL.
+//! All peer changes go through federation proposals (propose, vote, withdraw).
+//! Connects via localhost HTTP to the registry for proposals and via identity service for signing.
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
@@ -14,7 +14,7 @@ use verifiable_storage_postgres::PgPool;
 
 use kels::IdentityClient;
 use kels::{
-    AdminRequest, CompletedProposalsResponse, Peer, PeerAdditionProposal, PeerRemovalProposal,
+    AdminRequest, CompletedProposalsResponse, PeerAdditionProposal, PeerRemovalProposal,
     ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
 };
 use kels_registry::{federation::FederationStatus, peer_store::PeerRepository};
@@ -53,27 +53,6 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PeerAction {
-    /// Add a peer directly (for bootstrapping first peer)
-    Add {
-        /// Peer identity (KELS prefix)
-        #[arg(long)]
-        peer_prefix: String,
-        /// Human-readable node name
-        #[arg(long)]
-        node_id: String,
-        /// HTTP URL for the KELS service
-        #[arg(long)]
-        kels_url: String,
-        /// Gossip address (host:port)
-        #[arg(long)]
-        gossip_addr: String,
-    },
-    /// Remove a peer from the allowlist
-    Remove {
-        /// Peer identity (KELS prefix)
-        #[arg(long)]
-        peer_prefix: String,
-    },
     /// List all peers in the allowlist
     List,
     /// Propose a new peer (requires multi-party approval)
@@ -292,123 +271,6 @@ async fn sign_admin_request(
     kels::sign_request(&signer, &request)
         .await
         .map_err(|e| anyhow!("Failed to sign admin request: {}", e))
-}
-
-async fn add_peer(
-    ctx: &AdminContext,
-    peer_prefix: &str,
-    node_id: &str,
-    kels_url: &str,
-    gossip_addr: &str,
-) -> anyhow::Result<()> {
-    use verifiable_storage::Chained;
-    use verifiable_storage_postgres::{Order, Query, QueryExecutor};
-
-    // Upsert pattern: load latest by node_id, if none create(), if some modify and increment()
-    // Unique constraint on (node_id, version) prevents race conditions
-    let query = Query::<Peer>::new()
-        .eq("node_id", node_id)
-        .order_by("version", Order::Desc)
-        .limit(1);
-    let existing: Vec<Peer> = ctx.peer_repo.pool.fetch(query).await?;
-
-    let peer = match existing.first() {
-        Some(latest)
-            if latest.active
-                && latest.peer_prefix == peer_prefix
-                && latest.kels_url == kels_url
-                && latest.gossip_addr == gossip_addr =>
-        {
-            println!(
-                "Peer {} already authorized (node: {})",
-                peer_prefix, node_id
-            );
-            return Ok(());
-        }
-        Some(latest) => {
-            // Existing node - clone, update fields, increment version
-            let mut peer = latest.clone();
-            peer.peer_prefix = peer_prefix.to_string();
-            peer.active = true;
-            peer.kels_url = kels_url.to_string();
-            peer.gossip_addr = gossip_addr.to_string();
-            peer.increment()?;
-            peer
-        }
-        None => {
-            // New peer - create version 0
-            Peer::create(
-                peer_prefix.to_string(),
-                node_id.to_string(),
-                ctx.self_prefix.clone(),
-                true,
-                kels_url.to_string(),
-                gossip_addr.to_string(),
-            )?
-        }
-    };
-
-    // Anchor the SAID in the registry's KEL via identity service
-    ctx.identity_client
-        .anchor(&peer.said)
-        .await
-        .context("Failed to anchor peer SAID in KEL")?;
-
-    // Insert new version (unique constraint will error on race condition)
-    ctx.peer_repo
-        .insert(peer.clone())
-        .await
-        .context("Failed to insert peer")?;
-
-    let action = if peer.version == 0 {
-        "Added"
-    } else {
-        "Updated"
-    };
-    println!("{} peer {} (node: {})", action, peer_prefix, node_id);
-    println!("Version: {} (SAID: {})", peer.version, peer.said);
-    Ok(())
-}
-
-async fn remove_peer(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
-    use verifiable_storage_postgres::{Order, Query, QueryExecutor};
-
-    let query = Query::<Peer>::new()
-        .eq("peer_prefix", peer_prefix)
-        .order_by("version", Order::Desc)
-        .limit(1);
-    let results: Vec<Peer> = ctx.peer_repo.pool.fetch(query).await?;
-    let existing = results
-        .first()
-        .ok_or_else(|| anyhow!("Peer not found: {}", peer_prefix))?;
-
-    if !existing.active {
-        println!("Peer {} already inactive", peer_prefix);
-        return Ok(());
-    }
-
-    let deactivated = existing.deactivate()?;
-
-    // Anchor the peer SAID in registry's KEL via identity service
-    ctx.identity_client
-        .anchor(&deactivated.said)
-        .await
-        .context("Failed to anchor peer SAID in KEL")?;
-
-    ctx.peer_repo
-        .insert(deactivated.clone())
-        .await
-        .context("Failed to insert peer")?;
-
-    println!(
-        "Removed peer {} (node: {})",
-        peer_prefix, deactivated.node_id
-    );
-    println!(
-        "Version: {} (SAID: {})",
-        deactivated.version, deactivated.said
-    );
-    Ok(())
 }
 
 /// Extract leader URL from a "Not leader" error message.
@@ -1094,17 +956,6 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Peer { action } => match action {
-            PeerAction::Add {
-                peer_prefix,
-                node_id,
-                kels_url,
-                gossip_addr,
-            } => {
-                add_peer(&ctx, &peer_prefix, &node_id, &kels_url, &gossip_addr).await?;
-            }
-            PeerAction::Remove { peer_prefix } => {
-                remove_peer(&ctx, &peer_prefix).await?;
-            }
             PeerAction::List => {
                 list_peers(&ctx).await?;
             }

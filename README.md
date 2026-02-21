@@ -195,10 +195,17 @@ All recorded data in KELS is KEL-backed and verified independently before use:
 - **Re-verify on refresh**: When re-fetching a peer's KEL (e.g. after key rotation), the KEL structure is fully verified before updating any cached state.
 - **Ephemeral data is the exception**: Only transient protocol messages (handshakes, gossip announcements) are exempt from anchoring. Everything persisted is KEL-backed.
 
+### Automatic Key Rotation
+
+The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that checks every 6 hours whether the current HSM key binding is older than 30 days. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
+
+All rotations — automatic and manual — go through a single `perform_rotation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The rotation endpoint (`POST /api/identity/rotate`) requires a signed request verified against the identity's own KEL.
+
 ### Proactive Protection
 
-- Rotate signing keys regularly (suggested: every 1-3 months)
-- Rotate recovery keys periodically (suggested: every 3-12 months)
+- HSM-backed services rotate signing keys automatically (every 30 days) and recovery keys (every ~90 days)
+- Manual rotation is available via the admin CLI for immediate key refresh
+- End-user clients should rotate keys regularly (suggested: signing every 1-3 months, recovery every 3-12 months)
 - Use hardware-backed keys (Secure Enclave, HSM) when possible
 
 ### Post-Quantum Considerations

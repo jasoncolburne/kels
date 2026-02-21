@@ -55,10 +55,40 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum RotateMode {
+    #[default]
+    Scheduled,
+    Standard,
+    Recovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateRequest {
+    #[serde(default)]
+    pub mode: RotateMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateResponse {
+    pub prefix: String,
+    pub said: String,
+    pub mode: String,
+    pub rotation_number: usize,
+    pub current_key_handle: String,
+    pub next_key_handle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_key_handle: Option<String>,
+}
+
 pub struct AppState {
     pub repo: Arc<IdentityRepository>,
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
+    pub kels_url: Option<String>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -148,7 +178,7 @@ pub async fn anchor(
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
     tracing::info!(
-        "Anchored {} in registry KEL at {}",
+        "Anchored {} in identity KEL at {}",
         request.said,
         ixn.event.said,
     );
@@ -227,6 +257,38 @@ pub async fn ecdh(
     Ok(Json(EcdhResponse {
         shared_secret: encoded,
     }))
+}
+
+pub async fn rotate(
+    State(state): State<Arc<AppState>>,
+    Json(signed): Json<kels::SignedRequest<RotateRequest>>,
+) -> Result<Json<RotateResponse>, ApiError> {
+    let prefix = {
+        let builder = state.builder.read().await;
+        builder
+            .prefix()
+            .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
+            .to_string()
+    };
+
+    let kel = state
+        .kel_repo
+        .get_kel(&prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+
+    kel.verify()
+        .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
+
+    signed
+        .verify_signature(&kel)
+        .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
+
+    let response = crate::server::perform_rotation(&state, signed.payload.mode)
+        .await
+        .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
+
+    Ok(Json(response))
 }
 
 #[cfg(test)]

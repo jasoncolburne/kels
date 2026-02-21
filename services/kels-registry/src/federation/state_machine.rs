@@ -22,7 +22,6 @@ use super::{
     config::FederationConfig,
     types::{FederationRequest, FederationResponse, PeerSnapshot, TypeConfig},
 };
-use kels::IdentityClient;
 
 use crate::peer_store::PeerRepository;
 
@@ -149,12 +148,7 @@ impl StateMachineData {
     }
 
     /// Apply a request to the state machine.
-    fn apply(
-        &mut self,
-        request: FederationRequest,
-        threshold: usize,
-        leader_prefix: &str,
-    ) -> FederationResponse {
+    fn apply(&mut self, request: FederationRequest, threshold: usize) -> FederationResponse {
         match request {
             FederationRequest::AddPeer(peer) => {
                 let peer_prefix = peer.peer_prefix.clone();
@@ -468,32 +462,14 @@ impl StateMachineData {
                                 );
                             }
                         };
-                        let peer_prefix = v0.peer_prefix.clone();
 
                         info!(
                             proposal_id = %proposal_id,
-                            peer_prefix = %peer_prefix,
-                            "Proposal approved - adding peer"
+                            peer_prefix = %v0.peer_prefix,
+                            "Proposal approved — leader must create and submit AddPeer"
                         );
 
-                        let peer = match Peer::create(
-                            peer_prefix.clone(),
-                            v0.node_id.clone(),
-                            leader_prefix.to_string(),
-                            true,
-                            v0.kels_url.clone(),
-                            v0.gossip_addr.clone(),
-                        ) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                return FederationResponse::InternalError(format!(
-                                    "Couldn't create peer: {}",
-                                    e
-                                ));
-                            }
-                        };
-
-                        self.peers.insert(peer_prefix.clone(), peer.clone());
+                        let proposal_box = Box::new(v0.clone());
                         self.completed_addition_proposals.push(vec![v0]);
 
                         return FederationResponse::VoteRecorded {
@@ -501,7 +477,7 @@ impl StateMachineData {
                             current_votes,
                             votes_needed: proposal_threshold,
                             approved: true,
-                            peer: Some(Box::new(peer)),
+                            proposal: Some(proposal_box),
                         };
                     } else {
                         let v0 = match self.pending_removal_proposals.remove(&proposal_id) {
@@ -538,7 +514,7 @@ impl StateMachineData {
                     current_votes,
                     votes_needed: proposal_threshold,
                     approved: false,
-                    peer: None,
+                    proposal: None,
                 }
             }
         }
@@ -616,7 +592,6 @@ impl StateMachineData {
 #[derive(Clone)]
 pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
-    identity_client: Arc<IdentityClient>,
     /// Cached KELs from federation members (for SAID verification)
     member_kels: Arc<RwLock<HashMap<String, Kel>>>,
     /// Federation config (for refreshing member KELs)
@@ -628,14 +603,12 @@ pub struct StateMachineStore {
 impl StateMachineStore {
     /// Create a new state machine store.
     pub fn new(
-        identity_client: Arc<IdentityClient>,
         member_kels: Arc<RwLock<HashMap<String, Kel>>>,
         config: FederationConfig,
         peer_repo: Arc<PeerRepository>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
-            identity_client,
             member_kels,
             config,
             peer_repo,
@@ -690,6 +663,54 @@ impl StateMachineStore {
         Ok(())
     }
 
+    /// Fetch a specific member's KEL from other reachable peers.
+    ///
+    /// Falls back to `/api/registry-kels` on each peer, which returns all
+    /// cached member KELs. Used when the member itself is unreachable.
+    async fn fetch_member_kel_from_peers(&self, target_prefix: &str) {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let client = match client {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        for member in &self.config.members {
+            if member.prefix == target_prefix {
+                continue; // Already tried this member directly
+            }
+
+            let url = format!("{}/api/registry-kels", member.url.trim_end_matches('/'));
+            let resp = match client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r,
+                _ => continue,
+            };
+            let all_kels: HashMap<String, Kel> = match resp.json().await {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+
+            if let Some(kel) = all_kels.get(target_prefix)
+                && kel.verify().is_ok()
+            {
+                info!(
+                    target_prefix = %target_prefix,
+                    via = %member.prefix,
+                    "Fetched member KEL from peer"
+                );
+                let mut kels = self.member_kels.write().await;
+                kels.insert(target_prefix.to_string(), kel.clone());
+                return;
+            }
+        }
+
+        warn!(
+            target_prefix = %target_prefix,
+            "Could not fetch member KEL from any peer"
+        );
+    }
+
     /// Verify a SAID is anchored in a federation member's KEL.
     /// This proves the member signed/authorized the data with the given SAID.
     pub async fn verify_member_anchoring(
@@ -722,9 +743,16 @@ impl StateMachineStore {
             return Ok(());
         }
 
-        // Not found in cache - refresh member's KEL and try again
-        if let Err(e) = self.refresh_all_member_kels().await {
-            return Err(format!("Failed to fetch member KEL: {}", e));
+        // Not found in cache - refresh from each member directly
+        let _ = self.refresh_all_member_kels().await;
+
+        // If still missing, ask other reachable members for their cached copy
+        {
+            let kels = self.member_kels.read().await;
+            if !kels.contains_key(member_prefix) {
+                drop(kels);
+                self.fetch_member_kel_from_peers(member_prefix).await;
+            }
         }
 
         let kel = {
@@ -930,24 +958,10 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        // Anchor in our own KEL
-                        if let Err(e) = self.identity_client.anchor(&peer.said).await {
-                            warn!(
-                                peer_prefix = %peer.peer_prefix,
-                                said = %peer.said,
-                                error = %e,
-                                "Failed to anchor peer SAID in our KEL - rejecting"
-                            );
-                            if let Some(r) = responder {
-                                r.send(FederationResponse::Ok);
-                            }
-                            continue;
-                        }
-
                         info!(
                             peer_prefix = %peer.peer_prefix,
                             said = %peer.said,
-                            "Verified and anchored peer SAID in our KEL"
+                            "Verified peer"
                         );
 
                         if let Err(e) = self.upsert_peer_to_db(peer).await {
@@ -1091,37 +1105,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     }
 
                     let threshold = self.config.approval_threshold();
-                    let leader_prefix = &self.config.self_prefix;
-                    let response = sm.apply(request.clone(), threshold, leader_prefix);
+                    let response = sm.apply(request.clone(), threshold);
 
-                    // If a proposal was approved, write the peer to DB and anchor
-                    if let FederationResponse::VoteRecorded {
-                        approved: true,
-                        ref peer,
-                        ..
-                    } = response
-                        && let Some(peer) = peer
-                    {
-                        if let Err(e) = self.identity_client.anchor(&peer.said).await {
-                            if let Some(r) = responder {
-                                r.send(FederationResponse::InternalError(format!(
-                                    "Failed to anchor approved peer SAID in our KEL: {}",
-                                    e
-                                )));
-                            }
-                            continue;
-                        }
-
-                        if let Err(e) = self.upsert_peer_to_db(peer).await {
-                            warn!(
-                                peer_prefix = %peer.peer_prefix,
-                                error = %e,
-                                "Failed to write approved peer to local DB"
-                            );
-                        }
-                    }
-
-                    // If a removal proposal was approved, deactivate peer in DB and anchor
+                    // If a removal proposal was approved, deactivate peer in DB
                     if let FederationResponse::RemovalApproved {
                         ref peer_prefix, ..
                     } = response
@@ -1139,16 +1125,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         {
                             match latest.deactivate() {
                                 Ok(deactivated) => {
-                                    if let Err(e) =
-                                        self.identity_client.anchor(&deactivated.said).await
-                                    {
-                                        warn!(
-                                            peer_prefix = %peer_prefix,
-                                            error = %e,
-                                            "Failed to anchor deactivated peer SAID in our KEL"
-                                        );
-                                    }
-
                                     if let Err(e) = self.peer_repo.insert(deactivated).await {
                                         warn!(
                                             peer_prefix = %peer_prefix,
@@ -1294,7 +1270,6 @@ mod tests {
     use verifiable_storage::{Chained, StorageDatetime};
 
     const TEST_THRESHOLD: usize = 2;
-    const TEST_ANCHORING_PREFIX: &str = "ETestLeader";
 
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
@@ -1358,7 +1333,6 @@ mod tests {
         match sm.apply(
             FederationRequest::SubmitAdditionProposal(proposal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         ) {
             FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
             r => panic!("Expected ProposalCreated, got {:?}", r),
@@ -1377,7 +1351,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
@@ -1387,7 +1360,6 @@ mod tests {
                 vote: vote_b,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         proposal_id
@@ -1405,11 +1377,7 @@ mod tests {
     fn test_add_peer() {
         let mut sm = StateMachineData::new();
         let peer = make_test_peer("peer-1", "node-1");
-        let response = sm.apply(
-            FederationRequest::AddPeer(peer),
-            TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
-        );
+        let response = sm.apply(FederationRequest::AddPeer(peer), TEST_THRESHOLD);
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
         assert_eq!(sm.peers().len(), 1);
         assert!(sm.get_peer("peer-1").is_some());
@@ -1421,17 +1389,14 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert_eq!(sm.peers().len(), 3);
     }
@@ -1442,13 +1407,11 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-1");
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-2")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-2");
         assert_eq!(sm.peers().len(), 1);
@@ -1460,12 +1423,10 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         let response = sm.apply(
             FederationRequest::RemovePeer("peer-1".to_string()),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::PeerRemoved(_)));
         assert!(sm.peers().is_empty());
@@ -1477,7 +1438,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::RemovePeer("nonexistent".to_string()),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::PeerNotFound(_)));
     }
@@ -1488,22 +1448,18 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm.apply(
             FederationRequest::RemovePeer("peer-2".to_string()),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert_eq!(sm.peers().len(), 2);
         assert!(sm.get_peer("peer-1").is_some());
@@ -1523,7 +1479,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::AddPeer(make_inactive_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
         assert!(!sm.get_peer("peer-1").unwrap().active);
@@ -1552,12 +1507,10 @@ mod tests {
         sm1.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         sm1.apply(
             FederationRequest::AddPeer(make_test_peer("peer-2", "node-2")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let snapshot = sm1.snapshot();
@@ -1580,7 +1533,6 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         let peers = sm.peers();
         assert_eq!(peers.len(), 1);
@@ -1612,7 +1564,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", true);
@@ -1622,7 +1573,6 @@ mod tests {
                 vote: vote_b,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         match response {
@@ -1631,18 +1581,19 @@ mod tests {
                 current_votes,
                 votes_needed,
                 approved,
-                peer,
+                proposal,
             } => {
                 assert_eq!(resp_id, proposal_id);
                 assert_eq!(current_votes, 2);
                 assert_eq!(votes_needed, TEST_THRESHOLD);
                 assert!(approved);
-                assert!(peer.is_some());
+                assert!(proposal.is_some());
             }
             _ => panic!("Expected VoteRecorded, got {:?}", response),
         }
 
-        assert!(sm.get_peer("peer-1").is_some());
+        // Peer is NOT in state machine yet — leader must create and submit AddPeer
+        assert!(sm.get_peer("peer-1").is_none());
         assert!(sm.get_proposal(&proposal_id).is_none());
         assert_eq!(sm.completed_addition_proposals.len(), 1);
     }
@@ -1660,7 +1611,6 @@ mod tests {
                 vote,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let vote2 = make_test_vote(&proposal_id, "ERegistryA", true);
@@ -1670,7 +1620,6 @@ mod tests {
                 vote: vote2,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::AlreadyVoted(_)));
     }
@@ -1681,14 +1630,12 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let response = sm.apply(
             FederationRequest::SubmitAdditionProposal(proposal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::PeerAlreadyExists(_)));
     }
@@ -1705,7 +1652,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         assert!(matches!(response, FederationResponse::ProposalWithdrawn(_)));
@@ -1730,7 +1676,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::NotAuthorized(_)));
         assert!(sm.get_proposal(&proposal_id).is_some());
@@ -1750,7 +1695,6 @@ mod tests {
                 vote,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         // Now try to withdraw
@@ -1760,7 +1704,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::HasVotes(_)));
         // Proposal should still be pending
@@ -1777,7 +1720,6 @@ mod tests {
                 vote,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
     }
@@ -1795,7 +1737,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let vote_b = make_test_vote(&proposal_id, "ERegistryB", false);
@@ -1805,7 +1746,6 @@ mod tests {
                 vote: vote_b,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         match response {
@@ -1836,7 +1776,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::VoteRecorded { .. }));
 
@@ -1848,7 +1787,6 @@ mod tests {
                 vote: vote_b,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(
             matches!(response, FederationResponse::ProposalRejected(_)),
@@ -1871,7 +1809,6 @@ mod tests {
                 vote: vote_c,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
 
@@ -1880,7 +1817,6 @@ mod tests {
         let response = sm.apply(
             FederationRequest::SubmitAdditionProposal(proposal2.clone()),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(matches!(
             response,
@@ -1937,7 +1873,6 @@ mod tests {
         sm.apply(
             FederationRequest::AddPeer(make_test_peer("rogue-peer", "rogue-node")),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
         assert!(sm.get_peer("rogue-peer").is_some());
         let voters = sm.verified_voters_for_peer("rogue-peer", &members);
@@ -1958,7 +1893,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let voters = sm.verified_voters_for_peer("peer-1", &members);
@@ -1981,7 +1915,6 @@ mod tests {
                 vote: vote_a,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let vote_c = make_test_vote(&proposal_id, "ERegistryC", true);
@@ -1991,7 +1924,6 @@ mod tests {
                 vote: vote_c,
             },
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let voters = sm.verified_voters_for_peer("peer-1", &members);
@@ -2022,7 +1954,6 @@ mod tests {
         sm.apply(
             FederationRequest::SubmitAdditionProposal(withdrawal),
             TEST_THRESHOLD,
-            TEST_ANCHORING_PREFIX,
         );
 
         let voters = sm.verified_voters_for_peer("peer-1", &members);

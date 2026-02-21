@@ -64,9 +64,6 @@ anyhow = "1"
 # Colored output
 colored = "2"
 
-[features]
-default = []
-
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
