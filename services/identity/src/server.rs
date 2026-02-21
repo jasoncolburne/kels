@@ -143,7 +143,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         )
         .map_err(|e| format!("Failed to create HSM binding: {}", e))?;
         repo.hsm_bindings
-            .create(binding.clone())
+            .insert(binding.clone())
             .await
             .map_err(|e| format!("Failed to store HSM binding: {}", e))?;
 
@@ -160,7 +160,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         )
         .map_err(|e| format!("Failed to create authority mapping: {}", e))?;
         repo.authority
-            .create(authority)
+            .insert(authority)
             .await
             .map_err(|e| format!("Failed to store authority prefix: {}", e))?;
 
