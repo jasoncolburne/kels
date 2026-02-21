@@ -212,7 +212,7 @@ pub async fn ecdh(
         .decode(&request.peer_public_key)
         .map_err(|e| ApiError::bad_request(format!("Invalid base64 peer public key: {}", e)))?;
 
-    tracing::info!("ECDH: peer public key {} bytes", peer_public_key.len());
+    tracing::debug!("ECDH: peer public key {} bytes", peer_public_key.len());
 
     let builder = state.builder.read().await;
     let key_provider = builder.key_provider();

@@ -174,8 +174,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     });
 
     let rotation_state = state.clone();
+    let rotation_hsm = hsm.clone();
+    let rotation_key_prefix = key_handle_prefix.clone();
+    let rotation_kel_store = kel_store.clone();
     tokio::spawn(async move {
-        auto_rotation_loop(rotation_state).await;
+        auto_rotation_loop(
+            rotation_state,
+            rotation_hsm,
+            rotation_key_prefix,
+            rotation_kel_store,
+        )
+        .await;
     });
 
     let app = create_router(state);
@@ -197,7 +206,12 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 const ROTATION_INTERVAL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
 const LOOP_PERIOD: Duration = Duration::from_secs(6 * 3600); // 6 hours
 
-async fn auto_rotation_loop(state: Arc<AppState>) {
+async fn auto_rotation_loop(
+    state: Arc<AppState>,
+    hsm: Arc<HsmClient>,
+    key_handle_prefix: String,
+    kel_store: Arc<dyn KelStore>,
+) {
     // Stabilize on startup
     tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -206,7 +220,7 @@ async fn auto_rotation_loop(state: Arc<AppState>) {
     loop {
         interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
 
-        match check_and_rotate(&state).await {
+        match check_and_rotate(&state, &hsm, &key_handle_prefix, &kel_store).await {
             Ok(rotated) => {
                 if rotated {
                     info!("Auto-rotation completed successfully");
@@ -221,7 +235,13 @@ async fn auto_rotation_loop(state: Arc<AppState>) {
 
 async fn check_and_rotate(
     state: &Arc<AppState>,
+    hsm: &Arc<HsmClient>,
+    key_handle_prefix: &str,
+    kel_store: &Arc<dyn KelStore>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::hsm::HsmKeyProvider;
+    use kels::KeyEventBuilder;
+
     let mapping = state
         .repo
         .authority
@@ -270,12 +290,35 @@ async fn check_and_rotate(
             return Err(format!("scheduled-rotate failed: {}", stderr).into());
         }
 
-        // Reload the builder so the server picks up the new keys
+        // Reconstruct builder with updated key handles from the database
+        let binding = state
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix(prefix)
+            .await?
+            .ok_or("HSM binding not found after rotation")?;
+
+        let key_provider = HsmKeyProvider::with_handles(
+            hsm.clone(),
+            key_handle_prefix,
+            binding.signing_generation,
+            binding.recovery_generation,
+            binding.current_key_handle.into(),
+            binding.next_key_handle.into(),
+            binding.recovery_key_handle.into(),
+        );
+
+        let new_builder = KeyEventBuilder::with_dependencies(
+            key_provider,
+            None,
+            Some(kel_store.clone()),
+            Some(prefix),
+        )
+        .await
+        .map_err(|e| format!("Failed to rebuild builder after rotation: {}", e))?;
+
         let mut builder = state.builder.write().await;
-        builder
-            .reload()
-            .await
-            .map_err(|e| format!("Failed to reload builder after rotation: {}", e))?;
+        *builder = new_builder;
 
         return Ok(true);
     }
