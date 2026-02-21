@@ -440,7 +440,7 @@ fn audit_binding_chain(
     kel: &kels::Kel,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for binding in bindings {
-        binding.verify_said()?;
+        binding.verify()?;
     }
 
     if bindings[0].get_previous().is_some() {
@@ -483,7 +483,7 @@ fn verify_latest_binding(
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let latest = &bindings[bindings.len() - 1];
 
-    latest.verify_said()?;
+    latest.verify()?;
 
     if bindings.len() > 1 {
         let previous = &bindings[bindings.len() - 2];
