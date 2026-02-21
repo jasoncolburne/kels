@@ -257,12 +257,17 @@ async fn check_and_rotate(
     // Verify KEL integrity
     kel.verify()?;
 
-    // Verify binding chain integrity
-    let should_rotate = match verify_binding_chain(&bindings, &kel) {
+    // Audit full binding chain — alert on any tampering but don't rotate
+    if let Err(e) = audit_binding_chain(&bindings, &kel) {
+        warn!("SECURITY: binding chain integrity check failed: {}", e);
+    }
+
+    // Only the latest binding's consistency determines rotation
+    let should_rotate = match verify_latest_binding(&bindings, &kel) {
         Ok(needs_rotation) => needs_rotation,
         Err(e) => {
             warn!(
-                "Binding chain verification failed ({}), rotating immediately",
+                "SECURITY: latest binding verification failed ({}), rotating immediately",
                 e
             );
             true
@@ -427,16 +432,17 @@ pub(crate) async fn perform_rotation(
     })
 }
 
-fn verify_binding_chain(
+/// Audit the full binding chain for tampering. Logs warnings but does not
+/// influence the rotation decision — a corrupted historical binding cannot
+/// be fixed by rotating, so triggering rotation here would loop forever.
+fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
     kel: &kels::Kel,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // Verify each binding's SAID
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for binding in bindings {
         binding.verify_said()?;
     }
 
-    // Verify chain links: first has no previous, rest link correctly
     if bindings[0].get_previous().is_some() {
         return Err("First binding has unexpected previous pointer".into());
     }
@@ -450,7 +456,6 @@ fn verify_binding_chain(
         }
     }
 
-    // Verify versions increment by 1
     for i in 1..bindings.len() {
         if bindings[i].version != bindings[i - 1].version + 1 {
             return Err(format!(
@@ -462,14 +467,36 @@ fn verify_binding_chain(
         }
     }
 
-    // Verify all binding SAIDs are anchored in the KEL
     let binding_saids: Vec<&str> = bindings.iter().map(|b| b.said.as_str()).collect();
     if !kel.contains_anchors(&binding_saids) {
         return Err("Not all binding SAIDs are anchored in KEL".into());
     }
 
-    // All checks passed — check if latest binding is older than rotation interval
+    Ok(())
+}
+
+/// Verify only the latest binding's integrity. If this fails, something is
+/// actively wrong with the current key state and defensive rotation is warranted.
+fn verify_latest_binding(
+    bindings: &[HsmKeyBinding],
+    kel: &kels::Kel,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let latest = &bindings[bindings.len() - 1];
+
+    latest.verify_said()?;
+
+    if bindings.len() > 1 {
+        let previous = &bindings[bindings.len() - 2];
+        let expected_prev = Some(previous.get_said());
+        if latest.get_previous() != expected_prev {
+            return Err("Latest binding has wrong previous pointer".into());
+        }
+    }
+
+    if !kel.contains_anchor(&latest.said) {
+        return Err("Latest binding SAID not anchored in KEL".into());
+    }
+
     let latest_ts = latest
         .get_created_at()
         .ok_or("Missing created_at on latest binding")?;

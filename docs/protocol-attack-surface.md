@@ -154,13 +154,22 @@ The identity service implements an automatic rotation schedule for HSM-backed se
 
 ### Binding Chain Integrity
 
-Before rotating, the auto-rotation loop verifies the integrity of the HSM binding chain:
+The auto-rotation loop performs two levels of binding verification:
+
+**Full chain audit** (alert only — does not trigger rotation):
 1. Each binding's SAID is verified (content matches declared hash)
 2. Chain links are verified (each binding's `previous` pointer matches the prior binding's SAID)
 3. Versions increment by exactly 1
 4. All binding SAIDs are anchored in the identity's KEL (prevents a database-only attacker from forging bindings)
 
-If any verification fails, rotation is triggered immediately as a defensive measure.
+If the full chain audit fails, a `SECURITY` warning is logged. This is intentionally separated from the rotation decision because a corrupted historical binding cannot be fixed by rotating — triggering rotation on historical chain corruption would cause the service to rotate every 6 hours indefinitely, since the old corrupted records remain in the database.
+
+**Latest binding verification** (triggers defensive rotation on failure):
+1. Latest binding's SAID is verified
+2. Latest binding's `previous` pointer matches the prior binding's SAID
+3. Latest binding's SAID is anchored in the KEL
+
+If the latest binding verification fails, rotation is triggered immediately — something is actively wrong with the current key state. Unlike historical corruption, rotating creates a new valid latest binding, so this check is self-healing.
 
 ### Rotation Execution
 
