@@ -5,12 +5,13 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use identity::{
+    handlers::{RotateMode, RotateRequest, RotateResponse, SignRequest, SignResponse},
     hsm::{HsmClient, HsmKeyProvider, KeyHandle},
     repository::{AUTHORITY_IDENTITY_NAME, IdentityRepository, KeyEventRepository},
 };
 use kels::{KelStore, KelsClient, KeyEventBuilder, KeyProvider, RepositoryKelStore};
 use std::sync::Arc;
-use verifiable_storage::{Chained, ChainedRepository, RepositoryConnection};
+use verifiable_storage::{ChainedRepository, RepositoryConnection};
 
 #[derive(Parser)]
 #[command(name = "identity-admin")]
@@ -31,6 +32,10 @@ struct Cli {
     /// HSM key handle prefix
     #[arg(long, env = "KEY_HANDLE_PREFIX", default_value = "kels-registry")]
     key_handle_prefix: String,
+
+    /// Identity service URL (for rotation commands)
+    #[arg(long, env = "IDENTITY_URL", default_value = "http://localhost:80")]
+    identity_url: String,
 
     /// Output as JSON
     #[arg(short, long)]
@@ -80,10 +85,10 @@ async fn main() -> anyhow::Result<()> {
             cmd_status(&repo, cli.json).await?;
         }
         Commands::Rotate => {
-            cmd_rotate(&repo, hsm, &cli.key_handle_prefix, cli.json).await?;
+            cmd_rotate(&cli.identity_url, cli.json).await?;
         }
         Commands::RotateRecovery => {
-            cmd_rotate_recovery(&repo, hsm, &cli.key_handle_prefix, cli.json).await?;
+            cmd_rotate_recovery(&cli.identity_url, cli.json).await?;
         }
         Commands::Recover => {
             cmd_recover(&repo, hsm, &cli.key_handle_prefix, cli.json).await?;
@@ -95,11 +100,62 @@ async fn main() -> anyhow::Result<()> {
             cmd_decommission(&repo, hsm, &cli.key_handle_prefix, cli.json).await?;
         }
         Commands::ScheduledRotate { kels_url } => {
-            cmd_scheduled_rotate(&repo, hsm, &cli.key_handle_prefix, kels_url, cli.json).await?;
+            cmd_scheduled_rotate(&cli.identity_url, kels_url, cli.json).await?;
         }
     }
 
     Ok(())
+}
+
+/// Call the identity server's rotate endpoint with a signed request.
+async fn call_rotate(
+    identity_url: &str,
+    request: &RotateRequest,
+) -> anyhow::Result<RotateResponse> {
+    let client = reqwest::Client::new();
+
+    // Get prefix
+    let info_resp = client
+        .get(format!("{}/api/identity", identity_url))
+        .send()
+        .await?;
+    if !info_resp.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to get identity info"));
+    }
+    let info: identity::handlers::IdentityInfo = info_resp.json().await?;
+
+    // Sign the request payload
+    let payload_json = serde_json::to_string(request)?;
+    let sign_resp = client
+        .post(format!("{}/api/identity/sign", identity_url))
+        .json(&SignRequest { data: payload_json })
+        .send()
+        .await?;
+    if !sign_resp.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to sign rotation request"));
+    }
+    let sign_result: SignResponse = sign_resp.json().await?;
+
+    // Wrap in SignedRequest
+    let signed = kels::SignedRequest {
+        payload: request.clone(),
+        peer_prefix: info.prefix,
+        signature: sign_result.signature,
+    };
+
+    let resp = client
+        .post(format!("{}/api/identity/rotate", identity_url))
+        .json(&signed)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await?;
+        return Err(anyhow::anyhow!("Rotation failed: {}", text));
+    }
+
+    let response: RotateResponse = resp.json().await?;
+    Ok(response)
 }
 
 async fn cmd_status(repo: &IdentityRepository, json: bool) -> anyhow::Result<()> {
@@ -145,344 +201,146 @@ async fn cmd_status(repo: &IdentityRepository, json: bool) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn cmd_rotate(
-    repo: &IdentityRepository,
-    hsm: Arc<HsmClient>,
-    key_handle_prefix: &str,
-    json: bool,
-) -> anyhow::Result<()> {
-    let mut authority = repo
-        .authority
-        .get_by_name(AUTHORITY_IDENTITY_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
-
-    let prefix = authority.kel_prefix.clone();
-
-    let mut binding = repo
-        .hsm_bindings
-        .get_latest_by_kel_prefix(&prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
-
+async fn cmd_rotate(identity_url: &str, json: bool) -> anyhow::Result<()> {
     if !json {
         println!("{}", "Rotating Registry Key...".cyan());
-        println!("  {}: {}", "Current Version".cyan(), binding.version);
     }
 
-    // Create local KEL store for auto-save using RepositoryKelStore
-    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
-        KeyEventRepository::new(repo.pool().clone()),
-    )));
-
-    // Create HSM key provider with existing handles
-    let provider = HsmKeyProvider::with_handles(
-        hsm.clone(),
-        key_handle_prefix,
-        binding.signing_generation,
-        binding.recovery_generation,
-        KeyHandle::from(binding.current_key_handle.as_str()),
-        KeyHandle::from(binding.next_key_handle.as_str()),
-        KeyHandle::from(binding.recovery_key_handle.as_str()),
-    );
-    let key_provider = provider;
-
-    // Create builder with auto-load from store and auto-save after operations
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        None, // No KelsClient - identity service is authoritative
-        Some(kel_store),
-        Some(&prefix),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
-
-    // Verify KEL is not empty
-    if builder.last_said().is_none() {
-        return Err(anyhow::anyhow!("KEL is empty"));
-    }
-
-    // Rotate using the builder (handles key management, event creation, and local save)
-    let rot = builder.rotate().await?;
-
-    // Get updated handles from key provider
-    let new_current_handle = builder
-        .key_provider()
-        .current_handle()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No current handle after rotate"))?;
-    let new_next_handle = builder
-        .key_provider()
-        .next_handle()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No next handle after rotate"))?;
-
-    // Create new chained binding and anchor it in the KEL
-    binding.current_key_handle = new_current_handle.clone();
-    binding.next_key_handle = new_next_handle.clone();
-    binding.signing_generation = builder.key_provider().signing_generation().await;
-    binding.increment()?;
-    builder.interact(&binding.said).await?;
-    repo.hsm_bindings.insert(binding).await?;
-
-    // Update authority last_said
-    authority.last_said = rot.event.said.clone();
-    repo.authority.update(authority).await?;
+    let request = RotateRequest {
+        mode: RotateMode::Standard,
+    };
+    let response = call_rotate(identity_url, &request).await?;
 
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "success": true,
-                "prefix": prefix,
-                "said": rot.event.said,
-                "current_key_handle": new_current_handle,
-                "next_key_handle": new_next_handle,
+                "prefix": response.prefix,
+                "said": response.said,
+                "current_key_handle": response.current_key_handle,
+                "next_key_handle": response.next_key_handle,
             })
         );
     } else {
         println!("{}", "Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
-        println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New SAID".cyan(), rot.event.said);
-        println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
-        println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
+        println!("  {}: {}", "Prefix".cyan(), response.prefix);
+        println!("  {}: {}", "New SAID".cyan(), response.said);
+        println!(
+            "  {}: {}",
+            "New Current Key".cyan(),
+            response.current_key_handle
+        );
+        println!("  {}: {}", "New Next Key".cyan(), response.next_key_handle);
     }
 
     Ok(())
 }
 
-async fn cmd_rotate_recovery(
-    repo: &IdentityRepository,
-    hsm: Arc<HsmClient>,
-    key_handle_prefix: &str,
-    json: bool,
-) -> anyhow::Result<()> {
-    let mut authority = repo
-        .authority
-        .get_by_name(AUTHORITY_IDENTITY_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
-
-    let prefix = authority.kel_prefix.clone();
-
-    let mut binding = repo
-        .hsm_bindings
-        .get_latest_by_kel_prefix(&prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
-
+async fn cmd_rotate_recovery(identity_url: &str, json: bool) -> anyhow::Result<()> {
     if !json {
         println!("{}", "Rotating Recovery Key...".cyan());
-        println!("  {}: {}", "Current Version".cyan(), binding.version);
-        println!(
-            "  {}: {}",
-            "Current Recovery Key".cyan(),
-            binding.recovery_key_handle
-        );
     }
 
-    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
-        KeyEventRepository::new(repo.pool().clone()),
-    )));
-
-    let provider = HsmKeyProvider::with_handles(
-        hsm.clone(),
-        key_handle_prefix,
-        binding.signing_generation,
-        binding.recovery_generation,
-        KeyHandle::from(binding.current_key_handle.as_str()),
-        KeyHandle::from(binding.next_key_handle.as_str()),
-        KeyHandle::from(binding.recovery_key_handle.as_str()),
-    );
-    let key_provider = provider;
-
-    let mut builder =
-        KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store), Some(&prefix))
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
-
-    if builder.last_said().is_none() {
-        return Err(anyhow::anyhow!("KEL is empty"));
-    }
-
-    // Rotate recovery key using the builder
-    let ror = builder.rotate_recovery().await?;
-
-    // Get updated handles from key provider
-    let new_current_handle = builder
-        .key_provider()
-        .current_handle()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No current handle after rotate"))?;
-    let new_next_handle = builder
-        .key_provider()
-        .next_handle()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No next handle after rotate"))?;
-    let new_recovery_handle = builder
-        .key_provider()
-        .recovery_handle()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No recovery handle after rotate"))?;
-
-    // Create new chained binding and anchor it in the KEL
-    binding.current_key_handle = new_current_handle.clone();
-    binding.next_key_handle = new_next_handle.clone();
-    binding.recovery_key_handle = new_recovery_handle.clone();
-    binding.signing_generation = builder.key_provider().signing_generation().await;
-    binding.recovery_generation = builder.key_provider().recovery_generation().await;
-    binding.increment()?;
-    builder.interact(&binding.said).await?;
-    repo.hsm_bindings.insert(binding).await?;
-
-    // Update authority last_said
-    authority.last_said = ror.event.said.clone();
-    repo.authority.update(authority).await?;
+    let request = RotateRequest {
+        mode: RotateMode::Recovery,
+    };
+    let response = call_rotate(identity_url, &request).await?;
 
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "success": true,
-                "prefix": prefix,
-                "said": ror.event.said,
-                "current_key_handle": new_current_handle,
-                "next_key_handle": new_next_handle,
-                "recovery_key_handle": new_recovery_handle,
+                "prefix": response.prefix,
+                "said": response.said,
+                "current_key_handle": response.current_key_handle,
+                "next_key_handle": response.next_key_handle,
+                "recovery_key_handle": response.recovery_key_handle,
             })
         );
     } else {
         println!("{}", "Recovery Key Rotation Successful!".green().bold());
         println!("{}", "=".repeat(60));
-        println!("  {}: {}", "Prefix".cyan(), prefix);
-        println!("  {}: {}", "New SAID".cyan(), ror.event.said);
-        println!("  {}: {}", "New Current Key".cyan(), new_current_handle);
-        println!("  {}: {}", "New Next Key".cyan(), new_next_handle);
-        println!("  {}: {}", "New Recovery Key".cyan(), new_recovery_handle);
+        println!("  {}: {}", "Prefix".cyan(), response.prefix);
+        println!("  {}: {}", "New SAID".cyan(), response.said);
+        println!(
+            "  {}: {}",
+            "New Current Key".cyan(),
+            response.current_key_handle
+        );
+        println!("  {}: {}", "New Next Key".cyan(), response.next_key_handle);
+        if let Some(ref recovery) = response.recovery_key_handle {
+            println!("  {}: {}", "New Recovery Key".cyan(), recovery);
+        }
     }
 
     Ok(())
 }
 
 async fn cmd_scheduled_rotate(
-    repo: &IdentityRepository,
-    hsm: Arc<HsmClient>,
-    key_handle_prefix: &str,
+    identity_url: &str,
     kels_url: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let authority = repo
-        .authority
-        .get_by_name(AUTHORITY_IDENTITY_NAME)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Identity not initialized"))?;
+    let request = RotateRequest {
+        mode: RotateMode::Scheduled,
+    };
 
-    let prefix = authority.kel_prefix.clone();
-
-    let binding = repo
-        .hsm_bindings
-        .get_latest_by_kel_prefix(&prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("HSM binding not found"))?;
-
-    let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
-        KeyEventRepository::new(repo.pool().clone()),
-    )));
-
-    let provider = HsmKeyProvider::with_handles(
-        hsm.clone(),
-        key_handle_prefix,
-        binding.signing_generation,
-        binding.recovery_generation,
-        KeyHandle::from(binding.current_key_handle.as_str()),
-        KeyHandle::from(binding.next_key_handle.as_str()),
-        KeyHandle::from(binding.recovery_key_handle.as_str()),
-    );
-
-    let builder =
-        KeyEventBuilder::with_dependencies(provider, None, Some(kel_store), Some(&prefix))
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create builder: {}", e))?;
-
-    if builder.last_said().is_none() {
-        return Err(anyhow::anyhow!("KEL is empty"));
+    if !json {
+        println!("{}", "Performing Scheduled Rotation...".cyan());
     }
 
-    // Count existing ROT + ROR events to decide rotation type
-    // Sequence: ROT, ROT, ROR, ROT, ROT, ROR, ...
-    let rotation_count = builder
-        .events()
-        .iter()
-        .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
-        .count();
-
-    let use_recovery = rotation_count % 3 == 2;
-
-    if use_recovery {
-        if !json {
-            println!(
-                "{} (rotation #{}, every 3rd is ROR)",
-                "Performing Recovery Rotation...".cyan(),
-                rotation_count + 1
-            );
-        }
-        cmd_rotate_recovery(repo, hsm.clone(), key_handle_prefix, json).await?;
-    } else {
-        if !json {
-            println!(
-                "{} (rotation #{})",
-                "Performing Standard Rotation...".cyan(),
-                rotation_count + 1
-            );
-        }
-        cmd_rotate(repo, hsm.clone(), key_handle_prefix, json).await?;
-    }
+    let response = call_rotate(identity_url, &request).await?;
 
     // Submit updated KEL to local KELS service if URL is configured
     let kels_url = kels_url.filter(|u| !u.is_empty());
     if let Some(url) = kels_url {
-        // Re-load the KEL after rotation to get the updated events
-        let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(Arc::new(
-            KeyEventRepository::new(repo.pool().clone()),
-        )));
+        let client = reqwest::Client::new();
+        let kel_resp = client
+            .get(format!("{}/api/identity/kel", identity_url))
+            .send()
+            .await?;
 
-        let updated_binding = repo
-            .hsm_bindings
-            .get_latest_by_kel_prefix(&prefix)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("HSM binding not found after rotation"))?;
+        if !kel_resp.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch KEL after rotation"));
+        }
 
-        let provider = HsmKeyProvider::with_handles(
-            hsm.clone(),
-            key_handle_prefix,
-            updated_binding.signing_generation,
-            updated_binding.recovery_generation,
-            KeyHandle::from(updated_binding.current_key_handle.as_str()),
-            KeyHandle::from(updated_binding.next_key_handle.as_str()),
-            KeyHandle::from(updated_binding.recovery_key_handle.as_str()),
+        let kel: kels::Kel = kel_resp.json().await?;
+        let kels_client = KelsClient::new(&url);
+        let submit_resp = kels_client.submit_events(kel.events()).await?;
+
+        if !submit_resp.applied {
+            return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));
+        }
+
+        if !json {
+            println!("{}", "Updated KEL submitted to KELS service.".green());
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string(&response)?);
+    } else {
+        println!("{}", "Scheduled Rotation Complete!".green().bold());
+        println!("{}", "=".repeat(60));
+        println!(
+            "  {}: {} (rotation #{})",
+            "Mode".cyan(),
+            response.mode,
+            response.rotation_number
         );
-
-        let builder =
-            KeyEventBuilder::with_dependencies(provider, None, Some(kel_store), Some(&prefix))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to reload KEL: {}", e))?;
-
-        let events = builder.events().to_vec();
-        if !events.is_empty() {
-            let client = KelsClient::new(&url);
-            let response = client
-                .submit_events(&events)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to submit KEL to KELS at {}: {}", url, e))?;
-
-            if !response.applied {
-                return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));
-            }
-
-            if !json {
-                println!("{}", "Updated KEL submitted to KELS service.".green());
-            }
+        println!("  {}: {}", "Prefix".cyan(), response.prefix);
+        println!("  {}: {}", "New SAID".cyan(), response.said);
+        println!(
+            "  {}: {}",
+            "New Current Key".cyan(),
+            response.current_key_handle
+        );
+        println!("  {}: {}", "New Next Key".cyan(), response.next_key_handle);
+        if let Some(ref recovery) = response.recovery_key_handle {
+            println!("  {}: {}", "New Recovery Key".cyan(), recovery);
         }
     }
 

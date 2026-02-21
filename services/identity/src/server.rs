@@ -8,14 +8,16 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use kels::{KelStore, RepositoryKelStore, shutdown_signal};
+use kels::{
+    KelStore, KelsClient, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal,
+};
 use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
 
 use crate::{
-    handlers::{self, AppState},
-    hsm::HsmClient,
+    handlers::{self, AppState, RotateMode, RotateResponse},
+    hsm::{HsmClient, HsmKeyProvider},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
 
@@ -27,18 +29,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/identity/anchor", post(handlers::anchor))
         .route("/api/identity/sign", post(handlers::sign))
         .route("/api/identity/ecdh", post(handlers::ecdh))
+        .route("/api/identity/rotate", post(handlers::rotate))
         .with_state(state)
 }
 
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::hsm::HsmKeyProvider;
-    use kels::{KeyEventBuilder, KeyProvider};
-
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
     let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
+    let kels_url = std::env::var("KELS_URL").ok().filter(|u| !u.is_empty());
 
     info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)
@@ -171,20 +172,12 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
+        kels_url,
     });
 
     let rotation_state = state.clone();
-    let rotation_hsm = hsm.clone();
-    let rotation_key_prefix = key_handle_prefix.clone();
-    let rotation_kel_store = kel_store.clone();
     tokio::spawn(async move {
-        auto_rotation_loop(
-            rotation_state,
-            rotation_hsm,
-            rotation_key_prefix,
-            rotation_kel_store,
-        )
-        .await;
+        auto_rotation_loop(rotation_state).await;
     });
 
     let app = create_router(state);
@@ -206,12 +199,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 const ROTATION_INTERVAL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
 const LOOP_PERIOD: Duration = Duration::from_secs(6 * 3600); // 6 hours
 
-async fn auto_rotation_loop(
-    state: Arc<AppState>,
-    hsm: Arc<HsmClient>,
-    key_handle_prefix: String,
-    kel_store: Arc<dyn KelStore>,
-) {
+async fn auto_rotation_loop(state: Arc<AppState>) {
     // Stabilize on startup
     tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -228,7 +216,7 @@ async fn auto_rotation_loop(
             continue;
         }
 
-        match check_and_rotate(&state, &hsm, &key_handle_prefix, &kel_store).await {
+        match check_and_rotate(&state).await {
             Ok(rotated) => {
                 if rotated {
                     info!("Auto-rotation completed successfully");
@@ -244,13 +232,7 @@ async fn auto_rotation_loop(
 
 async fn check_and_rotate(
     state: &Arc<AppState>,
-    hsm: &Arc<HsmClient>,
-    key_handle_prefix: &str,
-    kel_store: &Arc<dyn KelStore>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    use crate::hsm::HsmKeyProvider;
-    use kels::KeyEventBuilder;
-
     let mapping = state
         .repo
         .authority
@@ -289,50 +271,160 @@ async fn check_and_rotate(
 
     if should_rotate {
         info!("Triggering scheduled rotation");
-        let output = tokio::process::Command::new("/app/identity-admin")
-            .args(["--json", "scheduled-rotate"])
-            .output()
-            .await?;
+        perform_rotation(state, RotateMode::Scheduled).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("scheduled-rotate failed: {}", stderr).into());
+        // Submit updated KEL to local KELS service if configured
+        if let Some(kels_url) = state.kels_url.as_ref() {
+            let builder = state.builder.read().await;
+            let events = builder.events().to_vec();
+            drop(builder);
+
+            if !events.is_empty() {
+                let client = KelsClient::new(kels_url);
+                match client.submit_events(&events).await {
+                    Ok(resp) if resp.applied => {
+                        info!("Submitted rotated KEL to KELS service");
+                    }
+                    Ok(_) => {
+                        warn!("KELS service rejected updated KEL");
+                    }
+                    Err(e) => {
+                        warn!("Failed to submit KEL to KELS: {}", e);
+                    }
+                }
+            }
         }
-
-        // Reconstruct builder with updated key handles from the database
-        let binding = state
-            .repo
-            .hsm_bindings
-            .get_latest_by_kel_prefix(prefix)
-            .await?
-            .ok_or("HSM binding not found after rotation")?;
-
-        let key_provider = HsmKeyProvider::with_handles(
-            hsm.clone(),
-            key_handle_prefix,
-            binding.signing_generation,
-            binding.recovery_generation,
-            binding.current_key_handle.into(),
-            binding.next_key_handle.into(),
-            binding.recovery_key_handle.into(),
-        );
-
-        let new_builder = KeyEventBuilder::with_dependencies(
-            key_provider,
-            None,
-            Some(kel_store.clone()),
-            Some(prefix),
-        )
-        .await
-        .map_err(|e| format!("Failed to rebuild builder after rotation: {}", e))?;
-
-        let mut builder = state.builder.write().await;
-        *builder = new_builder;
 
         return Ok(true);
     }
 
     Ok(false)
+}
+
+/// Perform a key rotation and update the in-memory builder.
+///
+/// This is the single source of truth for all rotations — called by both the
+/// HTTP handler and the auto-rotation loop. The builder's key provider is
+/// updated in-place, so no rebuild is needed.
+pub(crate) async fn perform_rotation(
+    state: &Arc<AppState>,
+    requested_mode: RotateMode,
+) -> Result<RotateResponse, Box<dyn std::error::Error + Send + Sync>> {
+    let mut builder = state.builder.write().await;
+
+    // Reload to pick up any external changes
+    builder
+        .reload()
+        .await
+        .map_err(|e| format!("Failed to reload KEL: {}", e))?;
+
+    let prefix = builder.prefix().ok_or("Builder has no prefix")?.to_string();
+
+    // Determine actual mode
+    let rotation_count = builder
+        .events()
+        .iter()
+        .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
+        .count();
+
+    let actual_mode = match requested_mode {
+        RotateMode::Scheduled => {
+            if rotation_count % 3 == 2 {
+                RotateMode::Recovery
+            } else {
+                RotateMode::Standard
+            }
+        }
+        other => other,
+    };
+
+    // Perform the rotation
+    let event = match actual_mode {
+        RotateMode::Standard => builder.rotate().await?,
+        RotateMode::Recovery => builder.rotate_recovery().await?,
+        RotateMode::Scheduled => unreachable!(),
+    };
+
+    // Get updated handles
+    let current_handle = builder
+        .key_provider()
+        .current_handle()
+        .await
+        .ok_or("No current handle after rotation")?;
+    let next_handle = builder
+        .key_provider()
+        .next_handle()
+        .await
+        .ok_or("No next handle after rotation")?;
+
+    // Get latest binding and chain it
+    let mut binding = state
+        .repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await?
+        .ok_or("HSM binding not found")?;
+
+    binding.current_key_handle = current_handle.clone();
+    binding.next_key_handle = next_handle.clone();
+    binding.signing_generation = builder.key_provider().signing_generation().await;
+
+    let mut recovery_handle_response = None;
+    if actual_mode == RotateMode::Recovery {
+        let recovery_handle = builder
+            .key_provider()
+            .recovery_handle()
+            .await
+            .ok_or("No recovery handle after rotation")?;
+        binding.recovery_key_handle = recovery_handle.clone();
+        binding.recovery_generation = builder.key_provider().recovery_generation().await;
+        recovery_handle_response = Some(recovery_handle);
+    }
+
+    binding.increment()?;
+    builder.interact(&binding.said).await?;
+    state
+        .repo
+        .hsm_bindings
+        .insert(binding)
+        .await
+        .map_err(|e| format!("Failed to insert binding: {}", e))?;
+
+    // Update authority
+    let mut authority = state
+        .repo
+        .authority
+        .get_by_name(AUTHORITY_IDENTITY_NAME)
+        .await?
+        .ok_or("Authority not found")?;
+    authority.last_said = event.event.said.clone();
+    state
+        .repo
+        .authority
+        .update(authority)
+        .await
+        .map_err(|e| format!("Failed to update authority: {}", e))?;
+
+    let mode_str = match actual_mode {
+        RotateMode::Standard => "standard",
+        RotateMode::Recovery => "recovery",
+        RotateMode::Scheduled => unreachable!(),
+    };
+
+    info!(
+        "Rotation completed: mode={}, said={}",
+        mode_str, event.event.said
+    );
+
+    Ok(RotateResponse {
+        prefix,
+        said: event.event.said,
+        mode: mode_str.to_string(),
+        rotation_number: rotation_count + 1,
+        current_key_handle: current_handle,
+        next_key_handle: next_handle,
+        recovery_key_handle: recovery_handle_response,
+    })
 }
 
 fn verify_binding_chain(
