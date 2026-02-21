@@ -45,17 +45,21 @@ pub async fn refresh_allowlist(
     drop(original_peers);
 
     // Fetch peers from all registries (all peers are equal)
+    let t0 = std::time::Instant::now();
     debug!("Fetching peers from all registries");
     let response = registry_client
         .fetch_all_verified_peers()
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    debug!("fetch_all_verified_peers completed in {:?}", t0.elapsed());
 
     // Fetch completed proposals for peer vote verification
     let proposals_response = registry_client.fetch_completed_proposals().await.ok();
+    debug!("fetch_completed_proposals completed in {:?} (total {:?})", t0.elapsed(), t0.elapsed());
 
     let mut authorized_peers = HashMap::new();
 
+    let t1 = std::time::Instant::now();
     for history in response.peers {
         // Get the latest (last) record
         if let Some(latest) = history.records.last() {
@@ -91,7 +95,10 @@ pub async fn refresh_allowlist(
                 }
             }
 
+            debug!(peer_prefix = %latest.peer_prefix, "allowlist: peer anchoring OK, checking votes...");
+
             // Verify the proposal has sufficient verified votes
+            let tv = std::time::Instant::now();
             if !registry_client
                 .verify_peer_votes(&latest.peer_prefix, &proposals_response)
                 .await
@@ -102,6 +109,12 @@ pub async fn refresh_allowlist(
                 );
                 continue;
             }
+
+            debug!(
+                peer_prefix = %latest.peer_prefix,
+                elapsed = ?tv.elapsed(),
+                "allowlist: vote verification complete"
+            );
 
             if latest.active {
                 authorized_peers.insert(latest.peer_prefix.clone(), latest.clone());
@@ -115,6 +128,7 @@ pub async fn refresh_allowlist(
     }
 
     let count = authorized_peers.len();
+    debug!("allowlist: peer verification loop took {:?} for {} peers", t1.elapsed(), count);
 
     if original_saids.len() != count
         || authorized_peers
@@ -125,8 +139,8 @@ pub async fn refresh_allowlist(
         *allowlist.write().await = authorized_peers;
 
         info!(
-            "Allowlist refreshed with {} verified authorized peers",
-            count
+            "Allowlist refreshed with {} verified authorized peers (total {:?})",
+            count, t0.elapsed()
         );
     }
 

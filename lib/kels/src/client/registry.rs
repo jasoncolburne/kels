@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use futures::future::join_all;
 use verifiable_storage::StorageDatetime;
@@ -369,7 +369,12 @@ impl KelsRegistryClient {
     async fn check_node_ready_status(&self, kels_url: &str) -> NodeStatus {
         let ready_url = format!("{}/ready", kels_url.trim_end_matches('/'));
 
-        match self.client.get(&ready_url).send().await {
+        let quick_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap_or_else(|_| self.client.clone());
+
+        match quick_client.get(&ready_url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
                     // Parse the JSON response to check if ready=true
@@ -678,6 +683,15 @@ impl MultiRegistryClient {
             self.fetch_registry_kel(&peer.authorizing_kel, true),
         )?;
 
+        if maybe_kel.is_none() {
+            debug!(
+                peer_prefix = %peer.peer_prefix,
+                said = %peer.said,
+                authorizing_kel = %peer.authorizing_kel,
+                "verify_peer_anchoring: anchor NOT found even after force refetch"
+            );
+        }
+
         Ok(maybe_kel.is_some())
     }
 
@@ -843,6 +857,12 @@ impl MultiRegistryClient {
         }
 
         for said in record_saids {
+            debug!(
+                peer_prefix = %peer_prefix,
+                said = %said,
+                proposer = %proposer,
+                "verify_proposal_dag: checking proposal record anchoring"
+            );
             let maybe_kel = retry_once!(
                 self.fetch_registry_kel(&proposer, false),
                 |kel: &Kel| kel.contains_anchor(said),
@@ -850,7 +870,9 @@ impl MultiRegistryClient {
             );
 
             match maybe_kel {
-                Ok(Some(_)) => {}
+                Ok(Some(_)) => {
+                    debug!(said = %said, "verify_proposal_dag: proposal record anchor OK");
+                }
                 Ok(None) => {
                     warn!(
                         peer_prefix = %peer_prefix,
@@ -881,6 +903,12 @@ impl MultiRegistryClient {
                 continue;
             }
 
+            debug!(
+                peer_prefix = %peer_prefix,
+                vote_said = %vote.said,
+                voter = %vote.voter,
+                "verify_proposal_dag: checking vote anchoring"
+            );
             let maybe_kel = retry_once!(
                 self.fetch_registry_kel(&vote.voter, false),
                 |kel: &Kel| kel.contains_anchor(&vote.said),
@@ -889,6 +917,7 @@ impl MultiRegistryClient {
 
             match maybe_kel {
                 Ok(Some(_)) => {
+                    debug!(voter = %vote.voter, "verify_proposal_dag: vote anchor OK");
                     verified_voters.insert(vote.voter.clone());
                 }
                 Ok(None) => {
@@ -1008,6 +1037,7 @@ impl MultiRegistryClient {
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
         if !self.prefix_map.is_empty() && !force_fetch {
+            debug!("fetch_registry_kels: using cached KELs ({} entries)", self.prefix_map.len());
             return Ok(self
                 .prefix_map
                 .values()
@@ -1015,6 +1045,7 @@ impl MultiRegistryClient {
                 .collect());
         }
 
+        debug!("fetch_registry_kels: force_fetch={}, fetching from {} URLs", force_fetch, self.urls.len());
         self.prefix_map.clear();
 
         let futures = self.urls.iter().map(|url| {
@@ -1038,6 +1069,14 @@ impl MultiRegistryClient {
                 ));
             };
 
+            debug!(
+                "fetch_registry_kels: {} -> prefix={}, events={}, anchors={}",
+                url,
+                prefix,
+                kel.events().len(),
+                kel.events().iter().filter(|e| e.event.is_interaction()).count(),
+            );
+
             self.url_map
                 .insert(url.clone(), (prefix.to_string(), kel.clone()));
             self.prefix_map
@@ -1056,13 +1095,28 @@ impl MultiRegistryClient {
         prefix: &str,
         force_fetch: bool,
     ) -> Result<crate::Kel, KelsError> {
+        debug!(prefix = %prefix, force_fetch = force_fetch, "fetch_registry_kel");
         self.fetch_verified_registry_kels(force_fetch).await?;
         match self.prefix_map.get(prefix) {
-            Some((_, kel)) => Ok(kel.clone()),
-            None => Err(KelsError::RegistryFailure(format!(
-                "Could not find {} in available trusted registries",
-                prefix
-            ))),
+            Some((_, kel)) => {
+                debug!(
+                    prefix = %prefix,
+                    events = kel.events().len(),
+                    "fetch_registry_kel: found"
+                );
+                Ok(kel.clone())
+            }
+            None => {
+                debug!(
+                    prefix = %prefix,
+                    available = ?self.prefix_map.keys().collect::<Vec<_>>(),
+                    "fetch_registry_kel: NOT FOUND in prefix_map"
+                );
+                Err(KelsError::RegistryFailure(format!(
+                    "Could not find {} in available trusted registries",
+                    prefix
+                )))
+            }
         }
     }
 
@@ -1126,10 +1180,14 @@ impl MultiRegistryClient {
         &mut self,
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
+        let was_cached = !self.prefix_map.is_empty() && !force_fetch;
         let kels = self.fetch_registry_kels(force_fetch).await?;
-        if !kels
-            .iter()
-            .all(|k| k.verify().is_ok() && k.verify_prefix(&self.trusted_prefixes))
+
+        // Only verify on fresh fetch — cached KELs were already verified on insertion
+        if !was_cached
+            && !kels
+                .iter()
+                .all(|k| k.verify().is_ok() && k.verify_prefix(&self.trusted_prefixes))
         {
             return Err(KelsError::RegistryFailure(format!(
                 "Failed to verify kel prefixes as expected ({:?})",

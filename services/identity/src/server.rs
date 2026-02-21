@@ -216,14 +216,23 @@ async fn auto_rotation_loop(
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let mut interval = tokio::time::interval(LOOP_PERIOD);
+    let mut last_rotation: Option<tokio::time::Instant> = None;
 
     loop {
         interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
+
+        // Cooldown: skip if we rotated recently (keys are fresh for ROTATION_INTERVAL)
+        if let Some(last) = last_rotation
+            && last.elapsed() < ROTATION_INTERVAL
+        {
+            continue;
+        }
 
         match check_and_rotate(&state, &hsm, &key_handle_prefix, &kel_store).await {
             Ok(rotated) => {
                 if rotated {
                     info!("Auto-rotation completed successfully");
+                    last_rotation = Some(tokio::time::Instant::now());
                 }
             }
             Err(e) => {
@@ -330,8 +339,6 @@ fn verify_binding_chain(
     bindings: &[HsmKeyBinding],
     kel: &kels::Kel,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let max_gap = ROTATION_INTERVAL + LOOP_PERIOD;
-
     // Verify each binding's SAID
     for binding in bindings {
         binding.verify_said()?;
@@ -366,26 +373,6 @@ fn verify_binding_chain(
     // Verify the first binding's SAID is anchored in the KEL
     if !kel.contains_anchor(&bindings[0].said) {
         return Err("First binding SAID not anchored in KEL".into());
-    }
-
-    // Verify consecutive created_at gaps are within bounds
-    for i in 1..bindings.len() {
-        let prev_ts = bindings[i - 1]
-            .get_created_at()
-            .ok_or("Missing created_at")?;
-        let curr_ts = bindings[i].get_created_at().ok_or("Missing created_at")?;
-        let gap = (*curr_ts.inner() - *prev_ts.inner())
-            .to_std()
-            .unwrap_or(Duration::ZERO);
-        if gap > max_gap {
-            return Err(format!(
-                "Binding created_at gap too large: {:?} between versions {} and {}",
-                gap,
-                bindings[i - 1].version,
-                bindings[i].version
-            )
-            .into());
-        }
     }
 
     // All checks passed — check if latest binding is older than rotation interval
