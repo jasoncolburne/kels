@@ -33,6 +33,10 @@ The merge function returns a tuple of three elements:
 
 ## Merge Flow
 
+### 0. Inception Dedup (Re-submission from Genesis)
+
+If the submitted events start from inception (`previous` is `None`) and the KEL already has events, merge skips known duplicates and recurses with the remaining new events. This allows callers to submit a full KEL (including inception) without triggering "Events not contiguous" errors. If all events are duplicates, the merge returns `Verified` with no changes.
+
 ### 1. Pre-merge Validation
 
 ```

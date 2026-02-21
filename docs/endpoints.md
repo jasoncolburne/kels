@@ -99,6 +99,7 @@ All standalone endpoints plus:
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
+| POST | `/api/federation/key-events` | **Federation member** | Submit member KEL events to Raft (verifies prefix is trusted member) |
 
 #### Admin API
 
