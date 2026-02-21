@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGISTRIES=(a b c d)
+DEBUG_DIR="$(cd "$(dirname "$0")/.." && pwd)/debug"
+
+mkdir -p "$DEBUG_DIR"
+
+for registry in "${REGISTRIES[@]}"; do
+  echo "Dumping gossip logs for registry-$registry..."
+  kubectl logs -l app=kels-registry --tail 10000 -n "kels-registry-$registry" > "$DEBUG_DIR/registry-$registry.log" 2>&1 &
+done
+
+wait
+echo "Done. Files in $DEBUG_DIR/"

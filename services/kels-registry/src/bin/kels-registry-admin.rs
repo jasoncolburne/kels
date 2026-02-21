@@ -286,6 +286,34 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
     None
 }
 
+/// Submit own KEL to the leader so anchoring can be verified.
+///
+/// After anchoring a SAID in the local identity KEL, the new event must reach
+/// Raft before the leader can verify it. Submits all events; merge() deduplicates.
+async fn sync_kel_to_leader(ctx: &AdminContext, leader_url: &str) -> anyhow::Result<()> {
+    let kel = ctx
+        .identity_client
+        .get_kel()
+        .await
+        .context("Failed to get own KEL")?;
+    let events = kel.events().to_vec();
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let url = format!(
+        "{}/api/federation/key-events",
+        leader_url.trim_end_matches('/')
+    );
+    let resp = ctx.http_client.post(&url).json(&events).send().await?;
+    if !resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let error = body["error"].as_str().unwrap_or("unknown error");
+        return Err(anyhow!("Failed to sync KEL to leader: {}", error));
+    }
+    Ok(())
+}
+
 async fn propose_peer(
     ctx: &AdminContext,
     peer_prefix: &str,
@@ -327,6 +355,9 @@ async fn propose_peer(
 
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
+
+    // Sync KEL to leader so anchor is available for verification
+    sync_kel_to_leader(ctx, &target_url).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -400,6 +431,9 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
+    // Sync KEL to leader so anchor is available for verification
+    sync_kel_to_leader(ctx, &target_url).await?;
+
     // Retry loop for leader changes
     for attempt in 0..2 {
         let url = format!("{}/api/admin/removal-proposals", target_url);
@@ -458,6 +492,9 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
 
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
+
+    // Sync KEL to leader so anchor is available for verification
+    sync_kel_to_leader(ctx, &target_url).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -686,6 +723,8 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
+            sync_kel_to_leader(ctx, &target_url).await?;
+
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/addition-proposals", target_url);
                 let resp = ctx.http_client.post(&url).json(&withdrawal).send().await?;
@@ -744,6 +783,8 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .anchor(&withdrawal.said)
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
+
+            sync_kel_to_leader(ctx, &target_url).await?;
 
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/removal-proposals", target_url);

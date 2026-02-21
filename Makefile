@@ -261,7 +261,7 @@ test-grow-federation:
 	garden deploy --env=registry-b
 	garden deploy --env=registry-c
 	garden deploy --env=registry-d
-	# Wait for Raft init + sync_membership on node 0
+	# Wait for Raft init + sync_membership
 	sleep 15
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
@@ -298,6 +298,8 @@ test-rotation:
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	# Wait for sync loop to pick up rotations
+	sleep 30
 	# Verify KEL event types from test-client
 	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=kels-registry-a ./test-scheduled-rotation.sh'
 	# Rotate on node-a identity and let gossip propagate
@@ -309,6 +311,8 @@ test-rotation:
 rotate-registry-b:
 	# If there are issues with verification after rotation, this will break voting
 	kubectl exec -n kels-registry-b deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
+	# Wait for sync loop to pick up rotation (not required due to upcoming vote which will sync)
+	# sleep 30
 
 test-suite:
 	$(MAKE) wait-for-gossip

@@ -351,6 +351,21 @@ impl Kel {
             return Err(KelsError::InvalidKel("No events to add".to_string()));
         };
 
+        // If events start from inception and we already have events, skip duplicates
+        if first_previous.is_none() && !self.events().is_empty() {
+            let events_by_said = self.map_events_by_said();
+            let new_start = events
+                .iter()
+                .position(|e| !events_by_said.contains_key(e.event.said.as_str()));
+            return match new_start {
+                None => Ok((vec![], vec![], KelMergeResult::Accepted)),
+                Some(0) => Err(KelsError::InvalidKel(
+                    "Inception event SAID mismatch".to_string(),
+                )),
+                Some(idx) => self.merge(events[idx..].to_vec()),
+            };
+        }
+
         let last_said = self.last().map(|e| e.event.said.clone());
 
         // Track old events that get removed (for archiving) and the merge result

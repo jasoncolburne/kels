@@ -56,6 +56,10 @@ pub fn create_router(
             .route(
                 "/api/federation/proposals",
                 get(handlers::list_completed_proposals),
+            )
+            .route(
+                "/api/federation/key-events",
+                post(handlers::federation_submit_key_events),
             );
 
         // Admin API (localhost only) for proposal and peer management
@@ -168,12 +172,42 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                             } else {
                                 info!("Federation cluster initialized successfully");
                             }
+                        });
+                    }
 
-                            if let Err(e) = init_node.sync_membership().await {
-                                warn!("Federation membership sync: {}", e);
-                            } else {
-                                info!("Federation membership synced");
+                    // Membership sync loop — periodically checks if this node is the
+                    // leader and if membership needs updating. Handles leadership changes
+                    // and new members joining after initial startup.
+                    {
+                        let sync_node = node.clone();
+                        tokio::spawn(async move {
+                            let mut ticker =
+                                tokio::time::interval(tokio::time::Duration::from_secs(10));
+                            loop {
+                                ticker.tick().await;
+
+                                if !sync_node.is_leader().await {
+                                    continue;
+                                }
+
+                                if let Err(e) = sync_node.sync_membership().await {
+                                    warn!("Federation membership sync: {}", e);
+                                }
                             }
+                        });
+                    }
+
+                    // Spawn KEL sync loop (runs on every node)
+                    {
+                        let sync_node = node.clone();
+                        let sync_identity = identity_client.clone();
+                        tokio::spawn(async move {
+                            crate::federation::sync::run_kel_sync_loop(
+                                sync_node,
+                                sync_identity,
+                                std::time::Duration::from_secs(30),
+                            )
+                            .await;
                         });
                     }
 
