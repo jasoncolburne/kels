@@ -142,6 +142,44 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 **Attack:** Trick the client into chaining from the wrong tail, creating an event that doesn't properly connect to the KEL.
 - **Mitigation:** The `owner_tail` is tracked via `save_owner_tail()` / `load_owner_tail()` on the `KelStore`. The builder syncs with the server KEL before creating events. Events that don't chain from a valid previous are rejected by the server.
 
+## Automatic Key Rotation
+
+The identity service implements an automatic rotation schedule for HSM-backed service identities (registries and gossip nodes) that limits the window of exposure for any compromised key. End-user clients managing their own keys (e.g., mobile apps with Secure Enclave) are responsible for their own rotation schedule.
+
+### Schedule
+
+- **Check interval:** Every 6 hours, the identity service checks whether the current key binding is due for rotation.
+- **Rotation interval:** 30 days. If the latest HSM key binding is older than 30 days, rotation is triggered.
+- **Mode selection:** Scheduled rotation auto-selects the rotation type based on rotation count. Every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This results in signing keys rotating approximately every 30 days and recovery keys every ~90 days.
+
+### Binding Chain Integrity
+
+Before rotating, the auto-rotation loop verifies the integrity of the HSM binding chain:
+1. Each binding's SAID is verified (content matches declared hash)
+2. Chain links are verified (each binding's `previous` pointer matches the prior binding's SAID)
+3. Versions increment by exactly 1
+4. All binding SAIDs are anchored in the identity's KEL (prevents a database-only attacker from forging bindings)
+
+If any verification fails, rotation is triggered immediately as a defensive measure.
+
+### Rotation Execution
+
+All rotations — automatic and admin-initiated — go through a single `perform_rotation` code path:
+1. The builder's KEL is reloaded from the database
+2. The rotation event (`rot` or `ror`) is created and signed via the HSM
+3. The builder's key provider is updated in-place with the new key handles
+4. A new HSM binding is created (chained from the previous), anchored in the KEL, and persisted
+5. The authority mapping is updated with the new tip SAID
+
+This ensures the server's in-memory signing state is always consistent with the persisted state, regardless of whether rotation was triggered automatically or via the admin CLI.
+
+### Security Properties
+
+- **Bounded exposure window:** A compromised signing key is useful for at most 30 days before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
+- **Recovery key freshness:** Recovery keys rotate every ~90 days, limiting the window for recovery key compromise.
+- **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
+- **Authenticated rotation endpoint:** The `POST /api/identity/rotate` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized rotation triggers.
+
 ## Summary of Residual Risks
 
 All protocol-level attack vectors have mitigations. The protocol's security properties are derived from cryptographic invariants (signatures, SAID integrity, forward commitments, dual-signature requirements) rather than access control, so there are no residual risks that depend on deployment configuration.

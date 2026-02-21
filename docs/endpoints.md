@@ -23,7 +23,7 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 
 ## Identity Service
 
-HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. No authentication — internal to the pod.
+HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The rotate endpoint requires a signed request.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -33,11 +33,13 @@ HSM-backed key management for cryptographic identity (KEL). Used by both registr
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
+| POST | `/api/identity/rotate` | **Signed request (own KEL)** | Perform key rotation (standard, recovery, or scheduled); updates in-memory builder |
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
 - KEL is read fresh from DB on each request (captures externally anchored events)
 - Sign returns qb64-encoded signature + public key
+- Rotate accepts `SignedRequest<RotateRequest>` — signature verified against own KEL. Mode can be `standard` (signing key), `recovery` (recovery key), or `scheduled` (auto-selects based on rotation count). All rotations go through `perform_rotation()` which updates the builder's key provider in-place, keeping the server in sync. Also called internally by the auto-rotation loop (every 30 days).
 - No external network exposure expected
 
 ## KELS Service
@@ -149,7 +151,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Method | Where Used | Mechanism |
 |--------|-----------|-----------|
-| **Signed request** | Node registration, prefix listing | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist |
+| **Signed request** | Node registration, prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Localhost only** | Admin API | `SocketAddr.ip().is_loopback()` check |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
