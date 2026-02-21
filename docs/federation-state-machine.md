@@ -84,7 +84,11 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
 - **RemovePeer**: Removes peer from `peers` HashMap
 - **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
 - **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
-- **VotePeer**: Records vote, checks threshold. For additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`. For removals: auto-removes peer from peer set on approval. Moves proposal to completed.
+- **VotePeer**: Records vote, checks threshold.
+  - If theshold met:
+    - Additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`
+    - Removals: auto-removes peer from peer set.
+    - Both: moves proposal to completed.
 - **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix. Uses `Kel::from_events()` for the first submission (empty KEL) and `Kel::merge()` for subsequent submissions
 
 ## Asynchronous Apply (Verification Layer)
@@ -95,12 +99,13 @@ The `StateMachineStore` implements OpenRaft's `RaftStateMachine` trait. Its asyn
 
 Before applying an `AddPeer` entry from the Raft log:
 
-1. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
-2. **DB write**: Write the peer to our local PostgreSQL database via `upsert_peer_to_db`.
+1. **Vote threshold**: Count verified voters — each vote must pass SAID integrity (`verify_said()`) and be anchored in the voter's KEL (`verify_member_anchoring`). Reject if verified voters < threshold.
+2. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
+3. **DB write**: Write the peer to our local PostgreSQL database via `upsert_peer_to_db`.
 
 Note: Self-anchoring (anchoring the peer's SAID in our own KEL) does not happen in `apply()`. It happens in the leader's HTTP handler before submitting the `AddPeer` request.
 
-If anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers -- followers independently verify and reject unanchored entries.
+If threshold or anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers — followers independently verify vote threshold and anchoring, rejecting unverified entries.
 
 ### VotePeer Verification
 
