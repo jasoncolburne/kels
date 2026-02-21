@@ -202,10 +202,9 @@ async fn auto_rotation_loop(state: Arc<AppState>) {
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let mut interval = tokio::time::interval(LOOP_PERIOD);
-    interval.tick().await; // consume the first immediate tick
 
     loop {
-        interval.tick().await;
+        interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
 
         match check_and_rotate(&state).await {
             Ok(rotated) => {
