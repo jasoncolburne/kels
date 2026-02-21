@@ -1037,7 +1037,10 @@ impl MultiRegistryClient {
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
         if !self.prefix_map.is_empty() && !force_fetch {
-            debug!("fetch_registry_kels: using cached KELs ({} entries)", self.prefix_map.len());
+            debug!(
+                "fetch_registry_kels: using cached KELs ({} entries)",
+                self.prefix_map.len()
+            );
             return Ok(self
                 .prefix_map
                 .values()
@@ -1045,7 +1048,11 @@ impl MultiRegistryClient {
                 .collect());
         }
 
-        debug!("fetch_registry_kels: force_fetch={}, fetching from {} URLs", force_fetch, self.urls.len());
+        debug!(
+            "fetch_registry_kels: force_fetch={}, fetching from {} URLs",
+            force_fetch,
+            self.urls.len()
+        );
         self.prefix_map.clear();
 
         let futures = self.urls.iter().map(|url| {
@@ -1074,7 +1081,10 @@ impl MultiRegistryClient {
                 url,
                 prefix,
                 kel.events().len(),
-                kel.events().iter().filter(|e| e.event.is_interaction()).count(),
+                kel.events()
+                    .iter()
+                    .filter(|e| e.event.is_interaction())
+                    .count(),
             );
 
             self.url_map

@@ -55,7 +55,11 @@ pub async fn refresh_allowlist(
 
     // Fetch completed proposals for peer vote verification
     let proposals_response = registry_client.fetch_completed_proposals().await.ok();
-    debug!("fetch_completed_proposals completed in {:?} (total {:?})", t0.elapsed(), t0.elapsed());
+    debug!(
+        "fetch_completed_proposals completed in {:?} (total {:?})",
+        t0.elapsed(),
+        t0.elapsed()
+    );
 
     let mut authorized_peers = HashMap::new();
 
@@ -128,7 +132,11 @@ pub async fn refresh_allowlist(
     }
 
     let count = authorized_peers.len();
-    debug!("allowlist: peer verification loop took {:?} for {} peers", t1.elapsed(), count);
+    debug!(
+        "allowlist: peer verification loop took {:?} for {} peers",
+        t1.elapsed(),
+        count
+    );
 
     if original_saids.len() != count
         || authorized_peers
@@ -140,7 +148,8 @@ pub async fn refresh_allowlist(
 
         info!(
             "Allowlist refreshed with {} verified authorized peers (total {:?})",
-            count, t0.elapsed()
+            count,
+            t0.elapsed()
         );
     }
 
