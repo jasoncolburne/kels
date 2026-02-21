@@ -10,7 +10,7 @@ use identity::{
 };
 use kels::{KelStore, KelsClient, KeyEventBuilder, KeyProvider, RepositoryKelStore};
 use std::sync::Arc;
-use verifiable_storage::{ChainedRepository, RepositoryConnection};
+use verifiable_storage::{Chained, ChainedRepository, RepositoryConnection};
 
 #[derive(Parser)]
 #[command(name = "identity-admin")]
@@ -217,10 +217,13 @@ async fn cmd_rotate(
         .await
         .ok_or_else(|| anyhow::anyhow!("No next handle after rotate"))?;
 
-    // Update HSM binding
+    // Create new chained binding and anchor it in the KEL
     binding.current_key_handle = new_current_handle.clone();
     binding.next_key_handle = new_next_handle.clone();
-    repo.hsm_bindings.update(binding).await?;
+    binding.signing_generation = builder.key_provider().signing_generation().await;
+    binding.increment()?;
+    builder.interact(&binding.said).await?;
+    repo.hsm_bindings.insert(binding).await?;
 
     // Update authority last_said
     authority.last_said = rot.event.said.clone();
@@ -323,11 +326,15 @@ async fn cmd_rotate_recovery(
         .await
         .ok_or_else(|| anyhow::anyhow!("No recovery handle after rotate"))?;
 
-    // Update HSM binding
+    // Create new chained binding and anchor it in the KEL
     binding.current_key_handle = new_current_handle.clone();
     binding.next_key_handle = new_next_handle.clone();
     binding.recovery_key_handle = new_recovery_handle.clone();
-    repo.hsm_bindings.update(binding).await?;
+    binding.signing_generation = builder.key_provider().signing_generation().await;
+    binding.recovery_generation = builder.key_provider().recovery_generation().await;
+    binding.increment()?;
+    builder.interact(&binding.said).await?;
+    repo.hsm_bindings.insert(binding).await?;
 
     // Update authority last_said
     authority.last_said = ror.event.said.clone();
