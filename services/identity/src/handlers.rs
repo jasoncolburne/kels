@@ -277,6 +277,8 @@ pub async fn rotate(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
 
+    kel.verify()?;
+
     signed
         .verify_signature(&kel)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
