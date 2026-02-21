@@ -160,6 +160,7 @@ pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, Ap
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.
+/// Idempotent: if the SAID is already anchored, returns the existing event SAID.
 pub async fn anchor(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AnchorRequest>,
@@ -171,6 +172,17 @@ pub async fn anchor(
         .reload()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
+
+    // Idempotent: skip if already anchored
+    if let Some(existing) = builder
+        .events()
+        .iter()
+        .find(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(&request.said))
+    {
+        return Ok(Json(AnchorResponse {
+            event_said: existing.event.said.clone(),
+        }));
+    }
 
     let ixn = builder
         .interact(&request.said)

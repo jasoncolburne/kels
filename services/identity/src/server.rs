@@ -63,7 +63,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
     {
         let prefix = mapping.kel_prefix.clone();
-        info!("Found registry prefix: {}", prefix);
+        info!("Found identity prefix: {}", prefix);
 
         let binding = repo
             .hsm_bindings
@@ -113,7 +113,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
             .await
             .map_err(|e| format!("Failed to incept: {}", e))?;
 
-        info!("Generated registry prefix: {}", icp.event.prefix);
+        info!("Generated identity prefix: {}", icp.event.prefix);
 
         let current_handle = builder
             .key_provider()
