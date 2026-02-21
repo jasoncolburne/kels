@@ -22,7 +22,6 @@ use super::{
     config::FederationConfig,
     types::{FederationRequest, FederationResponse, PeerSnapshot, TypeConfig},
 };
-use kels::IdentityClient;
 
 use crate::peer_store::PeerRepository;
 
@@ -616,7 +615,6 @@ impl StateMachineData {
 #[derive(Clone)]
 pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
-    identity_client: Arc<IdentityClient>,
     /// Cached KELs from federation members (for SAID verification)
     member_kels: Arc<RwLock<HashMap<String, Kel>>>,
     /// Federation config (for refreshing member KELs)
@@ -628,14 +626,12 @@ pub struct StateMachineStore {
 impl StateMachineStore {
     /// Create a new state machine store.
     pub fn new(
-        identity_client: Arc<IdentityClient>,
         member_kels: Arc<RwLock<HashMap<String, Kel>>>,
         config: FederationConfig,
         peer_repo: Arc<PeerRepository>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
-            identity_client,
             member_kels,
             config,
             peer_repo,
@@ -930,24 +926,10 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        // Anchor in our own KEL
-                        if let Err(e) = self.identity_client.anchor(&peer.said).await {
-                            warn!(
-                                peer_prefix = %peer.peer_prefix,
-                                said = %peer.said,
-                                error = %e,
-                                "Failed to anchor peer SAID in our KEL - rejecting"
-                            );
-                            if let Some(r) = responder {
-                                r.send(FederationResponse::Ok);
-                            }
-                            continue;
-                        }
-
                         info!(
                             peer_prefix = %peer.peer_prefix,
                             said = %peer.said,
-                            "Verified and anchored peer SAID in our KEL"
+                            "Verified peer"
                         );
 
                         if let Err(e) = self.upsert_peer_to_db(peer).await {
@@ -1094,34 +1076,23 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     let leader_prefix = &self.config.self_prefix;
                     let response = sm.apply(request.clone(), threshold, leader_prefix);
 
-                    // If a proposal was approved, write the peer to DB and anchor
+                    // If a proposal was approved, write the peer to DB
                     if let FederationResponse::VoteRecorded {
                         approved: true,
                         ref peer,
                         ..
                     } = response
                         && let Some(peer) = peer
+                        && let Err(e) = self.upsert_peer_to_db(peer).await
                     {
-                        if let Err(e) = self.identity_client.anchor(&peer.said).await {
-                            if let Some(r) = responder {
-                                r.send(FederationResponse::InternalError(format!(
-                                    "Failed to anchor approved peer SAID in our KEL: {}",
-                                    e
-                                )));
-                            }
-                            continue;
-                        }
-
-                        if let Err(e) = self.upsert_peer_to_db(peer).await {
-                            warn!(
-                                peer_prefix = %peer.peer_prefix,
-                                error = %e,
-                                "Failed to write approved peer to local DB"
-                            );
-                        }
+                        warn!(
+                            peer_prefix = %peer.peer_prefix,
+                            error = %e,
+                            "Failed to write approved peer to local DB"
+                        );
                     }
 
-                    // If a removal proposal was approved, deactivate peer in DB and anchor
+                    // If a removal proposal was approved, deactivate peer in DB
                     if let FederationResponse::RemovalApproved {
                         ref peer_prefix, ..
                     } = response
@@ -1139,16 +1110,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         {
                             match latest.deactivate() {
                                 Ok(deactivated) => {
-                                    if let Err(e) =
-                                        self.identity_client.anchor(&deactivated.said).await
-                                    {
-                                        warn!(
-                                            peer_prefix = %peer_prefix,
-                                            error = %e,
-                                            "Failed to anchor deactivated peer SAID in our KEL"
-                                        );
-                                    }
-
                                     if let Err(e) = self.peer_repo.insert(deactivated).await {
                                         warn!(
                                             peer_prefix = %peer_prefix,

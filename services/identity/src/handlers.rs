@@ -173,24 +173,13 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
-    // Idempotent: skip if already anchored
-    if let Some(existing) = builder
-        .events()
-        .iter()
-        .find(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(&request.said))
-    {
-        return Ok(Json(AnchorResponse {
-            event_said: existing.event.said.clone(),
-        }));
-    }
-
     let ixn = builder
         .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
     tracing::info!(
-        "Anchored {} in registry KEL at {}",
+        "Anchored {} in identity KEL at {}",
         request.said,
         ixn.event.said,
     );

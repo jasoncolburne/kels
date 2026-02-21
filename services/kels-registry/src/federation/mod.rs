@@ -89,7 +89,6 @@ impl FederationNode {
             node_id,
         );
         let state_machine = StateMachineStore::new(
-            identity_client.clone(),
             member_kels.clone(),
             config.clone(),
             Arc::new(repository.peers.clone()),
