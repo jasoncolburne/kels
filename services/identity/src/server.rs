@@ -370,9 +370,10 @@ fn verify_binding_chain(
         }
     }
 
-    // Verify the first binding's SAID is anchored in the KEL
-    if !kel.contains_anchor(&bindings[0].said) {
-        return Err("First binding SAID not anchored in KEL".into());
+    // Verify all binding SAIDs are anchored in the KEL
+    let binding_saids: Vec<&str> = bindings.iter().map(|b| b.said.as_str()).collect();
+    if !kel.contains_anchors(&binding_saids) {
+        return Err("Not all binding SAIDs are anchored in KEL".into());
     }
 
     // All checks passed — check if latest binding is older than rotation interval
