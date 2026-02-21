@@ -160,7 +160,6 @@ pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, Ap
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.
-/// Idempotent: if the SAID is already anchored, returns the existing event SAID.
 pub async fn anchor(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AnchorRequest>,
