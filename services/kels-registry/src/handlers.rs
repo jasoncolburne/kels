@@ -964,26 +964,80 @@ pub async fn admin_vote_proposal(
             current_votes,
             votes_needed,
             approved,
-            peer,
+            proposal,
         } => {
-            let message = if approved {
-                format!("Proposal approved! Peer {:?} added.", peer.map(|p| p.said))
-            } else {
-                format!(
-                    "Vote recorded. {} of {} approvals.",
-                    current_votes, votes_needed
-                )
-            };
+            if approved {
+                if let Some(v0) = proposal {
+                    let self_prefix = state.node.config().self_prefix.clone();
+
+                    // Idempotency: if peer already exists, skip create/anchor/submit
+                    let already_exists = state
+                        .node
+                        .state_machine()
+                        .inner()
+                        .lock()
+                        .await
+                        .get_peer(&v0.peer_prefix)
+                        .is_some();
+
+                    if !already_exists {
+                        let peer = Peer::create(
+                            v0.peer_prefix.clone(),
+                            v0.node_id.clone(),
+                            self_prefix.clone(),
+                            true,
+                            v0.kels_url.clone(),
+                            v0.gossip_addr.clone(),
+                        )
+                        .map_err(|e| {
+                            ApiError::internal_error(format!("Failed to create peer: {}", e))
+                        })?;
+
+                        if peer.authorizing_kel != self_prefix {
+                            return Err(ApiError::internal_error(
+                                "Peer authorizing_kel does not match self prefix".to_string(),
+                            ));
+                        }
+
+                        state
+                            .identity_client
+                            .anchor(&peer.said)
+                            .await
+                            .map_err(|e| {
+                                ApiError::internal_error(format!(
+                                    "Failed to anchor peer SAID: {}",
+                                    e
+                                ))
+                            })?;
+
+                        state.node.add_peer(peer.clone()).await.map_err(|e| {
+                            ApiError::internal_error(format!("Failed to add peer via Raft: {}", e))
+                        })?;
+                    }
+
+                    return Ok(Json(ProposalResponse {
+                        proposal_id,
+                        status: "approved".to_string(),
+                        votes_needed,
+                        current_votes,
+                        message: format!("Proposal approved! Peer {} added.", v0.peer_prefix),
+                    }));
+                }
+
+                return Err(ApiError::internal_error(
+                    "Proposal approved but no proposal data returned".to_string(),
+                ));
+            }
+
             Ok(Json(ProposalResponse {
                 proposal_id,
-                status: if approved {
-                    "approved".to_string()
-                } else {
-                    "pending".to_string()
-                },
+                status: "pending".to_string(),
                 votes_needed,
                 current_votes,
-                message,
+                message: format!(
+                    "Vote recorded. {} of {} approvals.",
+                    current_votes, votes_needed
+                ),
             }))
         }
         FederationResponse::RemovalApproved {

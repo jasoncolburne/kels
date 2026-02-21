@@ -136,7 +136,8 @@ pub enum FederationResponse {
         current_votes: usize,
         votes_needed: usize,
         approved: bool,
-        peer: Option<Box<Peer>>,
+        /// When approved, includes the proposal so the leader can create the Peer.
+        proposal: Option<Box<PeerAdditionProposal>>,
     },
     /// Proposal not found.
     ProposalNotFound(String),
@@ -193,16 +194,16 @@ impl fmt::Display for FederationResponse {
                 current_votes,
                 votes_needed,
                 approved,
-                peer,
+                proposal,
             } => {
                 write!(
                     f,
-                    "VoteRecorded({}, {}/{} votes, approved={}, peer={:?})",
+                    "VoteRecorded({}, {}/{} votes, approved={}, proposal={:?})",
                     proposal_id,
                     current_votes,
                     votes_needed,
                     approved,
-                    peer.clone().map(|p| p.said)
+                    proposal.as_ref().map(|p| &p.peer_prefix)
                 )
             }
             FederationResponse::ProposalNotFound(id) => write!(f, "ProposalNotFound({})", id),

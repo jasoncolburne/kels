@@ -238,6 +238,11 @@ impl FederationNode {
         &self.config
     }
 
+    /// Get the state machine store.
+    pub fn state_machine(&self) -> &StateMachineStore {
+        &self.state_machine
+    }
+
     /// Propose adding a peer (leader only).
     ///
     /// This will replicate the peer to all registries via Raft consensus.
