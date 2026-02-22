@@ -1063,9 +1063,17 @@ impl MultiRegistryClient {
             let client = self.create_client(&url);
             match client.fetch_registry_kels().await {
                 Ok(kels_map) if !kels_map.is_empty() => {
-                    let kels: Vec<crate::Kel> = kels_map.values().cloned().collect();
+                    let mut kels: Vec<crate::Kel> = Vec::new();
 
                     for (prefix, kel) in &kels_map {
+                        if !self.trusted_prefixes.contains(prefix.as_str()) {
+                            warn!(
+                                prefix = %prefix,
+                                "Ignoring untrusted prefix from registry-kels response"
+                            );
+                            continue;
+                        }
+
                         debug!(
                             "fetch_registry_kels: prefix={}, events={}, anchors={}",
                             prefix,
@@ -1077,6 +1085,12 @@ impl MultiRegistryClient {
                         );
                         self.prefix_map
                             .insert(prefix.clone(), (url.clone(), kel.clone()));
+                        kels.push(kel.clone());
+                    }
+
+                    if kels.is_empty() {
+                        warn!(url = %url, "No trusted prefixes in response, trying next");
+                        continue;
                     }
 
                     return Ok(kels);
