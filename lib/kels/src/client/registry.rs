@@ -955,25 +955,24 @@ impl MultiRegistryClient {
     /// Returns true if the peer_prefix is found in the allowlist with active=true.
     /// This is an unauthenticated check - nodes can verify their authorization
     /// before attempting to register.
-    pub async fn is_peer_authorized(
-        &mut self,
-        peer_prefix: &str,
-        registry_prefix: &str,
-    ) -> Result<bool, KelsError> {
+    pub async fn is_peer_authorized(&mut self, peer_prefix: &str) -> Result<bool, KelsError> {
         let kels_vec: Vec<_> = self.fetch_verified_registry_kels(false).await?;
-        let url = self.url_for_prefix(registry_prefix)?;
-        let client: KelsRegistryClient = self.create_client(&url);
         let kels: Vec<&Kel> = kels_vec.iter().collect();
-        match client
-            .is_peer_authorized(peer_prefix, &self.trusted_prefixes, &kels)
-            .await
-        {
-            Ok(p) => Ok(p),
-            Err(e) => Err(KelsError::RegistryFailure(format!(
-                "Could not list nodes for registry {}: {}",
-                registry_prefix, e
-            ))),
+        for url in &self.urls {
+            let client = self.create_client(url);
+            match client
+                .is_peer_authorized(peer_prefix, &self.trusted_prefixes, &kels)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to check peer authorization, trying next");
+                }
+            }
         }
+        Err(KelsError::RegistryFailure(
+            "Could not check peer authorization from any registry".to_string(),
+        ))
     }
 
     pub async fn nodes_sorted_by_latency(

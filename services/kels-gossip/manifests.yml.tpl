@@ -88,8 +88,6 @@ spec:
               value: "${var.hsm.url}"
             - name: IDENTITY_URL
               value: "${var.identityUrl}"
-            - name: REGISTRY_URL
-              value: "${var.registryUrl}"
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
             - name: GOSSIP_LISTEN_ADDR
