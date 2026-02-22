@@ -24,7 +24,6 @@ Leader                          Follower A                    Follower B
   |          |                     |                             |
   |     apply() locally       apply() locally              apply() locally
   |     - verify anchoring    - verify anchoring           - verify anchoring
-  |     - write to DB         - write to DB                - write to DB
   |     - update state        - update state               - update state
 ```
 
@@ -34,7 +33,8 @@ Leader                          Follower A                    Follower B
 pub struct StateMachineData {
     pub last_applied_log: Option<LogId<TypeConfig>>,
     pub last_membership: StoredMembership<TypeConfig>,
-    pub peers: HashMap<String, Peer>,
+    pub active_peers: HashMap<String, Peer>,
+    pub inactive_peers: HashMap<String, Peer>,
     pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
     pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
     pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
@@ -46,7 +46,7 @@ pub struct StateMachineData {
 
 ### Peers
 
-The `peers` HashMap is the peer set, keyed by `peer_prefix`. These are the peers trusted across all federation members.
+Active and inactive peers are stored in separate HashMaps, both keyed by `peer_prefix`. Active peers are the trusted peer set. Inactive peers are deactivated peers preserved for audit trail — when a peer is removed, it moves from `active_peers` to `inactive_peers` rather than being deleted.
 
 ### Member KELs
 
@@ -80,14 +80,14 @@ Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in 
 
 The `StateMachineData::apply()` method is a pure, synchronous function that updates in-memory state. It handles:
 
-- **AddPeer**: Inserts peer into `peers` HashMap
-- **RemovePeer**: Removes peer from `peers` HashMap
+- **AddPeer**: Inserts peer into `active_peers` HashMap
+- **RemovePeer**: Moves peer from `active_peers` to `inactive_peers` (must be deactivated; rejects active peers)
 - **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
 - **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
-- **VotePeer**: Records vote, checks threshold.
-  - If theshold met:
+- **VotePeer**: Records vote, checks threshold (from the proposal, not config).
+  - If threshold met:
     - Additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`
-    - Removals: auto-removes peer from peer set.
+    - Removals: returns the approved proposal — the leader handler then deactivates the peer, anchors it, and submits `RemovePeer`
     - Both: moves proposal to completed.
 - **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix. Uses `Kel::from_events()` for the first submission (empty KEL) and `Kel::merge()` for subsequent submissions
 
@@ -99,13 +99,21 @@ The `StateMachineStore` implements OpenRaft's `RaftStateMachine` trait. Its asyn
 
 Before applying an `AddPeer` entry from the Raft log:
 
-1. **Vote threshold**: Count verified voters — each vote must pass SAID integrity (`verify_said()`) and be anchored in the voter's KEL (`verify_member_anchoring`). Reject if verified voters < threshold.
-2. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
-3. **DB write**: Write the peer to our local PostgreSQL database via `upsert_peer_to_db`.
+1. **Proposal threshold**: Find the completed addition proposal for this peer and extract its stored threshold. Reject if no completed proposal exists. Enforce the minimum threshold floor (`compute_approval_threshold(0)`, currently 3) — see [Threshold Verification](#threshold-verification).
+2. **Vote threshold**: Count verified voters — each vote must pass SAID integrity (`verify_said()`) and be anchored in the voter's KEL (`verify_member_anchoring`). Reject if verified voters < proposal threshold.
+3. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
 
 Note: Self-anchoring (anchoring the peer's SAID in our own KEL) does not happen in `apply()`. It happens in the leader's HTTP handler before submitting the `AddPeer` request.
 
 If threshold or anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers — followers independently verify vote threshold and anchoring, rejecting unverified entries.
+
+### RemovePeer Verification
+
+Before applying a `RemovePeer` entry from the Raft log:
+
+1. **Proposal threshold**: Find the completed removal proposal for this peer and extract its stored threshold. Reject if no completed proposal exists. Enforce the minimum threshold floor.
+2. **Vote threshold**: Count verified voters from the completed removal proposal. Reject if verified voters < proposal threshold.
+3. **KEL anchoring**: Verify the deactivated peer's SAID is anchored in the authorizing member's KEL.
 
 ### VotePeer Verification
 
@@ -120,7 +128,7 @@ Before applying a vote:
 
 Before applying a proposal:
 
-1. **Threshold check**: Verify the proposal's `threshold` field matches the current `approval_threshold()` — ensures proposer and federation agree on membership size
+1. **Threshold floor**: Verify the proposal's `threshold` field meets the minimum floor (`compute_approval_threshold(0)`) — see [Threshold Verification](#threshold-verification). The exact-match check against current config happens in the leader's HTTP handler, not here.
 2. **Proposal anchoring**: Verify the proposal's SAID is anchored in the proposer's KEL
 
 ### SubmitKeyEvents Verification
@@ -133,12 +141,13 @@ Before applying key events:
 
 ### Approved Proposal Side Effects
 
-When a `VotePeer` triggers addition approval (threshold met), the state machine returns `VoteRecorded { approved: true, proposal: Some(...) }`. The leader's HTTP handler then creates the Peer record, anchors the peer's SAID in its own KEL, writes the peer to the local database, and submits a separate `AddPeer` request to Raft. These side effects happen in the handler, not in the state machine's `apply()`.
+When a `VotePeer` triggers addition approval (threshold met), the state machine returns `VoteRecorded { approved: true, proposal: Some(...) }`. The leader's HTTP handler then creates the Peer record, anchors the peer's SAID in its own KEL, and submits a separate `AddPeer` request to Raft. These side effects happen in the handler, not in the state machine's `apply()`.
 
-When a `VotePeer` triggers removal approval, the async layer:
+When a `VotePeer` triggers removal approval, the state machine returns `RemovalApproved` with the proposal. The leader's HTTP handler then:
 
-1. Deactivates the peer in the local database
-2. Anchors the deactivated peer's SAID in our KEL
+1. Deactivates the peer (sets `active = false`, increments version)
+2. Anchors the deactivated peer's SAID in its own KEL
+3. Submits a separate `RemovePeer` request to Raft
 
 ## Defense in Depth
 
@@ -179,7 +188,7 @@ The peer set flows to multiple consumers:
 
 The state machine supports snapshotting for efficient Raft log compaction:
 
-- **Snapshot**: Serializes `peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_kels` to JSON
+- **Snapshot**: Serializes `active_peers`, `inactive_peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_kels` to JSON
 - **Restore**: Deserializes and verifies all proposal chains and member KELs before accepting. Proposals with invalid chains are dropped during restore. Member KELs are verified with `kel.verify()` before restoring.
 
 ## KEL Sync Loop
@@ -200,6 +209,22 @@ The voting threshold for peer approval scales with federation size:
 
 The minimum threshold of 3 prevents trivial collusion — even in the smallest viable federation (3 members), all members must agree.
 
+## Threshold Verification
+
+The approval threshold is stored on each proposal at creation time. Threshold verification is split across two layers:
+
+### Leader Handler (Exact Match)
+
+When a proposal is submitted via the HTTP API, the leader handler verifies `proposal.threshold == approval_threshold()` — rejecting proposals where the threshold doesn't match the current federation config. This runs only at real submission time, never during Raft log replay.
+
+### Outer `apply()` (Floor Check)
+
+When replaying Raft log entries (e.g., after a registry restart), the outer `apply()` only enforces a minimum threshold floor (`compute_approval_threshold(0)`, currently 3). It does **not** check against the current config because the config may have changed since the entry was originally committed — a federation that grew from 3 to 10 members would have a different `approval_threshold()` than when earlier proposals were accepted. An exact-match check during replay would incorrectly reject legitimate historical entries.
+
+### Why Both Layers Are Needed
+
+The exact-match check in the leader handler prevents a proposer from submitting a proposal with an artificially low threshold (e.g., threshold 3 in a 10-member federation where the correct threshold is 4). The floor check in `apply()` is defense-in-depth: if a forged proposal with a below-minimum threshold somehow enters the Raft log (e.g., through a bug or exploit), followers will reject it. Together with the floor check on `AddPeer`/`RemovePeer` verification, this ensures that no peer change can ever be approved with fewer than 3 verified votes, regardless of how the entry entered the log.
+
 ## Rogue Leader Attack
 
 A compromised leader could attempt to:
@@ -207,6 +232,7 @@ A compromised leader could attempt to:
 1. **Add unauthorized peers via `AddPeer`**: Blocked by follower-side KEL anchoring verification
 2. **Fabricate votes**: Blocked by vote SAID verification and KEL anchoring checks
 3. **Tamper with proposal history**: Blocked by proposal chain verification
-4. **Skip the voting process entirely**: Blocked by vote verification in `apply()` -- followers check that a completed proposal with sufficient unique voter prefixes exists
+4. **Skip the voting process entirely**: Blocked by vote verification in `apply()` — followers check that a completed proposal with sufficient unique voter prefixes exists
+5. **Forge a low-threshold proposal**: If three members collude and one becomes leader, they could craft a proposal with `threshold: 3` in a larger federation (e.g., 10 members, correct threshold 4). The leader handler's exact-match check rejects this at submission time. Even if the forged proposal enters the log, the floor check ensures followers never accept fewer than 3 verified votes. In the worst case — three colluding members successfully add a rogue peer — the resolution is straightforward: legitimate operators vote to remove the rogue peer via the standard removal proposal process.
 
 The key insight is that the Raft log is just a proposal mechanism. Followers independently verify every entry and reject anything that doesn't meet the verification criteria.
