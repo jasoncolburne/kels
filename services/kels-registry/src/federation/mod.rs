@@ -135,19 +135,20 @@ impl FederationNode {
         Ok(())
     }
 
-    /// Grow-only sync of Raft voter set to match compiled-in federation members.
+    /// Sync Raft voter set to match compiled-in active federation members.
     ///
-    /// Compares the current Raft voter set against the compiled-in config. If new
-    /// members exist in config that are not yet voters, adds them as learners first
-    /// (blocking until they catch up), then promotes them to voters.
-    ///
-    /// This is grow-only: if the config has fewer members than the current voter set,
-    /// no voters are removed. This prevents a node compiled without a new prefix from
-    /// undoing an expansion made by an updated node.
+    /// Compares the current Raft voter set against the compiled-in config.
+    /// - New members in config are added as learners first (blocking until
+    ///   they catch up), then promoted to voters.
+    /// - Members in the voter set but not in config (decommissioned) are removed.
     pub async fn sync_membership(&self) -> Result<(), FederationError> {
         let current_voters: BTreeSet<FederationNodeId> = self.raft.voter_ids().collect();
         let expected_voters: BTreeSet<FederationNodeId> =
             self.config.members.iter().map(|m| m.id).collect();
+
+        if current_voters == expected_voters {
+            return Ok(());
+        }
 
         let new_members: Vec<&FederationMember> = self
             .config
@@ -156,13 +157,12 @@ impl FederationNode {
             .filter(|m| !current_voters.contains(&m.id))
             .collect();
 
-        if new_members.is_empty() {
-            return Ok(());
-        }
+        let removed_count = current_voters.difference(&expected_voters).count();
 
         info!(
-            "Syncing federation membership: adding {} new member(s)",
-            new_members.len()
+            "Syncing federation membership: adding {}, removing {}",
+            new_members.len(),
+            removed_count
         );
 
         // Add each new member as a learner (blocking — waits for log catch-up)
@@ -181,10 +181,7 @@ impl FederationNode {
                 .map_err(|e| FederationError::RaftError(e.to_string()))?;
         }
 
-        // Promote all new learners to voters
-        info!("Promoting {} learner(s) to voters", new_members.len());
-
-        // Use the full expected voter set to ensure all members are voters
+        // Set the voter set to exactly the expected members
         self.raft
             .change_membership(expected_voters, true)
             .await
