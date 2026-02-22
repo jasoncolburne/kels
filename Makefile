@@ -14,10 +14,10 @@ PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[].prefix] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]')
+TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-rotation test-comprehensive wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-comprehensive wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -266,6 +266,23 @@ test-grow-federation:
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
+test-shrink-federation:
+	# Deactivate registry-b in federation config
+	scripts/federation-deactivate.sh registry-b .
+	# Tear down registry-b
+	garden cleanup namespace --env=registry-b
+	# Recompile and redeploy remaining active registries (a, c, d)
+	garden deploy --env=registry-a
+	garden deploy --env=registry-c
+	garden deploy --env=registry-d
+	# Wait for Raft init + sync_membership
+	sleep 15
+	# Redeploy nodes so they pick up the new federation config
+	$(MAKE) deploy-nodes
+	$(MAKE) wait-for-gossip
+	# Verify 3-member federation and gossip from test-client pod
+	kubectl exec -n kels-node-a -it test-client -- ./test-shrink-federation.sh
+
 seed-kels:
 	kubectl exec -n kels-node-a -it test-client -- bash -c 'TEST_KELS_HOST=kels.kels-node-a.kels ./test-kels.sh'
 
@@ -326,6 +343,7 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-grow-federation
+	$(MAKE) test-shrink-federation
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
 

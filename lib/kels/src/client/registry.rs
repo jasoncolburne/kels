@@ -1032,7 +1032,7 @@ impl MultiRegistryClient {
     /// This is an unauthenticated endpoint - nodes use this to verify
     /// that peer records are anchored in the registry's KEL.
     /// Unlike other methods, this fetches from ALL registries, not just until one succeeds.
-    async fn fetch_registry_kels(
+    pub async fn fetch_verified_registry_kels(
         &mut self,
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
@@ -1054,50 +1054,76 @@ impl MultiRegistryClient {
             self.urls.len()
         );
         self.prefix_map.clear();
+        self.url_map.clear();
 
-        let futures = self.urls.iter().map(|url| {
-            let registry = self.clone();
-            async move {
-                let client = registry.create_client(url);
-                client.fetch_registry_kel().await.ok()
+        // Fetch all member KELs (including decommissioned) from any available registry
+        // using the plural endpoint. Any active registry serves all member KELs from
+        // Raft-replicated state.
+        for url in self.urls.clone() {
+            let client = self.create_client(&url);
+            match client.fetch_registry_kels().await {
+                Ok(kels_map) if !kels_map.is_empty() => {
+                    let mut kels: Vec<crate::Kel> = Vec::new();
+
+                    for (prefix, kel) in &kels_map {
+                        if !self.trusted_prefixes.contains(prefix.as_str()) {
+                            warn!(
+                                prefix = %prefix,
+                                "Ignoring untrusted prefix from registry-kels response"
+                            );
+                            continue;
+                        }
+
+                        if let Err(e) = kel.verify() {
+                            warn!(
+                                prefix = %prefix,
+                                error = %e,
+                                "KEL verification failed, skipping"
+                            );
+                            continue;
+                        }
+
+                        if !kel.verify_prefix(&self.trusted_prefixes) {
+                            warn!(
+                                prefix = %prefix,
+                                "KEL prefix not in trusted set, skipping"
+                            );
+                            continue;
+                        }
+
+                        debug!(
+                            "fetch_registry_kels: prefix={}, events={}, anchors={}",
+                            prefix,
+                            kel.events().len(),
+                            kel.events()
+                                .iter()
+                                .filter(|e| e.event.is_interaction())
+                                .count(),
+                        );
+                        self.prefix_map
+                            .insert(prefix.clone(), (url.clone(), kel.clone()));
+                        kels.push(kel.clone());
+                    }
+
+                    if kels.is_empty() {
+                        warn!(url = %url, "No trusted prefixes in response, trying next");
+                        continue;
+                    }
+
+                    return Ok(kels);
+                }
+                Ok(_) => {
+                    debug!(url = %url, "fetch_registry_kels: empty response, trying next");
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to fetch registry KELs, trying next");
+                }
             }
-        });
-
-        let kels: Vec<_> = join_all(futures)
-            .await
-            .iter()
-            .filter_map(|k| k.clone())
-            .collect();
-
-        for (url, kel) in self.urls.iter().zip(kels.clone().into_iter()) {
-            let Some(prefix) = kel.prefix() else {
-                return Err(KelsError::RegistryFailure(
-                    "Prefix for KEL not found".to_string(),
-                ));
-            };
-
-            debug!(
-                "fetch_registry_kels: {} -> prefix={}, events={}, anchors={}",
-                url,
-                prefix,
-                kel.events().len(),
-                kel.events()
-                    .iter()
-                    .filter(|e| e.event.is_interaction())
-                    .count(),
-            );
-
-            self.url_map
-                .insert(url.clone(), (prefix.to_string(), kel.clone()));
-            self.prefix_map
-                .insert(prefix.to_string(), (url.clone(), kel));
         }
 
-        if self.prefix_map.is_empty() {
-            Err(KelsError::RegistryFailure("No URLs configured".to_string()))
-        } else {
-            Ok(kels)
-        }
+        Err(KelsError::RegistryFailure(
+            "Could not fetch registry KELs from any registry".to_string(),
+        ))
     }
 
     pub async fn fetch_registry_kel(
@@ -1184,28 +1210,6 @@ impl MultiRegistryClient {
         Err(KelsError::RegistryFailure(
             "Could not fetch proposals from any registry".to_string(),
         ))
-    }
-
-    pub async fn fetch_verified_registry_kels(
-        &mut self,
-        force_fetch: bool,
-    ) -> Result<Vec<crate::Kel>, KelsError> {
-        let was_cached = !self.prefix_map.is_empty() && !force_fetch;
-        let kels = self.fetch_registry_kels(force_fetch).await?;
-
-        // Only verify on fresh fetch — cached KELs were already verified on insertion
-        if !was_cached
-            && !kels
-                .iter()
-                .all(|k| k.verify().is_ok() && k.verify_prefix(&self.trusted_prefixes))
-        {
-            return Err(KelsError::RegistryFailure(format!(
-                "Failed to verify kel prefixes as expected ({:?})",
-                self.trusted_prefixes
-            )));
-        }
-
-        Ok(kels)
     }
 }
 
@@ -1639,7 +1643,7 @@ mod tests {
     async fn test_multi_client_all_kels_fail() {
         let server1 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
+            .and(path("/api/registry-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 1",
                 "code": "internal_error"
@@ -1649,7 +1653,7 @@ mod tests {
 
         let server2 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
+            .and(path("/api/registry-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 2",
                 "code": "internal_error"
@@ -1659,7 +1663,7 @@ mod tests {
 
         let mut client = MultiRegistryClient::new(vec![server1.uri(), server2.uri()]);
 
-        let result = client.fetch_registry_kels(false).await;
+        let result = client.fetch_verified_registry_kels(false).await;
 
         assert!(matches!(result, Err(KelsError::RegistryFailure(_))));
     }

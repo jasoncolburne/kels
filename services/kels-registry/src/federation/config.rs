@@ -1,12 +1,14 @@
 //! Federation configuration types.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json;
 
 use super::types::{FederationError, FederationNodeId};
 
 /// Trusted registry members - MUST be set at compile time.
-/// Format: JSON array of objects with `id` and `prefix` fields.
+/// Format: JSON array of objects with `id`, `prefix`, and `active` fields.
 /// Used for federation membership with explicit Raft node IDs.
 const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 
@@ -15,6 +17,7 @@ const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 struct TrustedMember {
     id: FederationNodeId,
     prefix: String,
+    active: bool,
 }
 
 /// A federation member (registry).
@@ -33,17 +36,23 @@ pub struct FederationMember {
 pub struct FederationConfig {
     /// This registry's identity prefix.
     pub self_prefix: String,
-    /// All federation members (including self).
-    /// Order determines node ID (index = node_id).
+    /// Active federation members (including self).
     pub members: Vec<FederationMember>,
+    /// All trusted prefixes (active + inactive), for historical verification.
+    pub trusted_prefixes: Vec<String>,
 }
 
 impl FederationConfig {
     /// Create a new federation configuration.
-    pub fn new(self_prefix: String, members: Vec<FederationMember>) -> Self {
+    pub fn new(
+        self_prefix: String,
+        members: Vec<FederationMember>,
+        trusted_prefixes: Vec<String>,
+    ) -> Self {
         Self {
             self_prefix,
             members,
+            trusted_prefixes,
         }
     }
 
@@ -75,10 +84,33 @@ impl FederationConfig {
             _ => return Ok(None), // Federation not configured
         };
 
-        // If our prefix isn't in the trusted set, we're in standalone mode
-        if !trusted_members.iter().any(|m| m.prefix == self_prefix) {
-            return Ok(None);
+        // Validate no duplicate IDs across all entries (active + inactive)
+        let mut seen_ids = HashSet::new();
+        for tm in &trusted_members {
+            if !seen_ids.insert(tm.id) {
+                return Err(FederationError::ConfigError(format!(
+                    "Duplicate federation member ID: {}",
+                    tm.id
+                )));
+            }
         }
+
+        // If our prefix isn't in the trusted set, we're in standalone mode
+        let self_member = trusted_members.iter().find(|m| m.prefix == self_prefix);
+        match self_member {
+            None => return Ok(None),
+            Some(m) if !m.active => {
+                return Err(FederationError::ConfigError(format!(
+                    "Self prefix '{}' is marked inactive",
+                    self_prefix
+                )));
+            }
+            _ => {}
+        }
+
+        // Collect all trusted prefixes (active + inactive)
+        let trusted_prefixes: Vec<String> =
+            trusted_members.iter().map(|m| m.prefix.clone()).collect();
 
         // Parse runtime URLs
         let urls_str = match std::env::var("FEDERATION_URLS") {
@@ -88,9 +120,12 @@ impl FederationConfig {
 
         let url_map = parse_urls(&urls_str)?;
 
-        // Build members list from trusted members + runtime URLs
+        // Build members list from active trusted members + runtime URLs
         let mut members = Vec::new();
         for tm in &trusted_members {
+            if !tm.active {
+                continue;
+            }
             let url = url_map.get(&tm.prefix).ok_or_else(|| {
                 FederationError::ConfigError(format!(
                     "No URL provided for trusted prefix '{}' in FEDERATION_URLS",
@@ -104,7 +139,7 @@ impl FederationConfig {
             });
         }
 
-        Ok(Some(Self::new(self_prefix, members)))
+        Ok(Some(Self::new(self_prefix, members, trusted_prefixes)))
     }
 
     /// Get this node's Raft node ID.
@@ -131,9 +166,14 @@ impl FederationConfig {
         self.members.iter().find(|m| m.prefix == prefix)
     }
 
-    /// Check if a prefix is a federation member.
+    /// Check if a prefix is an active federation member.
     pub fn is_member(&self, prefix: &str) -> bool {
         self.members.iter().any(|m| m.prefix == prefix)
+    }
+
+    /// Check if a prefix is a trusted prefix (active or inactive).
+    pub fn is_trusted_prefix(&self, prefix: &str) -> bool {
+        self.trusted_prefixes.iter().any(|p| p == prefix)
     }
 
     /// Calculate approval threshold for peer proposals.
@@ -168,10 +208,8 @@ impl FederationConfig {
 
 /// Parse URLs from environment variable format.
 /// Format: "prefix1=url1,prefix2=url2,..."
-fn parse_urls(
-    urls_str: &str,
-) -> Result<std::collections::HashMap<String, String>, FederationError> {
-    let mut urls = std::collections::HashMap::new();
+fn parse_urls(urls_str: &str) -> Result<HashMap<String, String>, FederationError> {
+    let mut urls = HashMap::new();
 
     for part in urls_str.split(',') {
         let part = part.trim();
@@ -195,6 +233,12 @@ fn parse_urls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to build a config where all members are also trusted prefixes.
+    fn make_config(self_prefix: &str, members: Vec<FederationMember>) -> FederationConfig {
+        let trusted_prefixes = members.iter().map(|m| m.prefix.clone()).collect();
+        FederationConfig::new(self_prefix.to_string(), members, trusted_prefixes)
+    }
 
     #[test]
     fn test_parse_urls() {
@@ -225,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_config_self_node_id() {
-        let config = FederationConfig::new(
-            "ERegistryB".to_string(),
+        let config = make_config(
+            "ERegistryB",
             vec![
                 FederationMember {
                     id: 0,
@@ -251,8 +295,8 @@ mod tests {
 
     #[test]
     fn test_config_member_by_id() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![
                 FederationMember {
                     id: 0,
@@ -273,8 +317,8 @@ mod tests {
 
     #[test]
     fn test_config_is_member() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![FederationMember {
                 id: 0,
                 prefix: "ERegistryA".to_string(),
@@ -300,8 +344,8 @@ mod tests {
 
     #[test]
     fn test_config_member_by_id_out_of_bounds() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![FederationMember {
                 id: 0,
                 prefix: "ERegistryA".to_string(),
@@ -314,8 +358,8 @@ mod tests {
 
     #[test]
     fn test_config_member_by_prefix_not_found() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![FederationMember {
                 id: 0,
                 prefix: "ERegistryA".to_string(),
@@ -328,8 +372,8 @@ mod tests {
 
     #[test]
     fn test_config_member_by_prefix_found() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![
                 FederationMember {
                     id: 0,
@@ -350,8 +394,8 @@ mod tests {
 
     #[test]
     fn test_config_self_node_id_not_found() {
-        let config = FederationConfig::new(
-            "ERegistryNotInList".to_string(),
+        let config = make_config(
+            "ERegistryNotInList",
             vec![FederationMember {
                 id: 0,
                 prefix: "ERegistryA".to_string(),
@@ -386,8 +430,8 @@ mod tests {
 
     #[test]
     fn test_federation_config_clone() {
-        let config = FederationConfig::new(
-            "ERegistryA".to_string(),
+        let config = make_config(
+            "ERegistryA",
             vec![FederationMember {
                 id: 0,
                 prefix: "ERegistryA".to_string(),
@@ -409,79 +453,173 @@ mod tests {
             .collect()
     }
 
+    fn make_prefixes(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("ERegistry{}", i)).collect()
+    }
+
     #[test]
     fn test_approval_threshold_empty() {
-        let config = FederationConfig::new("ERegistry0".to_string(), vec![]);
+        let config = FederationConfig::new("ERegistry0".to_string(), vec![], vec![]);
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_1_member() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(1));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(1), make_prefixes(1));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_2_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(2));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(2), make_prefixes(2));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_3_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(3));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(3), make_prefixes(3));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_4_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(4));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(4), make_prefixes(4));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_5_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(5));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(5), make_prefixes(5));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_6_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(6));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(6), make_prefixes(6));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_7_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(7));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(7), make_prefixes(7));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_9_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(9));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(9), make_prefixes(9));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_10_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(10));
+        let config = FederationConfig::new(
+            "ERegistry0".to_string(),
+            make_members(10),
+            make_prefixes(10),
+        );
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_20_members() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(20));
+        let config = FederationConfig::new(
+            "ERegistry0".to_string(),
+            make_members(20),
+            make_prefixes(20),
+        );
         assert_eq!(config.approval_threshold(), 7);
     }
 
     #[test]
     fn test_member_prefixes() {
-        let config = FederationConfig::new("ERegistry0".to_string(), make_members(3));
+        let config =
+            FederationConfig::new("ERegistry0".to_string(), make_members(3), make_prefixes(3));
         let prefixes = config.member_prefixes();
         assert_eq!(prefixes.len(), 3);
         assert!(prefixes.contains(&"ERegistry0".to_string()));
         assert!(prefixes.contains(&"ERegistry1".to_string()));
         assert!(prefixes.contains(&"ERegistry2".to_string()));
+    }
+
+    #[test]
+    fn test_inactive_member_not_in_members() {
+        // ERegistryB is inactive — only active members in `members`
+        let config = FederationConfig::new(
+            "ERegistryA".to_string(),
+            vec![FederationMember {
+                id: 0,
+                prefix: "ERegistryA".to_string(),
+                url: "https://a.example.com".to_string(),
+            }],
+            vec!["ERegistryA".to_string(), "ERegistryB".to_string()],
+        );
+
+        assert_eq!(config.members.len(), 1);
+        assert!(config.is_member("ERegistryA"));
+        assert!(!config.is_member("ERegistryB"));
+    }
+
+    #[test]
+    fn test_is_trusted_prefix_includes_inactive() {
+        let config = FederationConfig::new(
+            "ERegistryA".to_string(),
+            vec![FederationMember {
+                id: 0,
+                prefix: "ERegistryA".to_string(),
+                url: "https://a.example.com".to_string(),
+            }],
+            vec!["ERegistryA".to_string(), "ERegistryB".to_string()],
+        );
+
+        assert!(config.is_trusted_prefix("ERegistryA"));
+        assert!(config.is_trusted_prefix("ERegistryB"));
+        assert!(!config.is_trusted_prefix("ERegistryUnknown"));
+    }
+
+    #[test]
+    fn test_approval_threshold_counts_active_only() {
+        // 3 trusted prefixes but only 2 active members — threshold from active count
+        let config = FederationConfig::new(
+            "ERegistryA".to_string(),
+            make_members(2),
+            vec![
+                "ERegistry0".to_string(),
+                "ERegistry1".to_string(),
+                "ERegistryInactive".to_string(),
+            ],
+        );
+
+        // 2 active members → threshold 3 (from the 0..=5 bracket)
+        assert_eq!(config.approval_threshold(), 3);
+    }
+
+    #[test]
+    fn test_trusted_member_deserialization_missing_active_rejected() {
+        let json = r#"[{"id": 0, "prefix": "EA"}]"#;
+        let result: Result<Vec<TrustedMember>, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trusted_member_deserialization_inactive() {
+        let json = r#"[{"id": 0, "prefix": "EA", "active": false}]"#;
+        let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
+        assert!(!members[0].active);
+    }
+
+    #[test]
+    fn test_trusted_member_deserialization_active() {
+        let json = r#"[{"id": 0, "prefix": "EA", "active": true}]"#;
+        let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
+        assert!(members[0].active);
     }
 }
