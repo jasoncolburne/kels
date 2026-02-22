@@ -17,10 +17,19 @@ fi
 
 # Map node environments to their registry
 case "$ENV_NAME" in
-    node-a|node-d) REGISTRY_ENV="registry-a" ;;
-    node-b|node-e) REGISTRY_ENV="registry-b" ;;
-    node-c|node-f) REGISTRY_ENV="registry-c" ;;
+    node-a) REGISTRY_ENV="registry-a" ;;
+    node-b) REGISTRY_ENV="registry-b" ;;
+    node-c) REGISTRY_ENV="registry-c" ;;
+    node-d) REGISTRY_ENV="registry-d" ;;
+    node-e) REGISTRY_ENV="registry-a" ;;
+    node-f) REGISTRY_ENV="registry-c" ;;
     *) REGISTRY_ENV="$ENV_NAME" ;;
 esac
+
+# If the assigned registry is inactive, fall back to the first active registry
+ACTIVE=$(jq -r --arg name "$REGISTRY_ENV" '.[] | select(.name == $name) | .active' "$REGISTRIES_FILE")
+if [ "$ACTIVE" != "true" ]; then
+    REGISTRY_ENV=$(jq -r '[.[] | select(.active == true)][-1].name' "$REGISTRIES_FILE")
+fi
 
 jq -r --arg name "$REGISTRY_ENV" '.[] | select(.name == $name) | .url' "$REGISTRIES_FILE"
