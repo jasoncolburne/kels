@@ -239,7 +239,7 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 | `dip` (delegated incept) | Signing key | - |
 | `ixn` (interact) | Signing key | - |
 | `rot` (rotate) | Next signing key (pre-committed) | - |
-| `ror` (recovery rotation) | Next signing key | Recovery key |
+| `ror` (rotate recovery) | Next signing key | Recovery key |
 | `rec` (recover) | Next signing key | Recovery key |
 | `cnt` (contest) | Next signing key | Recovery key |
 | `dec` (decommission) | Next signing key | Recovery key |

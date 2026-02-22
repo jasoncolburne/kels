@@ -61,12 +61,12 @@ Binary-safe encoding format for cryptographic primitives. Used for SAIDs, signat
 A cryptographically-linked chain of self-addressed key events sharing a prefix. Each event references the previous event's SAID via the `previous` field. The chain contains forward commitments to the next keys via `rotation_hash = Blake3(next_public_key)`, so after key revelation the chain is provable in both directions — backward via `previous` pointers and forward via rotation hash verification.
 
 Event types:
-- **`icp`** (inception) — creates a new KEL, establishes initial keys and rotation hash
-- **`rot`** (rotation) — rotates keys, reveals previous rotation hash, commits to next keys
-- **`ixn`** (interaction) — non-key-change event, extends the chain
-- **`dip`** (delegated inception) — inception under a delegating prefix
-- **`rec`** (recovery) — recovery event, requires dual signatures (current + recovery key)
-- **`ror`** (recovery rotation) — rotates both signing and recovery keys, requires dual signatures
+- **`icp`** (incept) — creates a new KEL, establishes initial keys and rotation hash
+- **`rot`** (rotate) — rotates keys, reveals previous rotation hash, commits to next keys
+- **`ixn`** (interact) — non-key-change event, extends the chain
+- **`dip`** (delegated incept) — inception under a delegating prefix
+- **`rec`** (recover) — recovery event, requires dual signatures (current + recovery key)
+- **`ror`** (rotate recovery) — rotates both signing and recovery keys, requires dual signatures
 
 Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed.
 
