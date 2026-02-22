@@ -8,4 +8,4 @@ if [ ! -f "$REGISTRIES_FILE" ]; then
     exit 0
 fi
 
-jq -r '[.[].url] | join(",")' "$REGISTRIES_FILE"
+jq -r '[.[] | select(.active == true) | .url] | join(",")' "$REGISTRIES_FILE"
