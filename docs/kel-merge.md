@@ -24,18 +24,18 @@ The merge function returns a tuple of three elements:
 
 | Result | Meaning | KEL State After |
 |--------|---------|-----------------|
-| `Verified` | Events accepted normally | OK |
+| `Accepted` | Events accepted normally | OK |
 | `Recovered` | Recovery succeeded, adversary events archived | OK |
-| `Recoverable` | Divergence detected, owner can submit `rec` | Frozen (divergent) |
+| `Diverged` | Divergence first detected, KEL now frozen, owner can submit `rec` | Frozen (divergent) |
 | `Contested` | Both parties revealed recovery keys, KEL permanently frozen | Contested |
-| `Frozen` | KEL already divergent, only recovery events accepted | Frozen (divergent) |
-| `RecoveryProtected` | Recovery event protects this generation from re-divergence | Unchanged |
+| `Rejected` | KEL already frozen (divergent), only `rec`/`cnt` events accepted | Frozen (divergent) |
+| `Protected` | Recovery event protects earlier events from re-divergence | Unchanged |
 
 ## Merge Flow
 
 ### 0. Inception Dedup (Re-submission from Genesis)
 
-If the submitted events start from inception (`previous` is `None`) and the KEL already has events, merge skips known duplicates and recurses with the remaining new events. This allows callers to submit a full KEL (including inception) without triggering "Events not contiguous" errors. If all events are duplicates, the merge returns `Verified` with no changes.
+If the submitted events start from inception (`previous` is `None`) and the KEL already has events, merge skips known duplicates and recurses with the remaining new events. This allows callers to submit a full KEL (including inception) without triggering "Events not contiguous" errors. If the inception event SAID doesn't match the existing KEL's inception, the merge returns an error. If all events are duplicates, the merge returns `Accepted` with no changes.
 
 ### 1. Pre-merge Validation
 
@@ -63,7 +63,7 @@ if KEL has divergence AND first event does NOT reveal recovery key:
         add pre-rec events to establish owner's chain in the fork
         process rec event via recovery path below
         return Recovered
-    return Frozen  // No recovery event in batch
+    return Rejected  // No recovery event in batch
 ```
 
 ### 3. Recovery from Divergent KEL
@@ -97,7 +97,7 @@ if batch contains a rec event (at any position):
 
 **No recovery event in batch**:
 ```
-return Frozen  // Only rec/cnt can resolve a divergent KEL
+return Rejected  // Only rec/cnt can resolve a divergent KEL
 ```
 
 ### 4. Normal Merge (Non-divergent KEL)
@@ -110,7 +110,7 @@ if first_event.previous == current_tail.said:
     if KEL is decommissioned:
         return Error("KEL decommissioned")
     append all events
-    return Verified
+    return Accepted
 ```
 
 **Case B: Overlap (potential divergence)**
@@ -121,7 +121,7 @@ for each event where previous already has a successor:
         goto divergence_handling
 
 if all events already exist (same SAIDs):
-    return Verified  // Idempotent submission
+    return Accepted  // Idempotent submission
 ```
 
 **Case C: Gap**
@@ -146,7 +146,7 @@ if old events reveal recovery:
         append contest event
         return Contested
     else:
-        return RecoveryProtected  // Owner must contest, not recover
+        return Protected  // Owner must contest, not recover
 else if batch contains a rec event (at any position):
     add pre-rec events to establish owner's chain in the fork
     trace owner's chain from recovery event's previous field
@@ -156,7 +156,7 @@ else if batch contains a rec event (at any position):
 else:
     // No recovery event in batch - freeze KEL, mark as divergent
     push single divergent event
-    return Recoverable
+    return Diverged
 ```
 
 ### 6. Post-merge Verification
@@ -200,6 +200,6 @@ return result
 
 1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/v1/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `extend()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
-3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists at generation N, divergence at generation <= N is rejected
+3. **Recovery protects against re-divergence** - Once a recovery-revealing event exists in a divergent branch, divergence before that event is rejected with `Protected` (owner must contest instead)
 4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)
 5. **Contested KELs are permanently frozen** - No events can be added after contest

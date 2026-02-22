@@ -59,6 +59,8 @@ The registry namespace includes a dedicated identity service (single replica) th
 | `GET` | `/api/identity/kel` | Get registry's full KEL |
 | `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
 | `POST` | `/api/identity/sign` | Sign data with registry's current key |
+| `POST` | `/api/identity/ecdh` | ECDH key agreement |
+| `POST` | `/api/identity/rotate` | Rotate registry's keys |
 
 ## Components
 
@@ -97,7 +99,7 @@ struct Peer {
     prefix: String,           // Stable lineage ID
     previous: Option<String>, // SAID of previous version
     version: u64,             // Version number
-    created_at: DateTime,
+    created_at: StorageDatetime,
     peer_prefix: String,          // NodePrefix (44-char CESR)
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
@@ -121,8 +123,7 @@ Mutating registry operations require signed requests:
 ```rust
 struct SignedRequest<T> {
     payload: T,           // The actual request data
-    peer_prefix: String,      // Base58 PeerPrefix of signer
-    public_key: String,   // CESR qb64 encoded public key
+    peer_prefix: String,  // CESR qb64 PeerPrefix of signer (44-char CESR-encoded Blake3 hash)
     signature: String,    // CESR qb64 encoded signature
 }
 ```
@@ -155,8 +156,8 @@ struct SignedRequest<T> {
 When the registry receives a signed request:
 
 1. **Parse signature components** from SignedRequest
-2. **Verify signature** over payload JSON using CESR library
-3. **Derive PeerPrefix** from public key and verify it matches claimed peer_prefix
+2. **Look up peer** by `peer_prefix` in the database, fetch their KEL, and extract the current public key
+3. **Verify signature** over payload JSON against the public key from the peer's KEL
 4. **Check allowlist** - query PostgreSQL for latest version of peer, verify `active: true`
 5. **Process request** if all checks pass
 
@@ -164,27 +165,22 @@ When the registry receives a signed request:
 ┌──────────────────┐
 │ Signed Request   │
 │ - payload        │
-│ - peer_prefix        │
-│ - public_key     │
+│ - peer_prefix    │
 │ - signature      │
 └────────┬─────────┘
          │
          ▼
-┌──────────────────┐
-│ Parse CESR keys  │
-│ & signature      │
-└────────┬─────────┘
-         │
-         ▼
 ┌──────────────────┐     ┌─────────────────┐
-│ Verify signature │────>│ 401 Unauthorized│
-│ over payload     │ NO  │ (invalid sig)   │
-└────────┬─────────┘     └─────────────────┘
+│ Look up peer by  │────>│ 401 Unauthorized│
+│ peer_prefix,     │ NO  │ (unknown peer)  │
+│ fetch KEL,       │     └─────────────────┘
+│ extract pubkey   │
+└────────┬─────────┘
          │ YES
          ▼
 ┌──────────────────┐     ┌─────────────────┐
-│ Derive PeerPrefix    │────>│ 401 Unauthorized│
-│ matches claimed? │ NO  │ (peer mismatch) │
+│ Verify signature │────>│ 401 Unauthorized│
+│ against KEL key  │ NO  │ (invalid sig)   │
 └────────┬─────────┘     └─────────────────┘
          │ YES
          ▼
@@ -201,23 +197,22 @@ When the registry receives a signed request:
 
 ## Request Signing Flow (Client Side)
 
-kels-gossip signs requests using `HsmRegistrySigner`:
+kels-gossip signs requests using `IdentityRegistrySigner`:
 
-1. **Create signer** on startup with HSM URL and node_id
-2. **Sign requests** by calling HSM sign endpoint (returns signature + public key)
-3. **Derive peer_prefix** from returned public key
-4. **Wrap payload** in SignedRequest with signature, public key, and peer_prefix
+1. **Create signer** on startup with identity service URL and peer_prefix
+2. **Sign requests** by calling the identity service sign endpoint (returns signature)
+3. **Wrap payload** in SignedRequest with signature and peer_prefix
 
 ```rust
 // In kels-gossip startup
-let registry_signer = HsmRegistrySigner::new(hsm_url, &node_id);
-let registry_client = KelsRegistryClient::with_signer(registry_url, Arc::new(registry_signer));
+let registry_signer = IdentityRegistrySigner::new(identity_url, &peer_prefix);
+let registry_client = MultiRegistryClient::with_signer(registry_urls, Arc::new(registry_signer));
 
 // Registration is now automatically signed
 registry_client.register(node_id, kels_url, ...).await?;
 ```
 
-The HSM sign endpoint returns both signature and public key in a single call, avoiding the need to cache or make separate requests.
+The public key is not included in the request. During verification, the registry looks up the peer by `peer_prefix`, fetches their KEL, and extracts the public key to verify the signature.
 
 ## Allowlist Management
 
@@ -302,9 +297,9 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 
 ### Identity Binding
 
-- PeerPrefix is cryptographically derived from HSM public key
-- Cannot claim a different PeerPrefix than what the key produces
-- Same key always produces same PeerPrefix (deterministic)
+- PeerPrefix is the prefix of the node's identity KEL (44-char CESR-encoded Blake3 hash)
+- PeerPrefix is stable across restarts and key rotations
+- The public key used for verification is extracted from the peer's KEL, not sent with requests
 
 ### Defense in Depth
 
@@ -384,4 +379,4 @@ kels-node-x/
 
 - Check allowlist refresh interval (default: 60 seconds)
 - Verify peer is active in allowlist (not deactivated)
-- Check AllowlistBehaviour logs for disconnection events
+- Check allowlist refresh logs for disconnection events

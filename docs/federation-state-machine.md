@@ -84,8 +84,12 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
 - **RemovePeer**: Removes peer from `peers` HashMap
 - **SubmitAdditionProposal**: v0 creates an empty proposal checking for duplicate peers/proposals; v1 withdraws (only before any votes are cast)
 - **SubmitRemovalProposal**: v0 creates a removal proposal checking the peer exists; v1 withdraws (only before any votes are cast)
-- **VotePeer**: Records vote, checks threshold. For additions: auto-adds peer to peer set on approval. For removals: auto-removes peer from peer set on approval. Moves proposal to completed.
-- **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix using `Kel::merge()`
+- **VotePeer**: Records vote, checks threshold.
+  - If theshold met:
+    - Additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`
+    - Removals: auto-removes peer from peer set.
+    - Both: moves proposal to completed.
+- **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix. Uses `Kel::from_events()` for the first submission (empty KEL) and `Kel::merge()` for subsequent submissions
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -95,11 +99,13 @@ The `StateMachineStore` implements OpenRaft's `RaftStateMachine` trait. Its asyn
 
 Before applying an `AddPeer` entry from the Raft log:
 
-1. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
-2. **Self-anchoring**: Anchor the peer's SAID in our own KEL (so we also vouch for it).
+1. **Vote threshold**: Count verified voters — each vote must pass SAID integrity (`verify_said()`) and be anchored in the voter's KEL (`verify_member_anchoring`). Reject if verified voters < threshold.
+2. **KEL anchoring**: Verify the peer's SAID is anchored in a federation member's KEL (`verify_member_anchoring`). This proves a trusted member authorized this peer.
 3. **DB write**: Write the peer to our local PostgreSQL database via `upsert_peer_to_db`.
 
-If anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers -- followers independently verify and reject unanchored entries.
+Note: Self-anchoring (anchoring the peer's SAID in our own KEL) does not happen in `apply()`. It happens in the leader's HTTP handler before submitting the `AddPeer` request.
+
+If threshold or anchoring verification fails, the entry is **skipped** (not applied to state). This means a rogue leader cannot add unauthorized peers — followers independently verify vote threshold and anchoring, rejecting unverified entries.
 
 ### VotePeer Verification
 
@@ -123,14 +129,11 @@ Before applying key events:
 
 1. **Member check**: Verify the event prefix belongs to a federation member (`config.is_member(prefix)`)
 2. **KEL merge**: Merge events into the existing member KEL using `Kel::merge()` — handles dedup, chain verification, divergence detection
-3. **Security events**: Log divergence/contest at error level as critical security events (indicates compromised registry signing key)
+3. **Security events**: Log divergence/contest/protected at error level as critical security events (indicates compromised registry signing key)
 
 ### Approved Proposal Side Effects
 
-When a `VotePeer` triggers addition approval (threshold met), the async layer also:
-
-1. Anchors the approved peer's SAID in our KEL
-2. Writes the peer to the local database
+When a `VotePeer` triggers addition approval (threshold met), the state machine returns `VoteRecorded { approved: true, proposal: Some(...) }`. The leader's HTTP handler then creates the Peer record, anchors the peer's SAID in its own KEL, writes the peer to the local database, and submits a separate `AddPeer` request to Raft. These side effects happen in the handler, not in the state machine's `apply()`.
 
 When a `VotePeer` triggers removal approval, the async layer:
 
@@ -171,7 +174,6 @@ The peer set flows to multiple consumers:
 | Registry API (`/api/peers`) | Reads from state machine | Pre-verified by state machine |
 | Gossip allowlist refresh | Fetches from registry API | KEL verification of peer SAIDs |
 | Registry client library | Fetches from registry API | KEL verification of peer SAIDs |
-| DB sync loop (leader) | Reads from local DB | Raft consensus replication |
 
 ## Snapshot and Restore
 
@@ -180,13 +182,11 @@ The state machine supports snapshotting for efficient Raft log compaction:
 - **Snapshot**: Serializes `peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_kels` to JSON
 - **Restore**: Deserializes and verifies all proposal chains and member KELs before accepting. Proposals with invalid chains are dropped during restore. Member KELs are verified with `kel.verify()` before restoring.
 
-## DB Sync Loop
+## KEL Sync Loop
 
-The leader runs a background sync loop (`sync.rs`) that reads peers from the local PostgreSQL database and replicates changes to Raft. This allows the admin CLI to write directly to the database, with changes propagating automatically via consensus.
+Every node runs a background KEL sync loop (`sync.rs`) that fetches its own identity KEL every 30 seconds and submits any new events to Raft via `SubmitKeyEvents`. This ensures that key rotations and other identity events performed outside of Raft are replicated to all federation members. The admin CLI also eagerly submits events after each `anchor()` call, so the sync loop serves as a fallback to catch anything missed.
 
-Flow: Admin CLI -> local DB -> sync loop (leader) -> Raft -> all followers
-
-The reverse direction (Raft -> DB) happens immediately in the state machine `apply()` method.
+Flow: Local identity KEL -> sync loop (every 30s) -> If required, SubmitKeyEvents -> Raft -> all members
 
 ## Approval Threshold
 

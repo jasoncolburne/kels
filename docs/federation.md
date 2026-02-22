@@ -58,13 +58,17 @@ All services use **compile-time trusted prefixes** for zero-trust security. The 
 
 ### Deployment Impact
 
-Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, all existing services are rebuilt and redeployed with the updated `TRUSTED_REGISTRY_PREFIXES`. The new registry is then redeployed alongside them with the same full set of prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
+Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, all existing services are rebuilt and redeployed with the updated trust anchors (`TRUSTED_REGISTRY_MEMBERS` for kels-registry and `TRUSTED_REGISTRY_PREFIXES` for all services). The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
 
 ### Registry Configuration
 
 **Compile-time (via Dockerfile build args):**
 ```bash
-# Trusted registry prefixes for federation - MUST be set at compile time
+# Trusted registry members for federation - MUST be set at compile time
+# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix} objects used by kels-registry
+# for Raft node identity. This is distinct from TRUSTED_REGISTRY_PREFIXES (comma-separated
+# prefixes used by gossip and identity services).
+TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme..."},{"id":2,"prefix":"ERegistryBeta..."},{"id":3,"prefix":"ERegistryGamma..."}]'
 TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
 ```
 
@@ -78,7 +82,7 @@ FEDERATION_URLS=ERegistryAcme...=https://registry.acme.com,ERegistryBeta...=http
 ```
 
 Registries verify incoming federation messages by:
-1. Checking sender prefix is in compiled-in `TRUSTED_REGISTRY_PREFIXES`
+1. Checking sender prefix is in compiled-in `TRUSTED_REGISTRY_MEMBERS`
 2. Verifying message signature against sender's KEL
 
 ### Gossip Node Configuration
@@ -144,7 +148,7 @@ Any federation member can propose a new peer:
 ```bash
 # From any registry in the federation
 kels-registry-admin peer propose \
-  --peer-id Qm... \
+  --peer-prefix Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
   --gossip-addr gossip.node-1.example.com:4001
@@ -188,7 +192,7 @@ Peer removal follows the same multi-party approval process as additions.
 ```bash
 # From any registry in the federation
 kels-registry-admin peer propose-removal \
-  --peer-id Qm...
+  --peer-prefix Qm...
 
 # Output:
 # Removal proposal created: EProposal456...
@@ -213,7 +217,7 @@ After approval, the peer is removed from the Raft state machine and deactivated 
 
 ### Federation Membership
 
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_PREFIXES` constant
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip and identity services)
 - Only known registry prefixes can participate in consensus
 - Cannot be changed at runtime - must be baked into the binary at build time
 
@@ -221,12 +225,12 @@ After approval, the peer is removed from the Raft state machine and deactivated 
 
 - All Raft messages are signed with the sender's identity key (HSM-backed)
 - Recipients verify signatures against the sender's KEL
-- Messages from prefixes not in `TRUSTED_REGISTRY_PREFIXES` are rejected
+- Messages from prefixes not in `TRUSTED_REGISTRY_MEMBERS` are rejected
 
 ### Member KEL Replication
 
 - Member KELs are replicated via Raft consensus (not ephemeral HTTP caches)
-- Each member submits its own KEL to Raft via a periodic sync loop (every 30s)
+- Each member submits its own KEL to Raft via a periodic sync loop if required (every 30s)
 - KELs survive registry restarts since they are part of the Raft-replicated state and snapshots
 - Verification of anchored data uses the Raft-replicated KELs as the single source of truth
 - See [Registry Removal](registry-removal.md) for decommission procedures
@@ -239,8 +243,9 @@ If a federation member is compromised:
 
 1. **Detection**: Audit logs show unexpected peer changes with the rogue registry's prefix
 
-2. **Isolation**: Update `TRUSTED_REGISTRY_PREFIXES` on honest registries to exclude the rogue:
+2. **Isolation**: Update `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` on honest services to exclude the rogue:
    ```bash
+   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme..."},{"id":3,"prefix":"ERegistryGamma..."}]'  # Beta removed
    TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryGamma...  # Beta removed
    ```
 
@@ -248,11 +253,7 @@ If a federation member is compromised:
    - Rogue is excluded from consensus
    - New leader elected from remaining members
 
-4. **Recovery**: If peer set was compromised:
-   ```bash
-   # Manually re-add legitimate peers
-   kels-registry-admin peer add --peer-id Qm... --node-id node-1
-   ```
+4. **Recovery**: If peer set was compromised, peers must be re-added via the standard proposal/vote process (`kels-registry-admin peer propose` followed by `kels-registry-admin peer vote` from the remaining honest registries). There is no direct `peer add` command.
 
 5. **Gossip nodes auto-heal**: Next allowlist refresh removes unauthorized peers
 
@@ -296,7 +297,7 @@ Peer proposal management:
 ```
 POST   /api/admin/addition-proposals              # Propose a new peer (addition)
 POST   /api/admin/removal-proposals              # Propose removal of a peer
-GET    /api/admin/proposals/:proposal_id         # Get proposal details
+POST   /api/admin/proposals/:proposal_id         # Get proposal details (signed request)
 POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
 ```
 

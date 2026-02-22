@@ -65,8 +65,8 @@ If an attacker gains access to the HSM service:
 ### Denial of Service — Allowlist Refresh Trigger
 
 **Attack:** Flood the gossip network with connections from unknown PeerPrefixes, triggering repeated allowlist refreshes.
-- **Mitigation:** The `refresh_tx` channel has capacity 1 — multiple triggers coalesce into a single refresh. However, there is no rate limiting on inbound connections at the application level.
-- **Residual risk:** Pending verification set is bounded (max 200 peers, 300s TTL) but a sustained flood could still cause legitimate peers to be evicted before verification completes.
+- **Mitigation:** Allowlist refresh is triggered synchronously via `retry_once!` — on an unknown peer, the allowlist is refreshed once and rechecked. Subsequent connections from the same unknown peer hit the refreshed allowlist without triggering another refresh. However, there is no rate limiting on inbound connections at the application level.
+- **Residual risk:** A flood of connections from many distinct unknown PeerPrefixes could cause repeated allowlist refreshes, each involving HTTP calls to the registry.
 
 ### Denial of Service — KEL Fetch Amplification
 
@@ -83,7 +83,7 @@ If an attacker gains access to the HSM service:
 ### Selective Message Dropping
 
 **Attack:** A compromised node selectively drops announcements, preventing propagation to certain peers.
-- **Mitigation:** PlumTree broadcast redundancy with lazy push repair. Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Periodic resync with retry queue retries failed gossip fetches against all known peers on a configurable interval (default 5 min), recovering missed events from alternative peers. Anti-entropy loop (default 10s) detects and repairs silent divergence via prefix page sampling. No real-time detection mechanism.
+- **Mitigation:** PlumTree broadcast redundancy with lazy push repair. Periodic allowlist refresh and bootstrap reconciliation eventually fill gaps. Failed gossip fetches are recorded as stale prefixes and repaired by the anti-entropy loop (default 10s cycle), recovering missed events from alternative peers. Anti-entropy loop (default 10s) detects and repairs silent divergence via prefix page sampling. No real-time detection mechanism.
 
 ## Admin API
 
@@ -129,7 +129,7 @@ These are intentionally public. The security model relies on cryptographic verif
 
 1. ~~**Admin API lacks authentication beyond localhost check**~~ — mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
-3. ~~**Allowlist pending set unbounded**~~ — mitigated: max 200 pending peers with 300s TTL, oldest evicted at capacity
+3. ~~**Allowlist refresh flood**~~ — mitigated: `retry_once!` limits refresh to one attempt per unknown peer; subsequent connections use the cached allowlist
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
 5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption
 6. (removed)
@@ -143,7 +143,7 @@ Unmitigated attack vectors and planned improvements, roughly ordered by impact.
 No application-level rate limiting exists on any endpoint. The allowlist pending verification set has no TTL or max size, so a connection flood can grow it unboundedly.
 
 - [x] Add rate limiting to the registry HTTP server (per-IP token bucket on write endpoints: 200 req/s refill, 1000 burst; 5 MiB body limit)
-- [x] Add TTL and max size cap to the pending verification set in `AllowlistBehaviour` (max 200 pending peers, 300s TTL, oldest evicted at capacity)
+- [x] Allowlist refresh uses `retry_once!` — single synchronous refresh per unknown peer, with cached allowlist for subsequent checks
 
 ### ~~Admin API authentication (addresses residual risk 1)~~
 

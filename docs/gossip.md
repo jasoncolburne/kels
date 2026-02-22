@@ -113,12 +113,18 @@ struct KelAnnouncement {
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NODE_ID` | Unique node identifier | `node-unknown` |
-| `KELS_URL` | Local KELS HTTP endpoint | `http://kels:80` |
+| `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
+| `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
+| `HSM_URL` | HSM service URL | `http://hsm` |
+| `IDENTITY_URL` | Identity service URL | `http://identity` |
 | `REGISTRY_URL` | Registry service URL for bootstrap sync | (required) |
+| `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for HA | (required) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
 | `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |
+| `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
+| `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval | `60` |
 

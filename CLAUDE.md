@@ -61,13 +61,12 @@ Binary-safe encoding format for cryptographic primitives. Used for SAIDs, signat
 A cryptographically-linked chain of self-addressed key events sharing a prefix. Each event references the previous event's SAID via the `previous` field. The chain contains forward commitments to the next keys via `rotation_hash = Blake3(next_public_key)`, so after key revelation the chain is provable in both directions — backward via `previous` pointers and forward via rotation hash verification.
 
 Event types:
-- **`icp`** (inception) — creates a new KEL, establishes initial keys and rotation hash
-- **`rot`** (rotation) — rotates keys, reveals previous rotation hash, commits to next keys
-- **`ixn`** (interaction) — non-key-change event, extends the chain
-- **`dip`** (delegated inception) — inception under a delegating prefix
-- **`drt`** (delegated rotation) — rotation under a delegating prefix
-- **`rec`** (recovery) — recovery event, requires dual signatures (current + recovery key)
-- **`ror`** (contest) — contests a recovery, also requires dual signatures
+- **`icp`** (incept) — creates a new KEL, establishes initial keys and rotation hash
+- **`rot`** (rotate) — rotates keys, reveals previous rotation hash, commits to next keys
+- **`ixn`** (interact) — non-key-change event, extends the chain
+- **`dip`** (delegated incept) — inception under a delegating prefix
+- **`rec`** (recover) — recovery event, requires dual signatures (current + recovery key)
+- **`ror`** (rotate recovery) — rotates both signing and recovery keys, requires dual signatures
 
 Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed.
 
@@ -93,7 +92,7 @@ When events are submitted, the KEL merge produces one of:
 
 ### Services
 
-- **kels** — Core registry service. Stores and serves KELs via REST API. Handles event submission with cryptographic verification, advisory locking per prefix, rate limiting, nonce deduplication, and pre-serialized caching via Redis.
+- **kels** — Core KEL service. Stores and serves KELs via REST API. Handles event submission with cryptographic verification, advisory locking per prefix, rate limiting, nonce deduplication, and pre-serialized caching via Redis.
 - **kels-gossip** — Gossip and federation service. Syncs KELs between peers using a custom gossip protocol (HyParView + PlumTree). Handles bootstrap sync, peer discovery, and allowlist management.
 - **kels-registry** — Registry service. Manages peer lifecycle via OpenRaft consensus. Handles multi-party voting for peer addition/removal. Federates state across registries.
 - **kels-identity** — Identity service. Manages the registry's own KEL and signing keys.
@@ -110,7 +109,7 @@ When events are submitted, the KEL merge produces one of:
 
 - **kels-cli** — Command-line client for interacting with KELS.
 - **kels-bench** — Benchmarking tool.
-- **kels-client** — C client with shell-based test scripts.
+- **kels-client** — Swift client (iOS/macOS).
 
 ### Gossip
 
@@ -138,9 +137,9 @@ An **anti-entropy loop** (default every 10s) provides background repair: Phase 1
 
 - **Fail secure** — restrictive defaults when state is unknown
 - **Advisory locks** — per-prefix PostgreSQL advisory locks serialize all operations on a prefix
-- **Dual signatures** — recovery events (`rec`, `ror`) require signatures from both current and recovery keys
+- **Dual signatures** — recovery events (`rec`, `ror`, `dec`, `cnt`) require signatures from both current and recovery keys
 - **Forward commitments** — rotation hash commits to next key before revelation
-- **Rate limiting** — 32 submissions per prefix per minute (sliding window)
+- **Rate limiting** — 32 submissions per prefix per minute (fixed window, theoretical max 64 across window boundary)
 - **Nonce deduplication** — prevents replay of signed requests within a 60-second window
 - **Signed peer requests** — prefix listing requires signed requests with timestamp validation and peer verification
 - **Peer allowlist** — gossip peers must be in the allowlist (cached in Redis, refreshed from registry)

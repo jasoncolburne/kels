@@ -56,22 +56,9 @@ verify_event_basics(event, prefix):
         return Error("Prefix mismatch")
 ```
 
-#### 1.4 Chaining Verification
+#### 1.4 Valid Tails Tracking
 
-```
-verify_chaining(event, all_events):
-    if event.previous is None:
-        // Must be inception (icp or dip)
-        if not event.is_inception():
-            return Error("Non-inception event has no previous")
-        return OK
-
-    // Non-inception must chain from valid previous
-    if event.previous not in [e.said for e in all_events]:
-        return Error("Chains from unknown previous")
-```
-
-#### 1.5 Valid Tails Tracking
+Note: There is no separate chaining verification step in the forward pass. Chain integrity is validated implicitly by `walk_generations()` (which follows `previous` links to build the generation map) and explicitly by the backward pass (which walks `previous` pointers and checks serial monotonicity).
 
 ```
 for each event:
@@ -110,7 +97,17 @@ verify_branch_from_tail(tail_said):
         else:
             pending_events.push(event)
 
-        current_said = event.previous
+        if event.previous exists:
+            // Verify serial monotonicity: previous event must have serial == event.serial - 1
+            prev_event = get_event(event.previous)
+            if event.serial != prev_event.serial + 1:
+                return Error("Serial not monotonically increasing")
+            current_said = event.previous
+        else:
+            // Inception event must have serial 0
+            if event.serial != 0:
+                return Error("Inception event has non-zero serial")
+            break
 ```
 
 #### 2.2 Establishment Event Processing
@@ -171,17 +168,20 @@ Similar to rotation verification, but for recovery keys.
 
 ```
 verify_signatures(signed_event, public_key):
-    // Reconstruct signed data
-    data = canonical_json(signed_event.event)
+    // The SAID is a Blake3 hash of the canonical JSON content,
+    // so signing/verifying the SAID bytes is equivalent to signing
+    // the canonical content but more efficient.
+    data = signed_event.event.said.as_bytes()
 
     // Verify primary signature
     signature = parse_signature(signed_event.signature)
     public_key.verify(data, signature)
 
-    // Verify recovery signature if present
+    // Verify recovery signature if present (dual authorization)
     if signed_event.recovery_signature exists:
+        recovery_key = parse_key(signed_event.event.recovery_key)
         recovery_sig = parse_signature(signed_event.recovery_signature)
-        // Recovery signature verified against recovery key
+        recovery_key.verify(data, recovery_sig)
 ```
 
 ### Phase 3: Final Validation
@@ -205,7 +205,7 @@ Success cases:
 
 DivergenceInfo:
     diverged_at_generation: u64
-    divergent_saids: Vec<String>
+    divergent_saids: HashSet<String>
 ```
 
 ## Key Properties Verified
@@ -216,9 +216,11 @@ DivergenceInfo:
 | Prefix consistency | All events have same prefix |
 | Event chaining | Previous field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
+| Serial monotonicity | Each event's serial must equal previous event's serial + 1 |
+| Inception serial | Inception events (no `previous`) must have serial 0 |
 | Pre-rotation commitment | rotation_hash matches next public_key |
 | Recovery commitment | recovery_hash matches revealed recovery_key |
-| Signature validity | Cryptographic signature verification |
+| Signature validity | Cryptographic signature verification against SAID bytes |
 
 ## Divergence Handling
 
@@ -234,6 +236,7 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 | Event Type | Primary Signature | Recovery Signature |
 |------------|-------------------|-------------------|
 | `icp` (incept) | Signing key | - |
+| `dip` (delegated incept) | Signing key | - |
 | `ixn` (interact) | Signing key | - |
 | `rot` (rotate) | Next signing key (pre-committed) | - |
 | `ror` (rotate recovery) | Next signing key | Recovery key |
