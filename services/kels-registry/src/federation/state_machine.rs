@@ -73,7 +73,7 @@ impl StateMachineData {
             .member_kel(member_prefix)
             .ok_or_else(|| format!("Member KEL not in Raft state: {}", member_prefix))?;
 
-        kel.verify()
+        kel.verify(true)
             .map_err(|e| format!("Member KEL verification failed: {}", e))?;
 
         if !kel.contains_anchor(said) {
@@ -1253,7 +1253,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         let original_kel_count = core_snapshot.member_kels.len();
         core_snapshot
             .member_kels
-            .retain(|prefix, kel| match kel.verify() {
+            .retain(|prefix, kel| match kel.verify(true) {
                 Ok(_) => true,
                 Err(e) => {
                     warn!(

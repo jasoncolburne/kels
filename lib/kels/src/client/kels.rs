@@ -1,20 +1,19 @@
 //! KELS HTTP Client
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::Path,
     sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
-use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     error::KelsError,
     types::{
-        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-        KelResponse, SignedKeyEvent,
+        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelResponse,
+        SignedKeyEvent,
     },
 };
 
@@ -557,172 +556,6 @@ impl KelsClient {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
         }
-    }
-
-    pub async fn get_kels(
-        &self,
-        prefixes: &[&str],
-        anchors: &HashMap<&str, &[&str]>,
-    ) -> Result<Vec<Kel>, KelsError> {
-        if prefixes.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut cached_kels: HashMap<String, Kel> = HashMap::new();
-        for p in prefixes {
-            if let Some(kel) = self.cache_get(p).await? {
-                cached_kels.insert((*p).to_string(), kel);
-            }
-        }
-
-        // Find prefixes that are cached but missing required anchors
-        let prefixes_missing_anchors: Vec<&str> = prefixes
-            .iter()
-            .copied()
-            .filter(|p| {
-                let Some(prefix_anchors) = anchors.get(p) else {
-                    return false;
-                };
-                if prefix_anchors.is_empty() {
-                    return false;
-                }
-                cached_kels
-                    .get(*p)
-                    .map(|kel| prefix_anchors.iter().any(|a| !kel.contains_anchor(a)))
-                    .unwrap_or(true)
-            })
-            .collect();
-
-        // Find prefixes not in cache at all
-        let missing_prefixes: Vec<&str> = prefixes
-            .iter()
-            .copied()
-            .filter(|p| !cached_kels.contains_key(*p))
-            .collect();
-
-        // All cached and no missing anchors - return from cache
-        if missing_prefixes.is_empty() && prefixes_missing_anchors.is_empty() {
-            return Ok(prefixes
-                .iter()
-                .filter_map(|p| cached_kels.remove(*p))
-                .collect());
-        }
-
-        // Build batch request for missing and stale prefixes
-        let batch_prefixes: HashSet<&str> = missing_prefixes
-            .iter()
-            .chain(prefixes_missing_anchors.iter())
-            .copied()
-            .collect();
-
-        let request = BatchKelsRequest {
-            prefixes: batch_prefixes
-                .iter()
-                .map(|p| (p.to_string(), None))
-                .collect(),
-        };
-
-        let resp = self
-            .client
-            .post(format!("{}/api/kels/kels", self.base_url))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let err: ErrorResponse = resp.json().await?;
-            return Err(KelsError::ServerError(err.error, err.code));
-        }
-
-        let new_events: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
-
-        let mut result_kels: HashMap<String, Kel> = HashMap::new();
-        let mut diverged_prefixes: Vec<String> = Vec::new();
-
-        // Move cached KELs that don't need updating to result
-        for prefix in prefixes {
-            if !batch_prefixes.contains(prefix)
-                && let Some(kel) = cached_kels.remove(*prefix)
-            {
-                result_kels.insert((*prefix).to_string(), kel);
-            }
-        }
-
-        // Merge new events into cached KELs or create new ones
-        for prefix in &batch_prefixes {
-            let new = new_events.get(*prefix);
-
-            if let Some(mut kel) = cached_kels.remove(*prefix) {
-                if let Some(events) = new
-                    && !events.is_empty()
-                {
-                    match kel.merge(events.clone()) {
-                        Ok((_, _, KelMergeResult::Accepted)) => {
-                            result_kels.insert((*prefix).to_string(), kel);
-                        }
-                        _ => {
-                            diverged_prefixes.push((*prefix).to_string());
-                        }
-                    }
-                } else {
-                    result_kels.insert((*prefix).to_string(), kel);
-                }
-            } else if let Some(events) = new
-                && !events.is_empty()
-            {
-                let kel = Kel::from_events(events.clone(), false)?;
-                result_kels.insert((*prefix).to_string(), kel);
-            }
-        }
-
-        let mut futures = Vec::new();
-        // Re-fetch diverged KELs from scratch
-        for prefix in &diverged_prefixes {
-            self.invalidate_cache_async(prefix).await?;
-            futures.push(async move {
-                let kel = match self.get_kel(prefix).await {
-                    Ok(k) => k,
-                    Err(_) => return None,
-                };
-
-                Some((prefix.clone(), kel))
-            });
-        }
-
-        let diverged_results = join_all(futures).await;
-
-        // Merge diverged KELs back and update cache
-        for (prefix, kel) in diverged_results.into_iter().flatten() {
-            self.cache_set(&prefix, &kel).await?;
-            result_kels.insert(prefix, kel);
-        }
-
-        // Verify all required anchors are present
-        let all_anchors_present = prefixes.iter().all(|p| {
-            let Some(prefix_anchors) = anchors.get(p) else {
-                return true;
-            };
-            result_kels
-                .get(*p)
-                .map(|kel| prefix_anchors.iter().all(|a| kel.contains_anchor(a)))
-                .unwrap_or(false)
-        });
-
-        if !all_anchors_present {
-            return Err(KelsError::AnchorVerificationFailed(
-                "Some anchors not found in KELs".to_string(),
-            ));
-        }
-
-        // Return KELs in requested order
-        prefixes
-            .iter()
-            .map(|p| {
-                result_kels
-                    .remove(*p)
-                    .ok_or(KelsError::KeyNotFound((*p).to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()
     }
 
     /// Skips signature verification - only for benchmarking/testing
@@ -1427,60 +1260,6 @@ mod tests {
             let client = KelsClient::with_caching("http://localhost:8080");
             let result = client.invalidate_cache_async("prefix").await;
             assert!(result.is_ok());
-        }
-
-        #[tokio::test]
-        async fn test_get_kels_empty_prefixes() {
-            let client = KelsClient::new("http://localhost:8080");
-            let result = client.get_kels(&[], &HashMap::new()).await;
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_empty());
-        }
-
-        #[tokio::test]
-        async fn test_get_kels_from_server() {
-            let mock_server = MockServer::start().await;
-
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let icp = builder.incept().await.unwrap();
-            let prefix = icp.event.prefix.clone();
-
-            let mut response: HashMap<String, Vec<SignedKeyEvent>> = HashMap::new();
-            response.insert(prefix.clone(), vec![icp]);
-
-            Mock::given(method("POST"))
-                .and(path("/api/kels/kels"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-                .mount(&mock_server)
-                .await;
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.get_kels(&[&prefix], &HashMap::new()).await;
-
-            assert!(result.is_ok());
-            let kels = result.unwrap();
-            assert_eq!(kels.len(), 1);
-        }
-
-        #[tokio::test]
-        async fn test_get_kels_server_error() {
-            let mock_server = MockServer::start().await;
-
-            let error = ErrorResponse {
-                error: "Server error".to_string(),
-                code: ErrorCode::InternalError,
-            };
-
-            Mock::given(method("POST"))
-                .and(path("/api/kels/kels"))
-                .respond_with(ResponseTemplate::new(500).set_body_json(&error))
-                .mount(&mock_server)
-                .await;
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.get_kels(&["prefix"], &HashMap::new()).await;
-
-            assert!(matches!(result, Err(KelsError::ServerError(..))));
         }
     }
 }

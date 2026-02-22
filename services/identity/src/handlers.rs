@@ -277,7 +277,7 @@ pub async fn rotate(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
 
-    kel.verify()
+    kel.verify(false)
         .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed

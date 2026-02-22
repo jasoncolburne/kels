@@ -43,6 +43,10 @@ impl<T: Serialize> SignedRequest<T> {
     /// Extracts the public key from the last establishment event, serializes the
     /// payload to JSON, and verifies the CESR-encoded signature.
     pub fn verify_signature(&self, kel: &Kel) -> Result<(), KelsError> {
+        if kel.find_divergence().is_some() {
+            return Err(KelsError::Divergent);
+        }
+
         let establishment = kel
             .last_establishment_event()
             .ok_or_else(|| KelsError::VerificationFailed("No establishment event in KEL".into()))?;
@@ -824,6 +828,33 @@ mod tests {
             records: vec![v0, v1],
         };
         assert!(history.verify().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_signature_rejects_divergent_kel() {
+        use crate::{Kel, KeyEventBuilder, SoftwareKeyProvider};
+
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let mut builder2 = builder1.clone();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
+
+        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        let signed = SignedRequest {
+            payload: "test".to_string(),
+            peer_prefix: "test_prefix".to_string(),
+            signature: "test_sig".to_string(),
+        };
+
+        let result = signed.verify_signature(&kel);
+        assert!(
+            matches!(result, Err(crate::KelsError::Divergent)),
+            "Expected Divergent error, got: {:?}",
+            result
+        );
     }
 
     #[test]

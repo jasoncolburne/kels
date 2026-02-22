@@ -2,7 +2,7 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use axum::{
     Router,
@@ -255,7 +255,7 @@ async fn check_and_rotate(
     let kel = state.kel_repo.get_kel(prefix).await?;
 
     // Verify KEL integrity
-    kel.verify()?;
+    kel.verify(false)?;
 
     // Audit full binding chain — alert on any tampering but don't rotate
     if let Err(e) = audit_binding_chain(&bindings, &kel) {
@@ -439,6 +439,11 @@ fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
     kel: &kels::Kel,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if kel.find_divergence().is_some() {
+        error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
+        return Err("SECURITY: Identity KEL has diverged".into());
+    }
+
     for binding in bindings {
         binding.verify()?;
     }
@@ -481,6 +486,11 @@ fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
     kel: &kels::Kel,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    if kel.find_divergence().is_some() {
+        error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
+        return Err("SECURITY: Identity KEL has diverged".into());
+    }
+
     let latest = &bindings[bindings.len() - 1];
 
     latest.verify()?;

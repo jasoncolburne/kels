@@ -518,7 +518,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!("  Latest Type: {}", last.event.kind);
         }
 
-        match kel.verify() {
+        match kel.verify(true) {
             Ok(_) => println!("Verified: Yes"),
             Err(e) => println!("Verified: {}", e),
         }
