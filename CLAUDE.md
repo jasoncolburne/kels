@@ -67,6 +67,8 @@ Event types:
 - **`dip`** (delegated incept) — inception under a delegating prefix
 - **`rec`** (recover) — recovery event, requires dual signatures (current + recovery key)
 - **`ror`** (rotate recovery) — rotates both signing and recovery keys, requires dual signatures
+- **`cnt`** (contest) — permanently freezes a divergent KEL, requires dual signatures
+- **`dec`** (decommission) — ends the KEL, requires dual signatures
 
 Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed.
 
@@ -95,7 +97,7 @@ When events are submitted, the KEL merge produces one of:
 - **kels** — Core KEL service. Stores and serves KELs via REST API. Handles event submission with cryptographic verification, advisory locking per prefix, rate limiting, nonce deduplication, and pre-serialized caching via Redis.
 - **kels-gossip** — Gossip and federation service. Syncs KELs between peers using a custom gossip protocol (HyParView + PlumTree). Handles bootstrap sync, peer discovery, and allowlist management.
 - **kels-registry** — Registry service. Manages peer lifecycle via OpenRaft consensus. Handles multi-party voting for peer addition/removal. Federates state across registries.
-- **kels-identity** — Identity service. Manages the registry's own KEL and signing keys.
+- **identity** — Identity service. Manages the registry's own KEL and signing keys.
 - **hsm** — Hardware security module interface for key storage and signing operations.
 
 ### Libraries

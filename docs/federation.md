@@ -65,10 +65,10 @@ Adding a new registry to the federation is a multi-step process: the new registr
 **Compile-time (via Dockerfile build args):**
 ```bash
 # Trusted registry members for federation - MUST be set at compile time
-# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix} objects used by kels-registry
+# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by kels-registry
 # for Raft node identity. This is distinct from TRUSTED_REGISTRY_PREFIXES (comma-separated
 # prefixes used by gossip and identity services).
-TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme..."},{"id":2,"prefix":"ERegistryBeta..."},{"id":3,"prefix":"ERegistryGamma..."}]'
+TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":2,"prefix":"ERegistryBeta...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'
 TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
 ```
 
@@ -217,7 +217,7 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ### Federation Membership
 
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip and identity services)
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip and identity services)
 - Only known registry prefixes can participate in consensus
 - Cannot be changed at runtime - must be baked into the binary at build time
 
@@ -245,7 +245,7 @@ If a federation member is compromised:
 
 2. **Isolation**: Update `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` on honest services to exclude the rogue:
    ```bash
-   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme..."},{"id":3,"prefix":"ERegistryGamma..."}]'  # Beta removed
+   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'  # Beta removed
    TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryGamma...  # Beta removed
    ```
 
