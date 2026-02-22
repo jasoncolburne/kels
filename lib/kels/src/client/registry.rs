@@ -1054,50 +1054,45 @@ impl MultiRegistryClient {
             self.urls.len()
         );
         self.prefix_map.clear();
+        self.url_map.clear();
 
-        let futures = self.urls.iter().map(|url| {
-            let registry = self.clone();
-            async move {
-                let client = registry.create_client(url);
-                client.fetch_registry_kel().await.ok()
+        // Fetch all member KELs (including decommissioned) from any available registry
+        // using the plural endpoint. Any active registry serves all member KELs from
+        // Raft-replicated state.
+        for url in self.urls.clone() {
+            let client = self.create_client(&url);
+            match client.fetch_registry_kels().await {
+                Ok(kels_map) if !kels_map.is_empty() => {
+                    let kels: Vec<crate::Kel> = kels_map.values().cloned().collect();
+
+                    for (prefix, kel) in &kels_map {
+                        debug!(
+                            "fetch_registry_kels: prefix={}, events={}, anchors={}",
+                            prefix,
+                            kel.events().len(),
+                            kel.events()
+                                .iter()
+                                .filter(|e| e.event.is_interaction())
+                                .count(),
+                        );
+                        self.prefix_map
+                            .insert(prefix.clone(), (url.clone(), kel.clone()));
+                    }
+
+                    return Ok(kels);
+                }
+                Ok(_) => {
+                    debug!(url = %url, "fetch_registry_kels: empty response, trying next");
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to fetch registry KELs, trying next");
+                }
             }
-        });
-
-        let kels: Vec<_> = join_all(futures)
-            .await
-            .iter()
-            .filter_map(|k| k.clone())
-            .collect();
-
-        for (url, kel) in self.urls.iter().zip(kels.clone().into_iter()) {
-            let Some(prefix) = kel.prefix() else {
-                return Err(KelsError::RegistryFailure(
-                    "Prefix for KEL not found".to_string(),
-                ));
-            };
-
-            debug!(
-                "fetch_registry_kels: {} -> prefix={}, events={}, anchors={}",
-                url,
-                prefix,
-                kel.events().len(),
-                kel.events()
-                    .iter()
-                    .filter(|e| e.event.is_interaction())
-                    .count(),
-            );
-
-            self.url_map
-                .insert(url.clone(), (prefix.to_string(), kel.clone()));
-            self.prefix_map
-                .insert(prefix.to_string(), (url.clone(), kel));
         }
 
-        if self.prefix_map.is_empty() {
-            Err(KelsError::RegistryFailure("No URLs configured".to_string()))
-        } else {
-            Ok(kels)
-        }
+        Err(KelsError::RegistryFailure(
+            "Could not fetch registry KELs from any registry".to_string(),
+        ))
     }
 
     pub async fn fetch_registry_kel(
@@ -1639,7 +1634,7 @@ mod tests {
     async fn test_multi_client_all_kels_fail() {
         let server1 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
+            .and(path("/api/registry-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 1",
                 "code": "internal_error"
@@ -1649,7 +1644,7 @@ mod tests {
 
         let server2 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
+            .and(path("/api/registry-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 2",
                 "code": "internal_error"
