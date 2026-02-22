@@ -186,7 +186,7 @@ The state machine supports snapshotting for efficient Raft log compaction:
 
 Every node runs a background KEL sync loop (`sync.rs`) that fetches its own identity KEL every 30 seconds and submits any new events to Raft via `SubmitKeyEvents`. This ensures that key rotations and other identity events performed outside of Raft are replicated to all federation members. The admin CLI also eagerly submits events after each `anchor()` call, so the sync loop serves as a fallback to catch anything missed.
 
-Flow: Local identity KEL -> sync loop (every 30s) -> SubmitKeyEvents -> Raft -> all members
+Flow: Local identity KEL -> sync loop (every 30s) -> If required, SubmitKeyEvents -> Raft -> all members
 
 ## Approval Threshold
 

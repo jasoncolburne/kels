@@ -230,7 +230,7 @@ After approval, the peer is removed from the Raft state machine and deactivated 
 ### Member KEL Replication
 
 - Member KELs are replicated via Raft consensus (not ephemeral HTTP caches)
-- Each member submits its own KEL to Raft via a periodic sync loop (every 30s)
+- Each member submits its own KEL to Raft via a periodic sync loop if required (every 30s)
 - KELs survive registry restarts since they are part of the Raft-replicated state and snapshots
 - Verification of anchored data uses the Raft-replicated KELs as the single source of truth
 - See [Registry Removal](registry-removal.md) for decommission procedures

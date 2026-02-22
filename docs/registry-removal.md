@@ -26,7 +26,7 @@ The `dec` event signals a clean, intentional termination of the KEL.
 
 ### Step 2: Submit to Raft
 
-The `dec` event is submitted to Raft via the KEL sync loop (every 30s). Once in Raft:
+The `dec` event is submitted to Raft via the KEL sync loop (within 30s). Once in Raft:
 
 - `Kel::is_decommissioned()` returns `true` for this prefix
 - `Kel::merge()` rejects any further events with `KelsError::KelDecommissioned`
