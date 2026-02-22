@@ -1032,7 +1032,7 @@ impl MultiRegistryClient {
     /// This is an unauthenticated endpoint - nodes use this to verify
     /// that peer records are anchored in the registry's KEL.
     /// Unlike other methods, this fetches from ALL registries, not just until one succeeds.
-    async fn fetch_registry_kels(
+    pub async fn fetch_verified_registry_kels(
         &mut self,
         force_fetch: bool,
     ) -> Result<Vec<crate::Kel>, KelsError> {
@@ -1070,6 +1070,23 @@ impl MultiRegistryClient {
                             warn!(
                                 prefix = %prefix,
                                 "Ignoring untrusted prefix from registry-kels response"
+                            );
+                            continue;
+                        }
+
+                        if let Err(e) = kel.verify() {
+                            warn!(
+                                prefix = %prefix,
+                                error = %e,
+                                "KEL verification failed, skipping"
+                            );
+                            continue;
+                        }
+
+                        if !kel.verify_prefix(&self.trusted_prefixes) {
+                            warn!(
+                                prefix = %prefix,
+                                "KEL prefix not in trusted set, skipping"
                             );
                             continue;
                         }
@@ -1193,28 +1210,6 @@ impl MultiRegistryClient {
         Err(KelsError::RegistryFailure(
             "Could not fetch proposals from any registry".to_string(),
         ))
-    }
-
-    pub async fn fetch_verified_registry_kels(
-        &mut self,
-        force_fetch: bool,
-    ) -> Result<Vec<crate::Kel>, KelsError> {
-        let was_cached = !self.prefix_map.is_empty() && !force_fetch;
-        let kels = self.fetch_registry_kels(force_fetch).await?;
-
-        // Only verify on fresh fetch — cached KELs were already verified on insertion
-        if !was_cached
-            && !kels
-                .iter()
-                .all(|k| k.verify().is_ok() && k.verify_prefix(&self.trusted_prefixes))
-        {
-            return Err(KelsError::RegistryFailure(format!(
-                "Failed to verify kel prefixes as expected ({:?})",
-                self.trusted_prefixes
-            )));
-        }
-
-        Ok(kels)
     }
 }
 
@@ -1668,7 +1663,7 @@ mod tests {
 
         let mut client = MultiRegistryClient::new(vec![server1.uri(), server2.uri()]);
 
-        let result = client.fetch_registry_kels(false).await;
+        let result = client.fetch_verified_registry_kels(false).await;
 
         assert!(matches!(result, Err(KelsError::RegistryFailure(_))));
     }
