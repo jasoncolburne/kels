@@ -720,8 +720,9 @@ pub async fn admin_get_proposal(
 ///
 /// Full verification before Raft submission:
 /// 1. Proposer is a federation member
-/// 2. Build and verify the full proposal chain (AdditionHistory)
-/// 3. Verify each record's SAID is anchored in proposer's KEL
+/// 2. Threshold matches current config (new proposals only)
+/// 3. Build and verify the full proposal chain (AdditionHistory)
+/// 4. Verify each record's SAID is anchored in proposer's KEL
 pub async fn admin_submit_addition_proposal(
     State(state): State<Arc<FederationState>>,
     Json(proposal): Json<PeerAdditionProposal>,
@@ -734,7 +735,17 @@ pub async fn admin_submit_addition_proposal(
         )));
     }
 
-    // 2. Build and verify the full proposal chain
+    // 2. Verify threshold matches current config (only enforced at submission time,
+    //    not during Raft log replay where config may have changed)
+    if proposal.previous.is_none() && proposal.threshold != state.node.approval_threshold() {
+        return Err(ApiError::bad_request(format!(
+            "Proposal threshold {} doesn't match current threshold {}",
+            proposal.threshold,
+            state.node.approval_threshold()
+        )));
+    }
+
+    // 3. Build and verify the full proposal chain
     let records = if proposal.previous.is_some() {
         // Withdrawal (v1): fetch existing v0 and build full chain
         let existing = state
@@ -759,7 +770,7 @@ pub async fn admin_submit_addition_proposal(
         .verify()
         .map_err(|e| ApiError::bad_request(format!("Proposal chain verification failed: {}", e)))?;
 
-    // 3. Verify each record's SAID is anchored in proposer's KEL
+    // 4. Verify each record's SAID is anchored in proposer's KEL
     ensure_own_kel_synced(&state).await;
     for record in &history.records {
         state
@@ -769,7 +780,7 @@ pub async fn admin_submit_addition_proposal(
             .map_err(|e| ApiError::unauthorized(format!("Anchoring verification failed: {}", e)))?;
     }
 
-    // 4. Submit to Raft
+    // 5. Submit to Raft
     let response = state
         .node
         .submit_addition_proposal(proposal)
@@ -842,7 +853,17 @@ pub async fn admin_submit_removal_proposal(
         )));
     }
 
-    // 2. Build and verify the full proposal chain
+    // 2. Verify threshold matches current config (only enforced at submission time,
+    //    not during Raft log replay where config may have changed)
+    if proposal.previous.is_none() && proposal.threshold != state.node.approval_threshold() {
+        return Err(ApiError::bad_request(format!(
+            "Proposal threshold {} doesn't match current threshold {}",
+            proposal.threshold,
+            state.node.approval_threshold()
+        )));
+    }
+
+    // 3. Build and verify the full proposal chain
     let records = if proposal.previous.is_some() {
         let existing = state
             .node
@@ -865,7 +886,7 @@ pub async fn admin_submit_removal_proposal(
         ApiError::bad_request(format!("Removal proposal chain verification failed: {}", e))
     })?;
 
-    // 3. Verify each record's SAID is anchored in proposer's KEL
+    // 4. Verify each record's SAID is anchored in proposer's KEL
     ensure_own_kel_synced(&state).await;
     for record in &history.records {
         state
@@ -875,7 +896,7 @@ pub async fn admin_submit_removal_proposal(
             .map_err(|e| ApiError::unauthorized(format!("Anchoring verification failed: {}", e)))?;
     }
 
-    // 4. Submit to Raft
+    // 5. Submit to Raft
     let response = state
         .node
         .submit_removal_proposal(proposal)

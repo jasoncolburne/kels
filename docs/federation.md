@@ -211,7 +211,7 @@ kels-registry-admin peer vote --proposal-id EProposal456... --approve
 # Peer has been removed from the peer set.
 ```
 
-After approval, the peer is removed from the Raft state machine and deactivated in the database. The peer can be re-added later via a new addition proposal.
+After approval, the peer is deactivated and moved from active to inactive in the Raft state machine. The peer can be re-added later via a new addition proposal.
 
 ## Security Considerations
 
@@ -260,6 +260,15 @@ If a federation member is compromised:
 ### Approval Requirements
 
 Peer changes require the approval threshold described above — minimum 3 votes, scaling to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the peer set.
+
+#### Threshold Verification
+
+The approval threshold is stored on each proposal at creation time. Verification is split across two layers:
+
+- **Leader handler** (exact match): At proposal submission time, the leader rejects proposals where `threshold != approval_threshold()`. This prevents a proposer from submitting a low threshold in a large federation.
+- **Raft `apply()`** (floor check): During log replay and replication, followers enforce only a minimum threshold floor (`compute_approval_threshold(0)`, currently 3). The exact-match check is deliberately not repeated here because the config may have changed since the entry was committed — a federation that grew from 3 to 10 members would incorrectly reject legitimate historical proposals from when the threshold was 3.
+
+This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](federation-state-machine.md#threshold-verification) for details.
 
 ### Split-Brain Protection
 

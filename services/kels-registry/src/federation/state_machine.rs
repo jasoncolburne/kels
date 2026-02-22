@@ -873,6 +873,21 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             }
                         };
 
+                        // Defense-in-depth: enforce minimum threshold floor (see docs/federation.md)
+                        let min_threshold = FederationConfig::compute_approval_threshold(0);
+                        if threshold < min_threshold {
+                            warn!(
+                                peer_prefix = %peer.peer_prefix,
+                                threshold = threshold,
+                                min_threshold = min_threshold,
+                                "Proposal threshold below minimum - rejecting"
+                            );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::Ok);
+                            }
+                            continue;
+                        }
+
                         if verified_voters.len() < threshold {
                             warn!(
                                 peer_prefix = %peer.peer_prefix,
@@ -956,6 +971,21 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 continue;
                             }
                         };
+
+                        // Defense-in-depth: enforce minimum threshold floor (see docs/federation.md)
+                        let min_threshold = FederationConfig::compute_approval_threshold(0);
+                        if threshold < min_threshold {
+                            warn!(
+                                peer_prefix = %peer.peer_prefix,
+                                threshold = threshold,
+                                min_threshold = min_threshold,
+                                "Removal proposal threshold below minimum - rejecting"
+                            );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::Ok);
+                            }
+                            continue;
+                        }
 
                         if verified_voters.len() < threshold {
                             warn!(
@@ -1078,20 +1108,23 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         continue;
                     }
 
-                    // Verify addition proposal anchoring
+                    // Verify addition proposal threshold floor and anchoring
                     if let FederationRequest::SubmitAdditionProposal(ref prop) = request {
-                        if prop.threshold != self.config.approval_threshold() {
+                        // Exact-match against current config is in the leader handler;
+                        // here we only enforce the floor so replayed entries from smaller
+                        // federations are not rejected after config growth.
+                        let min_threshold = FederationConfig::compute_approval_threshold(0);
+                        if prop.threshold < min_threshold {
                             warn!(
                                 proposer = %prop.proposer,
                                 proposal_threshold = prop.threshold,
-                                current_threshold = self.config.approval_threshold(),
-                                "Addition proposal threshold mismatch - rejecting"
+                                min_threshold = min_threshold,
+                                "Addition proposal threshold below minimum - rejecting"
                             );
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(format!(
-                                    "Proposal threshold {} doesn't match current threshold {}",
-                                    prop.threshold,
-                                    self.config.approval_threshold()
+                                    "Proposal threshold {} below minimum {}",
+                                    prop.threshold, min_threshold
                                 )));
                             }
                             continue;
@@ -1106,21 +1139,20 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify removal proposal anchoring
+                    // Verify removal proposal threshold floor and anchoring
                     if let FederationRequest::SubmitRemovalProposal(ref prop) = request {
-                        // Verify threshold matches current
-                        if prop.threshold != self.config.approval_threshold() {
+                        let min_threshold = FederationConfig::compute_approval_threshold(0);
+                        if prop.threshold < min_threshold {
                             warn!(
                                 proposer = %prop.proposer,
                                 proposal_threshold = prop.threshold,
-                                current_threshold = self.config.approval_threshold(),
-                                "Removal proposal threshold mismatch - rejecting"
+                                min_threshold = min_threshold,
+                                "Removal proposal threshold below minimum - rejecting"
                             );
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(format!(
-                                    "Proposal threshold {} doesn't match current threshold {}",
-                                    prop.threshold,
-                                    self.config.approval_threshold()
+                                    "Proposal threshold {} below minimum {}",
+                                    prop.threshold, min_threshold
                                 )));
                             }
                             continue;
