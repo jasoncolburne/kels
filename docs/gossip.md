@@ -226,7 +226,7 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 - Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs this is a deterministic Blake3 hash of sorted tip SAIDs
 - If digests match, done for this cycle
 - If different, reconciles: fetches missing/different KELs in both directions
-- Known-divergent prefixes (tracked in Redis SET `kels:anti_entropy:divergent`) are skipped to prevent infinite retry loops — these are prefixes where two nodes have different adversary branches that can't be resolved until recovery
+- Previously-seen remote effective SAIDs are skipped via per-prefix Redis SETs (`kels:anti_entropy:seen_saids:<prefix>`) — when a sync attempt fails (e.g., three-way divergence where nodes hold different adversary branch pairs), the remote's effective SAID is recorded so the same mismatch isn't retried. A new effective SAID (e.g., after recovery) will be retried and, on success, clears the seen set. The number of tracked prefixes is bounded by a sorted set with FIFO eviction
 
 Stale prefix entries are populated by bootstrap sync failures, gossip fetch failures, and anti-entropy mismatches.
 
