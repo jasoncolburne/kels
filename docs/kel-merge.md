@@ -26,10 +26,10 @@ The merge function returns a tuple of three elements:
 |--------|---------|-----------------|
 | `Accepted` | Events accepted normally | OK |
 | `Recovered` | Recovery succeeded, adversary events archived | OK |
-| `Diverged` | Divergence detected, owner can submit `rec` | Frozen (divergent) |
+| `Diverged` | Divergence first detected, KEL now frozen, owner can submit `rec` | Frozen (divergent) |
 | `Contested` | Both parties revealed recovery keys, KEL permanently frozen | Contested |
-| `Rejected` | KEL already divergent, only recovery events accepted | Frozen (divergent) |
-| `Protected` | Adversary used recovery key, owner must contest | Unchanged |
+| `Rejected` | KEL already frozen (divergent), only `rec`/`cnt` events accepted | Frozen (divergent) |
+| `Protected` | Recovery event protects earlier events from re-divergence | Unchanged |
 
 ## Merge Flow
 
