@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use futures::stream::StreamExt;
 use kels::{Kel, KelMergeResult, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
@@ -15,15 +15,12 @@ use openraft::{
     StoredMembership,
     storage::{EntryResponder, RaftStateMachine},
 };
-use verifiable_storage::{Chained, ChainedRepository, SelfAddressed, StorageDatetime};
-use verifiable_storage_postgres::{Order, Query, QueryExecutor};
+use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
 use super::{
     config::FederationConfig,
     types::{FederationRequest, FederationResponse, MemberSnapshot, TypeConfig},
 };
-
-use crate::peer_store::PeerRepository;
 
 /// State machine that manages the peer set.
 ///
@@ -35,8 +32,10 @@ pub struct StateMachineData {
     pub last_applied_log: Option<LogId<TypeConfig>>,
     /// Last membership configuration
     pub last_membership: StoredMembership<TypeConfig>,
-    /// The peer set (keyed by peer_prefix for efficient lookup)
-    pub peers: HashMap<String, Peer>,
+    /// Active peers (keyed by peer_prefix for efficient lookup)
+    pub active_peers: HashMap<String, Peer>,
+    /// Inactive (deactivated) peers for audit trail
+    pub inactive_peers: HashMap<String, Peer>,
     /// Pending addition proposals awaiting votes (keyed by proposal prefix/proposal_id)
     pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
     /// Completed addition proposals (full chain per proposal) for audit trail
@@ -84,14 +83,25 @@ impl StateMachineData {
         Ok(())
     }
 
-    /// Get all peers.
+    /// Get active peers.
     pub fn peers(&self) -> Vec<Peer> {
-        self.peers.values().cloned().collect()
+        self.active_peers.values().cloned().collect()
     }
 
-    /// Get a peer by peer_prefix.
+    /// Get all peers (active + inactive).
+    pub fn all_peers(&self) -> Vec<Peer> {
+        self.active_peers
+            .values()
+            .chain(self.inactive_peers.values())
+            .cloned()
+            .collect()
+    }
+
+    /// Get a peer by peer_prefix (checks active first, then inactive).
     pub fn get_peer(&self, peer_prefix: &str) -> Option<&Peer> {
-        self.peers.get(peer_prefix)
+        self.active_peers
+            .get(peer_prefix)
+            .or_else(|| self.inactive_peers.get(peer_prefix))
     }
 
     /// Check whether a peer has an approved proposal backed by sufficient
@@ -182,22 +192,27 @@ impl StateMachineData {
             FederationRequest::AddPeer(peer) => {
                 let peer_prefix = peer.peer_prefix.clone();
                 info!("Adding peer: {} (node: {})", peer_prefix, peer.node_id);
-                self.peers.insert(peer_prefix.clone(), peer);
+                self.active_peers.insert(peer_prefix.clone(), peer);
                 FederationResponse::PeerAdded(peer_prefix)
             }
-            FederationRequest::RemovePeer(peer_prefix) => {
-                if self.peers.remove(&peer_prefix).is_some() {
-                    info!("Removed peer: {}", peer_prefix);
-                    FederationResponse::PeerRemoved(peer_prefix)
-                } else {
-                    debug!("Peer not found for removal: {}", peer_prefix);
-                    FederationResponse::PeerNotFound(peer_prefix)
+            FederationRequest::RemovePeer(peer) => {
+                let peer_prefix = peer.peer_prefix.clone();
+                if peer.active {
+                    warn!("Rejecting RemovePeer for active peer: {}", peer_prefix);
+                    return FederationResponse::NotAuthorized(format!(
+                        "RemovePeer requires deactivated peer, but {} is still active",
+                        peer_prefix
+                    ));
                 }
+                self.active_peers.remove(&peer_prefix);
+                info!("Deactivated peer: {}", peer_prefix);
+                self.inactive_peers.insert(peer_prefix.clone(), peer);
+                FederationResponse::PeerRemoved(peer_prefix)
             }
             FederationRequest::SubmitAdditionProposal(ref submitted) => {
                 if submitted.previous.is_none() {
                     // New proposal (v0)
-                    if self.peers.contains_key(&submitted.peer_prefix) {
+                    if self.active_peers.contains_key(&submitted.peer_prefix) {
                         return FederationResponse::PeerAlreadyExists(
                             submitted.peer_prefix.clone(),
                         );
@@ -298,7 +313,7 @@ impl StateMachineData {
             FederationRequest::SubmitRemovalProposal(ref submitted) => {
                 if submitted.previous.is_none() {
                     // New removal proposal (v0)
-                    if !self.peers.contains_key(&submitted.peer_prefix) {
+                    if !self.active_peers.contains_key(&submitted.peer_prefix) {
                         return FederationResponse::PeerNotFound(submitted.peer_prefix.clone());
                     }
 
@@ -591,10 +606,10 @@ impl StateMachineData {
                         info!(
                             proposal_id = %proposal_id,
                             peer_prefix = %peer_prefix,
-                            "Removal proposal approved - removing peer"
+                            "Removal proposal approved — leader must deactivate, anchor, and submit RemovePeer"
                         );
 
-                        self.peers.remove(&peer_prefix);
+                        let proposal_box = Box::new(v0.clone());
                         self.completed_removal_proposals.push(vec![v0]);
 
                         return FederationResponse::RemovalApproved {
@@ -602,6 +617,7 @@ impl StateMachineData {
                             peer_prefix,
                             current_votes,
                             votes_needed: proposal_threshold,
+                            proposal: Some(proposal_box),
                         };
                     }
                 }
@@ -620,7 +636,8 @@ impl StateMachineData {
     /// Create a snapshot of the current state.
     fn snapshot(&self) -> MemberSnapshot {
         MemberSnapshot {
-            peers: self.peers(),
+            active_peers: self.active_peers.values().cloned().collect(),
+            inactive_peers: self.inactive_peers.values().cloned().collect(),
             pending_addition_proposals: self.pending_addition_proposals.values().cloned().collect(),
             completed_addition_proposals: self.completed_addition_proposals.clone(),
             pending_removal_proposals: self.pending_removal_proposals.values().cloned().collect(),
@@ -652,8 +669,13 @@ impl StateMachineData {
     fn restore(&mut self, snapshot: MemberSnapshot, meta: &SnapshotMeta<TypeConfig>) {
         self.last_applied_log = meta.last_log_id;
         self.last_membership = meta.last_membership.clone();
-        self.peers = snapshot
-            .peers
+        self.active_peers = snapshot
+            .active_peers
+            .into_iter()
+            .map(|p| (p.peer_prefix.clone(), p))
+            .collect();
+        self.inactive_peers = snapshot
+            .inactive_peers
             .into_iter()
             .map(|p| (p.peer_prefix.clone(), p))
             .collect();
@@ -676,8 +698,9 @@ impl StateMachineData {
             .collect();
         self.member_kels = snapshot.member_kels;
         info!(
-            "Restored {} peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes, {} member KELs from snapshot",
-            self.peers.len(),
+            "Restored {} active peers, {} inactive peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes, {} member KELs from snapshot",
+            self.active_peers.len(),
+            self.inactive_peers.len(),
             self.pending_addition_proposals.len(),
             self.completed_addition_proposals.len(),
             self.pending_removal_proposals.len(),
@@ -694,17 +717,14 @@ pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
     /// Federation config
     config: FederationConfig,
-    /// Peer repository for direct DB writes
-    peer_repo: Arc<PeerRepository>,
 }
 
 impl StateMachineStore {
     /// Create a new state machine store.
-    pub fn new(config: FederationConfig, peer_repo: Arc<PeerRepository>) -> Self {
+    pub fn new(config: FederationConfig) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
             config,
-            peer_repo,
         }
     }
 
@@ -729,64 +749,6 @@ impl StateMachineStore {
 
         let sm = self.inner.lock().await;
         sm.verify_member_anchoring(said, member_prefix)
-    }
-
-    /// Upsert a peer to the local DB using the same pattern as admin CLI.
-    async fn upsert_peer_to_db(&self, peer: &Peer) -> Result<(), String> {
-        // Query for existing peer by node_id
-        let query = Query::<Peer>::new()
-            .eq("node_id", &peer.node_id)
-            .order_by("version", Order::Desc)
-            .limit(1);
-        let existing: Vec<Peer> = self
-            .peer_repo
-            .pool
-            .fetch(query)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let db_peer = match existing.first() {
-            Some(latest)
-                if latest.active
-                    && latest.peer_prefix == peer.peer_prefix
-                    && latest.kels_url == peer.kels_url
-                    && latest.gossip_addr == peer.gossip_addr =>
-            {
-                // Already exists with same data, skip
-                debug!(peer_prefix = %peer.peer_prefix, "Peer already exists in local DB");
-                return Ok(());
-            }
-            Some(latest) => {
-                // Existing node - clone, update fields, increment version
-                let mut updated = latest.clone();
-                updated.peer_prefix = peer.peer_prefix.clone();
-                updated.active = peer.active;
-                updated.kels_url = peer.kels_url.clone();
-                updated.gossip_addr = peer.gossip_addr.clone();
-                updated.increment().map_err(|e| e.to_string())?;
-                updated
-            }
-            None => {
-                // New peer - create version 0
-                Peer::create(
-                    peer.peer_prefix.clone(),
-                    peer.node_id.clone(),
-                    self.config.self_prefix.clone(),
-                    peer.active,
-                    peer.kels_url.clone(),
-                    peer.gossip_addr.clone(),
-                )
-                .map_err(|e| e.to_string())?
-            }
-        };
-
-        self.peer_repo
-            .insert(db_peer)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        info!(peer_prefix = %peer.peer_prefix, "Wrote peer to local DB");
-        Ok(())
     }
 }
 
@@ -921,14 +883,75 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             said = %peer.said,
                             "Verified peer"
                         );
+                    }
 
-                        if let Err(e) = self.upsert_peer_to_db(peer).await {
+                    // For RemovePeer, verify removal proposal threshold and KEL anchoring
+                    if let FederationRequest::RemovePeer(ref peer) = request {
+                        let threshold = self.config.approval_threshold();
+                        let member_prefixes: std::collections::HashSet<&str> = self
+                            .config
+                            .members
+                            .iter()
+                            .map(|m| m.prefix.as_str())
+                            .collect();
+
+                        // Find a completed removal proposal for this peer_prefix
+                        let mut verified_voters = std::collections::HashSet::new();
+                        for chain in &sm.completed_removal_proposals {
+                            if let Some(v0) = chain.first()
+                                && v0.peer_prefix == peer.peer_prefix
+                                && !chain.last().is_some_and(|p| p.is_withdrawn())
+                            {
+                                let proposal_id = &v0.prefix;
+                                for vote in sm.votes.values() {
+                                    if vote.proposal == *proposal_id
+                                        && vote.approve
+                                        && member_prefixes.contains(vote.voter.as_str())
+                                        && vote.verify_said().is_ok()
+                                        && sm
+                                            .verify_member_anchoring(&vote.said, &vote.voter)
+                                            .is_ok()
+                                    {
+                                        verified_voters.insert(vote.voter.clone());
+                                    }
+                                }
+                            }
+                        }
+
+                        if verified_voters.len() < threshold {
                             warn!(
                                 peer_prefix = %peer.peer_prefix,
-                                error = %e,
-                                "Failed to write peer to local DB"
+                                verified = verified_voters.len(),
+                                threshold = threshold,
+                                "RemovePeer not backed by sufficient verified removal votes - rejecting"
                             );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::Ok);
+                            }
+                            continue;
                         }
+
+                        // Verify deactivated peer SAID is anchored in authorizing member's KEL
+                        if sm
+                            .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
+                            .is_err()
+                        {
+                            warn!(
+                                peer_prefix = %peer.peer_prefix,
+                                said = %peer.said,
+                                "Deactivated peer SAID not anchored in member KEL - rejecting"
+                            );
+                            if let Some(r) = responder {
+                                r.send(FederationResponse::Ok);
+                            }
+                            continue;
+                        }
+
+                        info!(
+                            peer_prefix = %peer.peer_prefix,
+                            said = %peer.said,
+                            "Verified peer removal"
+                        );
                     }
 
                     // Verify vote anchoring
@@ -1074,48 +1097,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     }
 
                     let threshold = self.config.approval_threshold();
-                    let response = sm.apply(request.clone(), threshold);
-
-                    // If a removal proposal was approved, deactivate peer in DB
-                    if let FederationResponse::RemovalApproved {
-                        ref peer_prefix, ..
-                    } = response
-                    {
-                        // Find the peer in DB and deactivate it
-                        let query = Query::<Peer>::new()
-                            .eq("peer_prefix", peer_prefix)
-                            .order_by("version", Order::Desc)
-                            .limit(1);
-                        let existing: Vec<Peer> =
-                            self.peer_repo.pool.fetch(query).await.unwrap_or_default();
-
-                        if let Some(latest) = existing.first()
-                            && latest.active
-                        {
-                            match latest.deactivate() {
-                                Ok(deactivated) => {
-                                    if let Err(e) = self.peer_repo.insert(deactivated).await {
-                                        warn!(
-                                            peer_prefix = %peer_prefix,
-                                            error = %e,
-                                            "Failed to deactivate peer in local DB"
-                                        );
-                                    } else {
-                                        info!(peer_prefix = %peer_prefix, "Deactivated removed peer in local DB");
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        peer_prefix = %peer_prefix,
-                                        error = %e,
-                                        "Failed to create deactivated peer record"
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    response
+                    sm.apply(request.clone(), threshold)
                 }
                 EntryPayload::Membership(membership) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), membership);
@@ -1418,22 +1400,26 @@ mod tests {
             FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
         );
-        let response = sm.apply(
-            FederationRequest::RemovePeer("peer-1".to_string()),
-            TEST_THRESHOLD,
-        );
+        let peer = sm.get_peer("peer-1").unwrap().deactivate().unwrap();
+        let response = sm.apply(FederationRequest::RemovePeer(peer), TEST_THRESHOLD);
         assert!(matches!(response, FederationResponse::PeerRemoved(_)));
-        assert!(sm.peers().is_empty());
+        assert!(sm.peers().is_empty()); // No active peers
+        assert!(sm.get_peer("peer-1").is_some()); // Still in inactive
+        assert!(!sm.get_peer("peer-1").unwrap().active);
     }
 
     #[test]
-    fn test_remove_nonexistent_peer() {
+    fn test_remove_peer_active_rejected() {
         let mut sm = StateMachineData::new();
-        let response = sm.apply(
-            FederationRequest::RemovePeer("nonexistent".to_string()),
+        sm.apply(
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
         );
-        assert!(matches!(response, FederationResponse::PeerNotFound(_)));
+        // Try to remove with an active peer — should be rejected
+        let active_peer = sm.get_peer("peer-1").unwrap().clone();
+        let response = sm.apply(FederationRequest::RemovePeer(active_peer), TEST_THRESHOLD);
+        assert!(matches!(response, FederationResponse::NotAuthorized(_)));
+        assert_eq!(sm.peers().len(), 1); // Still active
     }
 
     #[test]
@@ -1451,14 +1437,36 @@ mod tests {
             FederationRequest::AddPeer(make_test_peer("peer-3", "node-3")),
             TEST_THRESHOLD,
         );
+        let peer2 = sm.get_peer("peer-2").unwrap().deactivate().unwrap();
+        sm.apply(FederationRequest::RemovePeer(peer2), TEST_THRESHOLD);
+        assert_eq!(sm.peers().len(), 2); // 2 active
+        assert_eq!(sm.all_peers().len(), 3); // 3 total
+        assert!(sm.get_peer("peer-1").unwrap().active);
+        assert!(!sm.get_peer("peer-2").unwrap().active); // deactivated, still findable
+        assert!(sm.get_peer("peer-3").unwrap().active);
+    }
+
+    #[test]
+    fn test_deactivated_peer_can_be_reproposed() {
+        let mut sm = StateMachineData::new();
         sm.apply(
-            FederationRequest::RemovePeer("peer-2".to_string()),
+            FederationRequest::AddPeer(make_test_peer("peer-1", "node-1")),
             TEST_THRESHOLD,
         );
-        assert_eq!(sm.peers().len(), 2);
-        assert!(sm.get_peer("peer-1").is_some());
-        assert!(sm.get_peer("peer-2").is_none());
-        assert!(sm.get_peer("peer-3").is_some());
+        let peer = sm.get_peer("peer-1").unwrap().deactivate().unwrap();
+        sm.apply(FederationRequest::RemovePeer(peer), TEST_THRESHOLD);
+        assert!(sm.peers().is_empty());
+
+        // Re-proposing should succeed (deactivated peers don't block proposals)
+        let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
+        let response = sm.apply(
+            FederationRequest::SubmitAdditionProposal(proposal),
+            TEST_THRESHOLD,
+        );
+        assert!(matches!(
+            response,
+            FederationResponse::ProposalCreated { .. }
+        ));
     }
 
     #[test]
@@ -1481,7 +1489,8 @@ mod tests {
     #[test]
     fn test_state_machine_data_default() {
         let sm = StateMachineData::default();
-        assert!(sm.peers.is_empty());
+        assert!(sm.active_peers.is_empty());
+        assert!(sm.inactive_peers.is_empty());
         assert!(sm.pending_addition_proposals.is_empty());
         assert!(sm.last_applied_log.is_none());
     }
@@ -1492,7 +1501,8 @@ mod tests {
     fn test_snapshot_empty_state() {
         let sm = StateMachineData::new();
         let snapshot = sm.snapshot();
-        assert!(snapshot.peers.is_empty());
+        assert!(snapshot.active_peers.is_empty());
+        assert!(snapshot.inactive_peers.is_empty());
     }
 
     #[test]

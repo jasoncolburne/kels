@@ -82,8 +82,7 @@ impl FederationNode {
             Arc::new(repository.raft_state.clone()),
             node_id,
         );
-        let state_machine =
-            StateMachineStore::new(config.clone(), Arc::new(repository.peers.clone()));
+        let state_machine = StateMachineStore::new(config.clone());
 
         // Create network layer (with signing capability)
         let network = FederationNetwork::new(config.clone(), identity_client);
@@ -254,7 +253,7 @@ impl FederationNode {
     }
 
     /// Propose removing a peer (leader only).
-    pub async fn remove_peer(&self, peer_prefix: &str) -> Result<(), FederationError> {
+    pub async fn remove_peer(&self, peer: Peer) -> Result<(), FederationError> {
         if !self.is_leader().await {
             return Err(FederationError::NotLeader {
                 leader_prefix: self.leader_prefix().await,
@@ -262,7 +261,7 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::RemovePeer(peer_prefix.to_string());
+        let request = FederationRequest::RemovePeer(peer);
         self.raft
             .client_write(request)
             .await
@@ -517,9 +516,14 @@ impl FederationNode {
         self.config.approval_threshold()
     }
 
-    /// Get the current peer set from the state machine.
+    /// Get the current active peer set from the state machine.
     pub async fn peers(&self) -> Vec<Peer> {
         self.state_machine.inner().lock().await.peers()
+    }
+
+    /// Get all peers (active and inactive) from the state machine.
+    pub async fn all_peers(&self) -> Vec<Peer> {
+        self.state_machine.inner().lock().await.all_peers()
     }
 
     /// Get all completed addition proposals (full chains) with their votes.

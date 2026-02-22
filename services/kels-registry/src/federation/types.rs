@@ -49,8 +49,8 @@ pub enum FederationError {
 pub enum FederationRequest {
     /// Add a peer (used for regional peers or internal).
     AddPeer(Peer),
-    /// Remove a peer (by peer_prefix).
-    RemovePeer(String),
+    /// Remove a peer (deactivated, anchored).
+    RemovePeer(Peer),
 
     /// Submit an addition proposal (create or withdraw).
     SubmitAdditionProposal(PeerAdditionProposal),
@@ -74,7 +74,7 @@ impl fmt::Display for FederationRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_prefix),
-            FederationRequest::RemovePeer(peer_prefix) => write!(f, "RemovePeer({})", peer_prefix),
+            FederationRequest::RemovePeer(peer) => write!(f, "RemovePeer({})", peer.peer_prefix),
             FederationRequest::SubmitAdditionProposal(proposal) => {
                 if proposal.is_withdrawn() {
                     write!(
@@ -170,12 +170,14 @@ pub enum FederationResponse {
     NotAuthorized(String),
     /// Peer already exists or has a pending proposal.
     PeerAlreadyExists(String),
-    /// Removal proposal approved — peer should be removed.
+    /// Removal proposal approved — leader must deactivate, anchor, and submit RemovePeer.
     RemovalApproved {
         proposal_id: String,
         peer_prefix: String,
         current_votes: usize,
         votes_needed: usize,
+        /// When approved, includes the removal proposal so the leader can deactivate the Peer.
+        proposal: Option<Box<PeerRemovalProposal>>,
     },
     /// SAID mismatch (retry-able).
     SaidMismatch(String),
@@ -272,8 +274,11 @@ openraft::declare_raft_types!(
 /// not duplicated here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemberSnapshot {
-    /// The peer set data.
-    pub peers: Vec<Peer>,
+    /// Active peers.
+    pub active_peers: Vec<Peer>,
+    /// Inactive (deactivated) peers for audit trail.
+    #[serde(default)]
+    pub inactive_peers: Vec<Peer>,
     /// Pending addition proposals awaiting votes.
     #[serde(default)]
     pub pending_addition_proposals: Vec<PeerAdditionProposal>,
@@ -348,7 +353,16 @@ mod tests {
         let request = FederationRequest::AddPeer(peer);
         assert_eq!(format!("{}", request), "AddPeer(12D3KooWExample)");
 
-        let request = FederationRequest::RemovePeer("peer-123".to_string());
+        let deactivated = Peer::create(
+            "peer-123".to_string(),
+            "node-test".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
+            false,
+            "http://node-test:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
+        )
+        .unwrap();
+        let request = FederationRequest::RemovePeer(deactivated);
         assert_eq!(format!("{}", request), "RemovePeer(peer-123)");
     }
 
@@ -422,8 +436,18 @@ mod tests {
         let req2 = FederationRequest::AddPeer(peer);
         assert_eq!(req1, req2);
 
-        let req3 = FederationRequest::RemovePeer("peer-1".to_string());
-        let req4 = FederationRequest::RemovePeer("peer-1".to_string());
+        let deactivated1 = Peer::create(
+            "peer-1".to_string(),
+            "node-1".to_string(),
+            "EAuthorizingKel_____________________________".to_string(),
+            false,
+            "http://node-1:8080".to_string(),
+            "/ip4/127.0.0.1/tcp/4001".to_string(),
+        )
+        .unwrap();
+        let deactivated2 = deactivated1.clone();
+        let req3 = FederationRequest::RemovePeer(deactivated1);
+        let req4 = FederationRequest::RemovePeer(deactivated2);
         assert_eq!(req3, req4);
 
         assert_ne!(req1, req3);
@@ -445,7 +469,8 @@ mod tests {
     #[test]
     fn test_peer_snapshot_default() {
         let snapshot = MemberSnapshot::default();
-        assert!(snapshot.peers.is_empty());
+        assert!(snapshot.active_peers.is_empty());
+        assert!(snapshot.inactive_peers.is_empty());
     }
 
     #[test]
@@ -460,7 +485,8 @@ mod tests {
         )
         .unwrap();
         let snapshot = MemberSnapshot {
-            peers: vec![peer.clone()],
+            active_peers: vec![peer.clone()],
+            inactive_peers: vec![],
             pending_addition_proposals: vec![],
             completed_addition_proposals: vec![],
             pending_removal_proposals: vec![],
@@ -472,8 +498,9 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let parsed: MemberSnapshot = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.peers.len(), 1);
-        assert_eq!(parsed.peers[0].peer_prefix, "peer-1");
+        assert_eq!(parsed.active_peers.len(), 1);
+        assert_eq!(parsed.active_peers[0].peer_prefix, "peer-1");
+        assert!(parsed.inactive_peers.is_empty());
         assert!(parsed.pending_addition_proposals.is_empty());
         assert!(parsed.completed_addition_proposals.is_empty());
     }

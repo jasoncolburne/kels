@@ -7,17 +7,15 @@
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use std::sync::Arc;
 
-use verifiable_storage::{ChainedRepository, ColumnQuery, StorageDatetime};
-use verifiable_storage_postgres::PgPool;
+use verifiable_storage::{Chained, StorageDatetime};
 
 use kels::IdentityClient;
 use kels::{
     AdminRequest, CompletedProposalsResponse, PeerAdditionProposal, PeerRemovalProposal,
-    ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
+    PeersResponse, ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
 };
-use kels_registry::{federation::FederationStatus, peer_store::PeerRepository};
+use kels_registry::federation::FederationStatus;
 
 #[derive(Parser)]
 #[command(name = "kels-registry-admin")]
@@ -105,7 +103,7 @@ enum PeerAction {
 enum AllowlistAction {
     /// Show the current allowlist
     Show,
-    /// Show allowlist version history
+    /// Show allowlist version history (via completed proposals)
     History,
 }
 
@@ -141,7 +139,6 @@ struct ProposalResponse {
 
 /// Shared context for all commands
 struct AdminContext {
-    peer_repo: Arc<PeerRepository>,
     identity_client: IdentityClient,
     self_prefix: String,
     registry_url: String,
@@ -150,22 +147,13 @@ struct AdminContext {
 
 impl AdminContext {
     async fn new() -> anyhow::Result<Self> {
-        let postgres_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://postgres:postgres@postgres:5432/kels_registry".to_string()
-        });
         let identity_url =
             std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity".to_string());
         let registry_url =
             std::env::var("REGISTRY_URL").unwrap_or_else(|_| "http://localhost".to_string());
 
-        let pg_pool = PgPool::connect(&postgres_url)
-            .await
-            .context("Failed to connect to PostgreSQL")?;
-
         let identity_client = IdentityClient::new(&identity_url);
         let self_prefix = identity_client.get_prefix().await?;
-
-        let peer_repo = Arc::new(PeerRepository::new(pg_pool));
 
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -173,7 +161,6 @@ impl AdminContext {
             .context("Failed to create HTTP client")?;
 
         Ok(Self {
-            peer_repo,
             identity_client,
             self_prefix,
             registry_url,
@@ -664,8 +651,6 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
 }
 
 async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
-    use verifiable_storage::Chained;
-
     // 1. Fetch the current proposal from the registry
     let mut target_url = ctx.get_leader_url().await?;
     let signed = sign_admin_request(ctx).await?;
@@ -823,11 +808,28 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
 }
 
 async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
-    // Get all distinct prefixes
-    let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
+    let url = format!("{}/api/peers?all=true", ctx.registry_url);
+    let resp = ctx.http_client.get(&url).send().await?;
 
-    if prefixes.is_empty() {
+    if !resp.status().is_success() {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to list peers: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    let response: PeersResponse = resp.json().await?;
+    let peers: Vec<_> = response
+        .peers
+        .iter()
+        .filter_map(|h| h.records.last())
+        .collect();
+
+    if peers.is_empty() {
         println!("No peers in allowlist");
         return Ok(());
     }
@@ -835,65 +837,103 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
     println!("{:<20} {:<50} {:<8}", "NODE_ID", "PEER_ID", "STATUS");
     println!("{}", "-".repeat(82));
 
-    for prefix in prefixes {
-        if let Some(peer) = ctx.peer_repo.get_latest(&prefix).await? {
-            let status = if peer.active { "active" } else { "inactive" };
-            println!(
-                "{:<20} {:<50} {:<8}",
-                peer.node_id, peer.peer_prefix, status
-            );
-        }
+    for peer in peers {
+        let status = if peer.active { "active" } else { "inactive" };
+        println!(
+            "{:<20} {:<50} {:<8}",
+            peer.node_id, peer.peer_prefix, status
+        );
     }
 
     Ok(())
 }
 
 async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
-    // Get all distinct prefixes
-    let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
+    let url = format!("{}/api/peers", ctx.registry_url);
+    let resp = ctx.http_client.get(&url).send().await?;
+
+    if !resp.status().is_success() {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to fetch allowlist: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    let response: PeersResponse = resp.json().await?;
+    let active_peers: Vec<_> = response
+        .peers
+        .iter()
+        .filter_map(|h| h.records.last())
+        .filter(|p| p.active)
+        .collect();
 
     println!("Current Allowlist:");
     println!("{}", "=".repeat(60));
 
-    let mut active_count = 0;
-    for prefix in &prefixes {
-        if let Some(peer) = ctx.peer_repo.get_latest(prefix).await?
-            && peer.active
-        {
-            active_count += 1;
-            println!("  {} ({})", peer.peer_prefix, peer.node_id);
-        }
+    for peer in &active_peers {
+        println!("  {} ({})", peer.peer_prefix, peer.node_id);
     }
 
     println!("{}", "=".repeat(60));
-    println!("Total authorized peers: {}", active_count);
+    println!("Total authorized peers: {}", active_peers.len());
     Ok(())
 }
 
 async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
-    // Get all distinct prefixes
-    let query = ColumnQuery::new(PeerRepository::TABLE_NAME, "prefix").distinct();
-    let prefixes: Vec<String> = ctx.peer_repo.pool.fetch_column(query).await?;
+    let url = format!("{}/api/federation/proposals?audit=true", ctx.registry_url);
+    let resp = ctx.http_client.get(&url).send().await?;
 
-    if prefixes.is_empty() {
+    if !resp.status().is_success() {
+        let error: serde_json::Value = resp.json().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Failed to fetch proposal history: {}",
+            error
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+
+    let response: CompletedProposalsResponse = resp.json().await?;
+
+    if response.additions.is_empty() && response.removals.is_empty() {
         println!("No peer history");
         return Ok(());
     }
 
-    for prefix in prefixes {
-        let history = ctx.peer_repo.get_history(&prefix).await?;
-        if let Some(latest) = history.last() {
-            println!("\nPeer: {} ({})", latest.peer_prefix, latest.node_id);
-            println!("{}", "-".repeat(60));
-            for peer in &history {
-                let status = if peer.active { "active" } else { "inactive" };
+    if !response.additions.is_empty() {
+        println!("Addition History");
+        println!("{}", "=".repeat(60));
+        for pwv in &response.additions {
+            if let Some(p) = pwv.history.inception() {
+                let status = pwv.status(p.threshold);
                 println!(
-                    "  v{}: {} - {} (SAID: {}...)",
-                    peer.version,
+                    "  {} - {:?} (proposer: {}, votes: {})",
+                    p.peer_prefix,
                     status,
-                    peer.created_at,
-                    &peer.said[..12.min(peer.said.len())]
+                    p.proposer,
+                    pwv.approval_count()
+                );
+            }
+        }
+    }
+
+    if !response.removals.is_empty() {
+        println!("\nRemoval History");
+        println!("{}", "=".repeat(60));
+        for rwv in &response.removals {
+            if let Some(p) = rwv.history.inception() {
+                let status = rwv.status(p.threshold);
+                println!(
+                    "  {} - {:?} (proposer: {}, votes: {})",
+                    p.peer_prefix,
+                    status,
+                    p.proposer,
+                    rwv.approval_count()
                 );
             }
         }

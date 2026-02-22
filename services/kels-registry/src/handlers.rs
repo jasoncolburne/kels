@@ -23,7 +23,6 @@ use kels::{
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
-use verifiable_storage_postgres::{Order, Query as StorageQuery, QueryExecutor};
 
 use kels::IdentityClient;
 
@@ -32,7 +31,6 @@ use crate::{
         FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
         SignedFederationRpc,
     },
-    repository::RegistryRepository,
     store::{RegistryStore, StoreError},
 };
 
@@ -44,7 +42,6 @@ const IP_RATE_LIMIT_BURST: u32 = 1000;
 
 pub struct AppState {
     pub store: RegistryStore,
-    pub repo: Arc<RegistryRepository>,
     pub federation_node: Option<Arc<FederationNode>>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
@@ -161,22 +158,18 @@ async fn verify_and_authorize<T: serde::Serialize>(
 ) -> Result<Peer, ApiError> {
     let peer_prefix_str = &signed_request.peer_prefix;
 
-    // Look up the peer to verify they are in the allowlist
-    let query = StorageQuery::<Peer>::new()
-        .eq("peer_prefix", peer_prefix_str)
-        .order_by("version", Order::Desc)
-        .limit(1);
+    // Look up the peer from Raft state (source of truth)
+    let federation_node = state
+        .federation_node
+        .as_ref()
+        .ok_or_else(|| ApiError::internal_error("Federation not configured"))?;
+    let peer = {
+        let sm = federation_node.state_machine().inner().lock().await;
+        sm.get_peer(peer_prefix_str).cloned()
+    };
 
-    let peers: Vec<Peer> = state
-        .repo
-        .peers
-        .pool
-        .fetch(query)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to query allowlist: {}", e)))?;
-
-    let peer = match peers.into_iter().next() {
-        Some(peer) if peer.active => peer.clone(),
+    let peer = match peer {
+        Some(peer) if peer.active => peer,
         Some(_) => {
             return Err(ApiError::forbidden(format!(
                 "Peer {} is not authorized (deactivated)",
@@ -371,7 +364,6 @@ pub struct RegistryKelState {
 /// State for federation endpoints.
 pub struct FederationState {
     pub node: Arc<FederationNode>,
-    pub repo: Arc<RegistryRepository>,
     pub identity_client: Arc<IdentityClient>,
 }
 
@@ -1166,13 +1158,90 @@ pub async fn admin_vote_proposal(
             peer_prefix,
             current_votes,
             votes_needed,
-        } => Ok(Json(ProposalResponse {
-            proposal_id,
-            status: "removal_approved".to_string(),
-            votes_needed,
-            current_votes,
-            message: format!("Removal approved! Peer {} removed.", peer_prefix),
-        })),
+            proposal,
+        } => {
+            if let Some(_removal_proposal) = proposal {
+                let self_prefix = state.node.config().self_prefix.clone();
+
+                // Idempotency: if peer is already inactive, skip deactivate/anchor/submit
+                let current_peer = state
+                    .node
+                    .state_machine()
+                    .inner()
+                    .lock()
+                    .await
+                    .get_peer(&peer_prefix)
+                    .cloned();
+
+                let already_inactive = current_peer.as_ref().is_some_and(|p| !p.active);
+
+                if !already_inactive {
+                    let active_peer = current_peer.ok_or_else(|| {
+                        ApiError::internal_error(format!(
+                            "Peer {} not found in Raft state for deactivation",
+                            peer_prefix
+                        ))
+                    })?;
+
+                    // Set authorizing_kel before deactivate() so the SAID
+                    // is derived over the correct content
+                    let mut to_deactivate = active_peer.clone();
+                    to_deactivate.authorizing_kel = self_prefix.clone();
+                    let deactivated = to_deactivate.deactivate().map_err(|e| {
+                        ApiError::internal_error(format!("Failed to deactivate peer: {}", e))
+                    })?;
+
+                    state
+                        .identity_client
+                        .anchor(&deactivated.said)
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal_error(format!(
+                                "Failed to anchor deactivated peer SAID: {}",
+                                e
+                            ))
+                        })?;
+
+                    // Eagerly submit own KEL to Raft after anchoring
+                    if let Ok(own_kel) = state.identity_client.get_kel().await
+                        && let Some(prefix) = own_kel.prefix()
+                    {
+                        let raft_count = state
+                            .node
+                            .get_member_kel(prefix)
+                            .await
+                            .map(|k| k.events().len())
+                            .unwrap_or(0);
+                        let all_events = own_kel.events();
+                        if all_events.len() > raft_count {
+                            let events = all_events[raft_count..].to_vec();
+                            if let Err(e) = state.node.submit_key_events(events).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to eagerly submit own KEL to Raft after removal anchor"
+                                );
+                            }
+                        }
+                    }
+
+                    state.node.remove_peer(deactivated).await.map_err(|e| {
+                        ApiError::internal_error(format!("Failed to remove peer via Raft: {}", e))
+                    })?;
+                }
+
+                return Ok(Json(ProposalResponse {
+                    proposal_id,
+                    status: "removal_approved".to_string(),
+                    votes_needed,
+                    current_votes,
+                    message: format!("Removal approved! Peer {} deactivated.", peer_prefix),
+                }));
+            }
+
+            Err(ApiError::internal_error(
+                "Removal approved but no proposal data returned".to_string(),
+            ))
+        }
         FederationResponse::ProposalNotFound(id) => {
             Err(ApiError::not_found(format!("Proposal not found: {}", id)))
         }
@@ -1197,17 +1266,30 @@ pub async fn admin_vote_proposal(
     }
 }
 
+/// Query parameters for the peers endpoint.
+#[derive(Debug, Deserialize)]
+pub struct PeersQuery {
+    #[serde(default)]
+    pub all: bool,
+}
+
 /// List all peers from federation.
 ///
-/// Peers come from the Raft state machine.
+/// Peers come from the Raft state machine. By default returns only active peers.
+/// Use `?all=true` to include deactivated peers.
 pub async fn list_peers_federated(
     State(state): State<Arc<FederationState>>,
+    Query(query): Query<PeersQuery>,
 ) -> Result<Json<PeersResponse>, ApiError> {
-    let core_peers = state.node.peers().await;
+    let core_peers = if query.all {
+        state.node.all_peers().await
+    } else {
+        state.node.peers().await
+    };
 
     let histories: Vec<PeerHistory> = core_peers
         .into_iter()
-        .filter(|p| p.active)
+        .filter(|p| query.all || p.active)
         .map(|peer| PeerHistory {
             prefix: peer.prefix.clone(),
             records: vec![peer],

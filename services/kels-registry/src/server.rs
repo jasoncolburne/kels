@@ -123,7 +123,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database initialized");
 
-    let repo = Arc::new(repo);
     let store = RegistryStore::new(redis_conn, "kels-registry");
 
     // Connect to identity service to get the registry's prefix
@@ -215,7 +214,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         Some(node.clone()),
                         Some(Arc::new(FederationState {
                             node,
-                            repo: repo.clone(),
                             identity_client: identity_client.clone(),
                         })),
                     )
@@ -238,7 +236,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 
     let state = Arc::new(AppState {
         store,
-        repo: repo.clone(),
         federation_node,
         ip_rate_limits: dashmap::DashMap::new(),
     });
