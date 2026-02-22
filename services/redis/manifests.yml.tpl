@@ -20,7 +20,7 @@ data:
     user kels on #${var.redis.kelsPasswordHash} ~kels:kel:* ~kels:verified-peer:* %R~kels:gossip:ready &kel_updates +get +set +setex +del +publish +subscribe +ping
 
     # ACL: Gossip service
-    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates +get +set +del +subscribe +hset +hgetall +sadd +srem +sismember +ping
+    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates +get +set +del +subscribe +hset +hgetall +sadd +srem +sismember +zadd +zcard +zpopmin +zrem +ping
 
     # ACL: Registry service
     user registry on #${var.redis.registryPasswordHash} ~kels-registry:* +get +set +del +sadd +srem +smembers +multi +exec +ping
