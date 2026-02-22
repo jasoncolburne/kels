@@ -1093,7 +1093,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     // Verify SubmitKeyEvents is from a trusted member
                     if let FederationRequest::SubmitKeyEvents(ref events) = request
                         && let Some(first) = events.first()
-                        && !self.config.is_member(&first.event.prefix)
+                        && !self.config.is_trusted_prefix(&first.event.prefix)
                     {
                         warn!(
                             prefix = %first.event.prefix,
