@@ -4,11 +4,8 @@
 
 use verifiable_storage_postgres::Stored;
 
-use crate::{
-    peer_store::PeerRepository,
-    raft_store::{
-        RaftLogAuditRepository, RaftLogRepository, RaftStateRepository, RaftVoteRepository,
-    },
+use crate::raft_store::{
+    RaftLogAuditRepository, RaftLogRepository, RaftStateRepository, RaftVoteRepository,
 };
 
 /// Combined repository that manages all kels-registry database tables.
@@ -20,7 +17,6 @@ use crate::{
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct RegistryRepository {
-    pub peers: PeerRepository,
     pub raft_votes: RaftVoteRepository,
     pub raft_logs: RaftLogRepository,
     pub raft_state: RaftStateRepository,

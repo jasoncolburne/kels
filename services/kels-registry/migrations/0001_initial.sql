@@ -1,27 +1,5 @@
--- KELS Registry peer allowlist schema
+-- KELS Registry schema
 BEGIN;
-
-CREATE TABLE IF NOT EXISTS peer (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
-    version BIGINT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    peer_prefix TEXT NOT NULL,
-    node_id TEXT NOT NULL,
-    authorizing_kel CHAR(44) NOT NULL,
-    active BOOLEAN NOT NULL,
-    -- HTTP URL for the KELS service
-    kels_url TEXT NOT NULL,
-    -- Gossip address (host:port)
-    gossip_addr TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_peer_prefix ON peer(prefix);
-CREATE INDEX IF NOT EXISTS idx_peer_version ON peer(prefix, version DESC);
-CREATE INDEX IF NOT EXISTS idx_peer_active ON peer(peer_prefix) WHERE active = true;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_prefix_version_unique ON peer(prefix, version);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_node_version_unique ON peer(node_id, version);
 
 -- Raft consensus state for federation (content-addressed, chained)
 -- Each registry maintains its own Raft state keyed by node_id

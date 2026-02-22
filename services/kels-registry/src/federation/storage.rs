@@ -980,7 +980,9 @@ mod tests {
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
-        let request = FederationRequest::RemovePeer(peer.peer_prefix.clone());
+        // Deactivate the peer for RemovePeer (requires inactive peer)
+        let deactivated = peer.deactivate().unwrap();
+        let request = FederationRequest::RemovePeer(deactivated);
 
         let original = Entry {
             log_id: LogStore::make_log_id(7, 2, 42),
@@ -1003,7 +1005,7 @@ mod tests {
         assert!(
             matches!(
                 recovered.payload,
-                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer_prefix)) if peer_prefix == "12D3KooWRoundtrip"
+                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.peer_prefix == "12D3KooWRoundtrip"
             ),
             "Expected Normal payload with RemovePeer and matching peer_prefix"
         );
