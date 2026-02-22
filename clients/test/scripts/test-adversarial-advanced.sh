@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-adversarial-advanced.sh - Advanced Adversarial Tests (Multi-Node)
 # Tests 3-way fork recovery scenarios where adversary events are injected
 # on separate nodes simultaneously, requiring gossip-based recovery.
@@ -16,12 +16,7 @@
 #   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.kels-node-e.kels)
 #   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.kels-node-f.kels)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
@@ -33,52 +28,7 @@ NODE_D_URL="http://${NODE_D_KELS_HOST}"
 NODE_E_URL="http://${NODE_E_KELS_HOST}"
 NODE_F_URL="http://${NODE_F_KELS_HOST}"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
-
-run_test_expect_fail() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing (expect fail): ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${RED}FAILED: ${name} (expected failure but succeeded)${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    else
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    fi
-}
+init_temp_dir
 
 wait_for_propagation() {
     echo "Waiting ${GOSSIP_PROPAGATION_DELAY}s for gossip propagation..."
@@ -139,26 +89,6 @@ kels_match_all() {
     fi
 }
 
-# Get event count for a KEL on a given node
-get_event_count() {
-    local url="$1"
-    local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
-}
-
-# Check if a KEL exists on a given node
-kel_exists_on_node() {
-    local url="$1"
-    local prefix="$2"
-    local response
-    response=$(curl -s -w "\n%{http_code}" "$url/api/kels/kel/$prefix")
-    local http_code
-    http_code=$(echo "$response" | tail -n1)
-    [ "$http_code" = "200" ]
-}
-
 echo "========================================="
 echo "KELS Advanced Adversarial Test Suite"
 echo "========================================="
@@ -178,19 +108,9 @@ fi
 
 # Wait for all KELS servers to be ready
 echo "Waiting for KELS servers..."
-for url in "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"; do
-    for i in {1..30}; do
-        if curl -s "$url/health" > /dev/null 2>&1; then
-            echo "  $url is ready"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo -e "${RED}$url not ready after 30 seconds${NC}"
-            exit 1
-        fi
-        sleep 1
-    done
-done
+wait_for_health "$NODE_D_URL" "$NODE_D_URL" || exit 1
+wait_for_health "$NODE_E_URL" "$NODE_E_URL" || exit 1
+wait_for_health "$NODE_F_URL" "$NODE_F_URL" || exit 1
 echo ""
 
 # ========================================
@@ -304,21 +224,5 @@ run_test "All nodes have matching KELs after ror+rec recovery" wait_for_converge
 
 echo ""
 
-# ========================================
-# Print Summary
-# ========================================
-echo ""
-echo "========================================="
-echo "Advanced Adversarial Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Advanced Adversarial Test Summary"
+exit_with_result

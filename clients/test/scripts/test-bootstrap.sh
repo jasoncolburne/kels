@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-bootstrap.sh - Bootstrap Sync Integration Tests
 # Tests peer allowlist, bootstrap sync, and cross-node event propagation
 #
@@ -19,12 +19,7 @@
 #   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
 #   REGISTRY_HOST - registry hostname (default: kels-registry.kels-registry-a.kels)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
@@ -44,35 +39,7 @@ REGISTRY_URL="http://${REGISTRY_HOST}"
 
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
+init_temp_dir
 
 check_registry_health() {
     curl -s "$REGISTRY_URL/health" > /dev/null 2>&1
@@ -97,7 +64,7 @@ get_prefix_count() {
     echo "${count:-0}"
 }
 
-kel_exists_on_node() {
+wait_for_kel_on_node() {
     local url="$1"
     local prefix="$2"
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
@@ -196,17 +163,7 @@ done
 
 # Wait for KELS servers
 for url in "$NODE_A_URL" "$NODE_B_URL" "$NODE_C_URL" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"; do
-    for i in {1..30}; do
-        if curl -s "$url/health" > /dev/null 2>&1; then
-            echo "  $url is ready"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo -e "${RED}$url not ready after 30 seconds${NC}"
-            exit 1
-        fi
-        sleep 1
-    done
+    wait_for_health "$url" "$url" || exit 1
 done
 echo ""
 
@@ -318,10 +275,10 @@ echo ""
 # Poll until prefix counts match between nodes
 run_test "Prefix counts match between nodes" wait_for_prefix_counts_match "$NODE_A_URL" "$NODE_B_URL"
 
-run_test "Created KEL exists on node-a" kel_exists_on_node "$NODE_A_URL" "$PREFIX1"
-run_test "Created KEL synced to node-b" kel_exists_on_node "$NODE_B_URL" "$PREFIX1"
-run_test "Created KEL synced to node-c" kel_exists_on_node "$NODE_C_URL" "$PREFIX1"
-run_test "Created KEL synced to node-d" kel_exists_on_node "$NODE_D_URL" "$PREFIX1"
+run_test "Created KEL exists on node-a" wait_for_kel_on_node "$NODE_A_URL" "$PREFIX1"
+run_test "Created KEL synced to node-b" wait_for_kel_on_node "$NODE_B_URL" "$PREFIX1"
+run_test "Created KEL synced to node-c" wait_for_kel_on_node "$NODE_C_URL" "$PREFIX1"
+run_test "Created KEL synced to node-d" wait_for_kel_on_node "$NODE_D_URL" "$PREFIX1"
 
 echo ""
 
@@ -372,21 +329,5 @@ if check_registry_health; then
     echo ""
 fi
 
-# ========================================
-# Print Summary
-# ========================================
-echo ""
-echo "========================================="
-echo "Bootstrap Sync Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Bootstrap Sync Test Summary"
+exit_with_result

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-consistency.sh - Deep KEL Consistency Verification
 # Compares all prefixes and KEL contents across all nodes to ensure consistency.
 #
@@ -20,12 +20,7 @@
 #   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.kels-node-e.kels)
 #   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.kels-node-f.kels)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
@@ -53,8 +48,7 @@ declare -a PREFIX_NODE_URLS=(
     "http://${NODE_D_KELS_HOST}"
 )
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+init_temp_dir
 
 FAILURES=0
 

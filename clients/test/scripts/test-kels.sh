@@ -1,66 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-kels.sh - Basic KEL Operations Test
 # Tests core KELS functionality: inception, rotation, anchoring, decommission
 #
 # Usage: test-kels.sh
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Service endpoints
 TEST_KELS_HOST="${TEST_KELS_HOST:-kels}"
 TEST_KELS_PORT="${TEST_KELS_PORT:-80}"
 KELS_URL="http://${TEST_KELS_HOST}:${TEST_KELS_PORT}"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
-
-run_test_expect_fail() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing (expect fail): ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${RED}FAILED: ${name} (expected failure but succeeded)${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    else
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    fi
-}
+init_temp_dir
 
 echo "========================================="
 echo "KELS Basic Operations Test"
@@ -72,17 +23,7 @@ echo ""
 
 # Wait for KELS to be ready
 echo "Waiting for KELS server..."
-for i in {1..30}; do
-    if curl -s "$KELS_URL/health" > /dev/null 2>&1; then
-        echo "KELS server is ready"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo -e "${RED}KELS server not ready after 30 seconds${NC}"
-        exit 1
-    fi
-    sleep 1
-done
+wait_for_health "$KELS_URL" "KELS server" || exit 1
 echo ""
 
 # Test 1: Create inception event
@@ -131,19 +72,5 @@ run_test_expect_fail "Reject decommission on decommissioned KEL" kels-cli -u "$K
 # Recovery is for adversarial situations, not for undoing your own decommission
 run_test_expect_fail "Reject recover on self-decommissioned KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX"
 
-# Print summary
-echo ""
-echo "========================================="
-echo "Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "KELS Basic Operations Test Summary"
+exit_with_result

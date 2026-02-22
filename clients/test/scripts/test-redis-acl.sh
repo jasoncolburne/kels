@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-redis-acl.sh - Redis ACL Enforcement Tests
 # Verifies per-service ACL users, command restrictions, key isolation, and TTLs.
 #
@@ -8,38 +8,13 @@
 #   GOSSIP_PASSWORD     - gossip user password (default: gossip-redis-pass)
 #   REGISTRY_PASSWORD   - registry user password (default: registry-redis-pass)
 
-set -euo pipefail
-
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 REDIS_HOST="${REDIS_HOST:-redis}"
 KELS_PASSWORD="${KELS_PASSWORD:-kels-redis-pass}"
 GOSSIP_PASSWORD="${GOSSIP_PASSWORD:-gossip-redis-pass}"
 REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-registry-redis-pass}"
-
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    if "$@" 2>&1; then
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++)) || true
-        return 0
-    else
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++)) || true
-        return 1
-    fi
-}
 
 # Redis command helpers for each user
 redis_kels() {
@@ -217,20 +192,5 @@ run_test "Anti-entropy key persists (no TTL)" bash -c '
 
 echo ""
 
-# ==========================================
-# Summary
-# ==========================================
-echo "========================================="
-echo "Redis ACL Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Redis ACL Test Summary"
+exit_with_result
