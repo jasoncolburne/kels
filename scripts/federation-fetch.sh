@@ -34,14 +34,14 @@ if [ -f "$REGISTRIES_FILE" ]; then
             "$REGISTRIES_FILE" > "$REGISTRIES_FILE.tmp"
     else
         jq --argjson id "$NEXT_ID" --arg name "$ENV_NAME" --arg prefix "$PREFIX" --arg url "$URL" \
-            '. + [{"id": $id, "name": $name, "prefix": $prefix, "url": $url}]' \
+            '. + [{"id": $id, "name": $name, "prefix": $prefix, "url": $url, "active": true}]' \
             "$REGISTRIES_FILE" > "$REGISTRIES_FILE.tmp"
     fi
     mv "$REGISTRIES_FILE.tmp" "$REGISTRIES_FILE"
 else
     # Create new file
     jq -n --arg name "$ENV_NAME" --arg prefix "$PREFIX" --arg url "$URL" \
-        '[{"id": 0, "name": $name, "prefix": $prefix, "url": $url}]' > "$REGISTRIES_FILE"
+        '[{"id": 0, "name": $name, "prefix": $prefix, "url": $url, "active": true}]' > "$REGISTRIES_FILE"
 fi
 
 echo "Registry prefix saved for $ENV_NAME: $PREFIX"

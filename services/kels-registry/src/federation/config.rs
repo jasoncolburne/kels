@@ -7,12 +7,8 @@ use serde_json;
 
 use super::types::{FederationError, FederationNodeId};
 
-fn default_true() -> bool {
-    true
-}
-
 /// Trusted registry members - MUST be set at compile time.
-/// Format: JSON array of objects with `id` and `prefix` fields.
+/// Format: JSON array of objects with `id`, `prefix`, and `active` fields.
 /// Used for federation membership with explicit Raft node IDs.
 const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 
@@ -21,7 +17,6 @@ const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 struct TrustedMember {
     id: FederationNodeId,
     prefix: String,
-    #[serde(default = "default_true")]
     active: bool,
 }
 
@@ -608,21 +603,21 @@ mod tests {
     }
 
     #[test]
-    fn test_trusted_member_deserialization_defaults_active() {
+    fn test_trusted_member_deserialization_missing_active_rejected() {
         let json = r#"[{"id": 0, "prefix": "EA"}]"#;
-        let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
-        assert!(members[0].active);
+        let result: Result<Vec<TrustedMember>, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_trusted_member_deserialization_explicit_inactive() {
+    fn test_trusted_member_deserialization_inactive() {
         let json = r#"[{"id": 0, "prefix": "EA", "active": false}]"#;
         let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
         assert!(!members[0].active);
     }
 
     #[test]
-    fn test_trusted_member_deserialization_explicit_active() {
+    fn test_trusted_member_deserialization_active() {
         let json = r#"[{"id": 0, "prefix": "EA", "active": true}]"#;
         let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
         assert!(members[0].active);
