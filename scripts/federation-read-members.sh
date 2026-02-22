@@ -8,4 +8,4 @@ if [ ! -f "$REGISTRIES_FILE" ]; then
     exit 0
 fi
 
-jq -c '[.[] | {id, prefix}]' "$REGISTRIES_FILE"
+jq -c '[.[] | {id, prefix, active}]' "$REGISTRIES_FILE"

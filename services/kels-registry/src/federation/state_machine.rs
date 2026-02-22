@@ -753,7 +753,7 @@ impl StateMachineStore {
         said: &str,
         member_prefix: &str,
     ) -> Result<(), String> {
-        if !self.config.is_member(member_prefix) {
+        if !self.config.is_trusted_prefix(member_prefix) {
             return Err(format!("Unknown member: {}", member_prefix));
         }
 
@@ -824,9 +824,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     if let FederationRequest::AddPeer(ref peer) = request {
                         let member_prefixes: std::collections::HashSet<&str> = self
                             .config
-                            .members
+                            .trusted_prefixes
                             .iter()
-                            .map(|m| m.prefix.as_str())
+                            .map(|p| p.as_str())
                             .collect();
 
                         let candidate_voters =
@@ -928,9 +928,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     if let FederationRequest::RemovePeer(ref peer) = request {
                         let member_prefixes: std::collections::HashSet<&str> = self
                             .config
-                            .members
+                            .trusted_prefixes
                             .iter()
-                            .map(|m| m.prefix.as_str())
+                            .map(|p| p.as_str())
                             .collect();
 
                         // Find a completed removal proposal, its threshold, and verify votes
