@@ -32,23 +32,6 @@ spec:
 ---
 
 kind: Run
-name: federation-read-url
-type: exec
-description: Read the registry URL for the current environment
-
-include:
-  - .kels/federated-registries.json
-  - scripts/federation-read-url.sh
-
-spec:
-  command:
-    - bash
-    - scripts/federation-read-url.sh
-    - ${environment.name}
-
----
-
-kind: Run
 name: federation-read-prefixes
 type: exec
 description: Read all trusted registry prefixes (comma-separated)

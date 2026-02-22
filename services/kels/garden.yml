@@ -35,7 +35,6 @@ type: kubernetes
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.federation-read-url
   - run.federation-read-urls
   - build.kels
   - deploy.postgres

@@ -79,8 +79,6 @@ pub struct Config {
     pub hsm_url: String,
     /// Identity service URL for KELS prefix
     pub identity_url: String,
-    /// Registry service URL (runtime)
-    pub registry_url: String,
     /// All federation registry URLs (for peer discovery)
     pub federation_registry_urls: Vec<String>,
     /// Gossip listen address (e.g., 0.0.0.0:4001)
@@ -108,7 +106,6 @@ pub struct EnvValues {
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
     pub identity_url: Option<String>,
-    pub registry_url: Option<String>,
     pub federation_registry_urls: Option<String>,
     pub listen_addr: Option<String>,
     pub advertise_addr: Option<String>,
@@ -126,10 +123,6 @@ impl Config {
             .kels_advertise_url
             .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
 
-        let registry_url = env
-            .registry_url
-            .ok_or_else(|| ServiceError::Config("REGISTRY_URL is required".to_string()))?;
-
         let listen_addr_str = env
             .listen_addr
             .unwrap_or_else(|| "0.0.0.0:4001".to_string());
@@ -144,7 +137,7 @@ impl Config {
         let federation_registry_urls: Vec<String> = env
             .federation_registry_urls
             .map(|s| s.split(',').map(|u| u.trim().to_string()).collect())
-            .unwrap_or_else(|| vec![registry_url.clone()]);
+            .unwrap_or_default();
 
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
@@ -157,7 +150,6 @@ impl Config {
             identity_url: env
                 .identity_url
                 .unwrap_or_else(|| "http://identity".to_string()),
-            registry_url,
             federation_registry_urls,
             listen_addr,
             advertise_addr,
@@ -182,7 +174,6 @@ impl Config {
             redis_url: std::env::var("REDIS_URL").ok(),
             hsm_url: std::env::var("HSM_URL").ok(),
             identity_url: std::env::var("IDENTITY_URL").ok(),
-            registry_url: std::env::var("REGISTRY_URL").ok(),
             federation_registry_urls: std::env::var("FEDERATION_REGISTRY_URLS").ok(),
             listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
             advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
@@ -216,7 +207,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Redis URL: {}", config.redis_url);
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
-    info!("Registry URL: {:?}", config.registry_url);
     info!(
         "Federation registry URLs: {:?}",
         config.federation_registry_urls
@@ -283,18 +273,16 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let registry_signer: Arc<dyn kels::RegistrySigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
-    // Local registry URL for authenticated operations (registration, etc.)
-    let registry_urls: Vec<String> = vec![config.registry_url.clone()];
-    // All federation registry URLs for peer discovery
+    // All federation registry URLs for peer discovery and authenticated operations
     let federation_registry_urls = config.federation_registry_urls.clone();
 
     // Registry client with signer
     let mut registry_client =
-        MultiRegistryClient::with_signer(registry_urls.clone(), registry_signer.clone());
+        MultiRegistryClient::with_signer(federation_registry_urls.clone(), registry_signer.clone());
 
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
-    info!("urls: {:?}", registry_urls);
+    info!("urls: {:?}", federation_registry_urls);
     let registry_kels = registry_client
         .fetch_verified_registry_kels(true)
         .await
@@ -313,16 +301,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     info!("Registry prefixes verified: {:?}", registry_prefixes);
-
-    let registry_prefix = match registry_client.prefix_for_url(&config.registry_url).await {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(ServiceError::Config(format!(
-                "Can't find prefix for kels url {}: {}",
-                &config.registry_url, e
-            )));
-        }
-    };
 
     // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -365,10 +343,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 2-3: Check allowlist and wait if not authorized
     loop {
-        match bootstrap
-            .is_peer_authorized(&peer_prefix_str, &registry_prefix)
-            .await
-        {
+        match bootstrap.is_peer_authorized(&peer_prefix_str).await {
             Ok(true) => {
                 info!("Peer {} is authorized in allowlist", peer_prefix_str);
                 break;
@@ -688,15 +663,6 @@ mod tests {
     fn test_config_missing_required() {
         // Missing kels_advertise_url
         let env = EnvValues {
-            registry_url: Some("http://registry.example.com".to_string()),
-            ..Default::default()
-        };
-        let result = Config::from_values(env);
-        assert!(result.is_err());
-
-        // Missing registry_url
-        let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
             ..Default::default()
         };
         let result = Config::from_values(env);
@@ -707,14 +673,12 @@ mod tests {
     fn test_config_with_required_vars() {
         let env = EnvValues {
             kels_advertise_url: Some("http://kels.example.com".to_string()),
-            registry_url: Some("http://registry.example.com".to_string()),
             ..Default::default()
         };
 
         let result = Config::from_values(env);
         if let Ok(config) = result {
             assert_eq!(config.kels_advertise_url, "http://kels.example.com");
-            assert_eq!(config.registry_url, "http://registry.example.com");
         }
     }
 
@@ -722,7 +686,6 @@ mod tests {
     fn test_config_defaults() {
         let env = EnvValues {
             kels_advertise_url: Some("http://kels.example.com".to_string()),
-            registry_url: Some("http://registry.example.com".to_string()),
             ..Default::default()
         };
 
@@ -743,7 +706,6 @@ mod tests {
     fn test_config_invalid_listen_addr() {
         let env = EnvValues {
             kels_advertise_url: Some("http://kels.example.com".to_string()),
-            registry_url: Some("http://registry.example.com".to_string()),
             listen_addr: Some("not-a-valid-address".to_string()),
             ..Default::default()
         };
