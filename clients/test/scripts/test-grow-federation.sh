@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-grow-federation.sh - Federation Growth Verification
 # Verifies that a 4th registry has been added to the federation and all
 # registries report consistent Raft membership.
@@ -12,12 +12,7 @@
 #
 # Usage: test-grow-federation.sh
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Registry URLs
 REGISTRY_URLS=(
@@ -27,29 +22,6 @@ REGISTRY_URLS=(
     "http://kels-registry.kels-registry-d.kels"
 )
 REGISTRY_NAMES=(a b c d)
-
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
 
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  Federation Growth Verification${NC}"
@@ -66,15 +38,7 @@ echo
 for i in "${!REGISTRY_URLS[@]}"; do
     url="${REGISTRY_URLS[$i]}"
     name="${REGISTRY_NAMES[$i]}"
-    for attempt in {1..60}; do
-        if curl -sf "${url}/health" > /dev/null 2>&1; then
-            break
-        fi
-        if [ "$attempt" -eq 60 ]; then
-            echo -e "${RED}registry-${name} not healthy after 60 seconds${NC}"
-        fi
-        sleep 1
-    done
+    wait_for_health "$url" "registry-${name}" 60 || true
     run_test "registry-${name} is healthy" curl -sf "${url}/health"
 done
 
@@ -166,20 +130,5 @@ run_test "Node 0 reports nodeId 0" [ "$NODE_ID_0" = "0" ]
 
 echo
 
-# ========================================
-# Print Summary
-# ========================================
-echo -e "${CYAN}========================================${NC}"
-echo "Federation Growth Test Summary"
-echo -e "${CYAN}========================================${NC}"
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo -e "${CYAN}========================================${NC}"
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Federation Growth Test Summary"
+exit_with_result

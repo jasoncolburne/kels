@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-scheduled-rotation.sh - Identity Scheduled Rotation Tests
 # Verifies KEL structure after multiple scheduled rotations.
 #
@@ -10,39 +10,11 @@
 # Environment variables:
 #   IDENTITY_NS - Identity service namespace (default: kels-registry-a)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 IDENTITY_NS="${IDENTITY_NS:-kels-registry-a}"
 IDENTITY_URL="http://identity.${IDENTITY_NS}.kels"
-
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
 
 echo "========================================="
 echo "KELS Scheduled Rotation Test Suite"
@@ -53,17 +25,7 @@ echo ""
 
 # Wait for identity service to be ready
 echo "Waiting for identity service..."
-for i in {1..30}; do
-    if curl -s "$IDENTITY_URL/health" > /dev/null 2>&1; then
-        echo "  Identity service is ready"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo -e "${RED}Identity service not ready after 30 seconds${NC}"
-        exit 1
-    fi
-    sleep 1
-done
+wait_for_health "$IDENTITY_URL" "Identity service" || exit 1
 echo ""
 
 # ========================================
@@ -107,21 +69,5 @@ run_test "2nd rotation is ROT" [ "${KINDS[1]}" = "kels/v1/rot" ]
 
 echo ""
 
-# ========================================
-# Print Summary
-# ========================================
-echo ""
-echo "========================================="
-echo "Scheduled Rotation Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Scheduled Rotation Test Summary"
+exit_with_result

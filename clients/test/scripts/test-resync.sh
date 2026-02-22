@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-resync.sh - Anti-Entropy Stale Prefix Repair Integration Tests
 # Tests that failed gossip fetches are recorded as stale and resolved by anti-entropy.
 #
@@ -21,12 +21,7 @@ if [ "$MODE" != "setup" ] && [ "$MODE" != "verify" ]; then
     exit 1
 fi
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_URL="http://${NODE_A_KELS_HOST:-kels}"
@@ -36,35 +31,7 @@ RESYNC_WAIT="${RESYNC_WAIT:-30}"
 STALE_PREFIX_KEY="kels:anti_entropy:stale"
 STATE_FILE="/tmp/resync-test-state"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
+init_temp_dir
 
 # Redis helpers (authenticate as gossip user — accesses kels:anti_entropy:* keys)
 redis_cmd() {
@@ -95,38 +62,6 @@ stale_entries() {
     redis_cmd HGETALL "$STALE_PREFIX_KEY"
 }
 
-# KEL helpers
-get_event_count() {
-    local url="$1"
-    local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
-}
-
-get_latest_said() {
-    local url="$1"
-    local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
-    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
-}
-
-print_summary() {
-    local suite_name="$1"
-    echo ""
-    echo "========================================="
-    echo "$suite_name"
-    echo "========================================="
-    echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-    if [ $TESTS_FAILED -gt 0 ]; then
-        echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-    else
-        echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-    fi
-    echo "========================================="
-}
-
 # =====================================================================
 # SETUP MODE — DNS for node-b is broken
 # =====================================================================
@@ -142,19 +77,8 @@ if [ "$MODE" = "setup" ]; then
 
     # Wait for node-a KELS to be ready
     echo "Waiting for KELS servers..."
-    for url in "$NODE_A_URL" "$NODE_B_FQDN_URL"; do
-        for i in {1..30}; do
-            if curl -s "$url/health" > /dev/null 2>&1; then
-                echo "  $url is ready"
-                break
-            fi
-            if [ $i -eq 30 ]; then
-                echo -e "${RED}$url not ready after 30 seconds${NC}"
-                exit 1
-            fi
-            sleep 1
-        done
-    done
+    wait_for_health "$NODE_A_URL" "$NODE_A_URL" || exit 1
+    wait_for_health "$NODE_B_FQDN_URL" "$NODE_B_FQDN_URL" || exit 1
     echo ""
 
     # ========================================
@@ -294,10 +218,7 @@ if [ "$MODE" = "setup" ]; then
     echo ""
 
     print_summary "Anti-Entropy Stale Repair Setup Summary"
-
-    if [ $TESTS_FAILED -gt 0 ]; then
-        exit 1
-    fi
+    exit_with_result
 fi
 
 # =====================================================================
@@ -370,7 +291,5 @@ if [ "$MODE" = "verify" ]; then
     # Clean up state file
     rm -f "$STATE_FILE"
 
-    if [ $TESTS_FAILED -gt 0 ]; then
-        exit 1
-    fi
+    exit_with_result
 fi

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-shrink-federation.sh - Federation Shrink Verification
 # Verifies that after decommissioning registry-b, the remaining 3 registries
 # (a, c, d) form a healthy federation and gossip still works. Historical votes
@@ -13,12 +13,7 @@
 #
 # Usage: test-shrink-federation.sh
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Active registry URLs (b is decommissioned)
 ACTIVE_REGISTRY_URLS=(
@@ -33,53 +28,7 @@ DECOMMISSIONED_URL="http://kels-registry.kels-registry-b.kels"
 NODE_A_URL="http://kels.kels-node-a.kels"
 NODE_B_URL="http://kels.kels-node-b.kels"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
-
-run_test_expect_fail() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing (expect fail): ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${RED}FAILED: ${name} (expected failure but succeeded)${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    else
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    fi
-}
+init_temp_dir
 
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  Federation Shrink Verification${NC}"
@@ -96,15 +45,7 @@ echo
 for i in "${!ACTIVE_REGISTRY_URLS[@]}"; do
     url="${ACTIVE_REGISTRY_URLS[$i]}"
     name="${ACTIVE_REGISTRY_NAMES[$i]}"
-    for attempt in {1..60}; do
-        if curl -sf "${url}/health" > /dev/null 2>&1; then
-            break
-        fi
-        if [ "$attempt" -eq 60 ]; then
-            echo -e "${RED}registry-${name} not healthy after 60 seconds${NC}"
-        fi
-        sleep 1
-    done
+    wait_for_health "$url" "registry-${name}" 60 || true
     run_test "registry-${name} is healthy" curl -sf "${url}/health"
 done
 
@@ -173,17 +114,8 @@ echo "Creating KEL on node-a, verifying propagation to node-b..."
 echo
 
 # Wait for nodes to be ready
-for url in "$NODE_A_URL" "$NODE_B_URL"; do
-    for i in {1..30}; do
-        if curl -s "$url/health" > /dev/null 2>&1; then
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo -e "${RED}$url not ready after 30 seconds${NC}"
-        fi
-        sleep 1
-    done
-done
+wait_for_health "$NODE_A_URL" "$NODE_A_URL" || true
+wait_for_health "$NODE_B_URL" "$NODE_B_URL" || true
 
 PREFIX=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX"
@@ -204,20 +136,5 @@ run_test "KEL propagated to node-b after shrink" [ "$CONVERGED" = "true" ]
 
 echo
 
-# ========================================
-# Print Summary
-# ========================================
-echo -e "${CYAN}========================================${NC}"
-echo "Federation Shrink Test Summary"
-echo -e "${CYAN}========================================${NC}"
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo -e "${CYAN}========================================${NC}"
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Federation Shrink Test Summary"
+exit_with_result

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-gossip.sh - Gossip Protocol Integration Tests
 # Tests KEL synchronization between node-a and node-b via gossip
 #
@@ -12,12 +12,7 @@
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
 #   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
@@ -27,52 +22,7 @@ NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
-
-run_test_expect_fail() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing (expect fail): ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${RED}FAILED: ${name} (expected failure but succeeded)${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    else
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    fi
-}
+init_temp_dir
 
 wait_for_propagation() {
     echo "Waiting ${GOSSIP_PROPAGATION_DELAY}s for gossip propagation..."
@@ -129,35 +79,6 @@ wait_for_event_count() {
     return 1
 }
 
-# Check if a KEL exists on a given node
-kel_exists_on_node() {
-    local url="$1"
-    local prefix="$2"
-    local response
-    response=$(curl -s -w "\n%{http_code}" "$url/api/kels/kel/$prefix")
-    local http_code
-    http_code=$(echo "$response" | tail -n1)
-    [ "$http_code" = "200" ]
-}
-
-# Get the latest SAID for a KEL on a given node
-get_latest_said() {
-    local url="$1"
-    local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
-    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
-}
-
-# Get event count for a KEL on a given node
-get_event_count() {
-    local url="$1"
-    local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
-}
-
 # Compare KELs between nodes (using md5sum of full response)
 kels_match() {
     local prefix="$1"
@@ -179,19 +100,8 @@ echo ""
 
 # Wait for both KELS servers to be ready
 echo "Waiting for KELS servers..."
-for url in "$NODE_A_URL" "$NODE_B_URL"; do
-    for i in {1..30}; do
-        if curl -s "$url/health" > /dev/null 2>&1; then
-            echo "  $url is ready"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo -e "${RED}$url not ready after 30 seconds${NC}"
-            exit 1
-        fi
-        sleep 1
-    done
-done
+wait_for_health "$NODE_A_URL" "$NODE_A_URL" || exit 1
+wait_for_health "$NODE_B_URL" "$NODE_B_URL" || exit 1
 echo ""
 
 # ========================================
@@ -328,7 +238,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4"
 else
     echo -e "${YELLOW}Skipping: kels-cli not built with --features dev-tools${NC}"
-    ((TESTS_PASSED++))  # Count as passed since we can't test
+    TESTS_PASSED=$((TESTS_PASSED + 1))  # Count as passed since we can't test
 fi
 
 echo ""
@@ -350,11 +260,11 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
         run_test "Recovery propagated to node-b" wait_for_convergence "$PREFIX6"
     else
         echo -e "${YELLOW}Skipping: PREFIX6 not set from scenario 6${NC}"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     fi
 else
     echo -e "${YELLOW}Skipping: kels-cli not built with --features dev-tools${NC}"
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
 fi
 
 echo ""
@@ -385,21 +295,5 @@ run_test "Node-b shows dec event" [ "$LAST_KIND" = "kels/v1/dec" ]
 
 echo ""
 
-# ========================================
-# Print Summary
-# ========================================
-echo ""
-echo "========================================="
-echo "Gossip Protocol Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Gossip Protocol Test Summary"
+exit_with_result

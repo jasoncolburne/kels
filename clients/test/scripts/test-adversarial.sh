@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test-adversarial.sh - Adversarial Divergence and Recovery Tests
 # Tests KELS divergence detection and recovery mechanisms
 #
@@ -6,28 +6,14 @@
 #
 # Usage: test-adversarial.sh
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Service endpoints
 TEST_KELS_HOST="${TEST_KELS_HOST:-kels}"
 TEST_KELS_PORT="${TEST_KELS_PORT:-80}"
 KELS_URL="http://${TEST_KELS_HOST}:${TEST_KELS_PORT}"
 
-# Test state
-TESTS_PASSED=0
-TESTS_FAILED=0
-TEMP_DIR=$(mktemp -d)
-export KELS_CLI_HOME="$TEMP_DIR"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
+init_temp_dir
 
 # Directory swap helpers for adversary simulation
 save_adversary_keys() {
@@ -47,42 +33,6 @@ swap_to_owner() {
 cleanup_adversary_backup() {
     rm -rf "$KELS_CLI_HOME.adversary"
     rm -rf "$KELS_CLI_HOME.owner"
-}
-
-# Test helpers
-run_test() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing: ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    else
-        echo "$output"
-        echo -e "${RED}FAILED: ${name}${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    fi
-}
-
-run_test_expect_fail() {
-    local name="$1"
-    shift
-    echo -e "${YELLOW}Testing (expect fail): ${name}${NC}"
-    local output
-    if output=$("$@" 2>&1); then
-        echo "$output"
-        echo -e "${RED}FAILED: ${name} (expected failure but succeeded)${NC}"
-        ((TESTS_FAILED++))
-        return 1
-    else
-        echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
-        return 0
-    fi
 }
 
 # Helper: wait for expected KEL status (handles eventual consistency across replicas)
@@ -109,14 +59,14 @@ run_test_expect_divergence() {
     # Check server state for divergence (retry for eventual consistency)
     if await_kel_status "$prefix" "DIVERGENT"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
         local status
         status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
         echo "Expected status DIVERGENT but got: $status"
         echo -e "${RED}FAILED: ${name} (expected divergence but not detected)${NC}"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
         return 1
     fi
 }
@@ -134,12 +84,12 @@ run_test_expect_recovery_protected() {
     # Check if the error message indicates recovery protection
     if echo "$output" | grep -qi "recovery protected"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
         echo "Expected 'Recovery protected' error but got: $output"
         echo -e "${RED}FAILED: ${name} (expected recovery protected but not detected)${NC}"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
         return 1
     fi
 }
@@ -216,17 +166,7 @@ fi
 
 # Wait for KELS to be ready
 echo "Waiting for KELS server..."
-for i in {1..30}; do
-    if curl -s "$KELS_URL/health" > /dev/null 2>&1; then
-        echo "KELS server is ready"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo -e "${RED}KELS server not ready after 30 seconds${NC}"
-        exit 1
-    fi
-    sleep 1
-done
+wait_for_health "$KELS_URL" "KELS server" || exit 1
 echo ""
 
 # ========================================
@@ -1278,21 +1218,5 @@ cleanup_adversary_backup
 
 echo ""
 
-# ========================================
-# Print Summary
-# ========================================
-echo ""
-echo "========================================="
-echo "Adversarial Test Summary"
-echo "========================================="
-echo -e "Passed: ${GREEN}${TESTS_PASSED}${NC}"
-if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "Failed: ${RED}${TESTS_FAILED}${NC}"
-else
-    echo -e "Failed: ${GREEN}${TESTS_FAILED}${NC}"
-fi
-echo "========================================="
-
-if [ $TESTS_FAILED -gt 0 ]; then
-    exit 1
-fi
+print_summary "Adversarial Test Summary"
+exit_with_result
