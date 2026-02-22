@@ -509,7 +509,7 @@ impl Kel {
     }
 
     /// Does NOT verify delegation anchoring for delegated KELs.
-    pub fn verify(&self) -> Result<Option<DivergenceInfo>, KelsError> {
+    pub fn verify(&self) -> Result<(), KelsError> {
         if self.is_empty() {
             return Err(KelsError::NotIncepted);
         }
@@ -519,26 +519,15 @@ impl Kel {
         let saids_by_generation = self.map_saids_by_event_generation();
         let prefix = self.prefix().ok_or(KelsError::NotIncepted)?;
 
-        // FORWARD PASS: Verify structure (SAID, prefix) and detect divergence
+        // FORWARD PASS: Verify structure (SAID, prefix)
         let mut valid_tails: HashSet<&str> = HashSet::new();
-        let mut divergence_info: Option<DivergenceInfo> = None;
 
-        for (generation, saids) in saids_by_generation.iter() {
+        for (_generation, saids) in saids_by_generation.iter() {
             let events_at_generation: Vec<_> = saids
                 .iter()
                 .filter_map(|said| events_by_said.get(said.as_str()))
                 .cloned()
                 .collect();
-            let is_first_divergence = events_at_generation.len() > 1 && divergence_info.is_none();
-            if is_first_divergence {
-                divergence_info = Some(DivergenceInfo {
-                    diverged_at_generation: *generation,
-                    divergent_saids: events_at_generation
-                        .iter()
-                        .map(|e| e.event.said.clone())
-                        .collect(),
-                });
-            }
 
             for signed_event in events_at_generation {
                 let event = &signed_event.event;
@@ -555,7 +544,7 @@ impl Kel {
             self.verify_branch_from_tail(tail_said, &events_by_said)?;
         }
 
-        Ok(divergence_info)
+        Ok(())
     }
 
     // ==================== Private Helpers - Chain Walking ====================
@@ -2177,41 +2166,6 @@ mod tests {
         // Should fail because contest must be final (no events after it)
         assert!(result.is_err());
         assert!(matches!(result, Err(KelsError::InvalidKel(_))));
-    }
-
-    #[tokio::test]
-    async fn test_verify_detects_divergence() {
-        // verify() should detect and return divergence info
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder1.incept().await.unwrap();
-        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
-        let ixn1 = builder1.interact(&anchor1).await.unwrap();
-
-        let (current_key, next_key, recovery_key) = clone_keys(&builder1);
-
-        // Create adversary
-        let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
-
-        let mut builder2 = KeyEventBuilder::with_kel(
-            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
-            None,
-            None,
-            adversary_kel,
-        )
-        .unwrap();
-        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
-        let ixn2 = builder2.interact(&anchor2).await.unwrap();
-
-        // Create divergent KEL
-        let kel = Kel::from_events(vec![icp.clone(), ixn1.clone(), ixn2.clone()], true).unwrap();
-
-        // verify() should succeed but report divergence
-        let result = kel.verify();
-        assert!(result.is_ok());
-        let divergence = result.unwrap();
-        assert!(divergence.is_some());
-        let info = divergence.unwrap();
-        assert_eq!(info.diverged_at_generation, 1);
     }
 
     // ==================== Already-Divergent KEL Merge Tests ====================

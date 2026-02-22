@@ -1,6 +1,6 @@
 # KELS - Key Event Log System
 
-KELS is a federated decentralized key management infrastructure (DKMI). It provides cryptographically verifiable identity management through key event logs with pre-rotation commitment, divergence detection, and recovery mechanisms — offering protection against key compromise without relying on certificate authorities or centralized trust.
+KELS is a federated decentralized key management infrastructure (DKMI), inspired by [KERI](https://github.com/WebOfTrust/keripy). It provides cryptographically verifiable identity management through key event logs with pre-rotation commitment, divergence detection, and recovery mechanisms — offering protection against key compromise without relying on certificate authorities or centralized trust.
 
 ## Overview
 
@@ -38,7 +38,7 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ### Other notable differences
 
 - **Prefix derivation**: The 'prefix' of a KEL was originally named (in KERI) to convey the value was the first SAID in the chain of key events, prefixing the sequence. Now, I've changed the algorithm (in `verifiable-storage-rs`) and they are no longer the same value. Why? Now they are computed almost identically, but the prefix is derived ahead of the said in the algorithm, which means that there is no way to correlate a naked SAID identifiying a key event with the owner of that event - which is a an improvement in some situations. We probably need to revisit the name throughout this codebase. You can still prove the prefix was derived with the said, given the full event.
-- **No witnesses or receipts**: KERI relies on designated witness pools that sign receipts for events. KELS replaces this with gossip-based replication and registry-anchored peer allowlists — trust comes from KEL verification against compiled-in registry prefixes, not witness receipts.
+- **No witnesses or receipts**: KERI relies on designated witness pools that sign receipts for events. KELS replaces this with gossip-based replication and registry-anchored peer allowlists — trust within the gossip network comes from KEL verification against compiled-in registry prefixes.
 - **Divergence is observable, not private**: In KERI, duplicity is detected locally by comparing logs from different sources. In KELS, divergence is stored directly in the KEL and propagated to all nodes via gossip — it's a public, network-wide signal.
 - **Recovery and contest protocol**: KELS defines explicit `rec` (recover) and `cnt` (contest) event types. Recovery resolves divergence in favor of the legitimate owner. Contest permanently freezes the KEL when both parties hold recovery keys — an outcome KERI doesn't formalize.
 - **Gossip replication model**: KEL synchronization happens via gossip announcements (`prefix:said` pairs) with HTTP-based event fetching, rather than KERI's witness receipt protocol.
