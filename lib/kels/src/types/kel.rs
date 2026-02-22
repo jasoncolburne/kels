@@ -33,7 +33,7 @@ impl Kel {
     pub fn from_events(events: Vec<SignedKeyEvent>, skip_verify: bool) -> Result<Self, KelsError> {
         let kel = Self(events);
         if !skip_verify && !kel.is_empty() {
-            kel.verify()?;
+            kel.verify(true)?;
         }
         Ok(kel)
     }
@@ -112,13 +112,31 @@ impl Kel {
     }
 
     pub fn contains_anchor(&self, anchor: &str) -> bool {
-        self.0
-            .iter()
-            .any(|e| e.event.is_interaction() && e.event.anchor.as_deref() == Some(anchor))
+        let divergent_saids = self
+            .find_divergence()
+            .map(|info| info.divergent_saids)
+            .unwrap_or_default();
+
+        self.0.iter().any(|e| {
+            e.event.is_interaction()
+                && e.event.anchor.as_deref() == Some(anchor)
+                && !divergent_saids.contains(&e.event.said)
+        })
     }
 
     pub fn contains_anchors(&self, anchors: &[&str]) -> bool {
-        anchors.iter().all(|a| self.contains_anchor(a))
+        let divergent_saids = self
+            .find_divergence()
+            .map(|info| info.divergent_saids)
+            .unwrap_or_default();
+
+        anchors.iter().all(|anchor| {
+            self.0.iter().any(|e| {
+                e.event.is_interaction()
+                    && e.event.anchor.as_deref() == Some(*anchor)
+                    && !divergent_saids.contains(&e.event.said)
+            })
+        })
     }
 
     /// A contested KEL has a `cnt` event, meaning both parties used the recovery key.
@@ -231,7 +249,7 @@ impl Kel {
 
         let adversary_events = self.filter_events_by_said(&owner_kel_saids)?;
         self.extend(post_rec_events.iter().cloned());
-        self.verify()?;
+        self.verify(true)?;
         Ok(Some(adversary_events))
     }
 
@@ -310,7 +328,7 @@ impl Kel {
                         ));
                     }
                     self.extend(events.iter().cloned());
-                    self.verify()?;
+                    self.verify(true)?;
                     return Ok((vec![], events, KelMergeResult::Contested));
                 } else {
                     return Err(KelsError::Frozen);
@@ -503,15 +521,19 @@ impl Kel {
             return Err(KelsError::InvalidKel("Events not contiguous".to_string()));
         };
 
-        self.verify()?;
+        self.verify(true)?;
 
         Ok((old_events_removed, new_events_added, result))
     }
 
     /// Does NOT verify delegation anchoring for delegated KELs.
-    pub fn verify(&self) -> Result<(), KelsError> {
+    pub fn verify(&self, allow_divergence: bool) -> Result<(), KelsError> {
         if self.is_empty() {
             return Err(KelsError::NotIncepted);
+        }
+
+        if !allow_divergence && self.find_divergence().is_some() {
+            return Err(KelsError::Divergent);
         }
 
         // Build SAID -> event lookup
@@ -1064,7 +1086,7 @@ mod tests {
         assert!(kel.contains_anchor("test_anchor"));
         assert!(!kel.contains_anchor("other_anchor"));
 
-        assert!(kel.verify().is_ok());
+        assert!(kel.verify(true).is_ok());
     }
 
     #[tokio::test]
@@ -1085,7 +1107,7 @@ mod tests {
         // Verify the KEL works with deserialized event
         let mut kel = Kel::new();
         kel.push(deserialized);
-        assert!(kel.verify().is_ok());
+        assert!(kel.verify(true).is_ok());
     }
 
     #[tokio::test]
@@ -1490,8 +1512,38 @@ mod tests {
     #[tokio::test]
     async fn test_kel_verify_empty_fails() {
         let kel = Kel::new();
-        let result = kel.verify();
+        let result = kel.verify(true);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_rejects_divergent_when_disallowed() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let mut builder2 = builder1.clone();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
+
+        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        let result = kel.verify(false);
+        assert!(matches!(result, Err(KelsError::Divergent)));
+    }
+
+    #[tokio::test]
+    async fn test_verify_accepts_divergent_when_allowed() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let mut builder2 = builder1.clone();
+        let ixn1 = builder1.interact("anchor1").await.unwrap();
+        let ixn2 = builder2.interact("anchor2").await.unwrap();
+
+        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
+        assert!(kel.find_divergence().is_some());
+
+        let result = kel.verify(true);
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -2967,5 +3019,99 @@ mod tests {
         assert!(result.is_ok(), "Expected Rejected but got: {:?}", result);
         let (_archived, _added, merge_result) = result.unwrap();
         assert_eq!(merge_result, KelMergeResult::Rejected);
+    }
+
+    // ==================== contains_anchor divergence tests ====================
+
+    #[tokio::test]
+    async fn test_contains_anchor_no_divergence() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact("my-anchor").await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        assert!(kel.contains_anchor("my-anchor"));
+        assert!(!kel.contains_anchor("missing-anchor"));
+    }
+
+    #[tokio::test]
+    async fn test_contains_anchor_before_divergence() {
+        // icp -> ixn(anchor) at gen 1 -> divergence at gen 2
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let ixn_anchor = owner.interact("pre-divergence-anchor").await.unwrap();
+
+        // Clone AFTER the anchor event so divergence starts at gen 2
+        let mut adversary = owner.clone();
+
+        let owner_ixn2 = owner.interact("owner-gen2").await.unwrap();
+        let adversary_ixn2 = adversary.interact("adversary-gen2").await.unwrap();
+
+        let kel =
+            Kel::from_events(vec![icp, ixn_anchor, owner_ixn2, adversary_ixn2], true).unwrap();
+
+        // Divergence at gen 2, anchor at gen 1 — should be found
+        let divergence = kel.find_divergence().unwrap();
+        assert_eq!(divergence.diverged_at_generation, 2);
+        assert!(kel.contains_anchor("pre-divergence-anchor"));
+    }
+
+    #[tokio::test]
+    async fn test_contains_anchor_after_divergence() {
+        // icp -> divergence at gen 1, anchor only on a divergent branch
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let mut adversary = owner.clone();
+
+        let owner_ixn = owner.interact("owner-anchor").await.unwrap();
+        let adversary_ixn = adversary.interact("adversary-anchor").await.unwrap();
+
+        let kel = Kel::from_events(vec![icp, owner_ixn, adversary_ixn], true).unwrap();
+
+        // Divergence at gen 1 — both anchors are in divergent events
+        let divergence = kel.find_divergence().unwrap();
+        assert_eq!(divergence.diverged_at_generation, 1);
+        assert!(!kel.contains_anchor("owner-anchor"));
+        assert!(!kel.contains_anchor("adversary-anchor"));
+    }
+
+    #[tokio::test]
+    async fn test_contains_anchors_plural_mixed_divergence() {
+        // icp -> ixn(anchor-a) at gen 1 -> divergence at gen 2 with anchor-b only on branch
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let ixn_a = owner.interact("anchor-a").await.unwrap();
+
+        let mut adversary = owner.clone();
+
+        let owner_ixn_b = owner.interact("anchor-b").await.unwrap();
+        let adversary_ixn = adversary.interact("adversary-stuff").await.unwrap();
+
+        let kel = Kel::from_events(vec![icp, ixn_a, owner_ixn_b, adversary_ixn], true).unwrap();
+
+        let divergence = kel.find_divergence().unwrap();
+        assert_eq!(divergence.diverged_at_generation, 2);
+
+        // anchor-a is pre-divergence, anchor-b is post-divergence
+        assert!(kel.contains_anchor("anchor-a"));
+        assert!(!kel.contains_anchor("anchor-b"));
+
+        // Plural: all anchors must be non-divergent
+        assert!(kel.contains_anchors(&["anchor-a"]));
+        assert!(!kel.contains_anchors(&["anchor-a", "anchor-b"]));
+        assert!(!kel.contains_anchors(&["anchor-b"]));
+    }
+
+    #[tokio::test]
+    async fn test_contains_anchor_no_interactions() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let kel = Kel::from_events(builder.events().to_vec(), true).unwrap();
+
+        assert!(!kel.contains_anchor("anything"));
+        assert!(kel.contains_anchors(&[]));
     }
 }

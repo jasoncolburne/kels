@@ -1073,7 +1073,7 @@ impl MultiRegistryClient {
                             continue;
                         }
 
-                        if let Err(e) = kel.verify() {
+                        if let Err(e) = kel.verify(true) {
                             warn!(
                                 prefix = %prefix,
                                 error = %e,

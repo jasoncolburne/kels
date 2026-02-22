@@ -505,7 +505,7 @@ pub async fn federation_rpc(
                 ApiError::unauthorized(format!("Failed to parse sender KEL: {}", e))
             })?;
             fetched_kel
-                .verify()
+                .verify(true)
                 .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
             if fetched_kel.prefix() != Some(&signed_rpc.sender_prefix) {
                 return Err(ApiError::unauthorized(
@@ -515,6 +515,10 @@ pub async fn federation_rpc(
             fetched_kel
         }
     };
+
+    if kel.find_divergence().is_some() {
+        return Err(ApiError::unauthorized("Sender KEL is divergent"));
+    }
 
     verify_with_kel(&kel)?;
 

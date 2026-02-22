@@ -182,6 +182,13 @@ impl KelsPeerVerifier {
             GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
         })?;
 
+        if kel.find_divergence().is_some() {
+            return Err(GossipError::VerificationFailed(format!(
+                "KEL for {} is divergent",
+                prefix
+            )));
+        }
+
         let event = kel.last_establishment_event().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No establishment event in KEL for {}", prefix))
         })?;

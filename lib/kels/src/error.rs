@@ -109,6 +109,9 @@ pub enum KelsError {
     #[error("KEL diverged at: {0}")]
     Diverged(String),
 
+    #[error("KEL is divergent")]
+    Divergent,
+
     #[error("KEL frozen and requires recovery")]
     Frozen,
 
@@ -233,6 +236,7 @@ mod tests {
             KelsError::ContestedKel("contested".to_string()),
             KelsError::RecoveryProtected,
             KelsError::Diverged("diverged".to_string()),
+            KelsError::Divergent,
             KelsError::Frozen,
             KelsError::ContestRequired,
             KelsError::InvalidSerial("bad serial".to_string()),
