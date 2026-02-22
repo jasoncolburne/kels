@@ -57,7 +57,8 @@ kels/
 ├── lib/
 │   ├── kels/           # Core library (libkels)
 │   ├── kels-derive/    # Derive macros for storage traits
-│   └── kels-ffi/       # FFI bindings (Swift/C interop)
+│   ├── kels-ffi/       # FFI bindings (Swift/C interop)
+│   └── gossip/         # Custom gossip protocol library
 ├── services/
 │   ├── kels/           # HTTP API server
 │   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
@@ -98,6 +99,7 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 | Type | Description | Signatures Required |
 |------|-------------|---------------------|
 | `icp` | Incept - creates the KEL | Signing key |
+| `dip` | Delegated Incept - creates a delegated KEL | Signing key |
 | `rot` | Rotate - rotates signing key | Rotation key |
 | `ixn` | Interact - anchors external data | Signing key |
 | `ror` | Rotate Recovery - rotates recovery key | Rotation + Recovery |
@@ -303,6 +305,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Secure Registration](docs/secure-registration.md) - HSM-backed identity and peer allowlist
 - [Multi-Registry Federation](docs/federation.md) - Federated registries with Raft consensus
 - [Federation State Machine](docs/federation-state-machine.md) - Raft log, proposals, and voting
+- [Deployment](docs/deployment.md) - Trust anchors, federation deployment, and configuration
 - [API Endpoints](docs/endpoints.md) - Full endpoint reference
 - [Node Attack Surface](docs/node-attack-surface.md) - Security analysis of KELS data-plane services
 - [Registry Attack Surface](docs/registry-attack-surface.md) - Security analysis of federation and registry

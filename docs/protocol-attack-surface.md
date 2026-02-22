@@ -140,7 +140,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Owner Tail Confusion
 
 **Attack:** Trick the client into chaining from the wrong tail, creating an event that doesn't properly connect to the KEL.
-- **Mitigation:** The `owner_tail` is tracked via `save_owner_tail()` / `load_owner_tail()` on the `KelStore`. The builder syncs with the server KEL before creating events. Events that don't chain from a valid previous are rejected by the server.
+- **Mitigation:** The `owner_tail` is tracked in memory by `KeyEventBuilder::get_owner_tail()`, which returns the last event in the builder's local KEL. The builder syncs with the server KEL before creating events, and the server validates that submitted events chain from a valid previous event. Events that don't chain correctly are rejected.
 
 ## Automatic Key Rotation
 

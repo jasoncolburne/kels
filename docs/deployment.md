@@ -54,7 +54,7 @@ fetch prefix from registry-b → save
 fetch prefix from registry-c → save
 ```
 
-In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for all services) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id` + `prefix` for kels-registry Raft node IDs).
+In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for all services) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id`, `prefix`, and `active` for kels-registry Raft node IDs).
 
 ### Phase 3: Recompile and Redeploy Registries
 
@@ -103,7 +103,7 @@ Each registry needs two categories of configuration:
 
 **Compile-time (security — who to trust):**
 - `TRUSTED_REGISTRY_PREFIXES` — comma-separated prefixes, baked into all binaries
-- `TRUSTED_REGISTRY_MEMBERS` — JSON array of `{id, prefix}` objects, baked into kels-registry only (explicit Raft node IDs)
+- `TRUSTED_REGISTRY_MEMBERS` — JSON array of `{id, prefix, active}` objects, baked into kels-registry only (explicit Raft node IDs)
 
 **Runtime (operational — how to connect):**
 - `FEDERATION_SELF_PREFIX` — this registry's own prefix
