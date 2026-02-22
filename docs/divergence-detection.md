@@ -37,7 +37,7 @@ The `Kel::find_divergence()` method returns the first generation with multiple S
 
 ### Owner Tail Tracking
 
-The `KeyEventBuilder` tracks the owner's local KEL in memory. The `get_owner_tail()` method returns the last event in the builder's in-memory KEL. Before creating events, the builder syncs with the server to ensure its local state is current.
+The `KeyEventBuilder` tracks the owner's local KEL in memory. The `get_owner_tail()` method returns the last event in the builder's in-memory KEL. The builder loads its state from the local `KelStore` at construction time (via `with_dependencies`) or can be refreshed via `reload()`.
 
 The owner's tail is the **source of truth** for chaining all events:
 1. Normal operations (rotate, interact, etc.) chain from the owner's tail
