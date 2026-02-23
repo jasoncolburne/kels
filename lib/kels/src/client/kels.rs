@@ -558,6 +558,47 @@ impl KelsClient {
         }
     }
 
+    /// Batch-fetch KELs from the server. Automatically chunks to respect the server's
+    /// `MAX_BATCH_PREFIXES` limit. Returns raw signed events per prefix — callers
+    /// handle their own verification. Short-circuits on empty input.
+    pub async fn fetch_kels(
+        &self,
+        prefixes: &HashMap<String, Option<String>>,
+    ) -> Result<HashMap<String, Vec<SignedKeyEvent>>, KelsError> {
+        if prefixes.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let entries: Vec<_> = prefixes.iter().collect();
+        let mut result = HashMap::with_capacity(prefixes.len());
+
+        for chunk in entries.chunks(crate::MAX_BATCH_PREFIXES) {
+            let request = BatchKelsRequest {
+                prefixes: chunk
+                    .iter()
+                    .map(|(k, v)| ((*k).clone(), (*v).clone()))
+                    .collect(),
+            };
+
+            let resp = self
+                .client
+                .post(format!("{}/api/kels/kels", self.base_url))
+                .json(&request)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let err: ErrorResponse = resp.json().await?;
+                return Err(KelsError::ServerError(err.error, err.code));
+            }
+
+            let batch: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
+            result.extend(batch);
+        }
+
+        Ok(result)
+    }
+
     /// Skips signature verification - only for benchmarking/testing
     #[cfg(feature = "dev-tools")]
     pub async fn fetch_kels_unverified(&self, prefixes: &[&str]) -> Result<Vec<Kel>, KelsError> {

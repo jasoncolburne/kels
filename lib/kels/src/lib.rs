@@ -84,3 +84,7 @@ pub use types::{Kel, compute_rotation_hash};
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.
 pub const MAX_EVENTS_PER_SUBMISSION: usize = 500;
+
+/// Maximum number of prefixes allowed in a single batch fetch request.
+/// Shared between the server handler and client chunking logic.
+pub const MAX_BATCH_PREFIXES: usize = 50;

@@ -24,8 +24,8 @@
 //! joining the gossip network would be missed. The resync catches these events.
 
 use kels::{
-    BatchKelsRequest, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient,
-    PrefixListResponse, PrefixState, PrefixesRequest, RegistrySigner, SignedKeyEvent,
+    KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient, PrefixListResponse,
+    PrefixState, PrefixesRequest, RegistrySigner,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -336,8 +336,7 @@ impl BootstrapSync {
         Ok(())
     }
 
-    /// Batch fetch KELs from a peer using the batch endpoint and submit to local KELS.
-    /// Makes a single HTTP request to fetch all prefixes, then submits each KEL individually.
+    /// Batch fetch KELs from a peer using `KelsClient::fetch_kels()` and submit to local KELS.
     /// Each entry is (prefix, optional since SAID for delta fetch).
     async fn batch_fetch_and_submit(
         &self,
@@ -349,39 +348,16 @@ impl BootstrapSync {
             return vec![];
         }
 
-        // Build batch request with since SAIDs
-        let request = BatchKelsRequest {
-            prefixes: prefixes
-                .iter()
-                .map(|(p, s)| (p.clone(), s.clone()))
-                .collect(),
-        };
+        let remote_client = KelsClient::new(peer_url);
+        let request: HashMap<String, Option<String>> = prefixes
+            .iter()
+            .map(|(p, s)| (p.clone(), s.clone()))
+            .collect();
 
-        // Fetch all KELs in a single request
-        let url = format!("{}/api/kels/kels", peer_url.trim_end_matches('/'));
-        let response = match self.http_client.post(&url).json(&request).send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                let err_msg = format!("HTTP request failed: {}", e);
-                return prefixes
-                    .iter()
-                    .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
-                    .collect();
-            }
-        };
-
-        if !response.status().is_success() {
-            let err_msg = format!("Batch fetch failed: {}", response.status());
-            return prefixes
-                .iter()
-                .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
-                .collect();
-        }
-
-        let events_map: HashMap<String, Vec<SignedKeyEvent>> = match response.json().await {
+        let events_map = match remote_client.fetch_kels(&request).await {
             Ok(map) => map,
             Err(e) => {
-                let err_msg = format!("Failed to parse response: {}", e);
+                let err_msg = format!("Batch fetch failed: {}", e);
                 return prefixes
                     .iter()
                     .map(|_| Err(BootstrapError::Failed(err_msg.clone())))

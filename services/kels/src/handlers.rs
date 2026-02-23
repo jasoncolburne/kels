@@ -11,8 +11,8 @@ use dashmap::DashMap;
 use futures_util::future::join_all;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-    KelResponse, KelsAuditRecord, KelsError, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse,
-    ServerKelCache, SignedKeyEvent,
+    KelResponse, KelsAuditRecord, KelsError, MAX_BATCH_PREFIXES, MAX_EVENTS_PER_SUBMISSION,
+    PrefixListResponse, ServerKelCache, SignedKeyEvent,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -715,9 +715,6 @@ async fn refresh_verified_peers(
 }
 
 // ==================== Batch Handlers ====================
-
-/// Maximum number of prefixes allowed in a single batch request.
-const MAX_BATCH_PREFIXES: usize = 50;
 
 /// Batch fetch KELs. Returns map of prefix -> events.
 /// Supports delta fetching: if a since SAID is provided for a prefix,
