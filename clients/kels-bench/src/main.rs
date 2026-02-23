@@ -190,20 +190,23 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
     Ok(prefix)
 }
 
-async fn setup_test_kels(client: &KelsClient) -> Result<(TestKelConfig, Vec<TestKelConfig>)> {
+async fn setup_test_kels(client: &KelsClient) -> Result<(Vec<TestKelConfig>, Vec<TestKelConfig>)> {
     println!("{}", "Setting up test KELs...".green().bold());
 
-    // Create one large KEL (32 events)
-    println!("  Creating 32-event KEL...");
-    let large_prefix = create_test_kel(client, 32).await?;
-    println!("    Created: {}", large_prefix);
+    // Create singular KELs at different lengths for scaling benchmarks
+    let lengths = [1, 8, 32, 128];
+    let mut singular_kels = Vec::new();
+    for &len in &lengths {
+        println!("  Creating {}-event KEL...", len);
+        let prefix = create_test_kel(client, len).await?;
+        println!("    Created: {}", prefix);
+        singular_kels.push(TestKelConfig {
+            event_count: len,
+            prefix: Some(prefix),
+        });
+    }
 
-    let large_kel = TestKelConfig {
-        event_count: 32,
-        prefix: Some(large_prefix),
-    };
-
-    // Create 5 smaller KELs (8 events each)
+    // Create 5 smaller KELs (8 events each) for batch testing
     println!("  Creating 5 x 8-event KELs for batch testing...");
     let mut batch_kels = Vec::new();
     for i in 0..5 {
@@ -216,7 +219,7 @@ async fn setup_test_kels(client: &KelsClient) -> Result<(TestKelConfig, Vec<Test
     }
 
     println!("{}", "Setup complete!".green());
-    Ok((large_kel, batch_kels))
+    Ok((singular_kels, batch_kels))
 }
 
 #[derive(Clone)]
@@ -335,7 +338,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let (large_kel, batch_kels) = if args.skip_setup {
+    let (singular_kels, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
             let kel = match client.get_kel(prefix).await {
                 Ok(k) => k,
@@ -347,10 +350,10 @@ async fn main() -> Result<()> {
 
             println!("{}", "Skipping setup, using provided prefix...".yellow());
             (
-                TestKelConfig {
+                vec![TestKelConfig {
                     event_count: kel.len(),
                     prefix: Some(prefix.clone()),
-                },
+                }],
                 vec![],
             )
         } else {
@@ -370,18 +373,20 @@ async fn main() -> Result<()> {
     .await?;
     stats.reset().await;
 
-    if let Some(prefix) = &large_kel.prefix {
-        run_benchmark(
-            &args,
-            stats.clone(),
-            BenchmarkType::GetKel {
-                prefix: prefix.clone(),
-            },
-            &format!("get_kel ({} events)", large_kel.event_count),
-        )
-        .await?;
+    for kel_config in &singular_kels {
+        if let Some(prefix) = &kel_config.prefix {
+            run_benchmark(
+                &args,
+                stats.clone(),
+                BenchmarkType::GetKel {
+                    prefix: prefix.clone(),
+                },
+                &format!("get_kel ({} events)", kel_config.event_count),
+            )
+            .await?;
+            stats.reset().await;
+        }
     }
-    stats.reset().await;
 
     if !batch_kels.is_empty() {
         let prefixes: Vec<String> = batch_kels
