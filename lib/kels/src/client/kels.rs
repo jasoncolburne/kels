@@ -558,7 +558,8 @@ impl KelsClient {
         }
     }
 
-    /// Batch-fetch KELs from the server. Returns raw signed events per prefix — callers
+    /// Batch-fetch KELs from the server. Automatically chunks to respect the server's
+    /// `MAX_BATCH_PREFIXES` limit. Returns raw signed events per prefix — callers
     /// handle their own verification. Short-circuits on empty input.
     pub async fn fetch_kels(
         &self,
@@ -568,23 +569,34 @@ impl KelsClient {
             return Ok(HashMap::new());
         }
 
-        let request = BatchKelsRequest {
-            prefixes: prefixes.clone(),
-        };
+        let entries: Vec<_> = prefixes.iter().collect();
+        let mut result = HashMap::with_capacity(prefixes.len());
 
-        let resp = self
-            .client
-            .post(format!("{}/api/kels/kels", self.base_url))
-            .json(&request)
-            .send()
-            .await?;
+        for chunk in entries.chunks(crate::MAX_BATCH_PREFIXES) {
+            let request = BatchKelsRequest {
+                prefixes: chunk
+                    .iter()
+                    .map(|(k, v)| ((*k).clone(), (*v).clone()))
+                    .collect(),
+            };
 
-        if !resp.status().is_success() {
-            let err: ErrorResponse = resp.json().await?;
-            return Err(KelsError::ServerError(err.error, err.code));
+            let resp = self
+                .client
+                .post(format!("{}/api/kels/kels", self.base_url))
+                .json(&request)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let err: ErrorResponse = resp.json().await?;
+                return Err(KelsError::ServerError(err.error, err.code));
+            }
+
+            let batch: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
+            result.extend(batch);
         }
 
-        Ok(resp.json().await?)
+        Ok(result)
     }
 
     /// Skips signature verification - only for benchmarking/testing
