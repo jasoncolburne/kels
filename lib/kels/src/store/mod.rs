@@ -8,7 +8,10 @@ pub use repository::RepositoryKelStore;
 
 use async_trait::async_trait;
 
-use crate::{error::KelsError, types::Kel};
+use crate::{
+    error::KelsError,
+    types::{Kel, SignedKeyEvent},
+};
 
 /// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
 /// authoritative state from being overwritten by server-fetched data.
@@ -22,8 +25,14 @@ pub trait KelStore: Send + Sync {
     /// Set/clear owner prefix after enrollment.
     fn set_owner_prefix(&self, _prefix: Option<&str>) {}
 
-    /// Load a KEL by prefix. Returns None if not found. Skip verification on load (verified on save).
-    async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError>;
+    /// Load a page of events by prefix. Returns `(events, has_more)`.
+    /// Callers iterate explicitly and build `Kel` themselves when they need the full chain.
+    async fn load(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
     /// Save a KEL, overwriting any existing one with the same prefix.
     async fn save(&self, kel: &Kel) -> Result<(), KelsError>;
@@ -76,8 +85,30 @@ mod tests {
             }
         }
 
-        async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
-            Ok(self.kels.read().ok().and_then(|g| g.get(prefix).cloned()))
+        async fn load(
+            &self,
+            prefix: &str,
+            limit: u64,
+            offset: u64,
+        ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+            let guard = match self.kels.read() {
+                Ok(g) => g,
+                Err(_) => return Ok((vec![], false)),
+            };
+            match guard.get(prefix) {
+                Some(kel) => {
+                    let events = kel.events();
+                    let start = offset as usize;
+                    if start >= events.len() {
+                        return Ok((vec![], false));
+                    }
+                    let end = (start + limit as usize).min(events.len());
+                    let page = events[start..end].to_vec();
+                    let has_more = end < events.len();
+                    Ok((page, has_more))
+                }
+                None => Ok((vec![], false)),
+            }
         }
 
         async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
@@ -109,8 +140,8 @@ mod tests {
 
         store.cache(&kel).await.unwrap();
 
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_some());
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(!events.is_empty());
     }
 
     #[tokio::test]
@@ -126,8 +157,8 @@ mod tests {
         store.cache(&kel).await.unwrap();
 
         // KEL should NOT be saved
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_none());
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(events.is_empty());
     }
 
     #[tokio::test]

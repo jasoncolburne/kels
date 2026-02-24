@@ -82,7 +82,8 @@ impl FederationNode {
             Arc::new(repository.raft_state.clone()),
             node_id,
         );
-        let state_machine = StateMachineStore::new(config.clone());
+        let state_machine = StateMachineStore::new(config.clone())
+            .with_member_kel_repo(repository.member_kels.clone());
 
         // Create network layer (with signing capability)
         let network = FederationNetwork::new(config.clone(), identity_client);

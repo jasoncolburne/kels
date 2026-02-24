@@ -178,8 +178,15 @@ impl KelsPeerVerifier {
 
     /// Get the current public key from a peer's KEL as compressed SEC1 bytes.
     async fn public_key_from_kel(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
-        let kel = self.kels_client.get_kel(prefix).await.map_err(|e| {
-            GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
+        let page = self
+            .kels_client
+            .fetch_kel(prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            .map_err(|e| {
+                GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
+            })?;
+        let kel = kels::Kel::from_events(page.events, true).map_err(|e| {
+            GossipError::VerificationFailed(format!("KEL parse for {}: {}", prefix, e))
         })?;
 
         if kel.find_divergence().is_some() {
@@ -266,15 +273,18 @@ impl KelsPeerVerifier {
 
         // Fetch KEL from the peer's KELS instance
         let remote_client = kels::KelsClient::new(&peer_kels_url);
-        let kel = remote_client.get_kel(prefix).await.map_err(|e| {
-            GossipError::VerificationFailed(format!(
-                "Remote KEL fetch for {} from {}: {}",
-                prefix, peer_kels_url, e
-            ))
-        })?;
+        let page = remote_client
+            .fetch_kel(prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            .map_err(|e| {
+                GossipError::VerificationFailed(format!(
+                    "Remote KEL fetch for {} from {}: {}",
+                    prefix, peer_kels_url, e
+                ))
+            })?;
 
         // Submit the refreshed KEL to our local KELS instance
-        let events: Vec<_> = kel.events().to_vec();
+        let events = page.events;
         if !events.is_empty() {
             let _ = self.kels_client.submit_events(&events).await;
         }

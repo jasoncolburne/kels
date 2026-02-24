@@ -163,12 +163,17 @@ All recorded/persisted data MUST be KEL-backed and verified independently before
 
 Events are stored in PostgreSQL via the `verifiable-storage` framework:
 - `Stored` derive macro generates CRUD operations, table mappings, and query builders
-- `SignedEvents` derive macro generates signature table operations
+- `SignedEvents` derive macro generates signature table operations with paginated `get_signed_history(prefix, limit, offset)` returning `(Vec<SignedKeyEvent>, bool)`
 - `Chained` trait provides `derive_prefix`, `derive_said`, `increment`, `verify_prefix`, `verify_said`
 - `SelfAddressed` trait provides content-addressable storage via SAID
-- Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock
-- Pre-serialized JSON cache in Redis avoids re-serialization on reads
+- Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock. Provides `get_merge_context()` for bounded metadata queries (tips, contested, divergence) and `get_last_establishment_event()`.
+- `KelVerifier` — streaming forward-walking chain verifier for incremental verification without full KEL load. Used by submit handler fast path and `sync_and_verify()`.
+- `PagedKelSource` / `PagedKelSink` / `sync_and_verify()` — generic streaming pattern for verified KEL transfer between stores.
+- Pre-serialized JSON cache in Redis for KELs ≤ 512 events; larger KELs are not cached
 - Redis pub/sub for cache invalidation across instances
+- All KEL queries use `ORDER BY serial ASC, said ASC` for deterministic pagination across divergent events
+- `MAX_EVENTS_PER_KEL_QUERY` (512) — page size for database queries. `MAX_EVENTS_PER_KEL_RESPONSE` derives from this.
+- Local KEL stores: gossip service stores registry KELs in PostgreSQL for anchoring verification; registry service persists member KELs alongside Raft state
 - Patterns:
     - An identity creates verifiable data (eg for centralized storage/sharing):
         1. No request type is required, the full record is requried to verify the SAID/chain anyway - so send it (full record, or a vec/map of them etc) AS the payload

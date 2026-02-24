@@ -47,9 +47,6 @@ pub mod types;
 
 #[cfg(feature = "redis")]
 pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
-#[cfg(feature = "redis")]
-pub use client::RedisKelCache;
-
 #[cfg(feature = "server")]
 pub use server::shutdown_signal;
 
@@ -60,8 +57,8 @@ pub use hardware::HardwareKeyProvider;
 
 pub use builder::KeyEventBuilder;
 pub use client::{
-    IdentityClient, KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient,
-    RegistrySigner, SignResult, sign_request, trusted_prefixes,
+    IdentityClient, KelsClient, KelsRegistryClient, MultiRegistryClient, RegistrySigner,
+    SignResult, sign_request, trusted_prefixes,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
@@ -75,16 +72,25 @@ pub use types::{
     PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
     ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
-    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest, Vote, compute_effective_tail_said, generate_nonce, hash_tip_saids,
-    validate_timestamp,
+    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, StatusUpdateRequest, Vote, compute_effective_tail_said, generate_nonce,
+    hash_tip_saids, validate_timestamp,
 };
-pub use types::{Kel, compute_rotation_hash};
+pub use types::{
+    Kel, KelVerifier, PagedKelSink, PagedKelSource, compute_rotation_hash, sync_and_verify,
+};
 
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = 500;
+pub const MAX_EVENTS_PER_SUBMISSION: usize = 512;
 
 /// Maximum number of prefixes allowed in a single batch fetch request.
 /// Shared between the server handler and client chunking logic.
-pub const MAX_BATCH_PREFIXES: usize = 50;
+pub const MAX_BATCH_PREFIXES: usize = 64;
+
+/// Maximum number of events fetched in a single KEL database query or HTTP page.
+pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
+
+/// Maximum number of events returned in a single KEL response page.
+/// KELs larger than this are not cached server-side.
+pub const MAX_EVENTS_PER_KEL_RESPONSE: usize = MAX_EVENTS_PER_KEL_QUERY;

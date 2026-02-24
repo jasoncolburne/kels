@@ -10,8 +10,8 @@ use colored::Colorize;
 #[cfg(feature = "dev-tools")]
 use kels::EventKind;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
-    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    FileKelStore, Kel, KelStore, KelsClient, KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE,
+    MultiRegistryClient, NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -506,12 +506,15 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             "{}",
             format!("Fetching KEL {} with audit records...", prefix).green()
         );
-        let response = client.fetch_kel_with_audit(prefix).await?;
+        let page = client
+            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+            .await?;
+        let audit_records = client.fetch_kel_audit(prefix).await?;
 
         println!();
         println!("{}", format!("KEL: {}", prefix).cyan().bold());
-        println!("  Events: {}", response.events.len());
-        let kel = kels::Kel::from_events(response.events.clone(), true)?;
+        println!("  Events: {}", page.events.len());
+        let kel = Kel::from_events(page.events.clone(), true)?;
 
         if let Some(last) = kel.last() {
             println!("  Latest SAID: {}", last.event.said);
@@ -536,7 +539,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in response.events.iter().enumerate() {
+        for (i, signed_event) in page.events.iter().enumerate() {
             let event = &signed_event.event;
             println!(
                 "  [{}] {} - {}",
@@ -547,7 +550,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         }
 
         // Print audit records
-        if let Some(audit_records) = &response.audit_records {
+        if !audit_records.is_empty() {
             println!();
             println!("{}", "Audit Records:".yellow().bold());
             for (i, record) in audit_records.iter().enumerate() {
@@ -569,7 +572,10 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     }
 
     println!("{}", format!("Fetching KEL {}...", prefix).green());
-    let kel = client.get_kel(prefix).await?;
+    let page = client
+        .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+        .await?;
+    let kel = Kel::from_events(page.events, false)?;
 
     println!();
     println!("{}", format!("KEL: {}", prefix).cyan().bold());
@@ -639,10 +645,11 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let (events, _has_more) = kel_store.load(prefix, i64::MAX as u64, 0).await?;
+    if events.is_empty() {
+        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+    }
+    let kel = Kel::from_events(events, true)?;
 
     println!("{}", format!("KEL Status: {}", prefix).cyan().bold());
     println!("  Local Events: {}", kel.len());
@@ -775,10 +782,11 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let mut kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let (events, _has_more) = kel_store.load(prefix, i64::MAX as u64, 0).await?;
+    if events.is_empty() {
+        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+    }
+    let mut kel = Kel::from_events(events, true)?;
 
     if count >= kel.len() {
         println!("KEL already has {} events, nothing to truncate.", kel.len());
@@ -800,12 +808,12 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let (events, _has_more) = kel_store.load(prefix, i64::MAX as u64, 0).await?;
+    if events.is_empty() {
+        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+    }
 
-    let json = serde_json::to_string_pretty(kel.events())?;
+    let json = serde_json::to_string_pretty(&events)?;
     println!("{}", json);
 
     Ok(())
@@ -822,10 +830,11 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
 
     // Load the local KEL to get the chain state
     let kel_store = create_kel_store(cli, prefix)?;
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let (events, _has_more) = kel_store.load(prefix, i64::MAX as u64, 0).await?;
+    if events.is_empty() {
+        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+    }
+    let kel = Kel::from_events(events, true)?;
 
     // Load the key provider (adversary has the same keys as owner)
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;

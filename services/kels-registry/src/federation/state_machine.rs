@@ -727,6 +727,8 @@ pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
     /// Federation config
     config: FederationConfig,
+    /// Optional PostgreSQL-backed member KEL store for durable persistence
+    member_kel_repo: Option<crate::raft_store::MemberKelRepository>,
 }
 
 impl StateMachineStore {
@@ -735,7 +737,14 @@ impl StateMachineStore {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
             config,
+            member_kel_repo: None,
         }
+    }
+
+    /// Set the member KEL repository for durable persistence.
+    pub fn with_member_kel_repo(mut self, repo: crate::raft_store::MemberKelRepository) -> Self {
+        self.member_kel_repo = Some(repo);
+        self
     }
 
     /// Get access to the inner data.
@@ -1167,7 +1176,23 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    sm.apply(request.clone())
+                    let response = sm.apply(request.clone());
+
+                    // Persist member KEL events to DB after successful in-memory apply
+                    if let FederationRequest::SubmitKeyEvents(ref events) = request
+                        && matches!(response, FederationResponse::KeyEventsAccepted { .. })
+                        && let Some(ref repo) = self.member_kel_repo
+                    {
+                        let batch: Vec<_> = events
+                            .iter()
+                            .map(|e| (e.event.clone(), e.event_signatures()))
+                            .collect();
+                        if let Err(e) = repo.create_batch_with_signatures(batch).await {
+                            tracing::debug!("Member KEL DB persist (may be duplicate): {}", e);
+                        }
+                    }
+
+                    response
                 }
                 EntryPayload::Membership(membership) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), membership);

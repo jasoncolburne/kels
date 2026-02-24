@@ -150,11 +150,13 @@ pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, Ap
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    let kel = state
+    let (events, _) = state
         .kel_repo
-        .get_kel(prefix)
+        .get_signed_history(prefix, i64::MAX as u64, 0)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+    let kel = Kel::from_events(events, true)
+        .map_err(|e| ApiError::internal(format!("Failed to build KEL: {}", e)))?;
 
     Ok(Json(kel))
 }
@@ -271,11 +273,13 @@ pub async fn rotate(
             .to_string()
     };
 
-    let kel = state
+    let (events, _) = state
         .kel_repo
-        .get_kel(&prefix)
+        .get_signed_history(&prefix, i64::MAX as u64, 0)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+    let kel = Kel::from_events(events, true)
+        .map_err(|e| ApiError::internal(format!("Failed to build KEL: {}", e)))?;
 
     kel.verify(false)
         .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;

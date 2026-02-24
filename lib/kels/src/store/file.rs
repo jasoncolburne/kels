@@ -56,15 +56,28 @@ impl KelStore for FileKelStore {
         }
     }
 
-    async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
+    async fn load(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         let path = self.kel_path(prefix);
         if !path.exists() {
-            return Ok(None);
+            return Ok((vec![], false));
         }
         let contents =
             std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         let events: Vec<SignedKeyEvent> = serde_json::from_str(&contents)?;
-        Ok(Some(Kel::from_events(events, true)?))
+
+        let start = offset as usize;
+        if start >= events.len() {
+            return Ok((vec![], false));
+        }
+        let end = (start + limit as usize).min(events.len());
+        let page = events[start..end].to_vec();
+        let has_more = end < events.len();
+        Ok((page, has_more))
     }
 
     async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
@@ -153,12 +166,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_nonexistent_returns_none() {
+    async fn test_load_nonexistent_returns_empty() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let result = store.load("nonexistent").await.unwrap();
-        assert!(result.is_none());
+        let (events, has_more) = store.load("nonexistent", i64::MAX as u64, 0).await.unwrap();
+        assert!(events.is_empty());
+        assert!(!has_more);
     }
 
     #[tokio::test]
@@ -171,9 +185,8 @@ mod tests {
 
         store.save(&kel).await.unwrap();
 
-        let loaded = store.load(&prefix).await.unwrap().unwrap();
-        assert_eq!(loaded.len(), kel.len());
-        assert_eq!(loaded.prefix(), kel.prefix());
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert_eq!(events.len(), kel.len());
     }
 
     #[tokio::test]
@@ -229,7 +242,7 @@ mod tests {
         let path = temp.path().join("bad.kel.json");
         std::fs::write(&path, "not valid json").unwrap();
 
-        let result = store.load("bad").await;
+        let result = store.load("bad", i64::MAX as u64, 0).await;
         assert!(result.is_err());
     }
 
@@ -247,16 +260,18 @@ mod tests {
         store.save(&kel2).await.unwrap();
 
         // Both should be loadable independently
-        let loaded1 = store.load(&prefix1).await.unwrap().unwrap();
-        let loaded2 = store.load(&prefix2).await.unwrap().unwrap();
+        let (events1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
+        let (events2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
 
-        assert_eq!(loaded1.prefix(), kel1.prefix());
-        assert_eq!(loaded2.prefix(), kel2.prefix());
+        assert!(!events1.is_empty());
+        assert!(!events2.is_empty());
 
         // Delete one shouldn't affect the other
         store.delete(&prefix1).await.unwrap();
-        assert!(store.load(&prefix1).await.unwrap().is_none());
-        assert!(store.load(&prefix2).await.unwrap().is_some());
+        let (e1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
+        let (e2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
+        assert!(e1.is_empty());
+        assert!(!e2.is_empty());
     }
 
     #[tokio::test]
@@ -274,8 +289,8 @@ mod tests {
         store.cache(&kel).await.unwrap();
 
         // KEL should NOT be saved
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_none());
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(events.is_empty());
     }
 
     #[tokio::test]
@@ -293,7 +308,7 @@ mod tests {
         store.cache(&kel).await.unwrap();
 
         // KEL should be saved
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_some());
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(!events.is_empty());
     }
 }

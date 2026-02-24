@@ -11,8 +11,9 @@ use dashmap::DashMap;
 use futures_util::future::join_all;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelMergeResult,
-    KelResponse, KelsAuditRecord, KelsError, MAX_BATCH_PREFIXES, MAX_EVENTS_PER_SUBMISSION,
-    PrefixListResponse, ServerKelCache, SignedKeyEvent,
+    KelVerifier, KelsAuditRecord, KelsError, MAX_BATCH_PREFIXES, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache,
+    SignedKeyEvent, SignedKeyEventPage,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -22,19 +23,6 @@ use tracing::{debug, warn};
 use verifiable_storage::ChainedRepository;
 
 use crate::repository::KelsRepository;
-
-pub(crate) struct PreSerializedJson(pub Arc<Vec<u8>>);
-
-impl IntoResponse for PreSerializedJson {
-    fn into_response(self) -> Response {
-        (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            (*self.0).clone(),
-        )
-            .into_response()
-    }
-}
 
 /// Maximum submissions per prefix per minute (sliding window).
 const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
@@ -352,69 +340,138 @@ pub(crate) async fn submit_events(
         .begin_locked_transaction(&prefix)
         .await?;
 
-    // Load existing KEL within transaction (sees latest committed state)
-    let existing_events = tx.load_signed_events().await?;
-    let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
+    // Bounded metadata — tips, is_contested, diverged_at_serial
+    let ctx = tx.get_merge_context().await?;
 
     debug!(
-        "submit_events: prefix={}, submitted={} events, existing={} events, divergent={:?}",
+        "submit_events: prefix={}, submitted={} events, tips={}, contested={}, diverged_at={:?}",
         prefix,
         events.len(),
-        existing_events.len(),
-        kel.find_divergence()
+        ctx.tips.len(),
+        ctx.is_contested,
+        ctx.diverged_at_serial,
     );
 
-    // Build set of existing SAIDs to filter duplicates before merge
-    let existing_saids: std::collections::HashSet<String> = existing_events
-        .iter()
-        .map(|e| e.event.said.clone())
-        .collect();
-
-    // Filter out events we already have before merging
-    // This ensures recovery events are seen as "first" when syncing a full KEL
-    let new_events: Vec<SignedKeyEvent> = events
-        .iter()
-        .filter(|e| !existing_saids.contains(&e.event.said))
-        .cloned()
-        .collect();
-
-    debug!(
-        "submit_events: new_events={} (kinds: {:?})",
-        new_events.len(),
-        new_events.iter().map(|e| &e.event.kind).collect::<Vec<_>>()
-    );
-
-    // If all events were duplicates, nothing to do
-    if new_events.is_empty() {
-        tx.commit().await?;
-        return Ok(Json(BatchSubmitResponse {
-            diverged_at: kel.find_divergence().map(|d| d.diverged_at_generation),
-            applied: true,
-        }));
+    // Validate event structure before processing
+    for signed_event in &events {
+        signed_event
+            .event
+            .validate_structure()
+            .map_err(|e| ApiError::bad_request(format!("Invalid event structure: {}", e)))?;
     }
 
-    // Merge only new events into KEL
-    let (events_to_remove, events_to_add, result) = kel
-        .merge(new_events.clone())
-        .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+    // Route to fast path or full path based on context
+    let first_previous = events[0].event.previous.clone();
+    let is_fast_path = ctx.tips.len() == 1
+        && first_previous.as_deref() == Some(&ctx.tips[0].said)
+        && !ctx.is_contested;
 
-    debug!("submit_events: merge result={:?}", result);
+    let (new_events, result, diverged_at) = if is_fast_path {
+        // ==================== Fast Path (normal append, ~99% of submissions) ====================
+        // No full KEL load. Bounded metadata + incremental verification only.
+        let tip = &ctx.tips[0];
 
-    for event in &events_to_add {
-        tx.insert_signed_event(event).await?;
-    }
+        // Reject contest on non-divergent KEL
+        if events[0].event.kind.decommissions() && events[0].event.is_contest() {
+            return Err(ApiError::unauthorized(
+                "KEL merge failed: Contest requires divergence".to_string(),
+            ));
+        }
 
-    if !events_to_remove.is_empty() {
-        let audit_record = KelsAuditRecord::for_recovery(prefix.clone(), &events_to_remove)?;
-        tx.insert_audit_record(&audit_record).await?;
-        let saids: Vec<String> = events_to_remove
+        // Check not decommissioned (tip is dec or cnt)
+        if tip.kind.decommissions() {
+            return Err(ApiError::unauthorized(
+                "KEL merge failed: KEL is decommissioned".to_string(),
+            ));
+        }
+
+        // Verify with KelVerifier using bounded state
+        let last_est = tx.get_last_establishment_event().await?.ok_or_else(|| {
+            ApiError::internal_error("No establishment event found for existing KEL".to_string())
+        })?;
+
+        let mut verifier =
+            KelVerifier::from_merge_context(&prefix, tip.serial, &tip.said, &last_est);
+        verifier
+            .verify_page(&events)
+            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+
+        for event in &events {
+            tx.insert_signed_event(event).await?;
+        }
+
+        (events.clone(), KelMergeResult::Accepted, None)
+    } else if ctx.tips.is_empty() && first_previous.is_none() {
+        // ==================== New KEL (inception) ====================
+        let mut verifier = KelVerifier::new(&prefix);
+        verifier
+            .verify_page(&events)
+            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+
+        for event in &events {
+            tx.insert_signed_event(event).await?;
+        }
+
+        (events.clone(), KelMergeResult::Accepted, None)
+    } else {
+        // ==================== Full Path (divergence/recovery/overlap, rare) ====================
+        // Load existing KEL via paginated queries, use Kel::merge for correctness.
+        let mut existing_events = Vec::new();
+        let mut since_serial = 0u64;
+        loop {
+            let (page, has_more) = tx
+                .get_signed_history_since(since_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
+                .await?;
+            if let Some(last) = page.last() {
+                since_serial = last.event.serial + 1;
+            }
+            existing_events.extend(page);
+            if !has_more {
+                break;
+            }
+        }
+        let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
+
+        // Filter duplicates
+        let submitted_saids: Vec<String> = events.iter().map(|e| e.event.said.clone()).collect();
+        let existing = tx.existing_saids(&submitted_saids).await?;
+        let new_events: Vec<SignedKeyEvent> = events
             .iter()
-            .map(|e| e.event.said.clone())
+            .filter(|e| !existing.contains(&e.event.said))
+            .cloned()
             .collect();
-        tx.delete_events_by_said(saids).await?;
-    }
 
-    // Handle merge result within transaction
+        if new_events.is_empty() {
+            tx.commit().await?;
+            return Ok(Json(BatchSubmitResponse {
+                diverged_at: ctx.diverged_at_serial,
+                applied: true,
+            }));
+        }
+
+        let (events_to_remove, events_to_add, result) = kel
+            .merge(new_events)
+            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+
+        for event in &events_to_add {
+            tx.insert_signed_event(event).await?;
+        }
+
+        if !events_to_remove.is_empty() {
+            let audit_record = KelsAuditRecord::for_recovery(prefix.clone(), &events_to_remove)?;
+            tx.insert_audit_record(&audit_record).await?;
+            let saids: Vec<String> = events_to_remove
+                .iter()
+                .map(|e| e.event.said.clone())
+                .collect();
+            tx.delete_events_by_said(saids).await?;
+        }
+
+        let diverged_at = kel.find_divergence().map(|d| d.diverged_at_generation);
+        (events_to_add, result, diverged_at)
+    };
+
+    // Handle merge result
     let applied = match result {
         KelMergeResult::Accepted
         | KelMergeResult::Recovered
@@ -422,7 +479,6 @@ pub(crate) async fn submit_events(
         | KelMergeResult::Diverged => true,
         KelMergeResult::Rejected => false,
         KelMergeResult::Protected => {
-            // Adversary used recovery key - owner should contest
             return Err(ApiError::recovery_protected(
                 "Cannot submit event - adversary used recovery key. Use contest to freeze the KEL.",
             ));
@@ -432,21 +488,13 @@ pub(crate) async fn submit_events(
     // Commit the transaction - this releases the advisory lock
     tx.commit().await?;
 
-    let diverged_at = kel.find_divergence().map(|d| d.diverged_at_generation);
-
     // Update cache outside transaction
     if applied {
-        if let Err(e) = state.kel_cache.store(&prefix, &kel).await {
-            warn!("Failed to update cache: {}", e);
-            if let Err(e2) = state.kel_cache.invalidate(&prefix).await {
-                warn!("Failed to invalidate stale cache: {}", e2);
-            }
+        // Invalidate rather than rebuild — we don't have the full KEL in the fast path
+        if let Err(e) = state.kel_cache.invalidate(&prefix).await {
+            warn!("Failed to invalidate cache: {}", e);
         }
 
-        // Publish the SAID of the last submitted event (not events.last() from the
-        // sorted KEL). For same-kind forks (e.g., two ixn at the same serial), the
-        // sorted KEL's last event may be one the other nodes already have, which would
-        // cause them to skip the fetch and miss the newly added event.
         if let Some(last_new) = new_events.last()
             && let Err(e) = state
                 .kel_cache
@@ -465,31 +513,38 @@ pub(crate) async fn submit_events(
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct GetKelParams {
-    #[serde(default)]
-    pub audit: bool,
     pub since: Option<String>,
+    pub limit: Option<usize>,
 }
 
 pub(crate) async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
     Query(params): Query<GetKelParams>,
-) -> Result<Response, ApiError> {
-    // If since parameter provided, return delta events after the given SAID
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
+        .clamp(1, MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+
+    // Delta fetch path
     if let Some(ref since_said) = params.since {
         let since_event = match state.repo.key_events.get_by_said(since_said).await? {
             Some(e) => e,
             None => {
                 // SAID not found as a real event — check if it's a composite effective
                 // SAID for a divergent KEL. If the effective SAID matches, the caller
-                // is already in sync; return empty delta.
+                // is already in sync; return empty.
                 let effective = state
                     .repo
                     .key_events
                     .compute_prefix_effective_said(&prefix)
                     .await?;
                 if effective.as_deref() == Some(since_said.as_str()) {
-                    return Ok(Json(Vec::<SignedKeyEvent>::new()).into_response());
+                    return Ok(Json(SignedKeyEventPage {
+                        events: vec![],
+                        has_more: false,
+                    }));
                 }
                 return Err(ApiError::not_found(format!(
                     "Since SAID {} not found",
@@ -504,73 +559,64 @@ pub(crate) async fn get_kel(
             ));
         }
 
-        let events = state
+        let (events, has_more) = state
             .repo
             .key_events
-            .get_signed_history_since(&prefix, since_event.serial)
+            .get_signed_history_since(&prefix, since_said, limit)
             .await?;
 
-        // Filter out the since event itself — caller already has it
-        let delta: Vec<SignedKeyEvent> = events
-            .into_iter()
-            .filter(|e| e.event.said != *since_said)
-            .collect();
-
-        return Ok(Json(delta).into_response());
+        return Ok(Json(SignedKeyEventPage { events, has_more }));
     }
 
-    // If audit requested, skip cache and return full KelResponse
-    if params.audit {
-        let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
-
-        if signed_events.is_empty() {
-            return Err(ApiError::not_found(format!(
-                "No KEL found for prefix {}",
-                prefix
-            )));
-        }
-
-        let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
-
-        let response = KelResponse {
-            events: signed_events,
-            audit_records: if audit_records.is_empty() {
-                None
-            } else {
-                Some(audit_records)
-            },
-        };
-
-        return Ok(Json(response).into_response());
-    }
-
-    // Try pre-serialized cache first (non-audit path)
-    match state.kel_cache.get_full_serialized(&prefix).await {
-        Ok(Some(bytes)) => {
-            return Ok(PreSerializedJson(bytes).into_response());
-        }
-        Ok(None) => {}
-        Err(e) => {
-            warn!("Cache error for prefix {}: {}", prefix, e);
+    // Full fetch path — try cache for default limit
+    if limit as usize == MAX_EVENTS_PER_KEL_RESPONSE {
+        match state.kel_cache.get_full_serialized(&prefix).await {
+            Ok(Some(bytes)) => {
+                // Cached KELs are ≤ MAX_EVENTS_PER_KEL_RESPONSE, so has_more = false
+                let events: Vec<SignedKeyEvent> = serde_json::from_slice(&bytes).map_err(|e| {
+                    ApiError::internal_error(format!("Cache deserialization: {}", e))
+                })?;
+                return Ok(Json(SignedKeyEventPage {
+                    events,
+                    has_more: false,
+                }));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!("Cache error for prefix {}: {}", prefix, e);
+            }
         }
     }
 
-    // Cache miss - query database
-    let signed_events = state.repo.key_events.get_signed_history(&prefix).await?;
+    // Cache miss or non-default limit — query database
+    let (events, has_more) = state
+        .repo
+        .key_events
+        .get_signed_history(&prefix, limit, 0)
+        .await?;
 
-    if signed_events.is_empty() {
+    if events.is_empty() {
         return Err(ApiError::not_found(format!(
             "No KEL found for prefix {}",
             prefix
         )));
     }
 
-    // Store in cache
-    if let Err(e) = state.kel_cache.store(&prefix, &signed_events).await {
+    // Store in cache (skips if too large per cache logic)
+    if !has_more && let Err(e) = state.kel_cache.store(&prefix, &events).await {
         warn!("Failed to cache KEL: {}", e);
     }
 
-    Ok(Json(signed_events).into_response())
+    Ok(Json(SignedKeyEventPage { events, has_more }))
+}
+
+/// Dedicated audit endpoint — returns only audit records for a prefix.
+pub(crate) async fn get_kel_audit(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+) -> Result<Json<Vec<KelsAuditRecord>>, ApiError> {
+    let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
+    Ok(Json(audit_records))
 }
 
 // ==================== Event Exists ====================
@@ -716,9 +762,10 @@ async fn refresh_verified_peers(
 
 // ==================== Batch Handlers ====================
 
-/// Batch fetch KELs. Returns map of prefix -> events.
+/// Batch fetch KELs. Returns map of prefix -> SignedKeyEventPage.
 /// Supports delta fetching: if a since SAID is provided for a prefix,
 /// only events after that SAID are returned.
+/// Each prefix is limited to MAX_EVENTS_PER_KEL_RESPONSE events; `has_more` indicates truncation.
 pub(crate) async fn get_kels_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchKelsRequest>,
@@ -729,6 +776,8 @@ pub(crate) async fn get_kels_batch(
             MAX_BATCH_PREFIXES
         )));
     }
+
+    let limit = MAX_EVENTS_PER_KEL_RESPONSE as u64;
 
     // Fetch all KELs in parallel
     let futures: Vec<_> = request
@@ -741,28 +790,36 @@ pub(crate) async fn get_kels_batch(
                 match since {
                     // Full fetch path
                     None => {
-                        // Fast path: return cached bytes directly
+                        // Fast path: return cached bytes directly (cached KELs ≤ limit)
                         if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
                         {
-                            return Ok((prefix, (*bytes).clone()));
+                            // Cached KELs are always ≤ MAX_EVENTS_PER_KEL_RESPONSE
+                            let page_bytes = build_page_bytes(&bytes, false);
+                            return Ok((prefix, page_bytes));
                         }
 
                         // Cache miss - fetch from DB
-                        let events = state.repo.key_events.get_signed_history(&prefix).await?;
+                        let (events, has_more) = state
+                            .repo
+                            .key_events
+                            .get_signed_history(&prefix, limit, 0)
+                            .await?;
 
-                        // Store in cache
+                        // Store in cache (skips if too large)
                         if !events.is_empty()
+                            && !has_more
                             && let Err(e) = state.kel_cache.store(&prefix, &events).await
                         {
                             warn!("Failed to cache KEL for {}: {}", prefix, e);
                         }
 
-                        let bytes = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                        let bytes = serde_json::to_vec(&SignedKeyEventPage { events, has_more })
+                            .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
                         Ok((prefix, bytes))
                     }
                     // Delta fetch path
                     Some(since_said) => {
-                        // Look up the since event to get its serial
+                        // Look up the since event
                         let since_event = match state
                             .repo
                             .key_events
@@ -772,25 +829,30 @@ pub(crate) async fn get_kels_batch(
                             Some(e) => e,
                             None => {
                                 // SAID not found — check if it's a composite effective SAID
-                                // for a divergent KEL. If the effective SAID matches, the
-                                // caller is in sync; return empty.
                                 let effective = state
                                     .repo
                                     .key_events
                                     .compute_prefix_effective_said(&prefix)
                                     .await?;
                                 if effective.as_deref() == Some(since_said.as_str()) {
-                                    return Ok((prefix, b"[]".to_vec()));
+                                    let bytes = br#"{"events":[],"hasMore":false}"#.to_vec();
+                                    return Ok((prefix, bytes));
                                 }
-                                // Otherwise fall back to full fetch (SAID archived by recovery)
+                                // Fall back to full fetch (SAID archived by recovery)
                                 warn!(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix
                                 );
-                                let events =
-                                    state.repo.key_events.get_signed_history(&prefix).await?;
+                                let (events, has_more) = state
+                                    .repo
+                                    .key_events
+                                    .get_signed_history(&prefix, limit, 0)
+                                    .await?;
                                 let bytes =
-                                    serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+                                    serde_json::to_vec(&SignedKeyEventPage { events, has_more })
+                                        .unwrap_or_else(|_| {
+                                            br#"{"events":[],"hasMore":false}"#.to_vec()
+                                        });
                                 return Ok((prefix, bytes));
                             }
                         };
@@ -801,62 +863,14 @@ pub(crate) async fn get_kels_batch(
                             ));
                         }
 
-                        // Check for divergence
-                        let div_serial = state
+                        let (events, has_more) = state
                             .repo
                             .key_events
-                            .find_divergence_serial(&prefix)
+                            .get_signed_history_since(&prefix, &since_said, limit)
                             .await?;
 
-                        let delta = match div_serial {
-                            None => {
-                                // No divergence: simple serial-based delta
-                                let events = state
-                                    .repo
-                                    .key_events
-                                    .get_signed_history_since(&prefix, since_event.serial)
-                                    .await?;
-                                events
-                                    .into_iter()
-                                    .filter(|e| e.event.said != since_said)
-                                    .collect::<Vec<_>>()
-                            }
-                            Some(ds) if ds <= since_event.serial => {
-                                // Divergence at or before since event's serial:
-                                // fetch from divergence point and filter out client's events
-                                let events = state
-                                    .repo
-                                    .key_events
-                                    .get_signed_history_since(&prefix, ds)
-                                    .await?;
-                                let kel = Kel::from_events(events.clone(), true).map_err(|e| {
-                                    ApiError::internal_error(format!(
-                                        "Failed to build KEL for divergence filtering: {}",
-                                        e
-                                    ))
-                                })?;
-                                let client_saids = kel.get_event_saids_from_tail(&since_said);
-                                events
-                                    .into_iter()
-                                    .filter(|e| !client_saids.contains(&e.event.said))
-                                    .collect::<Vec<_>>()
-                            }
-                            Some(_) => {
-                                // Divergence after since event's serial:
-                                // client is before divergence, normal delta works
-                                let events = state
-                                    .repo
-                                    .key_events
-                                    .get_signed_history_since(&prefix, since_event.serial)
-                                    .await?;
-                                events
-                                    .into_iter()
-                                    .filter(|e| e.event.said != since_said)
-                                    .collect::<Vec<_>>()
-                            }
-                        };
-
-                        let bytes = serde_json::to_vec(&delta).unwrap_or_else(|_| b"[]".to_vec());
+                        let bytes = serde_json::to_vec(&SignedKeyEventPage { events, has_more })
+                            .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
                         Ok((prefix, bytes))
                     }
                 }
@@ -873,9 +887,8 @@ pub(crate) async fn get_kels_batch(
         serialized_entries.push(result?);
     }
 
-    // PERFORMANCE: Build JSON response by concatenating pre-serialized byte arrays.
-    // This avoids deserializing cached KELs just to re-serialize them into the response.
-    // Format: {"prefix1":[...],"prefix2":[...]}
+    // Build JSON response by concatenating pre-serialized byte arrays.
+    // Format: {"prefix1":{"events":[...],"hasMore":false},"prefix2":...}
     let mut response_bytes = Vec::with_capacity(
         serialized_entries
             .iter()
@@ -885,14 +898,14 @@ pub(crate) async fn get_kels_batch(
     );
     response_bytes.push(b'{');
 
-    for (i, (prefix, kel_bytes)) in serialized_entries.iter().enumerate() {
+    for (i, (prefix, page_bytes)) in serialized_entries.iter().enumerate() {
         if i > 0 {
             response_bytes.push(b',');
         }
         response_bytes.push(b'"');
         response_bytes.extend_from_slice(prefix.as_bytes());
         response_bytes.extend_from_slice(b"\":");
-        response_bytes.extend_from_slice(kel_bytes);
+        response_bytes.extend_from_slice(page_bytes);
     }
 
     response_bytes.push(b'}');
@@ -905,6 +918,19 @@ pub(crate) async fn get_kels_batch(
         .into_response())
 }
 
+/// Wrap cached event bytes (a JSON array) into a SignedKeyEventPage JSON object.
+fn build_page_bytes(event_array_bytes: &[u8], has_more: bool) -> Vec<u8> {
+    // {"events":<array>,"hasMore":false}
+    let has_more_str = if has_more { "true" } else { "false" };
+    let mut bytes = Vec::with_capacity(event_array_bytes.len() + 30);
+    bytes.extend_from_slice(b"{\"events\":");
+    bytes.extend_from_slice(event_array_bytes);
+    bytes.extend_from_slice(b",\"hasMore\":");
+    bytes.extend_from_slice(has_more_str.as_bytes());
+    bytes.push(b'}');
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,14 +941,16 @@ mod tests {
     fn test_get_kel_params_defaults() {
         let json = "{}";
         let params: GetKelParams = serde_json::from_str(json).unwrap();
-        assert!(!params.audit);
+        assert!(params.since.is_none());
+        assert!(params.limit.is_none());
     }
 
     #[test]
-    fn test_get_kel_params_with_audit() {
-        let json = r#"{"audit": true}"#;
+    fn test_get_kel_params_with_values() {
+        let json = r#"{"since": "someSAID", "limit": 100}"#;
         let params: GetKelParams = serde_json::from_str(json).unwrap();
-        assert!(params.audit);
+        assert_eq!(params.since.as_deref(), Some("someSAID"));
+        assert_eq!(params.limit, Some(100));
     }
 
     // ==================== ApiError Tests ====================
@@ -985,12 +1013,12 @@ mod tests {
 
     #[test]
     fn test_max_batch_prefixes_constant() {
-        assert_eq!(MAX_BATCH_PREFIXES, 50);
+        assert_eq!(MAX_BATCH_PREFIXES, 64);
     }
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 500);
+        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 512);
     }
 
     #[test]
@@ -1004,22 +1032,6 @@ mod tests {
     async fn test_health() {
         let status = health().await;
         assert_eq!(status, StatusCode::OK);
-    }
-
-    // ==================== PreSerializedJson Tests ====================
-
-    #[test]
-    fn test_pre_serialized_json_into_response() {
-        use axum::response::IntoResponse;
-
-        let data = Arc::new(br#"{"test": true}"#.to_vec());
-        let pre_serialized = PreSerializedJson(data);
-        let response = pre_serialized.into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        // Check content-type header
-        let content_type = response.headers().get("content-type").unwrap();
-        assert_eq!(content_type, "application/json");
     }
 
     // ==================== Limit Clamping Tests ====================

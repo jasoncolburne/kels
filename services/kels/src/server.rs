@@ -26,6 +26,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
+        .route("/api/kels/kel/:prefix/audit", get(handlers::get_kel_audit))
         .route("/api/kels/events/:said/exists", get(handlers::event_exists))
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB

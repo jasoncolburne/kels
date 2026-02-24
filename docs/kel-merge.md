@@ -196,6 +196,24 @@ return result
 └───────┘       └───────────┘
 ```
 
+## Submit Handler Architecture
+
+The KELS service's `submit_events` handler routes submissions through two paths based on bounded metadata from `MergeContext` (tips, is_contested, diverged_at_serial):
+
+### Fast Path (~99% of submissions)
+
+Conditions: single tip (non-divergent), submitted events chain from the tip, KEL not contested.
+
+Uses `KelVerifier::from_merge_context()` for incremental verification against the tip + last establishment event. **No full KEL load** — only bounded metadata queries. Events are inserted directly.
+
+### Full Path (divergence/recovery/overlap)
+
+Falls back to paginated KEL loading (`MAX_EVENTS_PER_KEL_QUERY` events per page) + `Kel::merge()` for correctness. Handles all edge cases: already-divergent KELs, recovery, contest, inception overlap, gap detection.
+
+## Pagination
+
+All KEL queries use `ORDER BY serial ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The `MAX_EVENTS_PER_KEL_QUERY` constant (512) controls the page size for both reads and the submit handler's full path. Responses include `has_more` to indicate truncation.
+
 ## Key Invariants
 
 1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/v1/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `extend()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest

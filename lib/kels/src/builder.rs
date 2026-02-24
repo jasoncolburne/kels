@@ -53,7 +53,14 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         prefix: Option<&str>,
     ) -> Result<Self, KelsError> {
         let kel = match (&kel_store, prefix) {
-            (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
+            (Some(store), Some(p)) => {
+                let (events, _) = store.load(p, i64::MAX as u64, 0).await?;
+                if events.is_empty() {
+                    Kel::default()
+                } else {
+                    Kel::from_events(events, true)?
+                }
+            }
             _ => Kel::default(),
         };
         let confirmed_cursor = kel.confirmed_length();
@@ -142,7 +149,9 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
             return Ok(());
         };
-        if let Some(kel) = store.load(&prefix).await? {
+        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await?;
+        if !events.is_empty() {
+            let kel = Kel::from_events(events, true)?;
             self.confirmed_cursor = kel.confirmed_length();
             self.kel = kel;
         }
@@ -153,7 +162,10 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         if let Some(client) = &self.kels_client
             && let Some(prefix) = self.prefix()
         {
-            let mut kels_kel = client.get_kel(prefix).await?;
+            let page = client
+                .fetch_kel(prefix, None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
+                .await?;
+            let mut kels_kel = Kel::from_events(page.events, true)?;
             let local_events = self.events();
             let local_set: HashSet<_> = local_events.iter().collect();
 

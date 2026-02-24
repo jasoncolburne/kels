@@ -1,12 +1,36 @@
 //! PostgreSQL Repository for KELS
 
 use kels::{
-    EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState, SignedKeyEvent,
+    EventKind, EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState,
+    SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
 use std::collections::{HashMap, HashSet};
-use verifiable_storage::{ColumnQuery, SelfAddressed, StorageError, TransactionExecutor, Value};
+use verifiable_storage::{
+    ColumnQuery, ScalarSubquery, SelfAddressed, StorageError, TransactionExecutor, Value,
+};
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
+
+/// Summary of a tip event (event not referenced as `previous` by any other event).
+#[derive(Debug, Clone)]
+pub struct TipInfo {
+    pub said: String,
+    pub serial: u64,
+    pub kind: EventKind,
+}
+
+/// Bounded metadata gathered from the database to route merge logic.
+/// No full KEL load — just tips and divergence state.
+#[derive(Debug, Clone)]
+pub struct MergeContext {
+    /// Tip events (events not referenced as `previous` by any other event).
+    /// Empty = no events, 1 = normal, >1 = divergent.
+    pub tips: Vec<TipInfo>,
+    /// Whether the KEL has been contested (permanently frozen).
+    pub is_contested: bool,
+    /// The lowest serial where divergence occurs (if divergent).
+    pub diverged_at_serial: Option<u64>,
+}
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
@@ -35,17 +59,51 @@ impl KeyEventRepository {
         self.pool.exists(query).await
     }
 
-    /// Get signed history since a given serial (inclusive).
+    /// Get signed history since a given SAID (exclusive — the since event itself is not returned).
+    ///
+    /// Uses a scalar subquery to find the serial of the since event, then fetches
+    /// events with `serial >= that serial`, filtering out the since event itself.
+    /// Returns `(events, has_more)` using the limit+1 pop pattern.
+    /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
     pub async fn get_signed_history_since(
         &self,
         prefix: &str,
-        since_serial: u64,
-    ) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        use verifiable_storage::ChainedRepository;
+        since_said: &str,
+        limit: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), StorageError> {
+        let subquery = ScalarSubquery::new(
+            Self::TABLE_NAME,
+            "serial",
+            vec![Filter::Eq(
+                "said".to_string(),
+                Value::String(since_said.to_string()),
+            )],
+        );
 
-        let events =
-            <Self as ChainedRepository<KeyEvent>>::get_history_since(self, prefix, since_serial)
-                .await?;
+        // Fetch limit + 2: one extra for the since event we'll filter out, one extra for has_more detection
+        // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
+        let clamped_limit = limit.min(i64::MAX as u64 - 2);
+        let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .gte_scalar_subquery("serial", subquery)
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc)
+            .limit(clamped_limit + 2);
+        let mut events: Vec<KeyEvent> = self.pool.fetch(query).await?;
+
+        // Filter out the since event itself (we want events *after* it,
+        // but we need >= its serial to include divergent events at the same serial)
+        events.retain(|e| e.said != since_said);
+
+        let has_more = events.len() > clamped_limit as usize;
+        if has_more {
+            events.truncate(limit as usize);
+        }
+
+        if events.is_empty() {
+            return Ok((vec![], false));
+        }
+
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
         let signatures = self.get_signatures_by_saids(&saids).await?;
 
@@ -61,7 +119,7 @@ impl KeyEventRepository {
             signed_events.push(SignedKeyEvent::from_signatures(event, sig_pairs));
         }
 
-        Ok(signed_events)
+        Ok((signed_events, has_more))
     }
 
     /// List unique prefixes with their effective SAIDs for bootstrap sync and anti-entropy.
@@ -207,14 +265,32 @@ impl KelTransaction {
     const SIGNATURES_TABLE: &'static str = KeyEventRepository::SIGNATURES_TABLE_NAME;
     const AUDIT_TABLE: &'static str = AuditRecordRepository::TABLE_NAME;
 
-    pub async fn load_signed_events(&mut self) -> Result<Vec<SignedKeyEvent>, StorageError> {
+    /// Get a paginated page of signed events for this prefix starting from `since_serial`.
+    ///
+    /// Returns `(events, has_more)` using the limit+1 pop pattern.
+    /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
+    pub async fn get_signed_history_since(
+        &mut self,
+        since_serial: u64,
+        limit: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), StorageError> {
+        // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
+        let clamped_limit = limit.min(i64::MAX as u64 - 1);
         let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
             .eq("prefix", &self.prefix)
-            .order_by("serial", Order::Asc);
-        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+            .gte("serial", since_serial)
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc)
+            .limit(clamped_limit + 1);
+        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let has_more = events.len() > clamped_limit as usize;
+        if has_more {
+            events.pop();
+        }
 
         if events.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], false));
         }
 
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
@@ -227,17 +303,131 @@ impl KelTransaction {
         }
         let mut result = Vec::with_capacity(events.len());
         for event in events {
-            let sigs = sig_map.remove(&event.said).unwrap_or_default();
-            let signed_event = SignedKeyEvent::from_signatures(
-                event,
-                sigs.into_iter()
-                    .map(|s| (s.public_key, s.signature))
-                    .collect(),
-            );
-            result.push(signed_event);
+            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+                StorageError::StorageError(format!("No signatures found for event {}", event.said))
+            })?;
+            let sig_pairs: Vec<(String, String)> = sigs
+                .iter()
+                .map(|s| (s.public_key.clone(), s.signature.clone()))
+                .collect();
+            result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
         }
 
-        Ok(result)
+        Ok((result, has_more))
+    }
+
+    /// Gather bounded metadata for merge routing. No full KEL load.
+    ///
+    /// Finds tip events (events not referenced as `previous` by any other event),
+    /// checks for contest, and finds divergence serial if divergent.
+    pub async fn get_merge_context(&mut self) -> Result<MergeContext, StorageError> {
+        // Find tip events: events whose SAID is not referenced as `previous` by any other event
+        // Using NOT IN subquery via two separate queries (verifiable-storage doesn't support NOT IN subquery)
+        let all_events_query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .order_by("serial", Order::Desc)
+            .order_by("said", Order::Asc);
+        let all_events: Vec<KeyEvent> = self.tx.fetch(all_events_query).await?;
+
+        if all_events.is_empty() {
+            return Ok(MergeContext {
+                tips: vec![],
+                is_contested: false,
+                diverged_at_serial: None,
+            });
+        }
+
+        // Build set of SAIDs referenced as `previous`
+        let referenced: HashSet<&str> = all_events
+            .iter()
+            .filter_map(|e| e.previous.as_deref())
+            .collect();
+
+        // Tips are events not referenced as `previous`
+        let tips: Vec<TipInfo> = all_events
+            .iter()
+            .filter(|e| !referenced.contains(e.said.as_str()))
+            .map(|e| TipInfo {
+                said: e.said.clone(),
+                serial: e.serial,
+                kind: e.kind,
+            })
+            .collect();
+
+        let is_contested = all_events.iter().any(|e| e.kind == EventKind::Cnt);
+
+        let diverged_at_serial = if tips.len() > 1 {
+            // Find lowest serial with duplicate values
+            let mut seen = HashSet::new();
+            let mut diverge_serial = None;
+            // Need sorted by serial ASC for finding first duplicate
+            let mut serials: Vec<u64> = all_events.iter().map(|e| e.serial).collect();
+            serials.sort();
+            for serial in &serials {
+                if !seen.insert(*serial) {
+                    diverge_serial = Some(*serial);
+                    break;
+                }
+            }
+            diverge_serial
+        } else {
+            None
+        };
+
+        Ok(MergeContext {
+            tips,
+            is_contested,
+            diverged_at_serial,
+        })
+    }
+
+    /// Get the last establishment event for this prefix (highest serial, establishment kind).
+    ///
+    /// Uses `EventKind::establishment_kinds()` as the source of truth for which kinds
+    /// are establishment events.
+    pub async fn get_last_establishment_event(
+        &mut self,
+    ) -> Result<Option<SignedKeyEvent>, StorageError> {
+        let est_kinds = EventKind::establishment_kinds();
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .r#in("kind", est_kinds)
+            .order_by("serial", Order::Desc)
+            .order_by("said", Order::Asc)
+            .limit(1);
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let event = match events.into_iter().next() {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        let saids = vec![event.said.clone()];
+        let query =
+            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let sig_pairs: Vec<(String, String)> = signatures
+            .into_iter()
+            .map(|s| (s.public_key, s.signature))
+            .collect();
+
+        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
+    }
+
+    /// Check which of the given SAIDs already exist in the database.
+    /// Returns the subset that exist. Bounded by the input size.
+    pub async fn existing_saids(
+        &mut self,
+        saids: &[String],
+    ) -> Result<HashSet<String>, StorageError> {
+        if saids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .r#in("said", saids.to_vec());
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+        Ok(events.into_iter().map(|e| e.said).collect())
     }
 
     pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {

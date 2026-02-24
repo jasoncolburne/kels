@@ -18,7 +18,10 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
-use kels::{Kel, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, RegistrySigner, SignedKeyEvent};
+use kels::{
+    Kel, KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
+    RegistrySigner, SignedKeyEvent,
+};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -381,22 +384,28 @@ impl SyncHandler {
             // Fetch events via HTTP — delta when possible, full otherwise
             let events = if let Some(ref effective_said) = local_effective_said {
                 // Delta fetch: only events after our local state
-                match remote_client.fetch_kel_since(prefix, effective_said).await {
-                    Ok(events) => events,
+                match remote_client
+                    .fetch_kel(prefix, Some(effective_said), MAX_EVENTS_PER_KEL_RESPONSE)
+                    .await
+                {
+                    Ok(page) => page.events,
                     Err(KelsError::KeyNotFound(_)) => {
                         // Since SAID was removed by recovery/contest on remote.
-                        // Fetch with audit to get archived adversary events.
+                        // Fetch events and audit records separately.
                         info!(
                             "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
                             prefix
                         );
-                        match remote_client.fetch_kel_with_audit(prefix).await {
-                            Ok(response) => {
-                                let clean_chain = response.events;
-                                let archived_events = response
-                                    .audit_records
-                                    .as_ref()
-                                    .and_then(|records| records.last())
+                        let events_result = remote_client
+                            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .await;
+                        let audit_result = remote_client.fetch_kel_audit(prefix).await;
+
+                        match (events_result, audit_result) {
+                            (Ok(page), Ok(audit_records)) => {
+                                let clean_chain = page.events;
+                                let archived_events = audit_records
+                                    .last()
                                     .and_then(|record| match record.as_signed_key_events() {
                                         Ok(events) if !events.is_empty() => {
                                             info!(
@@ -458,11 +467,12 @@ impl SyncHandler {
                                     return Ok(());
                                 }
                             }
-                            Err(KelsError::KeyNotFound(_)) => {
+                            (Err(KelsError::KeyNotFound(_)), _)
+                            | (_, Err(KelsError::KeyNotFound(_))) => {
                                 warn!("KEL not found on remote for {}", prefix);
                                 continue;
                             }
-                            Err(e) => {
+                            (Err(e), _) | (_, Err(e)) => {
                                 warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
                                 continue;
                             }
@@ -473,8 +483,11 @@ impl SyncHandler {
                             "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
                             kels_url, prefix, e
                         );
-                        match remote_client.get_kel(prefix).await {
-                            Ok(kel) => kel.events().to_vec(),
+                        match remote_client
+                            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .await
+                        {
+                            Ok(page) => page.events,
                             Err(KelsError::KeyNotFound(_)) => {
                                 warn!("KEL not found on remote for {}", prefix);
                                 continue;
@@ -488,8 +501,11 @@ impl SyncHandler {
                 }
             } else {
                 // No local state — fetch full KEL
-                match remote_client.get_kel(prefix).await {
-                    Ok(kel) => kel.events().to_vec(),
+                match remote_client
+                    .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .await
+                {
+                    Ok(page) => page.events,
                     Err(KelsError::KeyNotFound(_)) => {
                         warn!("KEL not found on remote for {}", prefix);
                         continue;
@@ -557,11 +573,24 @@ impl SyncHandler {
                     prefix, kels_url
                 );
                 let remote_client = KelsClient::new(&kels_url);
-                match remote_client.get_kel(prefix).await {
-                    Ok(full_kel) => self
-                        .submit_events_to_kels(full_kel.events())
-                        .await
-                        .unwrap_or(false),
+                match remote_client
+                    .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .await
+                {
+                    Ok(page) => {
+                        let kel = Kel::from_events(page.events, false);
+                        match kel {
+                            Ok(full_kel) => self
+                                .submit_events_to_kels(full_kel.events())
+                                .await
+                                .unwrap_or(false),
+                            Err(e) => {
+                                warn!("Failed to parse full KEL for retry: {}", e);
+                                self.record_stale(prefix, &announcement.origin).await;
+                                false
+                            }
+                        }
+                    }
                     Err(e) => {
                         warn!("Failed to fetch full KEL for retry: {}", e);
                         self.record_stale(prefix, &announcement.origin).await;
@@ -615,8 +644,12 @@ impl SyncHandler {
 
     /// Fetch a KEL from local KELS using the client library
     async fn fetch_local_kel(&self, prefix: &str) -> Result<Kel, SyncError> {
-        match self.kels_client.get_kel(prefix).await {
-            Ok(kel) => Ok(kel),
+        match self
+            .kels_client
+            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+        {
+            Ok(page) => Ok(Kel::from_events(page.events, true)?),
             Err(KelsError::KeyNotFound(_)) => Ok(Kel::default()),
             Err(e) => Err(SyncError::Kels(e)),
         }
@@ -1002,12 +1035,21 @@ async fn fetch_events_delta(
     since: Option<&str>,
 ) -> Option<Vec<SignedKeyEvent>> {
     if let Some(since_effective_said) = since
-        && let Ok(events) = source.fetch_kel_since(prefix, since_effective_said).await
+        && let Ok(page) = source
+            .fetch_kel(
+                prefix,
+                Some(since_effective_said),
+                MAX_EVENTS_PER_KEL_RESPONSE,
+            )
+            .await
     {
-        return Some(events);
+        return Some(page.events);
     }
-    match source.get_kel(prefix).await {
-        Ok(kel) => Some(kel.events().to_vec()),
+    match source
+        .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+        .await
+    {
+        Ok(page) => Some(page.events),
         Err(_) => None,
     }
 }
@@ -1139,10 +1181,14 @@ pub async fn run_anti_entropy_loop(
                     continue;
                 };
                 let local_said = local_client
-                    .get_kel(kel_prefix)
+                    .fetch_kel(kel_prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                     .await
                     .ok()
-                    .and_then(|kel| kel.effective_tail_said());
+                    .and_then(|page| {
+                        Kel::from_events(page.events, true)
+                            .ok()
+                            .and_then(|kel| kel.effective_tail_said())
+                    });
                 peer_groups
                     .entry(kels_url)
                     .or_default()
@@ -1170,9 +1216,9 @@ pub async fn run_anti_entropy_loop(
 
                 for (kel_prefix, _since) in prefix_group {
                     let result = match events_map.get(kel_prefix) {
-                        Some(events) if !events.is_empty() => {
-                            let count = events.len();
-                            match local_client.submit_events(events).await {
+                        Some(page) if !page.events.is_empty() => {
+                            let count = page.events.len();
+                            match local_client.submit_events(&page.events).await {
                                 Ok(r) if r.applied => RepairResult::Repaired(count),
                                 Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
                                 Ok(_) => RepairResult::NoOp,
@@ -1259,7 +1305,11 @@ pub async fn run_anti_entropy_loop(
             if has_seen_said(redis.as_ref(), &state.prefix, &state.said).await {
                 continue;
             }
-            let local_kel = local_client.get_kel(&state.prefix).await.ok();
+            let local_kel = local_client
+                .fetch_kel(&state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .await
+                .ok()
+                .and_then(|page| Kel::from_events(page.events, true).ok());
             to_fetch.push((state, local_kel));
         }
 
@@ -1277,9 +1327,9 @@ pub async fn run_anti_entropy_loop(
 
             for (state, local_kel) in &to_fetch {
                 let result = match events_map.get(&state.prefix) {
-                    Some(events) if !events.is_empty() => {
-                        let count = events.len();
-                        match local_client.submit_events(events).await {
+                    Some(page) if !page.events.is_empty() => {
+                        let count = page.events.len();
+                        match local_client.submit_events(&page.events).await {
                             Ok(r) if r.applied => RepairResult::Repaired(count),
                             Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
                             Ok(_) => RepairResult::NoOp,
@@ -1331,10 +1381,14 @@ pub async fn run_anti_entropy_loop(
             }
 
             let since = remote_client
-                .get_kel(&state.prefix)
+                .fetch_kel(&state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                 .await
                 .ok()
-                .and_then(|kel| kel.effective_tail_said());
+                .and_then(|page| {
+                    Kel::from_events(page.events, false)
+                        .ok()
+                        .and_then(|kel| kel.effective_tail_said())
+                });
 
             match sync_prefix(
                 &local_client,

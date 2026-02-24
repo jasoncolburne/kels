@@ -252,9 +252,13 @@ async fn check_and_rotate(
         return Err("No HSM bindings found".into());
     }
 
-    let kel = state.kel_repo.get_kel(prefix).await?;
+    let (events, _) = state
+        .kel_repo
+        .get_signed_history(prefix, i64::MAX as u64, 0)
+        .await?;
+    let kel = kels::Kel::from_events(events, true)?;
 
-    // Verify KEL integrity
+    // Verify KEL integrity (reject divergent KELs)
     kel.verify(false)?;
 
     // Audit full binding chain — alert on any tampering but don't rotate

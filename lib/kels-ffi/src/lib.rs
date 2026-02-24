@@ -413,7 +413,7 @@ pub extern "C" fn kels_init(
     let key_provider = SoftwareKeyProvider::new();
 
     // Create KELS client
-    let client = KelsClient::with_caching(&url);
+    let client = KelsClient::new(&url);
 
     // Create builder
     let builder = runtime.block_on(async {
@@ -491,7 +491,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     }
 
     // Create new client and update builder
-    let client = KelsClient::with_caching(&url);
+    let client = KelsClient::new(&url);
 
     let Ok(mut builder_guard) = ctx.builder.lock() else {
         set_last_error("Failed to acquire builder lock");
@@ -1464,15 +1464,23 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
     // Load KEL from store, truncate, and save
     ctx.runtime.block_on(async {
         // Load current KEL
-        let kel_result = ctx.store.load(&prefix).await;
-        let mut kel = match kel_result {
-            Ok(Some(k)) => k,
-            Ok(None) => {
-                set_last_error("KEL not found in local store");
-                return -1;
-            }
+        let (events, _has_more) = match ctx.store.load(&prefix, i64::MAX as u64, 0).await {
+            Ok(result) => result,
             Err(e) => {
                 set_last_error(&format!("Failed to load KEL: {}", e));
+                return -1;
+            }
+        };
+
+        if events.is_empty() {
+            set_last_error("KEL not found in local store");
+            return -1;
+        }
+
+        let mut kel = match kels::Kel::from_events(events, true) {
+            Ok(k) => k,
+            Err(e) => {
+                set_last_error(&format!("Failed to construct KEL: {}", e));
                 return -1;
             }
         };

@@ -8,8 +8,7 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// - `SIGNATURES_TABLE_NAME` constant
 /// - `create_with_signatures(item, signatures)` for storing events with signatures
 /// - `get_signatures_by_saids(saids)` for batch signature retrieval
-/// - `get_signed_history(prefix)` for getting all signed events
-/// - `get_kel(prefix)` for getting the full KEL
+/// - `get_signed_history(prefix, limit, offset)` for getting paginated signed events
 ///
 /// Also generates `SignedEventRepository` trait implementation.
 ///
@@ -133,15 +132,38 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 self.pool.fetch_optional(query).await
             }
 
-            /// Get the full signed history for a prefix.
+            /// Get a paginated page of signed events for a prefix.
+            ///
+            /// Returns `(events, has_more)` — fetches `limit + 1` rows and pops the extra
+            /// to determine whether more pages exist.
+            /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
             pub async fn get_signed_history(
                 &self,
                 prefix: &str,
-            ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
-                use verifiable_storage::ChainedRepository;
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+                use verifiable_storage_postgres::QueryExecutor;
 
-                let events =
-                    <Self as verifiable_storage::ChainedRepository<kels::KeyEvent>>::get_history(self, prefix).await?;
+                // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
+                let clamped_limit = limit.min(i64::MAX as u64 - 1);
+                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .order_by("serial", verifiable_storage_postgres::Order::Asc)
+                    .order_by("said", verifiable_storage_postgres::Order::Asc)
+                    .limit(clamped_limit + 1)
+                    .offset(offset);
+                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+
+                let has_more = events.len() > clamped_limit as usize;
+                if has_more {
+                    events.pop();
+                }
+
+                if events.is_empty() {
+                    return Ok((vec![], false));
+                }
+
                 let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
                 let signatures = self.get_signatures_by_saids(&saids).await?;
 
@@ -160,17 +182,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     signed_events.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
                 }
 
-                Ok(signed_events)
-            }
-
-            /// Get the full KEL for a prefix as a Kel struct.
-            pub async fn get_kel(
-                &self,
-                prefix: &str,
-            ) -> Result<kels::Kel, verifiable_storage::StorageError> {
-                let signed_events = self.get_signed_history(prefix).await?;
-                kels::Kel::from_events(signed_events, false)
-                    .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))
+                Ok((signed_events, has_more))
             }
 
             /// Store multiple items with their signatures in a single transaction.
@@ -219,8 +231,13 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
     let trait_impl = quote! {
         #[async_trait::async_trait]
         impl kels::SignedEventRepository for #repo_name {
-            async fn get_kel(&self, prefix: &str) -> Result<kels::Kel, kels::KelsError> {
-                #repo_name::get_kel(self, prefix)
+            async fn get_signed_history(
+                &self,
+                prefix: &str,
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                #repo_name::get_signed_history(self, prefix, limit, offset)
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }

@@ -2,13 +2,21 @@
 
 use async_trait::async_trait;
 
-use crate::{error::KelsError, types::Kel};
+use crate::error::KelsError;
 
-/// Implemented by repositories generated with `#[stored(signed_events = true)]`.
+/// Implemented by repositories generated with `#[derive(SignedEvents)]`.
 /// Wrap with `RepositoryKelStore` to use as `KelStore`.
 #[async_trait]
 pub trait SignedEventRepository: Send + Sync {
-    async fn get_kel(&self, prefix: &str) -> Result<Kel, KelsError>;
+    /// Get a paginated page of signed events for a prefix.
+    /// Returns `(events, has_more)`.
+    async fn get_signed_history(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<crate::SignedKeyEvent>, bool), KelsError>;
+
     async fn get_signature_by_said(
         &self,
         said: &str,

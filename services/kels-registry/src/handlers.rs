@@ -186,10 +186,12 @@ async fn verify_and_authorize<T: serde::Serialize>(
 
     // Verify signature against peer's current public key from their KEL
     let kels_client = kels::KelsClient::new(&peer.kels_url);
-    let kel = kels_client
-        .get_kel(&peer.peer_prefix)
+    let page = kels_client
+        .fetch_kel(&peer.peer_prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|_| ApiError::forbidden("Could not fetch peer KEL for signature verification"))?;
+    let kel = kels::Kel::from_events(page.events, false)
+        .map_err(|_| ApiError::forbidden("Could not verify peer KEL"))?;
 
     signed_request
         .verify_signature(&kel)

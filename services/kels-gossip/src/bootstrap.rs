@@ -24,8 +24,8 @@
 //! joining the gossip network would be missed. The resync catches these events.
 
 use kels::{
-    KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient, PrefixListResponse,
-    PrefixState, PrefixesRequest, RegistrySigner,
+    Kel, KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
+    MultiRegistryClient, PrefixListResponse, PrefixState, PrefixesRequest, RegistrySigner,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -369,15 +369,19 @@ impl BootstrapSync {
         let mut results = Vec::with_capacity(prefixes.len());
         for (prefix, _since) in prefixes {
             let result = match events_map.get(prefix) {
-                Some(events) if !events.is_empty() => {
-                    debug!("Fetched {} events for {} from peer", events.len(), prefix);
+                Some(page) if !page.events.is_empty() => {
+                    debug!(
+                        "Fetched {} events for {} from peer",
+                        page.events.len(),
+                        prefix
+                    );
                     match local_client
-                        .submit_events_chunked(events, MAX_EVENTS_PER_SUBMISSION)
+                        .submit_events_chunked(&page.events, MAX_EVENTS_PER_SUBMISSION)
                         .await
                     {
                         Ok(submit_result) => {
                             if submit_result.applied {
-                                info!("Synced KEL for {} ({} events)", prefix, events.len());
+                                info!("Synced KEL for {} ({} events)", prefix, page.events.len());
                                 Ok(true)
                             } else {
                                 warn!(
@@ -440,17 +444,23 @@ impl BootstrapSync {
         remote_state: &PrefixState,
         local_client: &KelsClient,
     ) -> Option<Option<String>> {
-        match local_client.get_kel(&remote_state.prefix).await {
-            Ok(kel) => {
-                if kel.is_empty() {
-                    return Some(None);
+        match local_client
+            .fetch_kel(&remote_state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+        {
+            Ok(page) => match Kel::from_events(page.events, true) {
+                Ok(kel) => {
+                    if kel.is_empty() {
+                        return Some(None);
+                    }
+                    let local_effective = kel.effective_tail_said();
+                    match local_effective {
+                        Some(ref eff) if eff == &remote_state.said => None,
+                        _ => Some(local_effective),
+                    }
                 }
-                let local_effective = kel.effective_tail_said();
-                match local_effective {
-                    Some(ref eff) if eff == &remote_state.said => None,
-                    _ => Some(local_effective),
-                }
-            }
+                Err(_) => Some(None),
+            },
             Err(_) => Some(None),
         }
     }

@@ -35,12 +35,13 @@ mod bootstrap;
 mod gossip_layer;
 mod hsm_signer;
 mod protocol;
+mod repository;
 mod server;
 mod sync;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use redis::AsyncCommands;
 use thiserror::Error;
@@ -73,6 +74,8 @@ pub struct Config {
     pub kels_url: String,
     /// Advertised KELS HTTP endpoint for clients and node-to-node sync
     pub kels_advertise_url: String,
+    /// PostgreSQL database URL for local registry KEL store
+    pub database_url: String,
     /// Redis URL for pub/sub
     pub redis_url: String,
     /// HSM service URL for identity keys
@@ -103,6 +106,7 @@ pub struct EnvValues {
     pub node_id: Option<String>,
     pub kels_url: Option<String>,
     pub kels_advertise_url: Option<String>,
+    pub database_url: Option<String>,
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
     pub identity_url: Option<String>,
@@ -143,6 +147,9 @@ impl Config {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
             kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
             kels_advertise_url,
+            database_url: env.database_url.unwrap_or_else(|| {
+                "postgres://kels_admin:password@postgres:5432/kels_gossip".to_string()
+            }),
             redis_url: env
                 .redis_url
                 .unwrap_or_else(|| "redis://redis:6379".to_string()),
@@ -171,6 +178,7 @@ impl Config {
             node_id: std::env::var("NODE_ID").ok(),
             kels_url: std::env::var("KELS_URL").ok(),
             kels_advertise_url: std::env::var("KELS_ADVERTISE_URL").ok(),
+            database_url: std::env::var("DATABASE_URL").ok(),
             redis_url: std::env::var("REDIS_URL").ok(),
             hsm_url: std::env::var("HSM_URL").ok(),
             identity_url: std::env::var("IDENTITY_URL").ok(),
@@ -323,6 +331,36 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 None
             }
         };
+
+    // Initialize PostgreSQL for local registry KEL store
+    info!("Connecting to database at {}", config.database_url);
+    let gossip_repo = {
+        use verifiable_storage_postgres::RepositoryConnection;
+        let repo = repository::GossipRepository::connect(&config.database_url)
+            .await
+            .map_err(|e| ServiceError::Config(format!("Failed to connect to database: {}", e)))?;
+        repo.initialize()
+            .await
+            .map_err(|e| ServiceError::Config(format!("Failed to run migrations: {}", e)))?;
+        info!("Database connected and migrations applied");
+        Arc::new(repo)
+    };
+
+    // Persist verified registry KELs to local store for anchoring checks
+    for kel in &registry_kels {
+        for event in kel.events() {
+            let sigs = event.event_signatures();
+            if let Err(e) = gossip_repo
+                .registry_kels
+                .create_with_signatures(event.event.clone(), sigs)
+                .await
+            {
+                // Duplicate SAIDs are expected on restart — not an error
+                debug!("Registry KEL event persist (may be duplicate): {}", e);
+            }
+        }
+    }
+    info!("Registry KELs persisted to local store");
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),

@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 use redis::{AsyncCommands, aio::ConnectionManager};
 
-use crate::{KelsError, SignedKeyEvent};
+use crate::{KelsError, MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEvent};
 
 const LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
 const PUBSUB_CHANNEL: &str = "kel_updates";
@@ -353,9 +353,10 @@ impl ServerKelCache {
         Ok(())
     }
 
-    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement)
+    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement).
+    /// Skips caching for KELs larger than MAX_EVENTS_PER_KEL_RESPONSE to prevent OOM.
     pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        if events.is_empty() {
+        if events.is_empty() || events.len() > MAX_EVENTS_PER_KEL_RESPONSE {
             return Ok(());
         }
 

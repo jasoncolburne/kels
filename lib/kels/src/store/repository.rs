@@ -3,7 +3,11 @@
 use async_trait::async_trait;
 
 use super::KelStore;
-use crate::{error::KelsError, repository::SignedEventRepository, types::Kel};
+use crate::{
+    error::KelsError,
+    repository::SignedEventRepository,
+    types::{Kel, SignedKeyEvent},
+};
 
 /// Wraps a SignedEventRepository to provide KelStore functionality.
 pub struct RepositoryKelStore<R: SignedEventRepository> {
@@ -18,13 +22,13 @@ impl<R: SignedEventRepository> RepositoryKelStore<R> {
 
 #[async_trait]
 impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
-    async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
-        let kel = self.repo.get_kel(prefix).await?;
-        if kel.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(kel))
-        }
+    async fn load(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.repo.get_signed_history(prefix, limit, offset).await
     }
 
     async fn save(&self, kel: &Kel) -> Result<(), KelsError> {

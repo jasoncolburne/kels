@@ -10,7 +10,8 @@ use cesr::{Digest, Matter};
 use chrono::Utc;
 use ctor::dtor;
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SoftwareKeyProvider,
+    BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage,
+    SoftwareKeyProvider,
 };
 use reqwest::Client;
 use std::net::TcpListener;
@@ -292,9 +293,10 @@ async fn test_submit_and_get_kel() {
         .expect("Failed to get KEL");
 
     assert_eq!(response.status(), 200);
-    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].event.said, inception.event.said);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].event.said, inception.event.said);
+    assert!(!page.has_more);
 }
 
 #[tokio::test]
@@ -331,8 +333,8 @@ async fn test_submit_multiple_events() {
         .await
         .expect("Failed to get KEL");
 
-    let stored_events: Vec<SignedKeyEvent> = response.json().await.unwrap();
-    assert_eq!(stored_events.len(), 3);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 3);
 }
 
 #[tokio::test]
@@ -397,7 +399,7 @@ async fn test_batch_get_kels() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
+    let result: std::collections::HashMap<String, SignedKeyEventPage> =
         response.json().await.unwrap();
     assert_eq!(result.len(), 2);
     assert!(result.contains_key(&prefix1));
@@ -478,8 +480,8 @@ async fn test_idempotent_submit() {
         .await
         .unwrap();
 
-    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
-    assert_eq!(events.len(), 1);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 1);
 }
 
 #[tokio::test]
@@ -519,20 +521,30 @@ async fn test_get_kel_with_audit() {
         .await
         .unwrap();
 
-    // Get with audit flag
+    // Get KEL
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}?audit=true", prefix)))
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
         .send()
         .await
-        .expect("Failed to get KEL with audit");
+        .expect("Failed to get KEL");
 
     assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 1);
 
-    let result: kels::KelResponse = response.json().await.unwrap();
-    assert_eq!(result.events.len(), 1);
+    // Get audit records from separate endpoint
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}/audit", prefix)))
+        .send()
+        .await
+        .expect("Failed to get audit records");
+
+    assert_eq!(response.status(), 200);
+    let audit_records: Vec<kels::KelsAuditRecord> = response.json().await.unwrap();
     // No audit records for a simple KEL
-    assert!(result.audit_records.is_none());
+    assert!(audit_records.is_empty());
 }
 
 #[tokio::test]
@@ -584,9 +596,9 @@ async fn test_batch_kels_exceeds_max_prefixes() {
         return;
     };
 
-    // Create request with 51 prefixes (max is 50)
+    // Create request with 65 prefixes (max is 64)
     let prefixes: std::collections::HashMap<String, Option<String>> =
-        (0..51).map(|i| (format!("prefix_{}", i), None)).collect();
+        (0..65).map(|i| (format!("prefix_{}", i), None)).collect();
     let request = BatchKelsRequest { prefixes };
 
     let response = harness
@@ -659,14 +671,14 @@ async fn test_batch_get_kels_with_missing_prefixes() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
+    let result: std::collections::HashMap<String, SignedKeyEventPage> =
         response.json().await.unwrap();
 
-    // Both prefixes should be in result, but nonexistent will have empty array
+    // Both prefixes should be in result, but nonexistent will have empty events
     assert!(result.contains_key(&existing_prefix));
     assert!(result.contains_key("nonexistent_prefix"));
-    assert!(!result.get(&existing_prefix).unwrap().is_empty());
-    assert!(result.get("nonexistent_prefix").unwrap().is_empty());
+    assert!(!result.get(&existing_prefix).unwrap().events.is_empty());
+    assert!(result.get("nonexistent_prefix").unwrap().events.is_empty());
 }
 
 #[tokio::test]
@@ -735,8 +747,8 @@ async fn test_submit_rotation_event() {
         .await
         .unwrap();
 
-    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
-    assert_eq!(events.len(), 2);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 2);
 }
 
 #[tokio::test]
@@ -860,8 +872,8 @@ async fn test_submit_decommission_event() {
         .await
         .unwrap();
 
-    let events: Vec<SignedKeyEvent> = response.json().await.unwrap();
-    assert_eq!(events.len(), 2);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page.events.len(), 2);
 }
 
 #[tokio::test]

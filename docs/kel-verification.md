@@ -245,3 +245,50 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 | `dec` (decommission) | Next signing key | Recovery key |
 
 Events with recovery signatures require dual authorization, making them the highest authority operations in the KEL.
+
+## Streaming Verification (KelVerifier)
+
+`KelVerifier` provides incremental forward-walking verification for scenarios where the full KEL shouldn't be loaded into memory. It maintains cryptographic state across pages:
+
+```
+struct KelVerifier {
+    prefix: String,
+    last_serial: Option<u64>,
+    last_said: Option<String>,
+    current_public_key: Option<String>,
+    pending_rotation_hash: Option<String>,
+    pending_recovery_hash: Option<String>,
+}
+```
+
+### Constructors
+
+- `KelVerifier::new(prefix)` — Start from inception. Used for full verification of untrusted KELs (e.g., streaming a peer's KEL page by page via `sync_and_verify()`).
+- `KelVerifier::from_merge_context(prefix, tip_serial, tip_said, last_establishment)` — Resume from known DB state. Used by the submit handler's fast path to verify appended events without loading the full KEL.
+
+### Usage
+
+```
+let mut verifier = KelVerifier::new(prefix);
+loop {
+    let (events, has_more) = source.fetch_page(prefix, since, limit).await?;
+    verifier.verify_page(&events)?;
+    sink.store_page(prefix, &events).await?;
+    if !has_more { break; }
+    since = events.last().map(|e| &e.event.said);
+}
+```
+
+### Checks Per Event
+
+1. SAID integrity (`event.verify()`)
+2. Prefix matches verifier's prefix
+3. Serial continuity (`serial == last_serial + 1`)
+4. Previous-pointer continuity (`previous == last_said`)
+5. Structure validation (`validate_structure()`)
+6. For establishment events: rotation hash forward commitment, recovery hash commitment
+7. Signature verification (primary + dual for recovery events)
+
+### Relationship to Kel::verify()
+
+`Kel::verify()` is the original backward-walking verifier that requires all events in memory. It handles divergent KELs (multiple tails) by verifying each branch independently. `KelVerifier` walks forward and is single-branch only — the caller feeds it a linear chain. Both perform the same cryptographic checks; they differ only in direction and memory requirements.

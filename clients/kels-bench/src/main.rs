@@ -9,11 +9,13 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinSet};
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider};
+use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider, MAX_EVENTS_PER_KEL_RESPONSE};
 use verifiable_storage::compute_said;
 
 fn test_said(name: &str) -> String {
@@ -241,24 +243,23 @@ async fn run_worker(
         let start = Instant::now();
         let result: Result<u64, _> = match &benchmark_type {
             BenchmarkType::Health => client.health().await.map(|_| 0),
-            BenchmarkType::GetKel { prefix } => {
-                client.fetch_full_kel(prefix, true).await.map(|kel| {
-                    serde_json::to_string(&kel)
+            BenchmarkType::GetKel { prefix } => client
+                .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .await
+                .map(|page| {
+                    serde_json::to_string(&page.events)
                         .map(|s| s.len() as u64)
                         .unwrap_or(0)
-                })
-            }
+                }),
             BenchmarkType::GetKels { prefixes } => {
-                let prefix_refs: Vec<&str> = prefixes.iter().map(|s| s.as_str()).collect();
-                client
-                    .fetch_kels_unverified(&prefix_refs)
-                    .await
-                    .map(|kels| {
-                        kels.iter()
-                            .filter_map(|kel| serde_json::to_string(kel).ok())
-                            .map(|s| s.len() as u64)
-                            .sum()
-                    })
+                let prefixes_map: HashMap<String, Option<String>> =
+                    prefixes.iter().map(|p| (p.clone(), None)).collect();
+                client.fetch_kels(&prefixes_map).await.map(|kels| {
+                    kels.values()
+                        .filter_map(|page| serde_json::to_string(&page.events).ok())
+                        .map(|s| s.len() as u64)
+                        .sum()
+                })
             }
         };
 
@@ -340,8 +341,11 @@ async fn main() -> Result<()> {
 
     let (singular_kels, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
-            let kel = match client.get_kel(prefix).await {
-                Ok(k) => k,
+            let page = match client
+                .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .await
+            {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("Couldn't fetch kel: {}", e);
                     std::process::exit(1);
@@ -351,7 +355,7 @@ async fn main() -> Result<()> {
             println!("{}", "Skipping setup, using provided prefix...".yellow());
             (
                 vec![TestKelConfig {
-                    event_count: kel.len(),
+                    event_count: page.events.len(),
                     prefix: Some(prefix.clone()),
                 }],
                 vec![],

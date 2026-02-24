@@ -33,8 +33,12 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 # KELS library for types and server utilities (shutdown_signal)
 libkels = { path = "../../lib/kels", features = ["server"] }
 
-# Verifiable storage for Chained trait
+# Verifiable storage for Chained trait and PostgreSQL backend
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# Derive macros for SignedEvents
+libkels-derive = { path = "../../lib/kels-derive" }
 
 # Redis for pub/sub
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }

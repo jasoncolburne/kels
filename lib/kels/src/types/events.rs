@@ -106,6 +106,24 @@ impl EventKind {
     pub fn decommissions(&self) -> bool {
         matches!(self, Self::Dec | Self::Cnt)
     }
+
+    /// Returns the DB string representations of all establishment event kinds.
+    /// Used to query for the last establishment event without hardcoding kind strings in SQL.
+    pub fn establishment_kinds() -> Vec<String> {
+        [
+            Self::Icp,
+            Self::Dip,
+            Self::Rot,
+            Self::Rec,
+            Self::Ror,
+            Self::Dec,
+            Self::Cnt,
+        ]
+        .iter()
+        .filter(|k| k.is_establishment())
+        .map(|k| k.as_str().to_string())
+        .collect()
+    }
 }
 
 impl fmt::Display for EventKind {
@@ -699,6 +717,13 @@ pub struct KelResponse {
     pub events: Vec<SignedKeyEvent>, // May include divergent events at same version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audit_records: Option<Vec<KelsAuditRecord>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedKeyEventPage {
+    pub events: Vec<SignedKeyEvent>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
