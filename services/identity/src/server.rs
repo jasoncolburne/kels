@@ -25,7 +25,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/identity", get(handlers::get_identity))
-        .route("/api/identity/kel", get(handlers::get_kel))
+        .route("/api/identity/kel", get(handlers::get_key_events))
         .route("/api/identity/anchor", post(handlers::anchor))
         .route("/api/identity/sign", post(handlers::sign))
         .route("/api/identity/ecdh", post(handlers::ecdh))
@@ -172,6 +172,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
+        kel_store: kel_store.clone(),
         kels_url,
     });
 
@@ -252,22 +253,29 @@ async fn check_and_rotate(
         return Err("No HSM bindings found".into());
     }
 
-    let (events, _) = state
-        .kel_repo
-        .get_signed_history(prefix, i64::MAX as u64, 0)
-        .await?;
-    let kel = kels::Kel::from_events(events, true)?;
+    // Consuming: verify full KEL under advisory lock with inline anchor checking
+    let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
+    let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
+    let ctx = kels::verified_merge_context(
+        &mut tx,
+        prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        binding_saids,
+    )
+    .await?;
 
-    // Verify KEL integrity (reject divergent KELs)
-    kel.verify(false)?;
+    if ctx.is_divergent() {
+        return Err("SECURITY: Identity KEL has diverged".into());
+    }
 
     // Audit full binding chain — alert on any tampering but don't rotate
-    if let Err(e) = audit_binding_chain(&bindings, &kel) {
+    if let Err(e) = audit_binding_chain(&bindings, &ctx) {
         warn!("SECURITY: binding chain integrity check failed: {}", e);
     }
 
     // Only the latest binding's consistency determines rotation
-    let should_rotate = match verify_latest_binding(&bindings, &kel) {
+    let should_rotate = match verify_latest_binding(&bindings, &ctx) {
         Ok(needs_rotation) => needs_rotation,
         Err(e) => {
             warn!(
@@ -281,6 +289,9 @@ async fn check_and_rotate(
     if should_rotate {
         info!("Triggering scheduled rotation");
         perform_rotation(state, RotateMode::Scheduled).await?;
+
+        // Release advisory lock after write completes
+        tx.commit().await?;
 
         // Submit updated KEL to local KELS service if configured
         if let Some(kels_url) = state.kels_url.as_ref() {
@@ -306,6 +317,9 @@ async fn check_and_rotate(
 
         return Ok(true);
     }
+
+    // No rotation needed — release advisory lock
+    tx.commit().await?;
 
     Ok(false)
 }
@@ -441,9 +455,9 @@ pub(crate) async fn perform_rotation(
 /// be fixed by rotating, so triggering rotation here would loop forever.
 fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
-    kel: &kels::Kel,
+    ctx: &kels::MergeContext,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if kel.find_divergence().is_some() {
+    if ctx.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -476,8 +490,7 @@ fn audit_binding_chain(
         }
     }
 
-    let binding_saids: Vec<&str> = bindings.iter().map(|b| b.said.as_str()).collect();
-    if !kel.contains_anchors(&binding_saids) {
+    if !ctx.anchors_all_saids() {
         return Err("Not all binding SAIDs are anchored in KEL".into());
     }
 
@@ -488,9 +501,9 @@ fn audit_binding_chain(
 /// actively wrong with the current key state and defensive rotation is warranted.
 fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
-    kel: &kels::Kel,
+    ctx: &kels::MergeContext,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if kel.find_divergence().is_some() {
+    if ctx.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -507,7 +520,7 @@ fn verify_latest_binding(
         }
     }
 
-    if !kel.contains_anchor(&latest.said) {
+    if !ctx.is_said_anchored(&latest.said) {
         return Err("Latest binding SAID not anchored in KEL".into());
     }
 

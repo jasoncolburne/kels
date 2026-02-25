@@ -244,7 +244,7 @@ async fn run_worker(
         let result: Result<u64, _> = match &benchmark_type {
             BenchmarkType::Health => client.health().await.map(|_| 0),
             BenchmarkType::GetKel { prefix } => client
-                .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                 .await
                 .map(|page| {
                     serde_json::to_string(&page.events)
@@ -342,7 +342,7 @@ async fn main() -> Result<()> {
     let (singular_kels, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
             let page = match client
-                .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                 .await
             {
                 Ok(p) => p,

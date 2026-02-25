@@ -500,7 +500,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 
     // Get current state from builder
     let prefix = builder_guard.prefix().map(|s| s.to_string());
-    let kel = builder_guard.kel().clone();
+    let events = builder_guard.events().to_vec();
 
     // Clone the key provider
     #[cfg(all(
@@ -519,13 +519,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 
     // Create new builder with same state but new client, preserving store
     let new_builder =
-        match KeyEventBuilder::with_kel(key_provider, Some(client), Some(ctx.store.clone()), kel) {
-            Ok(b) => b,
-            Err(e) => {
-                set_last_error(&format!("Failed to create builder: {e}"));
-                return -1;
-            }
-        };
+        KeyEventBuilder::with_events(key_provider, Some(client), Some(ctx.store.clone()), events);
     *builder_guard = new_builder;
 
     // Preserve store owner prefix
@@ -977,8 +971,7 @@ pub unsafe extern "C" fn kels_status(
         return;
     };
 
-    let kel = builder_guard.kel();
-    let events = kel.events();
+    let events = builder_guard.events();
 
     result.status = KelsStatus::Ok;
 
@@ -992,8 +985,14 @@ pub unsafe extern "C" fn kels_status(
         result.latest_said = to_c_string(said);
     }
 
-    result.is_divergent = kel.find_divergence().is_some();
-    result.is_contested = kel.is_contested();
+    if let Some(prefix) = builder_guard.prefix() {
+        let mut verifier = kels::KelVerifier::new(prefix);
+        if verifier.verify_page(events).is_ok() {
+            let ctx = verifier.into_merge_context();
+            result.is_divergent = ctx.is_divergent();
+            result.is_contested = ctx.is_contested();
+        }
+    }
     result.is_decommissioned = builder_guard.is_decommissioned();
 
     #[cfg(all(
@@ -1043,15 +1042,15 @@ pub unsafe extern "C" fn kels_get_kel(ctx: *mut KelsContext, prefix: *const c_ch
     };
 
     // If no prefix specified, use the current KEL
-    let kel_to_serialize =
+    let events_to_serialize =
         if prefix_str.is_none() || prefix_str.as_deref() == builder_guard.prefix() {
-            builder_guard.kel()
+            builder_guard.events()
         } else {
             set_last_error("Can only get current KEL from context");
             return std::ptr::null_mut();
         };
 
-    match serde_json::to_string(kel_to_serialize.events()) {
+    match serde_json::to_string(events_to_serialize) {
         Ok(json) => to_c_string(&json),
         Err(e) => {
             set_last_error(&format!("Failed to serialize KEL: {}", e));
@@ -1367,20 +1366,14 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         )))]
         let adversary_keys = builder_guard.key_provider().clone();
 
-        let kel = builder_guard.kel().clone();
+        let events = builder_guard.events().to_vec();
         drop(builder_guard);
 
         // Create adversary builder WITH KELS client but NO kel_store
         // Events submit to KELS but don't save locally (simulating adversary)
         let client = KelsClient::new(&kels_url);
         let mut adversary_builder =
-            match KeyEventBuilder::with_kel(adversary_keys, Some(client), None, kel) {
-                Ok(b) => b,
-                Err(e) => {
-                    set_last_error(&format!("Failed to create adversary builder: {e}"));
-                    return -1;
-                }
-            };
+            KeyEventBuilder::with_events(adversary_keys, Some(client), None, events);
 
         let mut counter = 0u32;
 
@@ -1477,15 +1470,8 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
             return -1;
         }
 
-        let mut kel = match kels::Kel::from_events(events, true) {
-            Ok(k) => k,
-            Err(e) => {
-                set_last_error(&format!("Failed to construct KEL: {}", e));
-                return -1;
-            }
-        };
-
-        let current_len = kel.len();
+        let mut events = events;
+        let current_len = events.len();
         let keep = keep_events as usize;
 
         if keep >= current_len {
@@ -1494,10 +1480,10 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
         }
 
         // Truncate
-        kel.truncate(keep);
+        events.truncate(keep);
 
         // Save back to store
-        if let Err(e) = ctx.store.save(&kel).await {
+        if let Err(e) = ctx.store.save(&prefix, &events).await {
             set_last_error(&format!("Failed to save truncated KEL: {}", e));
             return -1;
         }
@@ -1530,9 +1516,9 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
         return std::ptr::null_mut();
     };
 
-    let kel = builder_guard.kel();
+    let events = builder_guard.events();
 
-    match serde_json::to_string_pretty(kel.events()) {
+    match serde_json::to_string_pretty(events) {
         Ok(json) => to_c_string(&json),
         Err(e) => {
             set_last_error(&format!("Failed to serialize KEL: {}", e));

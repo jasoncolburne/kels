@@ -19,8 +19,8 @@ use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
 use kels::{
-    Kel, KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    RegistrySigner, SignedKeyEvent,
+    KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION, RegistrySigner,
+    SignedKeyEvent,
 };
 use rand::seq::SliceRandom;
 use thiserror::Error;
@@ -385,7 +385,7 @@ impl SyncHandler {
             let events = if let Some(ref effective_said) = local_effective_said {
                 // Delta fetch: only events after our local state
                 match remote_client
-                    .fetch_kel(prefix, Some(effective_said), MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_key_events(prefix, Some(effective_said), MAX_EVENTS_PER_KEL_RESPONSE)
                     .await
                 {
                     Ok(page) => page.events,
@@ -397,7 +397,7 @@ impl SyncHandler {
                             prefix
                         );
                         let events_result = remote_client
-                            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                             .await;
                         let audit_result = remote_client.fetch_kel_audit(prefix).await;
 
@@ -484,7 +484,7 @@ impl SyncHandler {
                             kels_url, prefix, e
                         );
                         match remote_client
-                            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                             .await
                         {
                             Ok(page) => page.events,
@@ -502,7 +502,7 @@ impl SyncHandler {
             } else {
                 // No local state — fetch full KEL
                 match remote_client
-                    .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                     .await
                 {
                     Ok(page) => page.events,
@@ -574,22 +574,14 @@ impl SyncHandler {
                 );
                 let remote_client = KelsClient::new(&kels_url);
                 match remote_client
-                    .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
                     .await
                 {
                     Ok(page) => {
-                        let kel = Kel::from_events(page.events, false);
-                        match kel {
-                            Ok(full_kel) => self
-                                .submit_events_to_kels(full_kel.events())
-                                .await
-                                .unwrap_or(false),
-                            Err(e) => {
-                                warn!("Failed to parse full KEL for retry: {}", e);
-                                self.record_stale(prefix, &announcement.origin).await;
-                                false
-                            }
-                        }
+                        // Serving/forwarding: submit to local KELS which verifies on ingest
+                        self.submit_events_to_kels(&page.events)
+                            .await
+                            .unwrap_or(false)
                     }
                     Err(e) => {
                         warn!("Failed to fetch full KEL for retry: {}", e);
@@ -622,37 +614,28 @@ impl SyncHandler {
             return Ok(Some(said.clone()));
         }
 
-        // Fetch from KELS and compute effective tail SAID
-        let kel = self.fetch_local_kel(prefix).await?;
-        if let Some(effective) = kel.effective_tail_said() {
-            self.local_saids
-                .insert(prefix.to_string(), effective.clone());
-            Ok(Some(effective))
-        } else {
-            Ok(None)
+        // Resolving: fetch from KELS and compute effective tail SAID
+        let effective = self.fetch_local_effective_said(prefix).await?;
+        if let Some(ref said) = effective {
+            self.local_saids.insert(prefix.to_string(), said.clone());
         }
+        Ok(effective)
     }
 
     /// Re-fetch effective tail SAID from local KELS and update cache.
     async fn refresh_local_effective_said(&mut self, prefix: &str) {
-        if let Ok(kel) = self.fetch_local_kel(prefix).await
-            && let Some(effective) = kel.effective_tail_said()
-        {
+        if let Ok(Some(effective)) = self.fetch_local_effective_said(prefix).await {
             self.local_saids.insert(prefix.to_string(), effective);
         }
     }
 
-    /// Fetch a KEL from local KELS using the client library
-    async fn fetch_local_kel(&self, prefix: &str) -> Result<Kel, SyncError> {
-        match self
-            .kels_client
-            .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+    /// Resolving: fetch effective tail SAID from local KELS service.
+    /// A wrong answer just triggers an unnecessary sync (which itself verifies).
+    async fn fetch_local_effective_said(&self, prefix: &str) -> Result<Option<String>, SyncError> {
+        self.kels_client
+            .fetch_effective_said(prefix)
             .await
-        {
-            Ok(page) => Ok(Kel::from_events(page.events, true)?),
-            Err(KelsError::KeyNotFound(_)) => Ok(Kel::default()),
-            Err(e) => Err(SyncError::Kels(e)),
-        }
+            .map_err(SyncError::Kels)
     }
 
     /// Partition events for chunked seeding of a potentially divergent KEL.
@@ -1036,7 +1019,7 @@ async fn fetch_events_delta(
 ) -> Option<Vec<SignedKeyEvent>> {
     if let Some(since_effective_said) = since
         && let Ok(page) = source
-            .fetch_kel(
+            .fetch_key_events(
                 prefix,
                 Some(since_effective_said),
                 MAX_EVENTS_PER_KEL_RESPONSE,
@@ -1046,7 +1029,7 @@ async fn fetch_events_delta(
         return Some(page.events);
     }
     match source
-        .fetch_kel(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+        .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
         .await
     {
         Ok(page) => Some(page.events),
@@ -1180,15 +1163,13 @@ pub async fn run_anti_entropy_loop(
                 let Some(kels_url) = kels_url else {
                     continue;
                 };
+                // Resolving: compute effective tail SAID for sync comparison
+                // Resolving: get local effective SAID for delta comparison
                 let local_said = local_client
-                    .fetch_kel(kel_prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_effective_said(kel_prefix)
                     .await
                     .ok()
-                    .and_then(|page| {
-                        Kel::from_events(page.events, true)
-                            .ok()
-                            .and_then(|kel| kel.effective_tail_said())
-                    });
+                    .flatten();
                 peer_groups
                     .entry(kels_url)
                     .or_default()
@@ -1305,27 +1286,25 @@ pub async fn run_anti_entropy_loop(
             if has_seen_said(redis.as_ref(), &state.prefix, &state.said).await {
                 continue;
             }
-            let local_kel = local_client
-                .fetch_kel(&state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+            // Resolving: fetch local effective SAID for delta comparison
+            let local_said = local_client
+                .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
-                .and_then(|page| Kel::from_events(page.events, true).ok());
-            to_fetch.push((state, local_kel));
+                .flatten();
+            to_fetch.push((state, local_said));
         }
 
         // Batch fetch from remote and process results
         if !to_fetch.is_empty() {
             let request: HashMap<String, Option<String>> = to_fetch
                 .iter()
-                .map(|(state, local_kel)| {
-                    let since = local_kel.as_ref().and_then(|kel| kel.effective_tail_said());
-                    (state.prefix.clone(), since)
-                })
+                .map(|(state, local_said)| (state.prefix.clone(), local_said.clone()))
                 .collect();
 
             let events_map = remote_client.fetch_kels(&request).await.unwrap_or_default();
 
-            for (state, local_kel) in &to_fetch {
+            for (state, _local_said) in &to_fetch {
                 let result = match events_map.get(&state.prefix) {
                     Some(page) if !page.events.is_empty() => {
                         let count = page.events.len();
@@ -1352,13 +1331,11 @@ pub async fn run_anti_entropy_loop(
                         record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
                     }
                     RepairResult::Failed => {
-                        // Three-way divergence: local KEL is already divergent and
-                        // merge rejected the 3rd branch from the remote peer.
-                        let local_is_divergent = local_kel
-                            .as_ref()
-                            .map(|kel| kel.find_divergence().is_some())
-                            .unwrap_or(false);
-                        if local_is_divergent {
+                        // Resolving: check if local KEL is already divergent (three-way).
+                        // Use the local effective SAID we already fetched — if it exists
+                        // and differs from the remote, record seen to stop retrying.
+                        if _local_said.is_some() {
+                            // We had local state but merge still failed — likely three-way divergence
                             record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
                         } else {
                             record_stale_prefix(redis.as_ref(), &state.prefix, &peer_prefix).await;
@@ -1380,15 +1357,12 @@ pub async fn run_anti_entropy_loop(
                 continue;
             }
 
+            // Resolving: get remote effective SAID for delta push
             let since = remote_client
-                .fetch_kel(&state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
-                .and_then(|page| {
-                    Kel::from_events(page.events, false)
-                        .ok()
-                        .and_then(|kel| kel.effective_tail_said())
-                });
+                .flatten();
 
             match sync_prefix(
                 &local_client,

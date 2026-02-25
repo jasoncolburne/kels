@@ -1,9 +1,11 @@
 //! PostgreSQL Repository for Identity Service
 
+use async_trait::async_trait;
+
 use kels::KeyEvent;
 use libkels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
+use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
 /// Maps KEL state to HSM key handles. Updated only on establishment events (icp, rot).
@@ -107,6 +109,104 @@ impl AuthorityRepository {
 #[signed_events(signatures_table = "identity_key_event_signatures")]
 pub struct KeyEventRepository {
     pub pool: PgPool,
+}
+
+impl KeyEventRepository {
+    /// Begin a transaction with an advisory lock on a KEL prefix.
+    /// Lock is held until the transaction is committed or rolled back.
+    pub async fn begin_locked_transaction(
+        &self,
+        prefix: &str,
+    ) -> Result<LockedKelTransaction, StorageError> {
+        let mut tx = self.pool.begin_transaction().await?;
+        tx.acquire_advisory_lock(prefix).await?;
+        Ok(LockedKelTransaction {
+            tx,
+            prefix: prefix.to_string(),
+        })
+    }
+}
+
+/// Transaction with advisory lock on a KEL prefix.
+/// Reads from this transaction see a consistent snapshot under the lock.
+pub struct LockedKelTransaction {
+    tx: <PgPool as QueryExecutor>::Transaction,
+    prefix: String,
+}
+
+impl LockedKelTransaction {
+    /// Load a page of signed events within the locked transaction.
+    pub async fn load(
+        &mut self,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
+        let clamped_limit = limit.min(i64::MAX as u64 - 1);
+        let query = Query::<KeyEvent>::for_table(KeyEventRepository::TABLE_NAME)
+            .eq("prefix", &self.prefix)
+            .gte("serial", 0u64)
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc)
+            .limit(clamped_limit + 1)
+            .offset(offset);
+        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let has_more = events.len() > clamped_limit as usize;
+        if has_more {
+            events.pop();
+        }
+
+        if events.is_empty() {
+            return Ok((vec![], false));
+        }
+
+        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+        let sig_query =
+            Query::<kels::EventSignature>::for_table(KeyEventRepository::SIGNATURES_TABLE_NAME)
+                .r#in("event_said", saids);
+        let signatures: Vec<kels::EventSignature> = self.tx.fetch(sig_query).await?;
+        let mut sig_map: std::collections::HashMap<String, Vec<kels::EventSignature>> =
+            std::collections::HashMap::new();
+        for sig in signatures {
+            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        }
+
+        let mut result = Vec::with_capacity(events.len());
+        for event in events {
+            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+                StorageError::StorageError(format!("No signatures found for event {}", event.said))
+            })?;
+            let sig_pairs: Vec<(String, String)> = sigs
+                .iter()
+                .map(|s| (s.public_key.clone(), s.signature.clone()))
+                .collect();
+            result.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
+        }
+
+        Ok((result, has_more))
+    }
+
+    pub async fn commit(self) -> Result<(), StorageError> {
+        self.tx.commit().await
+    }
+
+    pub async fn rollback(self) -> Result<(), StorageError> {
+        self.tx.rollback().await
+    }
+}
+
+#[async_trait]
+impl kels::PageLoader for LockedKelTransaction {
+    async fn load_page(
+        &mut self,
+        _prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+        self.load(limit, offset)
+            .await
+            .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+    }
 }
 
 #[derive(Stored)]

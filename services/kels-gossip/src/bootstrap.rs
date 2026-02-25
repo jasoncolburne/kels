@@ -24,8 +24,8 @@
 //! joining the gossip network would be missed. The resync catches these events.
 
 use kels::{
-    Kel, KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    MultiRegistryClient, PrefixListResponse, PrefixState, PrefixesRequest, RegistrySigner,
+    KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient, PrefixListResponse,
+    PrefixState, PrefixesRequest, RegistrySigner,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -439,29 +439,27 @@ impl BootstrapSync {
     /// - `None` = up to date, skip
     /// - `Some(None)` = no local KEL, full fetch
     /// - `Some(Some(said))` = has partial KEL, delta from effective tail SAID
+    ///
+    /// Resolving: compare local effective SAID with remote to decide if sync needed.
+    /// A wrong answer triggers an unnecessary sync (which itself verifies).
     async fn sync_check(
         &self,
         remote_state: &PrefixState,
         local_client: &KelsClient,
     ) -> Option<Option<String>> {
         match local_client
-            .fetch_kel(&remote_state.prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+            .fetch_effective_said(&remote_state.prefix)
             .await
         {
-            Ok(page) => match Kel::from_events(page.events, true) {
-                Ok(kel) => {
-                    if kel.is_empty() {
-                        return Some(None);
-                    }
-                    let local_effective = kel.effective_tail_said();
-                    match local_effective {
-                        Some(ref eff) if eff == &remote_state.said => None,
-                        _ => Some(local_effective),
-                    }
+            Ok(Some(local_effective)) => {
+                if local_effective == remote_state.said {
+                    None // In sync
+                } else {
+                    Some(Some(local_effective)) // Delta fetch from this SAID
                 }
-                Err(_) => Some(None),
-            },
-            Err(_) => Some(None),
+            }
+            Ok(None) => Some(None), // No local KEL, full fetch
+            Err(_) => Some(None),   // Error, try full fetch
         }
     }
 }

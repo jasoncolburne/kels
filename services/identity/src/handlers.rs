@@ -5,12 +5,12 @@ use tokio::sync::RwLock;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use kels::{Kel, KelsError, KeyEventBuilder};
+use kels::{KelStore, KelsError, KeyEventBuilder, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEventPage};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -88,6 +88,7 @@ pub struct AppState {
     pub repo: Arc<IdentityRepository>,
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
+    pub kel_store: Arc<dyn KelStore>,
     pub kels_url: Option<String>,
 }
 
@@ -143,22 +144,35 @@ pub async fn get_identity(
     }))
 }
 
-/// Fetches fresh from the database to include events anchored by other processes.
-pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, ApiError> {
+#[derive(Debug, Deserialize)]
+pub struct KeyEventsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<u64>,
+}
+
+/// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
+pub async fn get_key_events(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<KeyEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    let (events, _) = state
-        .kel_repo
-        .get_signed_history(prefix, i64::MAX as u64, 0)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
-    let kel = Kel::from_events(events, true)
-        .map_err(|e| ApiError::internal(format!("Failed to build KEL: {}", e)))?;
+    let limit = query
+        .limit
+        .unwrap_or(MAX_EVENTS_PER_KEL_QUERY)
+        .min(MAX_EVENTS_PER_KEL_QUERY);
+    let offset = query.offset.unwrap_or(0);
 
-    Ok(Json(kel))
+    let (events, has_more) = state
+        .kel_store
+        .load(prefix, limit as u64, offset)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch key events: {}", e)))?;
+
+    Ok(Json(SignedKeyEventPage { events, has_more }))
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.
@@ -273,24 +287,35 @@ pub async fn rotate(
             .to_string()
     };
 
-    let (events, _) = state
+    // Consuming: verify full KEL under advisory lock (paginated)
+    let mut tx = state
         .kel_repo
-        .get_signed_history(&prefix, i64::MAX as u64, 0)
+        .begin_locked_transaction(&prefix)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
-    let kel = Kel::from_events(events, true)
-        .map_err(|e| ApiError::internal(format!("Failed to build KEL: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
 
-    kel.verify(false)
-        .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
+    let ctx = kels::verified_merge_context(
+        &mut tx,
+        &prefix,
+        MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty(),
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed
-        .verify_signature(&kel)
+        .verify_signature_with_ctx(&ctx)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
     let response = crate::server::perform_rotation(&state, signed.payload.mode)
         .await
         .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
+
+    // Release advisory lock after write completes
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
 
     Ok(Json(response))
 }

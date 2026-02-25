@@ -129,7 +129,7 @@ impl KelsClient {
     /// - `limit`: Page size.
     ///
     /// Returns `SignedKeyEventPage` with `events` and `has_more`.
-    pub async fn fetch_kel(
+    pub async fn fetch_key_events(
         &self,
         prefix: &str,
         since: Option<&str>,
@@ -146,6 +146,32 @@ impl KelsClient {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::KeyNotFound(prefix.to_string()))
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch the effective tail SAID for a prefix.
+    ///
+    /// **RESOLVING ONLY — NOT VERIFIED.** Use only for sync comparison.
+    /// A wrong value triggers an unnecessary sync, not a security hole.
+    /// Returns `None` if the prefix doesn't exist.
+    pub async fn fetch_effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/api/kels/kel/{}/effective-said",
+                self.base_url, prefix
+            ))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await?;
+            Ok(body.get("said").and_then(|s| s.as_str()).map(String::from))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
         } else {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -473,7 +499,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_fetch_kel_success() {
+        async fn test_fetch_key_events_success() {
             let mock_server = MockServer::start().await;
 
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
@@ -492,7 +518,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_kel(&prefix, None, 512).await;
+            let result = client.fetch_key_events(&prefix, None, 512).await;
 
             assert!(result.is_ok());
             let page = result.unwrap();
@@ -501,7 +527,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_fetch_kel_not_found() {
+        async fn test_fetch_key_events_not_found() {
             let mock_server = MockServer::start().await;
 
             Mock::given(method("GET"))
@@ -511,13 +537,13 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_kel("nonexistent", None, 512).await;
+            let result = client.fetch_key_events("nonexistent", None, 512).await;
 
             assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
         }
 
         #[tokio::test]
-        async fn test_fetch_kel_server_error() {
+        async fn test_fetch_key_events_server_error() {
             let mock_server = MockServer::start().await;
 
             let error = ErrorResponse {
@@ -532,7 +558,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_kel("prefix", None, 512).await;
+            let result = client.fetch_key_events("prefix", None, 512).await;
 
             assert!(matches!(result, Err(KelsError::ServerError(..))));
         }

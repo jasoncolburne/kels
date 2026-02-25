@@ -307,9 +307,9 @@ async fn cmd_scheduled_rotate(
             return Err(anyhow::anyhow!("Failed to fetch KEL after rotation"));
         }
 
-        let kel: kels::Kel = kel_resp.json().await?;
+        let page: kels::SignedKeyEventPage = kel_resp.json().await?;
         let kels_client = KelsClient::new(&url);
-        let submit_resp = kels_client.submit_events(kel.events()).await?;
+        let submit_resp = kels_client.submit_events(&page.events).await?;
 
         if !submit_resp.applied {
             return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));

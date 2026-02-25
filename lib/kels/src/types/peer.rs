@@ -8,7 +8,7 @@ use cesr::{Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
-use super::Kel;
+use super::{Kel, MergeContext};
 use crate::KelsError;
 
 /// Validate that a timestamp is within the acceptable window.
@@ -38,10 +38,35 @@ pub struct SignedRequest<T> {
 }
 
 impl<T: Serialize> SignedRequest<T> {
-    /// Verify the request signature against the current public key from a KEL.
+    /// Verify the request signature against a verified KEL context.
     ///
-    /// Extracts the public key from the last establishment event, serializes the
-    /// payload to JSON, and verifies the CESR-encoded signature.
+    /// Uses the current public key from the `MergeContext` (proof-of-verification token).
+    /// Fails secure if the KEL is divergent (no unambiguous key).
+    pub fn verify_signature_with_ctx(&self, ctx: &MergeContext) -> Result<(), KelsError> {
+        if ctx.is_divergent() {
+            return Err(KelsError::Divergent);
+        }
+
+        let public_key_qb64 = ctx
+            .current_public_key()
+            .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
+
+        let public_key = PublicKey::from_qb64(public_key_qb64)
+            .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
+
+        let signature = Signature::from_qb64(&self.signature)
+            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
+
+        let payload_json = serde_json::to_vec(&self.payload)?;
+
+        public_key
+            .verify(&payload_json, &signature)
+            .map_err(|_| KelsError::SignatureVerificationFailed)?;
+
+        Ok(())
+    }
+
+    /// Verify the request signature against a KEL (legacy, will be removed).
     pub fn verify_signature(&self, kel: &Kel) -> Result<(), KelsError> {
         if kel.find_divergence().is_some() {
             return Err(KelsError::Divergent);
@@ -113,6 +138,25 @@ pub struct PeerHistory {
 }
 
 impl PeerHistory {
+    /// Verify peer records against verified KEL contexts.
+    pub fn verify_with_contexts(
+        &self,
+        trusted_prefixes: &HashSet<&'static str>,
+        contexts: &[&MergeContext],
+    ) -> Result<(), KelsError> {
+        for ctx in contexts {
+            if !trusted_prefixes.contains(ctx.prefix()) {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Could not verify KEL {} as trusted",
+                    ctx.prefix()
+                )));
+            }
+        }
+
+        self.verify_records()
+    }
+
+    /// Verify peer records against KELs (legacy, will be removed).
     pub fn verify(
         &self,
         trusted_prefixes: &HashSet<&'static str>,
@@ -127,6 +171,10 @@ impl PeerHistory {
             }
         }
 
+        self.verify_records()
+    }
+
+    fn verify_records(&self) -> Result<(), KelsError> {
         let mut last_said: Option<String> = None;
         for (i, peer_record) in self.records.iter().enumerate() {
             peer_record.verify()?;

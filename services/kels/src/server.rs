@@ -28,6 +28,11 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kels/kel/:prefix", get(handlers::get_kel))
         .route("/api/kels/kel/:prefix/audit", get(handlers::get_kel_audit))
         .route("/api/kels/events/:said/exists", get(handlers::event_exists))
+        // RESOLVING ONLY — unverified, for sync comparison. See handler doc.
+        .route(
+            "/api/kels/kel/:prefix/effective-said",
+            get(handlers::get_effective_said),
+        )
         .route("/api/kels/kels", post(handlers::get_kels_batch))
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
@@ -57,9 +62,19 @@ pub async fn run(
         .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
     info!("Connected to Redis");
 
+    let repo = Arc::new(repo);
+    #[cfg(not(feature = "dev-tools"))]
+    let kel_store: Arc<dyn kels::KelStore> = {
+        let kel_event_repo = Arc::new(crate::repository::KeyEventRepository::new(
+            repo.key_events.pool.clone(),
+        ));
+        Arc::new(kels::RepositoryKelStore::new(kel_event_repo))
+    };
     let kel_cache = ServerKelCache::new(redis_conn.clone(), "kels:kel");
     let state = Arc::new(AppState {
-        repo: Arc::new(repo),
+        repo,
+        #[cfg(not(feature = "dev-tools"))]
+        kel_store,
         kel_cache,
         redis_conn,
         registry_urls,

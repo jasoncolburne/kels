@@ -8,10 +8,7 @@ pub use repository::RepositoryKelStore;
 
 use async_trait::async_trait;
 
-use crate::{
-    error::KelsError,
-    types::{Kel, SignedKeyEvent},
-};
+use crate::{error::KelsError, types::SignedKeyEvent};
 
 /// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
 /// authoritative state from being overwritten by server-fetched data.
@@ -34,20 +31,20 @@ pub trait KelStore: Send + Sync {
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
-    /// Save a KEL, overwriting any existing one with the same prefix.
-    async fn save(&self, kel: &Kel) -> Result<(), KelsError>;
+    /// Save events for a prefix, overwriting any existing ones.
+    async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
 
     /// Delete a KEL by prefix. No-op if not found.
     async fn delete(&self, prefix: &str) -> Result<(), KelsError>;
 
-    /// Cache server-fetched KEL. Skips owner prefix to protect authoritative local state.
-    async fn cache(&self, kel: &Kel) -> Result<(), KelsError> {
+    /// Cache server-fetched events. Skips owner prefix to protect authoritative local state.
+    async fn cache(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         if let Some(owner) = self.owner_prefix()
-            && kel.prefix() == Some(owner.as_str())
+            && prefix == owner
         {
             return Ok(());
         }
-        self.save(kel).await
+        self.save(prefix, events).await
     }
 }
 
@@ -60,7 +57,7 @@ mod tests {
 
     /// In-memory store for testing
     struct MemoryStore {
-        kels: RwLock<HashMap<String, Kel>>,
+        kels: RwLock<HashMap<String, Vec<SignedKeyEvent>>>,
         owner: RwLock<Option<String>>,
     }
 
@@ -96,8 +93,7 @@ mod tests {
                 Err(_) => return Ok((vec![], false)),
             };
             match guard.get(prefix) {
-                Some(kel) => {
-                    let events = kel.events();
+                Some(events) => {
                     let start = offset as usize;
                     if start >= events.len() {
                         return Ok((vec![], false));
@@ -111,9 +107,9 @@ mod tests {
             }
         }
 
-        async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
-            if let (Ok(mut guard), Some(prefix)) = (self.kels.write(), kel.prefix()) {
-                guard.insert(prefix.to_string(), kel.clone());
+        async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+            if let Ok(mut guard) = self.kels.write() {
+                guard.insert(prefix.to_string(), events.to_vec());
             }
             Ok(())
         }
@@ -126,39 +122,38 @@ mod tests {
         }
     }
 
-    async fn create_test_kel() -> Kel {
+    async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder.incept().await.unwrap();
-        Kel::from_events(vec![icp], true).unwrap()
+        let prefix = icp.event.prefix.clone();
+        (prefix, vec![icp])
     }
 
     #[tokio::test]
     async fn test_cache_saves_non_owner_kel() {
         let store = MemoryStore::new();
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
-        assert!(!events.is_empty());
+        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(!loaded.is_empty());
     }
 
     #[tokio::test]
     async fn test_cache_skips_owner_kel() {
         let store = MemoryStore::new();
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
         // Set owner prefix to match KEL
         store.set_owner_prefix(Some(&prefix));
 
         // Cache should skip owner's KEL
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
         // KEL should NOT be saved
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
-        assert!(events.is_empty());
+        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(loaded.is_empty());
     }
 
     #[tokio::test]

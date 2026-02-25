@@ -18,8 +18,8 @@ use kels::{
     AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest, ErrorCode,
     ErrorResponse, Kel, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
-    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedRequest,
-    StatusUpdateRequest, Vote,
+    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedKeyEventPage,
+    SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
@@ -187,7 +187,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
     // Verify signature against peer's current public key from their KEL
     let kels_client = kels::KelsClient::new(&peer.kels_url);
     let page = kels_client
-        .fetch_kel(&peer.peer_prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .fetch_key_events(&peer.peer_prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|_| ApiError::forbidden("Could not fetch peer KEL for signature verification"))?;
     let kel = kels::Kel::from_events(page.events, false)
@@ -376,18 +376,21 @@ pub struct FederationState {
 /// the 30-second background loop may not have picked up the new anchor yet.
 async fn ensure_own_kel_synced(state: &FederationState) {
     let fut = async {
-        if let Ok(own_kel) = state.identity_client.get_kel().await
-            && let Some(prefix) = own_kel.prefix()
+        if let Ok(own_page) = state
+            .identity_client
+            .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            && let Some(first) = own_page.events.first()
         {
+            let prefix = &first.event.prefix;
             let raft_count = state
                 .node
                 .get_member_kel(prefix)
                 .await
                 .map(|k| k.events().len())
                 .unwrap_or(0);
-            let all_events = own_kel.events();
-            if all_events.len() > raft_count {
-                let events = all_events[raft_count..].to_vec();
+            if own_page.events.len() > raft_count {
+                let events = own_page.events[raft_count..].to_vec();
                 let _ = state.node.submit_key_events(events).await;
             }
         }
@@ -655,9 +658,11 @@ async fn verify_admin_request<T: Serialize>(
         return Err(ApiError::forbidden("Not signed by this node's identity"));
     }
 
-    let kel = identity_client
-        .get_kel()
+    let page = identity_client
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
+        .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
+    let kel = kels::Kel::from_events(page.events, true)
         .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
 
     signed_request
@@ -1129,18 +1134,21 @@ pub async fn admin_vote_proposal(
 
                         // Eagerly submit own KEL to Raft after anchoring
                         // (best-effort, background sync catches misses)
-                        if let Ok(own_kel) = state.identity_client.get_kel().await
-                            && let Some(prefix) = own_kel.prefix()
+                        if let Ok(own_page) = state
+                            .identity_client
+                            .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+                            .await
+                            && let Some(first) = own_page.events.first()
                         {
+                            let prefix = &first.event.prefix;
                             let raft_count = state
                                 .node
                                 .get_member_kel(prefix)
                                 .await
                                 .map(|k| k.events().len())
                                 .unwrap_or(0);
-                            let all_events = own_kel.events();
-                            if all_events.len() > raft_count {
-                                let events = all_events[raft_count..].to_vec();
+                            if own_page.events.len() > raft_count {
+                                let events = own_page.events[raft_count..].to_vec();
                                 if let Err(e) = state.node.submit_key_events(events).await {
                                     tracing::warn!(
                                         error = %e,
@@ -1230,18 +1238,21 @@ pub async fn admin_vote_proposal(
                         })?;
 
                     // Eagerly submit own KEL to Raft after anchoring
-                    if let Ok(own_kel) = state.identity_client.get_kel().await
-                        && let Some(prefix) = own_kel.prefix()
+                    if let Ok(own_page) = state
+                        .identity_client
+                        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+                        .await
+                        && let Some(first) = own_page.events.first()
                     {
+                        let prefix = &first.event.prefix;
                         let raft_count = state
                             .node
                             .get_member_kel(prefix)
                             .await
                             .map(|k| k.events().len())
                             .unwrap_or(0);
-                        let all_events = own_kel.events();
-                        if all_events.len() > raft_count {
-                            let events = all_events[raft_count..].to_vec();
+                        if own_page.events.len() > raft_count {
+                            let events = own_page.events[raft_count..].to_vec();
                             if let Err(e) = state.node.submit_key_events(events).await {
                                 tracing::warn!(
                                     error = %e,
@@ -1329,14 +1340,14 @@ pub async fn list_peers_federated(
 /// Public endpoint for clients to verify peer records are anchored in the registry's KEL.
 pub async fn get_registry_kel(
     State(state): State<Arc<RegistryKelState>>,
-) -> Result<Json<Kel>, ApiError> {
-    let kel = state
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let page = state
         .identity_client
-        .get_kel()
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to fetch KEL: {}", e)))?;
 
-    Ok(Json(kel))
+    Ok(Json(page))
 }
 
 /// Public endpoint to get all cached federation member KELs.
@@ -1347,11 +1358,13 @@ pub async fn get_registry_kels(
     let mut kels = state.node.get_all_member_kels().await;
 
     // Add our own fresh KEL (not cached, always current)
-    let own_kel = state
+    let own_page = state
         .identity_client
-        .get_kel()
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
+    let own_kel = kels::Kel::from_events(own_page.events, true)
+        .map_err(|e| ApiError::internal_error(format!("Failed to parse own KEL: {}", e)))?;
 
     let prefix = own_kel.prefix().ok_or(ApiError::internal_error(
         "Own KEL has no prefix".to_string(),

@@ -77,7 +77,9 @@ pub use types::{
     hash_tip_saids, validate_timestamp,
 };
 pub use types::{
-    Kel, KelVerifier, PagedKelSink, PagedKelSource, compute_rotation_hash, sync_and_verify,
+    BranchTip, Kel, KelVerifier, MergeContext, PageLoader, PagedKelSink, PagedKelSource,
+    StorePageLoader, compute_rotation_hash, sync_and_verify, truncate_incomplete_generation,
+    verified_merge_context,
 };
 
 /// Maximum number of events allowed in a single submit_events request.
@@ -90,6 +92,19 @@ pub const MAX_BATCH_PREFIXES: usize = 64;
 
 /// Maximum number of events fetched in a single KEL database query or HTTP page.
 pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
+
+/// Default maximum number of pages to walk during `verified_merge_context()`.
+/// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
+/// At 512 events per page, 512 pages = ~262K events before failing secure.
+pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
+
+/// Read the max verification pages from env, falling back to the default.
+pub fn max_verification_pages() -> usize {
+    std::env::var("KELS_MAX_VERIFICATION_PAGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_VERIFICATION_PAGES)
+}
 
 /// Maximum number of events returned in a single KEL response page.
 /// KELs larger than this are not cached server-side.

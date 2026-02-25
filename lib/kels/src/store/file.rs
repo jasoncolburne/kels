@@ -3,10 +3,7 @@
 use async_trait::async_trait;
 
 use super::KelStore;
-use crate::{
-    error::KelsError,
-    types::{Kel, SignedKeyEvent},
-};
+use crate::{error::KelsError, types::SignedKeyEvent};
 
 /// File-based KEL store for CLI and desktop apps
 pub struct FileKelStore {
@@ -80,13 +77,10 @@ impl KelStore for FileKelStore {
         Ok((page, has_more))
     }
 
-    async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
+    async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         use std::io::Write;
-        let prefix = kel
-            .prefix()
-            .ok_or_else(|| KelsError::InvalidKel("KEL has no prefix".to_string()))?;
         let path = self.kel_path(prefix);
-        let contents = serde_json::to_string_pretty(kel.events())?;
+        let contents = serde_json::to_string_pretty(events)?;
         let mut file =
             std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         file.write_all(contents.as_bytes())
@@ -116,10 +110,11 @@ mod tests {
     use super::*;
     use crate::{SoftwareKeyProvider, builder::KeyEventBuilder};
 
-    async fn create_test_kel() -> Kel {
+    async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder.incept().await.unwrap();
-        Kel::from_events(vec![icp], true).unwrap()
+        let prefix = icp.event.prefix.clone();
+        (prefix, vec![icp])
     }
 
     #[test]
@@ -180,13 +175,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
+        let event_count = events.len();
 
-        store.save(&kel).await.unwrap();
+        store.save(&prefix, &events).await.unwrap();
 
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
-        assert_eq!(events.len(), kel.len());
+        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert_eq!(loaded.len(), event_count);
     }
 
     #[tokio::test]
@@ -194,10 +189,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
-        store.save(&kel).await.unwrap();
+        store.save(&prefix, &events).await.unwrap();
 
         let expected_path = temp.path().join(format!("{}.kel.json", prefix));
         assert!(expected_path.exists());
@@ -212,10 +206,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
-        store.save(&kel).await.unwrap();
+        store.save(&prefix, &events).await.unwrap();
 
         let path = temp.path().join(format!("{}.kel.json", prefix));
         assert!(path.exists());
@@ -251,20 +244,18 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel1 = create_test_kel().await;
-        let kel2 = create_test_kel().await;
-        let prefix1 = kel1.prefix().unwrap().to_string();
-        let prefix2 = kel2.prefix().unwrap().to_string();
+        let (prefix1, events1) = create_test_events().await;
+        let (prefix2, events2) = create_test_events().await;
 
-        store.save(&kel1).await.unwrap();
-        store.save(&kel2).await.unwrap();
+        store.save(&prefix1, &events1).await.unwrap();
+        store.save(&prefix2, &events2).await.unwrap();
 
         // Both should be loadable independently
-        let (events1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
-        let (events2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
+        let (loaded1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
+        let (loaded2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
 
-        assert!(!events1.is_empty());
-        assert!(!events2.is_empty());
+        assert!(!loaded1.is_empty());
+        assert!(!loaded2.is_empty());
 
         // Delete one shouldn't affect the other
         store.delete(&prefix1).await.unwrap();
@@ -279,18 +270,17 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
         // Set this KEL's prefix as the owner
         store.set_owner_prefix(Some(&prefix));
 
         // Cache should skip saving because it's the owner's KEL
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
         // KEL should NOT be saved
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
-        assert!(events.is_empty());
+        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(loaded.is_empty());
     }
 
     #[tokio::test]
@@ -298,17 +288,16 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = create_test_events().await;
 
         // Set a different owner prefix
         store.set_owner_prefix(Some("different_prefix"));
 
         // Cache should save because it's not the owner's KEL
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
         // KEL should be saved
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
-        assert!(!events.is_empty());
+        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        assert!(!loaded.is_empty());
     }
 }

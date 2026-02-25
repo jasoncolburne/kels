@@ -177,30 +177,45 @@ impl KelsPeerVerifier {
     }
 
     /// Get the current public key from a peer's KEL as compressed SEC1 bytes.
-    async fn public_key_from_kel(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
-        let page = self
-            .kels_client
-            .fetch_kel(prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-            .await
-            .map_err(|e| {
-                GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
-            })?;
-        let kel = kels::Kel::from_events(page.events, true).map_err(|e| {
-            GossipError::VerificationFailed(format!("KEL parse for {}: {}", prefix, e))
-        })?;
+    async fn public_key_from_key_events(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
+        // Consuming: verify KEL (paginated) to extract trusted public key for signing
+        let mut verifier = kels::KelVerifier::new(prefix);
+        let page_size = kels::MAX_EVENTS_PER_KEL_QUERY;
+        let mut since: Option<String> = None;
 
-        if kel.find_divergence().is_some() {
+        loop {
+            let page = self
+                .kels_client
+                .fetch_key_events(prefix, since.as_deref(), page_size)
+                .await
+                .map_err(|e| {
+                    GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
+                })?;
+
+            if page.events.is_empty() {
+                break;
+            }
+
+            verifier.verify_page(&page.events).map_err(|e| {
+                GossipError::VerificationFailed(format!("KEL verification for {}: {}", prefix, e))
+            })?;
+
+            since = page.events.last().map(|e| e.event.said.clone());
+            if !page.has_more {
+                break;
+            }
+        }
+
+        let ctx = verifier.into_merge_context();
+
+        if ctx.is_divergent() {
             return Err(GossipError::VerificationFailed(format!(
                 "KEL for {} is divergent",
                 prefix
             )));
         }
 
-        let event = kel.last_establishment_event().ok_or_else(|| {
-            GossipError::VerificationFailed(format!("No establishment event in KEL for {}", prefix))
-        })?;
-
-        let qb64_key = event.event.public_key.as_ref().ok_or_else(|| {
+        let qb64_key = ctx.current_public_key().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
@@ -241,7 +256,7 @@ impl KelsPeerVerifier {
         signature: &[u8],
         handshake_key: &[u8],
     ) -> Result<bool, GossipError> {
-        let kel_key = match self.public_key_from_kel(prefix).await {
+        let kel_key = match self.public_key_from_key_events(prefix).await {
             Ok(key) => key,
             Err(_) => return Ok(false), // KEL not found locally — trigger refresh
         };
@@ -274,7 +289,7 @@ impl KelsPeerVerifier {
         // Fetch KEL from the peer's KELS instance
         let remote_client = kels::KelsClient::new(&peer_kels_url);
         let page = remote_client
-            .fetch_kel(prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .fetch_key_events(prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
             .await
             .map_err(|e| {
                 GossipError::VerificationFailed(format!(

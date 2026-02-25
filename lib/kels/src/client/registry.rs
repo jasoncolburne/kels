@@ -415,9 +415,11 @@ impl KelsRegistryClient {
 
     /// Fetch the registry's KEL for verification.
     ///
+    /// Fetch registry key events (paginated).
+    ///
     /// This is an unauthenticated endpoint - nodes use this to verify
     /// that peer records are anchored in the registry's KEL.
-    pub async fn fetch_registry_kel(&self) -> Result<crate::Kel, KelsError> {
+    pub async fn fetch_registry_key_events(&self) -> Result<crate::SignedKeyEventPage, KelsError> {
         let response = self
             .client
             .get(format!("{}/api/registry-kel", self.base_url))
@@ -543,9 +545,9 @@ impl MultiRegistryClient {
             Some((prefix, _kel)) => Ok(prefix.clone()),
             None => {
                 let client = self.create_client(url);
-                let registry_kel = client.fetch_registry_kel().await?;
-                match registry_kel.prefix() {
-                    Some(p) => Ok(p.to_string()),
+                let page = client.fetch_registry_key_events().await?;
+                match page.events.first() {
+                    Some(e) => Ok(e.event.prefix.clone()),
                     None => Err(KelsError::RegistryFailure(format!(
                         "Prefix not found for url {}",
                         url
@@ -1217,7 +1219,7 @@ mod tests {
     use super::*;
     use crate::builder::KeyEventBuilder;
     use crate::crypto::SoftwareKeyProvider;
-    use crate::types::{Kel, NodeRegistration, NodeType, Peer, PeerHistory};
+    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1560,28 +1562,31 @@ mod tests {
     // ==================== Registry KEL Tests ====================
 
     #[tokio::test]
-    async fn test_fetch_registry_kel_success() {
+    async fn test_fetch_registry_key_events_success() {
         let mock_server = MockServer::start().await;
 
-        // Create a valid KEL for response
+        // Create a valid page for response
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder.incept().await.unwrap();
-        let kel = Kel::from_events(vec![icp], true).unwrap();
+        let page = crate::SignedKeyEventPage {
+            events: vec![icp],
+            has_more: false,
+        };
 
         Mock::given(method("GET"))
             .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&kel))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&page))
             .mount(&mock_server)
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.fetch_registry_kel().await;
+        let result = client.fetch_registry_key_events().await;
 
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_fetch_registry_kel_server_error() {
+    async fn test_fetch_registry_key_events_server_error() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1594,7 +1599,7 @@ mod tests {
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client.fetch_registry_kel().await;
+        let result = client.fetch_registry_key_events().await;
 
         assert!(matches!(result, Err(KelsError::ServerError(..))));
     }

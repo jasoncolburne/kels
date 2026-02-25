@@ -278,12 +278,12 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
 /// After anchoring a SAID in the local identity KEL, the new event must reach
 /// Raft before the leader can verify it. Submits all events; merge() deduplicates.
 async fn sync_kel_to_leader(ctx: &AdminContext, leader_url: &str) -> anyhow::Result<()> {
-    let kel = ctx
+    let page = ctx
         .identity_client
-        .get_kel()
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .context("Failed to get own KEL")?;
-    let events = kel.events().to_vec();
+    let events = page.events;
     if events.is_empty() {
         return Ok(());
     }
@@ -999,11 +999,12 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         .get_prefix()
         .await
         .context("Failed to get identity prefix")?;
-    let kel = ctx
+    let page = ctx
         .identity_client
-        .get_kel()
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .context("Failed to get identity KEL")?;
+    let kel = kels::Kel::from_events(page.events, true)?;
 
     let is_decommissioned = kel.is_decommissioned();
 

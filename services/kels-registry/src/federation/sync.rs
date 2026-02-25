@@ -39,13 +39,15 @@ async fn sync_own_kel(
     node: &FederationNode,
     identity_client: &IdentityClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let own_kel = identity_client.get_kel().await?;
-    let own_prefix = match own_kel.prefix() {
-        Some(p) => p.to_string(),
+    let own_page = identity_client
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .await?;
+    let own_prefix = match own_page.events.first() {
+        Some(e) => e.event.prefix.clone(),
         None => return Ok(()),
     };
 
-    let identity_count = own_kel.events().len();
+    let identity_count = own_page.events.len();
 
     // Check Raft state for current event count
     let raft_count = node
@@ -63,7 +65,7 @@ async fn sync_own_kel(
         // Only submit events Raft doesn't have yet — merge() can't handle
         // re-submission from inception because the inception event's previous
         // is None, which doesn't chain onto the existing KEL tip.
-        let events = own_kel.events()[raft_count..].to_vec();
+        let events = own_page.events[raft_count..].to_vec();
         match node.submit_key_events(events).await {
             Ok(crate::federation::FederationResponse::KeyEventsAccepted { new_count, .. }) => {
                 info!(

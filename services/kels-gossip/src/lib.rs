@@ -255,12 +255,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Local PeerPrefix: {}", peer_prefix_str);
 
     // Submit identity KEL to local KELS service so other peers can verify us
-    let identity_kel = identity_client
-        .get_kel()
+    let identity_page = identity_client
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
     let local_kels_client = kels::KelsClient::new(&config.kels_url);
-    let events = identity_kel.events().to_vec();
+    let events = identity_page.events;
     if !events.is_empty() {
         let _ = local_kels_client
             .submit_events(&events)

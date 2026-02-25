@@ -1022,13 +1022,12 @@ mod tests {
         let (current_key, next_key, recovery_key) = clone_keys(&builder1);
 
         let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            kel,
-        )
-        .unwrap();
+            kel.events().to_vec(),
+        );
 
         let ixn = builder2.interact("anchor").await.unwrap();
         assert_eq!(ixn.event.prefix, icp.event.prefix);
@@ -1044,13 +1043,12 @@ mod tests {
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder);
         let kel = Kel::from_events(builder.events().to_vec(), false).unwrap();
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            kel,
-        )
-        .unwrap();
+            kel.events().to_vec(),
+        );
 
         assert_eq!(builder2.last_event().unwrap().said, ixn2.event.said);
         assert_eq!(
@@ -1193,7 +1191,7 @@ mod tests {
 
         let kel_for_builder2 = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(
                 current_key.clone(),
                 next_key.clone(),
@@ -1201,9 +1199,8 @@ mod tests {
             ),
             None,
             None,
-            kel_for_builder2,
-        )
-        .unwrap();
+            kel_for_builder2.events().to_vec(),
+        );
         let ixn2 = builder2.interact("anchor2").await.unwrap();
 
         // Create divergent KEL with events at v0 (icp) and two at v1
@@ -1213,20 +1210,18 @@ mod tests {
         assert!(divergent_kel.find_divergence().is_some());
 
         // Load with with_kel
-        let builder3 = KeyEventBuilder::with_kel(
+        let builder3 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            divergent_kel.clone(),
-        )
-        .unwrap();
+            divergent_kel.events().to_vec(),
+        );
 
-        // last_event returns the actual last event in the KEL (one of the divergent events)
-        // In divergent KEL, confirmed_cursor points to first divergent event
-        assert_eq!(builder3.confirmed_count(), 1);
+        // with_events sets confirmed_cursor to events.len() (no divergence detection)
+        assert_eq!(builder3.confirmed_count(), 3);
 
-        // pending_events should be the two divergent events
-        assert_eq!(builder3.pending_events().len(), 2);
+        // All events are confirmed with with_events
+        assert_eq!(builder3.pending_events().len(), 0);
 
         // The KEL itself reports divergence correctly
         assert!(divergent_kel.find_divergence().is_some());
@@ -1243,7 +1238,7 @@ mod tests {
 
         let kel_for_others = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(
                 current_key.clone(),
                 next_key.clone(),
@@ -1251,12 +1246,11 @@ mod tests {
             ),
             None,
             None,
-            kel_for_others.clone(),
-        )
-        .unwrap();
+            kel_for_others.events().to_vec(),
+        );
         let ixn2 = builder2.interact("anchor2").await.unwrap();
 
-        let mut builder3 = KeyEventBuilder::with_kel(
+        let mut builder3 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(
                 current_key.clone(),
                 next_key.clone(),
@@ -1264,9 +1258,8 @@ mod tests {
             ),
             None,
             None,
-            kel_for_others,
-        )
-        .unwrap();
+            kel_for_others.events().to_vec(),
+        );
         let ixn3 = builder3.interact("anchor3").await.unwrap();
 
         // Create 3-way divergent KEL
@@ -1277,17 +1270,16 @@ mod tests {
         assert_eq!(info.divergent_saids.len(), 3);
 
         // Load with with_kel
-        let loaded_builder = KeyEventBuilder::with_kel(
+        let loaded_builder = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            divergent_kel.clone(),
-        )
-        .unwrap();
+            divergent_kel.events().to_vec(),
+        );
 
-        // confirmed_cursor should be 1, pending should have 3 events
-        assert_eq!(loaded_builder.confirmed_count(), 1);
-        assert_eq!(loaded_builder.pending_events().len(), 3);
+        // with_events sets confirmed_cursor to events.len() (no divergence detection)
+        assert_eq!(loaded_builder.confirmed_count(), 4);
+        assert_eq!(loaded_builder.pending_events().len(), 0);
     }
 
     #[tokio::test]
@@ -1305,7 +1297,7 @@ mod tests {
         // Adversary creates a rotation at v1 (same version as owner's ixn)
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut adversary = KeyEventBuilder::with_kel(
+        let mut adversary = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(
                 current_key.clone(),
                 next_key.clone(),
@@ -1313,9 +1305,8 @@ mod tests {
             ),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let adversary_rot = adversary.rotate().await.unwrap();
 
         // Both events are at version 1
@@ -1330,7 +1321,7 @@ mod tests {
         assert_eq!(divergence.diverged_at_generation, 1);
 
         // Owner's local events (what they know about)
-        let owner_events = owner.kel();
+        let owner_events = owner.events();
         let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Check: adversary_rot should NOT be in owner's SAIDs (it's adversary's event)
@@ -1365,13 +1356,12 @@ mod tests {
         // Adversary injects ixn at v1 (same version as owner's rot) using inception key
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut adversary = KeyEventBuilder::with_kel(
+        let mut adversary = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_rot_current, pre_rot_next, pre_rot_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let adversary_ixn = adversary.interact("adversary-anchor").await.unwrap();
 
         // Both events at version 1
@@ -1386,7 +1376,7 @@ mod tests {
         assert_eq!(divergence.diverged_at_generation, 1);
 
         // Owner's local events
-        let owner_events = owner.kel();
+        let owner_events = owner.events();
         let owner_saids: HashSet<_> = owner_events.iter().map(|e| &e.event.said).collect();
 
         // Owner's rot IS in owner's SAIDs
@@ -1468,13 +1458,12 @@ mod tests {
 
         let kel_for_builder2 = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            kel_for_builder2,
-        )
-        .unwrap();
+            kel_for_builder2.events().to_vec(),
+        );
         let ixn2 = builder2.interact("anchor2").await.unwrap();
 
         // Divergent KEL at generation 1
@@ -1879,13 +1868,12 @@ mod tests {
         // Create adversary ixn
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let ixn2 = builder2
             .interact("EAdversaryAnchor____________________________")
             .await
@@ -1962,13 +1950,12 @@ mod tests {
         // Create adversary's divergent ixn
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let anchor2 = Digest::blake3_256(b"anchor2").qb64();
         let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
@@ -2046,13 +2033,12 @@ mod tests {
         // Create adversary's divergent ixn at same generation
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let anchor2 = Digest::blake3_256(b"anchor2").qb64();
         let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
@@ -2115,13 +2101,12 @@ mod tests {
         // Create adversary who starts from icp (before ror)
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let anchor = Digest::blake3_256(b"adversary").qb64();
         let adv_ixn = builder2.interact(&anchor).await.unwrap();
 
@@ -2154,13 +2139,12 @@ mod tests {
         // Create adversary with pre-rotation keys (starts from icp)
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary creates a contest event
         let cnt_event = builder2.contest().await.unwrap();
@@ -2240,13 +2224,12 @@ mod tests {
         // Create adversary from inception state
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary does an ixn (creating divergence)
         let anchor = Digest::blake3_256(b"adv_anchor").qb64();
@@ -2290,13 +2273,12 @@ mod tests {
         // Create adversary from inception state
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary does an ixn (creating divergence)
         let anchor2 = Digest::blake3_256(b"adv_anchor").qb64();
@@ -2361,13 +2343,12 @@ mod tests {
         // Create adversary from inception state (with pre-rotation keys)
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary does an ixn (creating divergence)
         let anchor = Digest::blake3_256(b"adv_anchor").qb64();
@@ -2406,13 +2387,12 @@ mod tests {
         // Create adversary from inception state
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_ror_current, pre_ror_next, pre_ror_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary does an ixn (creating divergence)
         let anchor = Digest::blake3_256(b"adv_anchor").qb64();
@@ -2475,13 +2455,12 @@ mod tests {
         // Create adversary from inception state
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
 
-        let mut builder2 = KeyEventBuilder::with_kel(
+        let mut builder2 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
 
         // Adversary creates recovery event directly from icp (at gen 1)
         // This makes the recovery event the first divergent event
@@ -2877,13 +2856,12 @@ mod tests {
 
         // Adversary does ror (reveals recovery key) from icp
         let adversary_kel = Kel::from_events(vec![icp.clone()], true).unwrap();
-        let mut adversary = KeyEventBuilder::with_kel(
+        let mut adversary = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(pre_current, pre_next, pre_recovery),
             None,
             None,
-            adversary_kel,
-        )
-        .unwrap();
+            adversary_kel.events().to_vec(),
+        );
         let adv_ror = adversary.rotate_recovery().await.unwrap();
 
         // Build frozen KEL with adversary's ror and owner's ixn

@@ -1,5 +1,6 @@
 //! PostgreSQL Repository for KELS
 
+use async_trait::async_trait;
 use kels::{
     EventKind, EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState,
     SignedKeyEvent,
@@ -464,11 +465,72 @@ impl KelTransaction {
         Ok(())
     }
 
+    /// Load a page of signed events by offset (for PageLoader impl).
+    pub async fn load(
+        &mut self,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), StorageError> {
+        let clamped_limit = limit.min(i64::MAX as u64 - 1);
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc)
+            .limit(clamped_limit + 1)
+            .offset(offset);
+        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let has_more = events.len() > clamped_limit as usize;
+        if has_more {
+            events.pop();
+        }
+
+        if events.is_empty() {
+            return Ok((vec![], false));
+        }
+
+        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+        let query =
+            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+        for sig in signatures {
+            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        }
+        let mut result = Vec::with_capacity(events.len());
+        for event in events {
+            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+                StorageError::StorageError(format!("No signatures found for event {}", event.said))
+            })?;
+            let sig_pairs: Vec<(String, String)> = sigs
+                .iter()
+                .map(|s| (s.public_key.clone(), s.signature.clone()))
+                .collect();
+            result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
+        }
+
+        Ok((result, has_more))
+    }
+
     pub async fn commit(self) -> Result<(), StorageError> {
         self.tx.commit().await
     }
     pub async fn rollback(self) -> Result<(), StorageError> {
         self.tx.rollback().await
+    }
+}
+
+#[async_trait]
+impl kels::PageLoader for KelTransaction {
+    async fn load_page(
+        &mut self,
+        _prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+        self.load(limit, offset)
+            .await
+            .map_err(|e| kels::KelsError::StorageError(e.to_string()))
     }
 }
 

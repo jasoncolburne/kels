@@ -3,6 +3,7 @@
 mod error;
 mod events;
 mod kel;
+mod merge_context;
 mod node;
 mod peer;
 mod raft;
@@ -12,6 +13,7 @@ mod verifier;
 pub use error::*;
 pub use events::*;
 pub use kel::*;
+pub use merge_context::*;
 pub use node::*;
 pub use peer::*;
 pub use raft::*;

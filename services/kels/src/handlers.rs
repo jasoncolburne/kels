@@ -39,6 +39,8 @@ const NONCE_WINDOW_SECS: u64 = 60;
 
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
+    #[cfg(not(feature = "dev-tools"))]
+    pub(crate) kel_store: Arc<dyn kels::KelStore>,
     pub(crate) kel_cache: ServerKelCache,
     pub(crate) redis_conn: redis::aio::ConnectionManager,
     #[cfg_attr(feature = "dev-tools", allow(dead_code))]
@@ -340,16 +342,24 @@ pub(crate) async fn submit_events(
         .begin_locked_transaction(&prefix)
         .await?;
 
-    // Bounded metadata — tips, is_contested, diverged_at_serial
-    let ctx = tx.get_merge_context().await?;
+    // Verify existing KEL (paginated, under advisory lock) to get trusted MergeContext
+    let ctx = kels::verified_merge_context(
+        &mut tx,
+        &prefix,
+        MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty(),
+    )
+    .await
+    .map_err(|e| ApiError::internal_error(format!("KEL verification failed: {}", e)))?;
 
     debug!(
-        "submit_events: prefix={}, submitted={} events, tips={}, contested={}, diverged_at={:?}",
+        "submit_events: prefix={}, submitted={} events, branches={}, contested={}, diverged_at={:?}",
         prefix,
         events.len(),
-        ctx.tips.len(),
-        ctx.is_contested,
-        ctx.diverged_at_serial,
+        ctx.branch_tips().len(),
+        ctx.is_contested(),
+        ctx.diverged_at_serial(),
     );
 
     // Validate event structure before processing
@@ -360,38 +370,27 @@ pub(crate) async fn submit_events(
             .map_err(|e| ApiError::bad_request(format!("Invalid event structure: {}", e)))?;
     }
 
-    // Route to fast path or full path based on context
+    // Route based on verified context
     let first_previous = events[0].event.previous.clone();
-    let is_fast_path = ctx.tips.len() == 1
-        && first_previous.as_deref() == Some(&ctx.tips[0].said)
-        && !ctx.is_contested;
+    let is_normal_append = ctx.branch_tips().len() == 1
+        && first_previous.as_deref() == Some(ctx.branch_tips()[0].tip.event.said.as_str())
+        && !ctx.is_contested();
 
-    let (new_events, result, diverged_at) = if is_fast_path {
-        // ==================== Fast Path (normal append, ~99% of submissions) ====================
-        // No full KEL load. Bounded metadata + incremental verification only.
-        let tip = &ctx.tips[0];
-
-        // Reject contest on non-divergent KEL
-        if events[0].event.kind.decommissions() && events[0].event.is_contest() {
+    let (new_events, result, diverged_at) = if is_normal_append {
+        // ==================== Normal Append (~99% of submissions) ====================
+        if ctx.is_decommissioned() {
+            return Err(ApiError::unauthorized(
+                "KEL merge failed: KEL is decommissioned".to_string(),
+            ));
+        }
+        if events[0].event.is_contest() {
             return Err(ApiError::unauthorized(
                 "KEL merge failed: Contest requires divergence".to_string(),
             ));
         }
 
-        // Check not decommissioned (tip is dec or cnt)
-        if tip.kind.decommissions() {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: KEL is decommissioned".to_string(),
-            ));
-        }
-
-        // Verify with KelVerifier using bounded state
-        let last_est = tx.get_last_establishment_event().await?.ok_or_else(|| {
-            ApiError::internal_error("No establishment event found for existing KEL".to_string())
-        })?;
-
-        let mut verifier =
-            KelVerifier::from_merge_context(&prefix, tip.serial, &tip.said, &last_est);
+        // Resume verification from the verified context
+        let mut verifier = KelVerifier::resume(&prefix, &ctx);
         verifier
             .verify_page(&events)
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -401,7 +400,7 @@ pub(crate) async fn submit_events(
         }
 
         (events.clone(), KelMergeResult::Accepted, None)
-    } else if ctx.tips.is_empty() && first_previous.is_none() {
+    } else if ctx.is_empty() && first_previous.is_none() {
         // ==================== New KEL (inception) ====================
         let mut verifier = KelVerifier::new(&prefix);
         verifier
@@ -415,22 +414,25 @@ pub(crate) async fn submit_events(
         (events.clone(), KelMergeResult::Accepted, None)
     } else {
         // ==================== Full Path (divergence/recovery/overlap, rare) ====================
-        // Load existing KEL via paginated queries, use Kel::merge for correctness.
+        // Use Kel::merge for the complex cases — this is bounded by the existing KEL size
+        // which is already verified above. The advisory lock prevents TOCTOU.
+        //
+        // TODO: Replace with case-by-case bounded DB operations per the plan.
+        // For now, reconstruct events from the verified walk for merge correctness.
         let mut existing_events = Vec::new();
-        let mut since_serial = 0u64;
+        let mut offset = 0u64;
         loop {
-            let (page, has_more) = tx
-                .get_signed_history_since(since_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
-                .await?;
-            if let Some(last) = page.last() {
-                since_serial = last.event.serial + 1;
+            let (page, has_more) = tx.load(MAX_EVENTS_PER_KEL_QUERY as u64, offset).await?;
+            if page.is_empty() {
+                break;
             }
+            offset += page.len() as u64;
             existing_events.extend(page);
             if !has_more {
                 break;
             }
         }
-        let mut kel = Kel::from_events(existing_events.clone(), true)?; // skip_verify: DB is trusted
+        let mut kel = Kel::from_events(existing_events, true)?;
 
         // Filter duplicates
         let submitted_saids: Vec<String> = events.iter().map(|e| e.event.said.clone()).collect();
@@ -444,7 +446,7 @@ pub(crate) async fn submit_events(
         if new_events.is_empty() {
             tx.commit().await?;
             return Ok(Json(BatchSubmitResponse {
-                diverged_at: ctx.diverged_at_serial,
+                diverged_at: ctx.diverged_at_serial(),
                 applied: true,
             }));
         }
@@ -632,6 +634,31 @@ pub(crate) async fn event_exists(
     }
 }
 
+// ==================== Effective SAID ====================
+
+/// Get the effective tail SAID for a specific prefix.
+///
+/// **RESOLVING ONLY — NOT VERIFIED.** This value is computed from unverified DB
+/// state and MUST NOT be used for security decisions. Its only purpose is sync
+/// comparison: if the local and remote effective SAIDs don't match, trigger a
+/// sync (which itself verifies). A wrong value here causes an unnecessary sync,
+/// not a security hole.
+pub(crate) async fn get_effective_said(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let effective = state
+        .repo
+        .key_events
+        .compute_prefix_effective_said(&prefix)
+        .await?;
+
+    match effective {
+        Some(said) => Ok(Json(serde_json::json!({ "said": said }))),
+        None => Err(ApiError::not_found(format!("Prefix {} not found", prefix))),
+    }
+}
+
 // ==================== Prefix Listing ====================
 
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
@@ -677,16 +704,20 @@ pub(crate) async fn list_prefixes(
             }
         };
 
-        // Verify signature against peer's current public key from their KEL
-        let kel = state
-            .repo
-            .key_events
-            .get_kel(&signed_request.peer_prefix)
-            .await
-            .map_err(|_| ApiError::forbidden("Peer KEL not found"))?;
+        // Consuming: verify peer's KEL (paginated) to extract trusted public key
+        let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
+        let ctx = kels::verified_merge_context(
+            &mut loader,
+            &signed_request.peer_prefix,
+            MAX_EVENTS_PER_KEL_QUERY as u64,
+            kels::max_verification_pages(),
+            std::iter::empty(),
+        )
+        .await
+        .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
 
         signed_request
-            .verify_signature(&kel)
+            .verify_signature_with_ctx(&ctx)
             .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
     }
 
