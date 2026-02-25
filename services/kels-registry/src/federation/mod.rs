@@ -345,7 +345,7 @@ impl FederationNode {
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
     pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
         self.state_machine
-            .verify_member_anchoring_with_lock(said, member_prefix)
+            .verify_member_anchoring(said, member_prefix)
             .await
     }
 
@@ -663,19 +663,24 @@ impl FederationNode {
         }
     }
 
-    /// Get a member KEL from Raft-replicated state.
-    pub async fn get_member_kel(&self, prefix: &str) -> Option<kels::Kel> {
+    /// Get a member's verified context from Raft-replicated state.
+    pub async fn get_member_context(&self, prefix: &str) -> Option<kels::MergeContext> {
         self.state_machine
             .inner()
             .lock()
             .await
-            .member_kel(prefix)
+            .member_context(prefix)
             .cloned()
     }
 
-    /// Get all member KELs from Raft-replicated state.
-    pub async fn get_all_member_kels(&self) -> HashMap<String, kels::Kel> {
-        self.state_machine.inner().lock().await.all_member_kels()
+    /// Get all member contexts from Raft-replicated state.
+    pub async fn get_all_member_contexts(&self) -> HashMap<String, kels::MergeContext> {
+        self.state_machine
+            .inner()
+            .lock()
+            .await
+            .all_member_contexts()
+            .clone()
     }
 }
 

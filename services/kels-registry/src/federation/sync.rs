@@ -49,28 +49,32 @@ async fn sync_own_kel(
 
     let identity_count = own_page.events.len();
 
-    // Check Raft state for current event count
-    let raft_count = node
-        .get_member_kel(&own_prefix)
+    // Check Raft state for current tip serial to compute delta
+    let raft_event_count = node
+        .get_member_context(&own_prefix)
         .await
-        .map(|k| k.events().len())
+        .and_then(|ctx| {
+            // For non-divergent KELs, tip serial + 1 = event count
+            ctx.branch_tips()
+                .first()
+                .map(|bt| bt.tip.event.serial as usize + 1)
+        })
         .unwrap_or(0);
 
-    if identity_count > raft_count {
+    if identity_count > raft_event_count {
         debug!(
             "Submitting own KEL to Raft ({} new events, Raft has {})",
-            identity_count - raft_count,
-            raft_count
+            identity_count - raft_event_count,
+            raft_event_count
         );
-        // Only submit events Raft doesn't have yet — merge() can't handle
-        // re-submission from inception because the inception event's previous
-        // is None, which doesn't chain onto the existing KEL tip.
-        let events = own_page.events[raft_count..].to_vec();
+        // Only submit events Raft doesn't have yet — KelVerifier::resume
+        // expects events starting after the last verified serial.
+        let events = own_page.events[raft_event_count..].to_vec();
         match node.submit_key_events(events).await {
             Ok(crate::federation::FederationResponse::KeyEventsAccepted { new_count, .. }) => {
                 info!(
                     "Synced own KEL to Raft ({} -> {} events, {} new)",
-                    raft_count, identity_count, new_count
+                    raft_event_count, identity_count, new_count
                 );
             }
             Ok(crate::federation::FederationResponse::KeyEventsRejected(reason)) => {

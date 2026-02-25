@@ -2,8 +2,7 @@
 
 use async_trait::async_trait;
 use kels::{
-    EventKind, EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState,
-    SignedKeyEvent,
+    EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState, SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
 use std::collections::{HashMap, HashSet};
@@ -11,27 +10,6 @@ use verifiable_storage::{
     ColumnQuery, ScalarSubquery, SelfAddressed, StorageError, TransactionExecutor, Value,
 };
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
-
-/// Summary of a tip event (event not referenced as `previous` by any other event).
-#[derive(Debug, Clone)]
-pub struct TipInfo {
-    pub said: String,
-    pub serial: u64,
-    pub kind: EventKind,
-}
-
-/// Bounded metadata gathered from the database to route merge logic.
-/// No full KEL load — just tips and divergence state.
-#[derive(Debug, Clone)]
-pub struct MergeContext {
-    /// Tip events (events not referenced as `previous` by any other event).
-    /// Empty = no events, 1 = normal, >1 = divergent.
-    pub tips: Vec<TipInfo>,
-    /// Whether the KEL has been contested (permanently frozen).
-    pub is_contested: bool,
-    /// The lowest serial where divergence occurs (if divergent).
-    pub diverged_at_serial: Option<u64>,
-}
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
@@ -315,104 +293,6 @@ impl KelTransaction {
         }
 
         Ok((result, has_more))
-    }
-
-    /// Gather bounded metadata for merge routing. No full KEL load.
-    ///
-    /// Finds tip events (events not referenced as `previous` by any other event),
-    /// checks for contest, and finds divergence serial if divergent.
-    pub async fn get_merge_context(&mut self) -> Result<MergeContext, StorageError> {
-        // Find tip events: events whose SAID is not referenced as `previous` by any other event
-        // Using NOT IN subquery via two separate queries (verifiable-storage doesn't support NOT IN subquery)
-        let all_events_query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .order_by("serial", Order::Desc)
-            .order_by("said", Order::Asc);
-        let all_events: Vec<KeyEvent> = self.tx.fetch(all_events_query).await?;
-
-        if all_events.is_empty() {
-            return Ok(MergeContext {
-                tips: vec![],
-                is_contested: false,
-                diverged_at_serial: None,
-            });
-        }
-
-        // Build set of SAIDs referenced as `previous`
-        let referenced: HashSet<&str> = all_events
-            .iter()
-            .filter_map(|e| e.previous.as_deref())
-            .collect();
-
-        // Tips are events not referenced as `previous`
-        let tips: Vec<TipInfo> = all_events
-            .iter()
-            .filter(|e| !referenced.contains(e.said.as_str()))
-            .map(|e| TipInfo {
-                said: e.said.clone(),
-                serial: e.serial,
-                kind: e.kind,
-            })
-            .collect();
-
-        let is_contested = all_events.iter().any(|e| e.kind == EventKind::Cnt);
-
-        let diverged_at_serial = if tips.len() > 1 {
-            // Find lowest serial with duplicate values
-            let mut seen = HashSet::new();
-            let mut diverge_serial = None;
-            // Need sorted by serial ASC for finding first duplicate
-            let mut serials: Vec<u64> = all_events.iter().map(|e| e.serial).collect();
-            serials.sort();
-            for serial in &serials {
-                if !seen.insert(*serial) {
-                    diverge_serial = Some(*serial);
-                    break;
-                }
-            }
-            diverge_serial
-        } else {
-            None
-        };
-
-        Ok(MergeContext {
-            tips,
-            is_contested,
-            diverged_at_serial,
-        })
-    }
-
-    /// Get the last establishment event for this prefix (highest serial, establishment kind).
-    ///
-    /// Uses `EventKind::establishment_kinds()` as the source of truth for which kinds
-    /// are establishment events.
-    pub async fn get_last_establishment_event(
-        &mut self,
-    ) -> Result<Option<SignedKeyEvent>, StorageError> {
-        let est_kinds = EventKind::establishment_kinds();
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .r#in("kind", est_kinds)
-            .order_by("serial", Order::Desc)
-            .order_by("said", Order::Asc)
-            .limit(1);
-        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let event = match events.into_iter().next() {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        let saids = vec![event.said.clone()];
-        let query =
-            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_pairs: Vec<(String, String)> = signatures
-            .into_iter()
-            .map(|s| (s.public_key, s.signature))
-            .collect();
-
-        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
     }
 
     /// Check which of the given SAIDs already exist in the database.

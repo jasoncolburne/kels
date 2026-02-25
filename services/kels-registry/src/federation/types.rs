@@ -6,7 +6,9 @@ use std::fmt;
 
 use std::collections::HashMap;
 
-use kels::{Kel, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Vote};
+use kels::{
+    MergeContext, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Vote,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -292,9 +294,9 @@ pub struct MemberSnapshot {
     /// Votes stored by SAID.
     #[serde(default)]
     pub votes: Vec<Vote>,
-    /// Federation member KELs (replicated via Raft).
+    /// Federation member verified contexts (replicated via Raft).
     #[serde(default)]
-    pub member_kels: HashMap<String, Kel>,
+    pub member_contexts: HashMap<String, MergeContext>,
 }
 
 #[cfg(test)]
@@ -492,7 +494,7 @@ mod tests {
             pending_removal_proposals: vec![],
             completed_removal_proposals: vec![],
             votes: vec![],
-            member_kels: HashMap::new(),
+            member_contexts: HashMap::new(),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();

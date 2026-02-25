@@ -1004,15 +1004,20 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .context("Failed to get identity KEL")?;
-    let kel = kels::Kel::from_events(page.events, true)?;
-
-    let is_decommissioned = kel.is_decommissioned();
+    let event_count = page.events.len();
+    let mut verifier = kels::KelVerifier::new(&prefix);
+    let ctx = if verifier.verify_page(&page.events).is_ok() {
+        Some(verifier.into_merge_context())
+    } else {
+        None
+    };
+    let is_decommissioned = ctx.as_ref().map(|c| c.is_decommissioned()).unwrap_or(false);
 
     if json {
         let status = serde_json::json!({
             "initialized": true,
             "prefix": prefix,
-            "eventCount": kel.len(),
+            "eventCount": event_count,
             "decommissioned": is_decommissioned
         });
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -1020,7 +1025,7 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         println!("Registry Identity Status");
         println!("{}", "=".repeat(40));
         println!("Prefix: {}", prefix);
-        println!("Event count: {}", kel.len());
+        println!("Event count: {}", event_count);
         println!("Decommissioned: {}", is_decommissioned);
         println!();
         println!("Note: Identity management (rotate, decommission) is handled");

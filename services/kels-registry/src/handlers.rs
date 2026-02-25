@@ -16,10 +16,10 @@ use axum::{
 use dashmap::DashMap;
 use kels::{
     AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest, ErrorCode,
-    ErrorResponse, Kel, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
-    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedKeyEventPage,
-    SignedRequest, StatusUpdateRequest, Vote,
+    ErrorResponse, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
+    RegisterNodeRequest, RemovalHistory, SignedKeyEventPage, SignedRequest, StatusUpdateRequest,
+    Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
@@ -185,16 +185,36 @@ async fn verify_and_authorize<T: serde::Serialize>(
     };
 
     // Verify signature against peer's current public key from their KEL
+    // Consuming: verify peer's KEL (paginated) to extract trusted public key
     let kels_client = kels::KelsClient::new(&peer.kels_url);
-    let page = kels_client
-        .fetch_key_events(&peer.peer_prefix, None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-        .map_err(|_| ApiError::forbidden("Could not fetch peer KEL for signature verification"))?;
-    let kel = kels::Kel::from_events(page.events, false)
-        .map_err(|_| ApiError::forbidden("Could not verify peer KEL"))?;
+    let mut verifier = kels::KelVerifier::new(&peer.peer_prefix);
+    let mut since: Option<String> = None;
+    loop {
+        let page = kels_client
+            .fetch_key_events(
+                &peer.peer_prefix,
+                since.as_deref(),
+                kels::MAX_EVENTS_PER_KEL_QUERY,
+            )
+            .await
+            .map_err(|_| {
+                ApiError::forbidden("Could not fetch peer KEL for signature verification")
+            })?;
+        if page.events.is_empty() {
+            break;
+        }
+        verifier
+            .verify_page(&page.events)
+            .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
+        since = page.events.last().map(|e| e.event.said.clone());
+        if !page.has_more {
+            break;
+        }
+    }
+    let ctx = verifier.into_merge_context();
 
     signed_request
-        .verify_signature(&kel)
+        .verify_signature_with_ctx(&ctx)
         .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
 
     // Verify the backing proposal was properly approved
@@ -385,9 +405,13 @@ async fn ensure_own_kel_synced(state: &FederationState) {
             let prefix = &first.event.prefix;
             let raft_count = state
                 .node
-                .get_member_kel(prefix)
+                .get_member_context(prefix)
                 .await
-                .map(|k| k.events().len())
+                .and_then(|ctx| {
+                    ctx.branch_tips()
+                        .first()
+                        .map(|bt| bt.tip.event.serial as usize + 1)
+                })
                 .unwrap_or(0);
             if own_page.events.len() > raft_count {
                 let events = own_page.events[raft_count..].to_vec();
@@ -460,31 +484,17 @@ pub async fn federation_rpc(
         )));
     }
 
-    // Get sender's KEL (try cache first, refresh on verification failure)
-    let verify_with_kel = |kel: &kels::Kel| -> Result<(), ApiError> {
-        let current_key = kel
-            .last_establishment_event()
-            .and_then(|e| e.event.public_key.clone())
-            .ok_or_else(|| {
-                ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
-            })?;
-
-        let public_key = PublicKey::from_qb64(&current_key)
-            .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
-
-        let signature = Signature::from_qb64(&signed_rpc.signature)
-            .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;
-
-        public_key
-            .verify(signed_rpc.payload.as_bytes(), &signature)
-            .map_err(|_| ApiError::unauthorized("Signature verification failed"))
-    };
-
-    // Try Raft state first, fall back to HTTP fetch during bootstrap
+    // Consuming: get verified context for sender's KEL to extract trusted public key for RPC auth.
+    // Try Raft state first (already-verified context), fall back to HTTP fetch during bootstrap
     // (chicken-and-egg: KELs are replicated via Raft, but Raft RPCs need KELs to auth)
-    let kel = match state.node.get_member_kel(&signed_rpc.sender_prefix).await {
-        Some(kel) => kel,
+    let ctx = match state
+        .node
+        .get_member_context(&signed_rpc.sender_prefix)
+        .await
+    {
+        Some(ctx) => ctx,
         None => {
+            // HTTP fetch during bootstrap
             let member = state
                 .node
                 .config()
@@ -506,26 +516,31 @@ pub async fn federation_rpc(
                     resp.status()
                 )));
             }
-            let fetched_kel: kels::Kel = resp.json().await.map_err(|e| {
+            let page: kels::SignedKeyEventPage = resp.json().await.map_err(|e| {
                 ApiError::unauthorized(format!("Failed to parse sender KEL: {}", e))
             })?;
-            fetched_kel
-                .verify(true)
+            let mut verifier = kels::KelVerifier::new(&signed_rpc.sender_prefix);
+            verifier
+                .verify_page(&page.events)
                 .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
-            if fetched_kel.prefix() != Some(&signed_rpc.sender_prefix) {
-                return Err(ApiError::unauthorized(
-                    "Fetched KEL prefix does not match sender",
-                ));
-            }
-            fetched_kel
+            verifier.into_merge_context()
         }
     };
 
-    if kel.find_divergence().is_some() {
+    if ctx.is_divergent() {
         return Err(ApiError::unauthorized("Sender KEL is divergent"));
     }
 
-    verify_with_kel(&kel)?;
+    let current_key = ctx.current_public_key().ok_or_else(|| {
+        ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
+    })?;
+    let public_key = PublicKey::from_qb64(current_key)
+        .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
+    let signature = Signature::from_qb64(&signed_rpc.signature)
+        .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;
+    public_key
+        .verify(signed_rpc.payload.as_bytes(), &signature)
+        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
 
     // Parse the verified payload
     let rpc: FederationRpc = serde_json::from_str(&signed_rpc.payload)
@@ -658,15 +673,29 @@ async fn verify_admin_request<T: Serialize>(
         return Err(ApiError::forbidden("Not signed by this node's identity"));
     }
 
-    let page = identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
-    let kel = kels::Kel::from_events(page.events, true)
-        .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
+    // Consuming: verify identity KEL (paginated) for admin signature check
+    let mut verifier = kels::KelVerifier::new(&our_prefix);
+    let mut since: Option<String> = None;
+    loop {
+        let page = identity_client
+            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_QUERY)
+            .await
+            .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
+        if page.events.is_empty() {
+            break;
+        }
+        verifier
+            .verify_page(&page.events)
+            .map_err(|e| ApiError::internal_error(format!("Identity KEL invalid: {}", e)))?;
+        since = page.events.last().map(|e| e.event.said.clone());
+        if !page.has_more {
+            break;
+        }
+    }
+    let ctx = verifier.into_merge_context();
 
     signed_request
-        .verify_signature(&kel)
+        .verify_signature_with_ctx(&ctx)
         .map_err(|_| ApiError::unauthorized("Admin signature verification failed"))?;
 
     Ok(())
@@ -1143,9 +1172,13 @@ pub async fn admin_vote_proposal(
                             let prefix = &first.event.prefix;
                             let raft_count = state
                                 .node
-                                .get_member_kel(prefix)
+                                .get_member_context(prefix)
                                 .await
-                                .map(|k| k.events().len())
+                                .and_then(|ctx| {
+                                    ctx.branch_tips()
+                                        .first()
+                                        .map(|bt| bt.tip.event.serial as usize + 1)
+                                })
                                 .unwrap_or(0);
                             if own_page.events.len() > raft_count {
                                 let events = own_page.events[raft_count..].to_vec();
@@ -1247,9 +1280,13 @@ pub async fn admin_vote_proposal(
                         let prefix = &first.event.prefix;
                         let raft_count = state
                             .node
-                            .get_member_kel(prefix)
+                            .get_member_context(prefix)
                             .await
-                            .map(|k| k.events().len())
+                            .and_then(|ctx| {
+                                ctx.branch_tips()
+                                    .first()
+                                    .map(|bt| bt.tip.event.serial as usize + 1)
+                            })
                             .unwrap_or(0);
                         if own_page.events.len() > raft_count {
                             let events = own_page.events[raft_count..].to_vec();
@@ -1354,8 +1391,23 @@ pub async fn get_registry_kel(
 /// Used for high availability - clients can fetch all KELs from any registry.
 pub async fn get_registry_kels(
     State(state): State<Arc<FederationState>>,
-) -> Result<Json<HashMap<String, Kel>>, ApiError> {
-    let mut kels = state.node.get_all_member_kels().await;
+) -> Result<Json<HashMap<String, SignedKeyEventPage>>, ApiError> {
+    let member_prefixes = state.node.member_prefixes();
+    let member_contexts = state.node.get_all_member_contexts().await;
+    let mut result: HashMap<String, SignedKeyEventPage> = HashMap::new();
+
+    // Read each member's KEL from the MemberKelRepository (DB-backed)
+    for prefix in &member_prefixes {
+        if member_contexts.contains_key(prefix)
+            && let Ok(page) = state
+                .node
+                .state_machine()
+                .read_member_kel_page(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
+                .await
+        {
+            result.insert(prefix.clone(), page);
+        }
+    }
 
     // Add our own fresh KEL (not cached, always current)
     let own_page = state
@@ -1363,16 +1415,12 @@ pub async fn get_registry_kels(
         .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
-    let own_kel = kels::Kel::from_events(own_page.events, true)
-        .map_err(|e| ApiError::internal_error(format!("Failed to parse own KEL: {}", e)))?;
 
-    let prefix = own_kel.prefix().ok_or(ApiError::internal_error(
-        "Own KEL has no prefix".to_string(),
-    ))?;
+    if let Some(first) = own_page.events.first() {
+        result.insert(first.event.prefix.clone(), own_page);
+    }
 
-    kels.insert(prefix.to_string(), own_kel);
-
-    Ok(Json(kels))
+    Ok(Json(result))
 }
 
 #[cfg(test)]

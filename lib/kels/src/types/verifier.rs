@@ -81,50 +81,6 @@ impl KelVerifier {
         }
     }
 
-    /// Resume from known DB state. Used by the submit handler fast path.
-    ///
-    /// `tip_serial` and `tip_said` identify the current chain tip.
-    /// `last_establishment` provides the current cryptographic state.
-    pub fn from_merge_context(
-        prefix: impl Into<String>,
-        tip_serial: u64,
-        tip_said: impl Into<String>,
-        last_establishment: &SignedKeyEvent,
-    ) -> Self {
-        let prefix = prefix.into();
-        let tip_said = tip_said.into();
-        let mut branches = HashMap::new();
-
-        if let Some(ref pk) = last_establishment.event.public_key {
-            // Create a synthetic tip event using the last establishment event's info
-            // but with the actual tip SAID/serial
-            let mut tip_event = last_establishment.clone();
-            tip_event.event.said = tip_said.clone();
-            tip_event.event.serial = tip_serial;
-
-            branches.insert(
-                tip_said,
-                BranchState {
-                    tip: tip_event,
-                    establishment_tip: last_establishment.clone(),
-                    current_public_key: pk.clone(),
-                    pending_rotation_hash: last_establishment.event.rotation_hash.clone(),
-                    pending_recovery_hash: last_establishment.event.recovery_hash.clone(),
-                },
-            );
-        }
-
-        Self {
-            prefix,
-            branches,
-            last_verified_serial: Some(tip_serial),
-            diverged_at_serial: None,
-            is_contested: false,
-            queried_saids: HashSet::new(),
-            anchored_saids: HashSet::new(),
-        }
-    }
-
     /// Resume from a verified `MergeContext`.
     pub fn resume(prefix: impl Into<String>, ctx: &MergeContext) -> Self {
         let prefix = prefix.into();
@@ -719,4 +675,302 @@ pub async fn sync_and_verify(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
+    use async_trait::async_trait;
+
+    use cesr::Matter;
+
+    use super::*;
+    use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider, store::KelStore};
+
+    /// In-memory store for testing
+    struct MemoryStore {
+        kels: RwLock<HashMap<String, Vec<SignedKeyEvent>>>,
+    }
+
+    impl MemoryStore {
+        fn new() -> Self {
+            Self {
+                kels: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl KelStore for MemoryStore {
+        async fn load(
+            &self,
+            prefix: &str,
+            limit: u64,
+            offset: u64,
+        ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
+            let guard = self.kels.read().unwrap();
+            match guard.get(prefix) {
+                Some(events) => {
+                    let start = offset as usize;
+                    if start >= events.len() {
+                        return Ok((vec![], false));
+                    }
+                    let end = (start + limit as usize).min(events.len());
+                    let page = events[start..end].to_vec();
+                    let has_more = end < events.len();
+                    Ok((page, has_more))
+                }
+                None => Ok((vec![], false)),
+            }
+        }
+
+        async fn save(
+            &self,
+            prefix: &str,
+            events: &[SignedKeyEvent],
+        ) -> Result<(), crate::error::KelsError> {
+            self.kels
+                .write()
+                .unwrap()
+                .insert(prefix.to_string(), events.to_vec());
+            Ok(())
+        }
+
+        async fn delete(&self, prefix: &str) -> Result<(), crate::error::KelsError> {
+            self.kels.write().unwrap().remove(prefix);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_large_kel_paginated_verification() {
+        // Build a 1025-event KEL (icp + 1024 ixn) — spans 3 pages at 512 events/page
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let mut events = vec![icp];
+        for i in 0..1024 {
+            let ixn = builder
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .await
+                .unwrap();
+            events.push(ixn);
+        }
+        assert_eq!(events.len(), 1025);
+
+        // Save to MemoryStore
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        // Verify with small page size to force multiple pages
+        let ctx = verified_merge_context(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            100,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!ctx.is_empty());
+        assert!(!ctx.is_divergent());
+        assert!(!ctx.is_contested());
+        assert!(!ctx.is_decommissioned());
+        assert!(ctx.current_public_key().is_some());
+
+        // Tip should be the last event
+        assert_eq!(ctx.branch_tips().len(), 1);
+        assert_eq!(
+            ctx.branch_tips()[0].tip.event.said,
+            events.last().unwrap().event.said
+        );
+    }
+
+    #[tokio::test]
+    async fn test_large_kel_with_early_divergence() {
+        // Build a long KEL, then inject a divergent event at serial 2
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let ixn1 = builder1
+            .interact(&Digest::blake3_256(b"anchor-1").qb64())
+            .await
+            .unwrap();
+
+        // Duplicate builder after icp+ixn1 (adversary has same keys)
+        let mut builder2 = builder1.clone();
+
+        // Owner continues building a long chain
+        let mut owner_events = vec![icp.clone(), ixn1.clone()];
+        for i in 2..1025 {
+            let ixn = builder1
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .await
+                .unwrap();
+            owner_events.push(ixn);
+        }
+        assert_eq!(owner_events.len(), 1025);
+
+        // Adversary injects one event at serial 2 (divergence)
+        let adversary_ixn = builder2
+            .interact(&Digest::blake3_256(b"adversary-anchor").qb64())
+            .await
+            .unwrap();
+        assert_eq!(adversary_ixn.event.serial, 2);
+
+        // Combined events: owner chain + adversary event at serial 2
+        // Sort by serial ASC, said ASC (DB ordering)
+        let mut all_events = owner_events.clone();
+        all_events.push(adversary_ixn.clone());
+        all_events.sort_by(|a, b| {
+            a.event
+                .serial
+                .cmp(&b.event.serial)
+                .then(a.event.said.cmp(&b.event.said))
+        });
+
+        // Save to store
+        let store = MemoryStore::new();
+        store.save(&prefix, &all_events).await.unwrap();
+
+        // Verify with paginated reads — should detect divergence
+        let ctx = verified_merge_context(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            100,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(2));
+        assert_eq!(ctx.branch_tips().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_verified_merge_context_with_anchor_checking() {
+        use cesr::{Digest, Matter};
+
+        let target_anchor = Digest::blake3_256(b"target-anchor").qb64();
+        let missing_anchor = Digest::blake3_256(b"missing-anchor").qb64();
+
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let ixn = builder.interact(&target_anchor).await.unwrap();
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &[icp, ixn]).await.unwrap();
+
+        // Check for an anchor that exists
+        let ctx = verified_merge_context(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            100,
+            std::iter::once(target_anchor.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_said_anchored(&target_anchor));
+        assert!(ctx.anchors_all_saids());
+
+        // Check for an anchor that doesn't exist
+        let ctx2 = verified_merge_context(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            100,
+            std::iter::once(missing_anchor.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert!(!ctx2.is_said_anchored(&missing_anchor));
+        assert!(!ctx2.anchors_all_saids());
+    }
+
+    #[tokio::test]
+    async fn test_max_pages_limit_fails_secure() {
+        // Build a KEL larger than max_pages * page_size
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let mut events = vec![icp];
+        for i in 0..20 {
+            let ixn = builder
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .await
+                .unwrap();
+            events.push(ixn);
+        }
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        // Page size 5, max 2 pages = 10 events max, but we have 21
+        let ctx = verified_merge_context(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            5,
+            2,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        // Should have verified only the first 10 events (2 pages of 5)
+        // The context is valid but incomplete — tip is at serial 9, not 20
+        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 9);
+    }
+
+    #[tokio::test]
+    async fn test_truncate_incomplete_generation_basic() {
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let ixn1 = builder1
+            .interact(&Digest::blake3_256(b"a1").qb64())
+            .await
+            .unwrap();
+
+        // Create adversary builder with same keys, reset to icp state
+        let mut builder2 = KeyEventBuilder::with_events(
+            builder1.key_provider().clone(),
+            None,
+            None,
+            vec![icp.clone()],
+        );
+        let ixn2 = builder2
+            .interact(&Digest::blake3_256(b"a2").qb64())
+            .await
+            .unwrap();
+
+        // Two events at serial 1, simulating divergence
+        // If a page ends with only one of them, truncate should remove it
+        let mut events = [icp, ixn1.clone(), ixn2.clone()].to_vec();
+        events.sort_by(|a, b| {
+            a.event
+                .serial
+                .cmp(&b.event.serial)
+                .then(a.event.said.cmp(&b.event.said))
+        });
+
+        // Simulate page that has icp + first divergent event but not second
+        let mut partial_page = events[..2].to_vec();
+        let truncated = truncate_incomplete_generation(&mut partial_page);
+
+        // Should truncate the lone serial-1 event since serial-0 has 1 event
+        // but serial-1 should have 2 — we only have 1 of them
+        // Actually: second-to-last serial (0) has 1 event, last serial (1) has 1 event
+        // 1 == 1, so no truncation. This is correct — we can't know there should be 2
+        // without seeing the second event.
+        assert_eq!(truncated, 0);
+    }
 }

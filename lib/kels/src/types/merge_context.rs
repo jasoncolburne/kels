@@ -6,6 +6,8 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use super::SignedKeyEvent;
 
 /// A verified branch endpoint: the chain head and its last establishment event.
@@ -13,7 +15,7 @@ use super::SignedKeyEvent;
 /// For a non-divergent KEL, there is one `BranchTip`. For divergent KELs, there
 /// is one per branch. The `establishment_tip` provides the crypto state (public key,
 /// rotation hash, recovery hash) for that branch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchTip {
     /// The chain head — the latest event on this branch.
     pub tip: SignedKeyEvent,
@@ -25,7 +27,7 @@ pub struct BranchTip {
 ///
 /// Cannot be constructed directly — only via `KelVerifier::into_merge_context()`.
 /// Having a `MergeContext` proves the KEL was fully verified.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeContext {
     prefix: String,
     branch_tips: Vec<BranchTip>,
