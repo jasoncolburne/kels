@@ -4,7 +4,7 @@
 //! Tracks evolving cryptographic state as it walks forward through the chain,
 //! supporting both linear and divergent KELs.
 //!
-//! After verification, call `into_merge_context()` to get a `MergeContext` — the
+//! After verification, call `into_verification()` to get a `MergeContext` — the
 //! proof-of-verification token that provides access to verified KEL state.
 //!
 //! `PagedKelSource` / `PagedKelSink` / `sync_and_verify` provide a generic pattern
@@ -17,7 +17,7 @@ use cesr::{Digest, Matter, PublicKey, Signature};
 use verifiable_storage::Chained;
 
 use super::events::SignedKeyEvent;
-use super::merge_context::{BranchTip, MergeContext};
+use super::verification::{BranchTip, Verification};
 use crate::error::KelsError;
 use crate::store::KelStore;
 
@@ -49,7 +49,7 @@ struct BranchState {
 /// (all events at a given serial must be in the same page). Use
 /// `truncate_incomplete_generation()` to ensure this at page boundaries.
 ///
-/// After verification, call `into_merge_context()` to produce a `MergeContext`
+/// After verification, call `into_verification()` to produce a `MergeContext`
 /// (proof-of-verification token).
 pub struct KelVerifier {
     prefix: String,
@@ -81,8 +81,43 @@ impl KelVerifier {
         }
     }
 
+    /// Start verification from a single verified branch tip.
+    ///
+    /// Used for divergence/recovery scenarios where events need to be verified
+    /// against a specific branch (not all branches). Creates a single-branch
+    /// verifier from the branch tip's crypto state.
+    pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Self {
+        let prefix = prefix.into();
+        let mut branches = HashMap::new();
+
+        if let Some(ref pk) = tip.establishment_tip.event.public_key {
+            branches.insert(
+                tip.tip.event.said.clone(),
+                BranchState {
+                    tip: tip.tip.clone(),
+                    establishment_tip: tip.establishment_tip.clone(),
+                    current_public_key: pk.clone(),
+                    pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
+                    pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
+                },
+            );
+        }
+
+        let last_verified_serial = Some(tip.tip.event.serial);
+
+        Self {
+            prefix,
+            branches,
+            last_verified_serial,
+            diverged_at_serial: None,
+            is_contested: false,
+            queried_saids: HashSet::new(),
+            anchored_saids: HashSet::new(),
+        }
+    }
+
     /// Resume from a verified `MergeContext`.
-    pub fn resume(prefix: impl Into<String>, ctx: &MergeContext) -> Self {
+    pub fn resume(prefix: impl Into<String>, ctx: &Verification) -> Self {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
@@ -118,7 +153,7 @@ impl KelVerifier {
     ///
     /// Call this before `verify_page()`. As the verifier walks events, it checks
     /// each `ixn` event's `anchor` field against these SAIDs. Results are available
-    /// via `MergeContext::anchored_saids()` after calling `into_merge_context()`.
+    /// via `MergeContext::anchored_saids()` after calling `into_verification()`.
     pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = String>) {
         self.queried_saids.extend(saids);
     }
@@ -162,7 +197,7 @@ impl KelVerifier {
     }
 
     /// Consume the verifier and produce a `MergeContext` (proof-of-verification token).
-    pub fn into_merge_context(self) -> MergeContext {
+    pub fn into_verification(self) -> Verification {
         let branch_tips: Vec<BranchTip> = self
             .branches
             .into_values()
@@ -172,7 +207,7 @@ impl KelVerifier {
             })
             .collect();
 
-        MergeContext::new(
+        Verification::new(
             self.prefix,
             branch_tips,
             self.is_contested,
@@ -582,13 +617,13 @@ impl PageLoader for StorePageLoader<'_> {
 ///
 /// Use `StorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
 /// locked transaction wrapper to read under advisory lock.
-pub async fn verified_merge_context(
+pub async fn completed_verification(
     loader: &mut dyn PageLoader,
     prefix: &str,
     page_size: u64,
     max_pages: usize,
     anchor_saids: impl IntoIterator<Item = String>,
-) -> Result<MergeContext, KelsError> {
+) -> Result<Verification, KelsError> {
     let mut verifier = KelVerifier::new(prefix);
     verifier.check_anchors(anchor_saids);
     let mut offset: u64 = 0;
@@ -616,7 +651,7 @@ pub async fn verified_merge_context(
         }
     }
 
-    Ok(verifier.into_merge_context())
+    Ok(verifier.into_verification())
 }
 
 // ==================== Sync Abstraction ====================
@@ -765,7 +800,7 @@ mod tests {
         store.save(&prefix, &events).await.unwrap();
 
         // Verify with small page size to force multiple pages
-        let ctx = verified_merge_context(
+        let ctx = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -837,7 +872,7 @@ mod tests {
         store.save(&prefix, &all_events).await.unwrap();
 
         // Verify with paginated reads — should detect divergence
-        let ctx = verified_merge_context(
+        let ctx = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -868,7 +903,7 @@ mod tests {
         store.save(&prefix, &[icp, ixn]).await.unwrap();
 
         // Check for an anchor that exists
-        let ctx = verified_merge_context(
+        let ctx = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -882,7 +917,7 @@ mod tests {
         assert!(ctx.anchors_all_saids());
 
         // Check for an anchor that doesn't exist
-        let ctx2 = verified_merge_context(
+        let ctx2 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -916,7 +951,7 @@ mod tests {
         store.save(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events max, but we have 21
-        let ctx = verified_merge_context(
+        let ctx = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             5,

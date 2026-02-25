@@ -256,7 +256,7 @@ async fn check_and_rotate(
     // Consuming: verify full KEL under advisory lock with inline anchor checking
     let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
     let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
-    let ctx = kels::verified_merge_context(
+    let ctx = kels::completed_verification(
         &mut tx,
         prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -455,7 +455,7 @@ pub(crate) async fn perform_rotation(
 /// be fixed by rotating, so triggering rotation here would loop forever.
 fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
-    ctx: &kels::MergeContext,
+    ctx: &kels::Verification,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if ctx.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
@@ -501,7 +501,7 @@ fn audit_binding_chain(
 /// actively wrong with the current key state and defensive rotation is warranted.
 fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
-    ctx: &kels::MergeContext,
+    ctx: &kels::Verification,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if ctx.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");

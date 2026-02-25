@@ -23,7 +23,7 @@ pub trait KelStore: Send + Sync {
     fn set_owner_prefix(&self, _prefix: Option<&str>) {}
 
     /// Load a page of events by prefix. Returns `(events, has_more)`.
-    /// Callers iterate explicitly and build `Kel` themselves when they need the full chain.
+    /// Callers iterate explicitly via paginated reads.
     async fn load(
         &self,
         prefix: &str,

@@ -664,7 +664,7 @@ impl FederationNode {
     }
 
     /// Get a member's verified context from Raft-replicated state.
-    pub async fn get_member_context(&self, prefix: &str) -> Option<kels::MergeContext> {
+    pub async fn get_member_context(&self, prefix: &str) -> Option<kels::Verification> {
         self.state_machine
             .inner()
             .lock()
@@ -674,7 +674,7 @@ impl FederationNode {
     }
 
     /// Get all member contexts from Raft-replicated state.
-    pub async fn get_all_member_contexts(&self) -> HashMap<String, kels::MergeContext> {
+    pub async fn get_all_member_contexts(&self) -> HashMap<String, kels::Verification> {
         self.state_machine
             .inner()
             .lock()

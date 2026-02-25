@@ -9,7 +9,7 @@ use crate::{
     crypto::KeyProvider,
     error::KelsError,
     store::KelStore,
-    types::{Kel, KeyEvent, SignedKeyEvent},
+    types::{KeyEvent, SignedKeyEvent},
 };
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
@@ -156,54 +156,57 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         Ok(())
     }
 
+    /// Check if recovery should include a rotation (rec+rot vs just rec).
+    ///
+    /// Fetches server events, compares with local to detect adversary rotation.
+    /// If the adversary revealed the rotation key, we need to rotate after recovery
+    /// to prevent them from injecting events with the compromised key.
     pub async fn should_add_rot_with_recover(&self) -> Result<bool, KelsError> {
         if let Some(client) = &self.kels_client
             && let Some(prefix) = self.prefix()
         {
+            // Fetch server events (paginated)
             let page = client
                 .fetch_key_events(prefix, None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
                 .await?;
-            let mut kels_kel = Kel::from_events(page.events, true)?;
-            let local_events = self.events();
-            let local_set: HashSet<_> = local_events.iter().collect();
 
-            // Filter out events the server already has before merging (mirrors server logic)
-            let server_saids: HashSet<String> =
-                kels_kel.iter().map(|e| e.event.said.clone()).collect();
-            let new_local_events: Vec<_> = local_events
+            let local_saids: HashSet<&str> = self
+                .events()
                 .iter()
-                .filter(|e| !server_saids.contains(&e.event.said))
-                .cloned()
+                .map(|e| e.event.said.as_str())
                 .collect();
 
-            if !new_local_events.is_empty() {
-                let _ = kels_kel.merge(new_local_events)?;
-            }
-            if let Some(divergence) = kels_kel.find_divergence() {
-                let owner_has_rot = local_events.iter().any(|e| {
-                    divergence.divergent_saids.contains(&e.event.said)
-                        && e.event.reveals_rotation_key()
-                });
+            // Events on the server that we don't have locally = adversary events
+            let adversary_events: Vec<_> = page
+                .events
+                .iter()
+                .filter(|e| !local_saids.contains(e.event.said.as_str()))
+                .collect();
 
-                if owner_has_rot {
-                    // owner rotated
-                    Ok(false)
-                } else {
-                    let adversarial_events: Vec<_> = kels_kel
-                        .events()
-                        .iter()
-                        .filter(|e| !local_set.contains(e))
-                        .collect();
-                    Ok(adversarial_events
-                        .iter()
-                        .any(|e| e.event.reveals_rotation_key()))
-                }
-            } else {
-                // not divergent
+            if adversary_events.is_empty() {
+                // No adversary events — not divergent
+                return Ok(false);
+            }
+
+            // Check if owner already rotated (our local events include a rotation
+            // at the same serial range as the adversary events)
+            let adversary_serials: HashSet<u64> =
+                adversary_events.iter().map(|e| e.event.serial).collect();
+            let owner_has_rot = self.events().iter().any(|e| {
+                adversary_serials.contains(&e.event.serial) && e.event.reveals_rotation_key()
+            });
+
+            if owner_has_rot {
+                // Owner already rotated — no need for additional rotation
                 Ok(false)
+            } else {
+                // Check if adversary revealed the rotation key
+                Ok(adversary_events
+                    .iter()
+                    .any(|e| e.event.reveals_rotation_key()))
             }
         } else {
-            // fail secure
+            // Fail secure: no client = assume rotation needed
             Ok(true)
         }
     }

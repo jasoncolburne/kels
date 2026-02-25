@@ -7,7 +7,7 @@ use std::fmt;
 use std::collections::HashMap;
 
 use kels::{
-    MergeContext, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Vote,
+    Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Verification, Vote,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -296,7 +296,7 @@ pub struct MemberSnapshot {
     pub votes: Vec<Vote>,
     /// Federation member verified contexts (replicated via Raft).
     #[serde(default)]
-    pub member_contexts: HashMap<String, MergeContext>,
+    pub member_contexts: HashMap<String, Verification>,
 }
 
 #[cfg(test)]

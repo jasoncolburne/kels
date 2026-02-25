@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use futures::stream::StreamExt;
-use kels::{MergeContext, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Verification, Vote};
 
 /// Verify a SAID is anchored in a member's KEL stored in the MemberKelRepository.
 /// Consuming: paginated read + verification + inline anchor check.
@@ -21,7 +21,7 @@ async fn verify_member_anchoring_from_repo(
     let store = kels::RepositoryKelStore::new(Arc::new(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
     ));
-    let ctx = kels::verified_merge_context(
+    let ctx = kels::completed_verification(
         &mut kels::StorePageLoader::new(&store),
         member_prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -75,7 +75,7 @@ pub struct StateMachineData {
     pub votes: HashMap<String, Vote>,
     /// Federation member verified contexts (replicated via Raft consensus).
     /// Events are stored in MemberKelRepository (DB); only contexts are in memory.
-    pub member_contexts: HashMap<String, MergeContext>,
+    pub member_contexts: HashMap<String, Verification>,
 }
 
 impl StateMachineData {
@@ -85,12 +85,12 @@ impl StateMachineData {
     }
 
     /// Get a member's verified context by prefix.
-    pub fn member_context(&self, prefix: &str) -> Option<&MergeContext> {
+    pub fn member_context(&self, prefix: &str) -> Option<&Verification> {
         self.member_contexts.get(prefix)
     }
 
     /// Get all member contexts.
-    pub fn all_member_contexts(&self) -> &HashMap<String, MergeContext> {
+    pub fn all_member_contexts(&self) -> &HashMap<String, Verification> {
         &self.member_contexts
     }
 
@@ -439,7 +439,7 @@ impl StateMachineData {
 
                 match verifier.verify_page(&events) {
                     Ok(()) => {
-                        let ctx = verifier.into_merge_context();
+                        let ctx = verifier.into_verification();
                         // Member KELs should never diverge
                         if ctx.is_divergent() {
                             tracing::error!(

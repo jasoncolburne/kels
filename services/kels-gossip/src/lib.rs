@@ -291,15 +291,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
     info!("urls: {:?}", federation_registry_urls);
-    let registry_kels = registry_client
+    let registry_contexts = registry_client
         .fetch_verified_registry_kels(true)
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
 
-    let registry_prefixes: Vec<_> = registry_kels
+    let registry_prefixes: Vec<_> = registry_contexts
         .iter()
-        .filter_map(|k| k.prefix())
-        .map(|p| p.to_string())
+        .map(|ctx| ctx.prefix().to_string())
         .collect();
 
     if registry_prefixes.is_empty() {
@@ -347,8 +346,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     };
 
     // Persist verified registry KELs to local store for anchoring checks
-    for kel in &registry_kels {
-        for event in kel.events() {
+    for (_prefix, events) in registry_client.cached_events() {
+        for event in events {
             let sigs = event.event_signatures();
             if let Err(e) = gossip_repo
                 .registry_kels

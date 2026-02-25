@@ -294,7 +294,7 @@ pub async fn rotate(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
 
-    let ctx = kels::verified_merge_context(
+    let ctx = kels::completed_verification(
         &mut tx,
         &prefix,
         MAX_EVENTS_PER_KEL_QUERY as u64,

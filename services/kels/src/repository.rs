@@ -345,6 +345,70 @@ impl KelTransaction {
         Ok(())
     }
 
+    /// Get a single signed event by SAID.
+    pub async fn get_event_by_said(
+        &mut self,
+        said: &str,
+    ) -> Result<Option<SignedKeyEvent>, StorageError> {
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .eq("said", said)
+            .limit(1);
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let Some(event) = events.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
+            .eq("event_said", &event.said);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let sig_pairs: Vec<(String, String)> = signatures
+            .iter()
+            .map(|s| (s.public_key.clone(), s.signature.clone()))
+            .collect();
+
+        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
+    }
+
+    /// Get the last establishment event at or before a given serial for this prefix.
+    /// Used to reconstruct crypto state at a branch point for divergence verification.
+    pub async fn get_establishment_at_serial(
+        &mut self,
+        serial: u64,
+    ) -> Result<Option<SignedKeyEvent>, StorageError> {
+        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
+            .eq("prefix", &self.prefix)
+            .lte("serial", serial)
+            .r#in(
+                "kind",
+                vec![
+                    "icp".to_string(),
+                    "rot".to_string(),
+                    "dip".to_string(),
+                    "rec".to_string(),
+                    "ror".to_string(),
+                ],
+            )
+            .order_by("serial", Order::Desc)
+            .limit(1);
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+
+        let Some(event) = events.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
+            .eq("event_said", &event.said);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let sig_pairs: Vec<(String, String)> = signatures
+            .iter()
+            .map(|s| (s.public_key.clone(), s.signature.clone()))
+            .collect();
+
+        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
+    }
+
     /// Load a page of signed events by offset (for PageLoader impl).
     pub async fn load(
         &mut self,

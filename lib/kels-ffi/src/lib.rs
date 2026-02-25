@@ -988,7 +988,7 @@ pub unsafe extern "C" fn kels_status(
     if let Some(prefix) = builder_guard.prefix() {
         let mut verifier = kels::KelVerifier::new(prefix);
         if verifier.verify_page(events).is_ok() {
-            let ctx = verifier.into_merge_context();
+            let ctx = verifier.into_verification();
             result.is_divergent = ctx.is_divergent();
             result.is_contested = ctx.is_contested();
         }

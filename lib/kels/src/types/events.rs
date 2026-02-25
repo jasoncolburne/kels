@@ -68,7 +68,7 @@ impl EventKind {
 
     /// Sort priority within the same serial (lower = earlier in sorted order).
     /// Ensures state-determining events (recovery, contest) sort after normal events,
-    /// so `Kel.last()` reflects the most significant event for announcements.
+    /// so the last event reflects the most significant event for announcements.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::Icp => 0,

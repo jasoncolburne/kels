@@ -8,7 +8,7 @@ use cesr::{Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
-use super::{Kel, MergeContext};
+use super::Verification;
 use crate::KelsError;
 
 /// Validate that a timestamp is within the acceptable window.
@@ -42,7 +42,7 @@ impl<T: Serialize> SignedRequest<T> {
     ///
     /// Uses the current public key from the `MergeContext` (proof-of-verification token).
     /// Fails secure if the KEL is divergent (no unambiguous key).
-    pub fn verify_signature_with_ctx(&self, ctx: &MergeContext) -> Result<(), KelsError> {
+    pub fn verify_signature_with_ctx(&self, ctx: &Verification) -> Result<(), KelsError> {
         if ctx.is_divergent() {
             return Err(KelsError::Divergent);
         }
@@ -50,35 +50,6 @@ impl<T: Serialize> SignedRequest<T> {
         let public_key_qb64 = ctx
             .current_public_key()
             .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
-
-        let public_key = PublicKey::from_qb64(public_key_qb64)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
-
-        let signature = Signature::from_qb64(&self.signature)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
-
-        let payload_json = serde_json::to_vec(&self.payload)?;
-
-        public_key
-            .verify(&payload_json, &signature)
-            .map_err(|_| KelsError::SignatureVerificationFailed)?;
-
-        Ok(())
-    }
-
-    /// Verify the request signature against a KEL (legacy, will be removed).
-    pub fn verify_signature(&self, kel: &Kel) -> Result<(), KelsError> {
-        if kel.find_divergence().is_some() {
-            return Err(KelsError::Divergent);
-        }
-
-        let establishment = kel
-            .last_establishment_event()
-            .ok_or_else(|| KelsError::VerificationFailed("No establishment event in KEL".into()))?;
-
-        let public_key_qb64 = establishment.event.public_key.as_ref().ok_or_else(|| {
-            KelsError::VerificationFailed("No public key in establishment event".into())
-        })?;
 
         let public_key = PublicKey::from_qb64(public_key_qb64)
             .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
@@ -142,31 +113,13 @@ impl PeerHistory {
     pub fn verify_with_contexts(
         &self,
         trusted_prefixes: &HashSet<&'static str>,
-        contexts: &[&MergeContext],
+        contexts: &[&Verification],
     ) -> Result<(), KelsError> {
         for ctx in contexts {
             if !trusted_prefixes.contains(ctx.prefix()) {
                 return Err(KelsError::RegistryFailure(format!(
                     "Could not verify KEL {} as trusted",
                     ctx.prefix()
-                )));
-            }
-        }
-
-        self.verify_records()
-    }
-
-    /// Verify peer records against KELs (legacy, will be removed).
-    pub fn verify(
-        &self,
-        trusted_prefixes: &HashSet<&'static str>,
-        kels: &[&Kel],
-    ) -> Result<(), KelsError> {
-        for kel in kels {
-            if !kel.verify_prefix(trusted_prefixes) {
-                return Err(KelsError::RegistryFailure(format!(
-                    "Could not verify KEL {} as trusted",
-                    kel.prefix().unwrap_or("unknown")
                 )));
             }
         }
@@ -880,16 +833,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
-        use crate::{Kel, KeyEventBuilder, SoftwareKeyProvider};
+        use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
+        use cesr::{Digest, Matter};
 
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
-        let ixn1 = builder1.interact("anchor1").await.unwrap();
-        let ixn2 = builder2.interact("anchor2").await.unwrap();
+        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
+        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+        let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
-        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
-        assert!(kel.find_divergence().is_some());
+        // Sort events by serial ASC, said ASC (DB ordering)
+        let mut events = vec![icp, ixn1, ixn2];
+        events.sort_by(|a, b| {
+            a.event
+                .serial
+                .cmp(&b.event.serial)
+                .then(a.event.said.cmp(&b.event.said))
+        });
+
+        let mut verifier = KelVerifier::new(&prefix);
+        verifier.verify_page(&events).unwrap();
+        let ctx = verifier.into_verification();
+        assert!(ctx.is_divergent());
 
         let signed = SignedRequest {
             payload: "test".to_string(),
@@ -897,7 +865,7 @@ mod tests {
             signature: "test_sig".to_string(),
         };
 
-        let result = signed.verify_signature(&kel);
+        let result = signed.verify_signature_with_ctx(&ctx);
         assert!(
             matches!(result, Err(crate::KelsError::Divergent)),
             "Expected Divergent error, got: {:?}",

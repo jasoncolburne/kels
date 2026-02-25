@@ -211,7 +211,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
             break;
         }
     }
-    let ctx = verifier.into_merge_context();
+    let ctx = verifier.into_verification();
 
     signed_request
         .verify_signature_with_ctx(&ctx)
@@ -523,7 +523,7 @@ pub async fn federation_rpc(
             verifier
                 .verify_page(&page.events)
                 .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
-            verifier.into_merge_context()
+            verifier.into_verification()
         }
     };
 
@@ -692,7 +692,7 @@ async fn verify_admin_request<T: Serialize>(
             break;
         }
     }
-    let ctx = verifier.into_merge_context();
+    let ctx = verifier.into_verification();
 
     signed_request
         .verify_signature_with_ctx(&ctx)

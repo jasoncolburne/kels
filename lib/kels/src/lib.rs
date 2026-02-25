@@ -77,9 +77,9 @@ pub use types::{
     hash_tip_saids, validate_timestamp,
 };
 pub use types::{
-    BranchTip, Kel, KelVerifier, MergeContext, PageLoader, PagedKelSink, PagedKelSource,
-    StorePageLoader, compute_rotation_hash, sync_and_verify, truncate_incomplete_generation,
-    verified_merge_context,
+    BranchTip, KelVerifier, PageLoader, PagedKelSink, PagedKelSource, StorePageLoader,
+    Verification, completed_verification, compute_rotation_hash, sync_and_verify,
+    truncate_incomplete_generation,
 };
 
 /// Maximum number of events allowed in a single submit_events request.

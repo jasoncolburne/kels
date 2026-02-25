@@ -18,10 +18,10 @@ use crate::{
     client::KelsClient,
     error::KelsError,
     types::{
-        CompletedProposalsResponse, DeregisterRequest, ErrorResponse, Kel, NodeInfo,
+        CompletedProposalsResponse, DeregisterRequest, ErrorResponse, KelVerifier, NodeInfo,
         NodeRegistration, NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory,
-        ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, SignedRequest,
-        StatusUpdateRequest, Vote,
+        ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, SignedKeyEvent,
+        SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Verification, Vote,
     },
 };
 
@@ -321,7 +321,7 @@ impl KelsRegistryClient {
         &self,
         peer_prefix: &str,
         trusted_prefixes: &HashSet<&'static str>,
-        kels: &[&Kel],
+        contexts: &[&Verification],
     ) -> Result<bool, KelsError> {
         let (peers_response, _) = self.fetch_peers().await?;
         if !peers_response.peers.iter().any(|history| {
@@ -337,10 +337,11 @@ impl KelsRegistryClient {
             )));
         }
 
-        Ok(peers_response
-            .peers
-            .iter()
-            .any(|history| history.verify(trusted_prefixes, kels).is_ok()))
+        Ok(peers_response.peers.iter().any(|history| {
+            history
+                .verify_with_contexts(trusted_prefixes, contexts)
+                .is_ok()
+        }))
     }
 
     pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
@@ -436,9 +437,11 @@ impl KelsRegistryClient {
 
     /// Fetch all cached federation member KELs from the registry.
     ///
-    /// Returns a map of prefix -> KEL for all federation members.
+    /// Returns a map of prefix -> SignedKeyEventPage for all federation members.
     /// Used for high availability - clients can fetch all KELs from any registry.
-    pub async fn fetch_registry_kels(&self) -> Result<HashMap<String, crate::Kel>, KelsError> {
+    pub async fn fetch_registry_kels(
+        &self,
+    ) -> Result<HashMap<String, SignedKeyEventPage>, KelsError> {
         let response = self
             .client
             .get(format!("{}/api/registry-kels", self.base_url))
@@ -460,8 +463,8 @@ pub struct MultiRegistryClient {
     urls: Vec<String>,
     timeout: Duration,
     signer: Option<Arc<dyn RegistrySigner>>,
-    url_map: HashMap<String, (String, crate::Kel)>,
-    prefix_map: HashMap<String, (String, crate::Kel)>,
+    url_map: HashMap<String, (String, Verification, Vec<SignedKeyEvent>)>,
+    prefix_map: HashMap<String, (String, Verification, Vec<SignedKeyEvent>)>,
     trusted_prefixes: HashSet<&'static str>,
 }
 
@@ -532,7 +535,7 @@ impl MultiRegistryClient {
 
     fn url_for_prefix(&self, prefix: &str) -> Result<String, KelsError> {
         match self.prefix_map.get(prefix) {
-            Some((url, _kel)) => Ok(url.clone()),
+            Some((url, ..)) => Ok(url.clone()),
             None => Err(KelsError::RegistryFailure(format!(
                 "Could not find registry for prefix {}",
                 prefix
@@ -542,7 +545,7 @@ impl MultiRegistryClient {
 
     pub async fn prefix_for_url(&self, url: &str) -> Result<String, KelsError> {
         match self.url_map.get(url) {
-            Some((prefix, _kel)) => Ok(prefix.clone()),
+            Some((prefix, ..)) => Ok(prefix.clone()),
             None => {
                 let client = self.create_client(url);
                 let page = client.fetch_registry_key_events().await?;
@@ -555,6 +558,16 @@ impl MultiRegistryClient {
                 }
             }
         }
+    }
+
+    /// Get the cached events for all verified registry KELs.
+    ///
+    /// Returns an iterator over `(prefix, events)` pairs from the prefix map.
+    /// Must be called after `fetch_verified_registry_kels`.
+    pub fn cached_events(&self) -> impl Iterator<Item = (&str, &[SignedKeyEvent])> {
+        self.prefix_map
+            .iter()
+            .map(|(prefix, (_, _, events))| (prefix.as_str(), events.as_slice()))
     }
 
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
@@ -666,9 +679,9 @@ impl MultiRegistryClient {
 
     async fn verify_peers_response(&mut self, response: &PeersResponse) -> Result<(), KelsError> {
         for history in &response.peers {
-            let kels_vec: Vec<_> = self.fetch_verified_registry_kels(false).await?;
-            let kels: Vec<&Kel> = kels_vec.iter().collect();
-            history.verify(&self.trusted_prefixes, &kels)?;
+            let contexts_vec = self.fetch_verified_registry_kels(false).await?;
+            let contexts: Vec<&Verification> = contexts_vec.iter().collect();
+            history.verify_with_contexts(&self.trusted_prefixes, &contexts)?;
         }
 
         Ok(())
@@ -679,13 +692,13 @@ impl MultiRegistryClient {
     /// Returns true if the peer's SAID is found as an anchor in the registry KEL.
     /// Retries once with a forced refetch if not found in the cached KEL.
     pub async fn verify_peer_anchoring(&mut self, peer: &Peer) -> Result<bool, KelsError> {
-        let maybe_kel = retry_once!(
-            self.fetch_registry_kel(&peer.authorizing_kel, false),
-            |kel: &Kel| kel.contains_anchor(&peer.said),
-            self.fetch_registry_kel(&peer.authorizing_kel, true),
+        let maybe_ctx = retry_once!(
+            self.verify_anchor(&peer.authorizing_kel, &peer.said, false),
+            |ctx: &Verification| ctx.anchors_all_saids(),
+            self.verify_anchor(&peer.authorizing_kel, &peer.said, true),
         )?;
 
-        if maybe_kel.is_none() {
+        if maybe_ctx.is_none() {
             debug!(
                 peer_prefix = %peer.peer_prefix,
                 said = %peer.said,
@@ -694,7 +707,7 @@ impl MultiRegistryClient {
             );
         }
 
-        Ok(maybe_kel.is_some())
+        Ok(maybe_ctx.is_some())
     }
 
     /// Verify that a peer has an approved proposal backed by sufficient anchored votes.
@@ -865,13 +878,13 @@ impl MultiRegistryClient {
                 proposer = %proposer,
                 "verify_proposal_dag: checking proposal record anchoring"
             );
-            let maybe_kel = retry_once!(
-                self.fetch_registry_kel(&proposer, false),
-                |kel: &Kel| kel.contains_anchor(said),
-                self.fetch_registry_kel(&proposer, true),
+            let maybe_ctx = retry_once!(
+                self.verify_anchor(&proposer, said, false),
+                |ctx: &Verification| ctx.anchors_all_saids(),
+                self.verify_anchor(&proposer, said, true),
             );
 
-            match maybe_kel {
+            match maybe_ctx {
                 Ok(Some(_)) => {
                     debug!(said = %said, "verify_proposal_dag: proposal record anchor OK");
                 }
@@ -911,13 +924,13 @@ impl MultiRegistryClient {
                 voter = %vote.voter,
                 "verify_proposal_dag: checking vote anchoring"
             );
-            let maybe_kel = retry_once!(
-                self.fetch_registry_kel(&vote.voter, false),
-                |kel: &Kel| kel.contains_anchor(&vote.said),
-                self.fetch_registry_kel(&vote.voter, true),
+            let maybe_ctx = retry_once!(
+                self.verify_anchor(&vote.voter, &vote.said, false),
+                |ctx: &Verification| ctx.anchors_all_saids(),
+                self.verify_anchor(&vote.voter, &vote.said, true),
             );
 
-            match maybe_kel {
+            match maybe_ctx {
                 Ok(Some(_)) => {
                     debug!(voter = %vote.voter, "verify_proposal_dag: vote anchor OK");
                     verified_voters.insert(vote.voter.clone());
@@ -958,12 +971,12 @@ impl MultiRegistryClient {
     /// This is an unauthenticated check - nodes can verify their authorization
     /// before attempting to register.
     pub async fn is_peer_authorized(&mut self, peer_prefix: &str) -> Result<bool, KelsError> {
-        let kels_vec: Vec<_> = self.fetch_verified_registry_kels(false).await?;
-        let kels: Vec<&Kel> = kels_vec.iter().collect();
+        let contexts_vec = self.fetch_verified_registry_kels(false).await?;
+        let contexts: Vec<&Verification> = contexts_vec.iter().collect();
         for url in &self.urls {
             let client = self.create_client(url);
             match client
-                .is_peer_authorized(peer_prefix, &self.trusted_prefixes, &kels)
+                .is_peer_authorized(peer_prefix, &self.trusted_prefixes, &contexts)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -1036,7 +1049,7 @@ impl MultiRegistryClient {
     pub async fn fetch_verified_registry_kels(
         &mut self,
         force_fetch: bool,
-    ) -> Result<Vec<crate::Kel>, KelsError> {
+    ) -> Result<Vec<Verification>, KelsError> {
         if !self.prefix_map.is_empty() && !force_fetch {
             debug!(
                 "fetch_registry_kels: using cached KELs ({} entries)",
@@ -1045,7 +1058,7 @@ impl MultiRegistryClient {
             return Ok(self
                 .prefix_map
                 .values()
-                .map(|(_, kel)| kel.clone())
+                .map(|(_, ctx, _)| ctx.clone())
                 .collect());
         }
 
@@ -1063,10 +1076,10 @@ impl MultiRegistryClient {
         for url in self.urls.clone() {
             let client = self.create_client(&url);
             match client.fetch_registry_kels().await {
-                Ok(kels_map) if !kels_map.is_empty() => {
-                    let mut kels: Vec<crate::Kel> = Vec::new();
+                Ok(pages_map) if !pages_map.is_empty() => {
+                    let mut contexts: Vec<Verification> = Vec::new();
 
-                    for (prefix, kel) in &kels_map {
+                    for (prefix, page) in &pages_map {
                         if !self.trusted_prefixes.contains(prefix.as_str()) {
                             warn!(
                                 prefix = %prefix,
@@ -1075,7 +1088,9 @@ impl MultiRegistryClient {
                             continue;
                         }
 
-                        if let Err(e) = kel.verify(true) {
+                        // Verify the KEL page with KelVerifier
+                        let mut verifier = KelVerifier::new(prefix);
+                        if let Err(e) = verifier.verify_page(&page.events) {
                             warn!(
                                 prefix = %prefix,
                                 error = %e,
@@ -1083,8 +1098,10 @@ impl MultiRegistryClient {
                             );
                             continue;
                         }
+                        let ctx = verifier.into_verification();
 
-                        if !kel.verify_prefix(&self.trusted_prefixes) {
+                        // Verify prefix is in trusted set
+                        if !self.trusted_prefixes.contains(ctx.prefix()) {
                             warn!(
                                 prefix = %prefix,
                                 "KEL prefix not in trusted set, skipping"
@@ -1095,23 +1112,25 @@ impl MultiRegistryClient {
                         debug!(
                             "fetch_registry_kels: prefix={}, events={}, anchors={}",
                             prefix,
-                            kel.events().len(),
-                            kel.events()
+                            page.events.len(),
+                            page.events
                                 .iter()
                                 .filter(|e| e.event.is_interaction())
                                 .count(),
                         );
-                        self.prefix_map
-                            .insert(prefix.clone(), (url.clone(), kel.clone()));
-                        kels.push(kel.clone());
+                        self.prefix_map.insert(
+                            prefix.clone(),
+                            (url.clone(), ctx.clone(), page.events.clone()),
+                        );
+                        contexts.push(ctx);
                     }
 
-                    if kels.is_empty() {
+                    if contexts.is_empty() {
                         warn!(url = %url, "No trusted prefixes in response, trying next");
                         continue;
                     }
 
-                    return Ok(kels);
+                    return Ok(contexts);
                 }
                 Ok(_) => {
                     debug!(url = %url, "fetch_registry_kels: empty response, trying next");
@@ -1127,34 +1146,55 @@ impl MultiRegistryClient {
         ))
     }
 
-    pub async fn fetch_registry_kel(
+    /// Fetch and cache a single registry's verified events.
+    ///
+    /// Returns the cached `MergeContext` for the given prefix. If `force_fetch` is true,
+    /// re-fetches from the registry.
+    async fn fetch_registry_events(
         &mut self,
         prefix: &str,
         force_fetch: bool,
-    ) -> Result<crate::Kel, KelsError> {
-        debug!(prefix = %prefix, force_fetch = force_fetch, "fetch_registry_kel");
+    ) -> Result<(), KelsError> {
+        debug!(prefix = %prefix, force_fetch = force_fetch, "fetch_registry_events");
         self.fetch_verified_registry_kels(force_fetch).await?;
-        match self.prefix_map.get(prefix) {
-            Some((_, kel)) => {
-                debug!(
-                    prefix = %prefix,
-                    events = kel.events().len(),
-                    "fetch_registry_kel: found"
-                );
-                Ok(kel.clone())
-            }
-            None => {
-                debug!(
-                    prefix = %prefix,
-                    available = ?self.prefix_map.keys().collect::<Vec<_>>(),
-                    "fetch_registry_kel: NOT FOUND in prefix_map"
-                );
-                Err(KelsError::RegistryFailure(format!(
-                    "Could not find {} in available trusted registries",
-                    prefix
-                )))
-            }
+        if self.prefix_map.contains_key(prefix) {
+            Ok(())
+        } else {
+            debug!(
+                prefix = %prefix,
+                available = ?self.prefix_map.keys().collect::<Vec<_>>(),
+                "fetch_registry_events: NOT FOUND in prefix_map"
+            );
+            Err(KelsError::RegistryFailure(format!(
+                "Could not find {} in available trusted registries",
+                prefix
+            )))
         }
+    }
+
+    /// Re-verify cached events for a prefix with anchor checking.
+    ///
+    /// Fetches (or uses cached) events, then runs `KelVerifier` with the given
+    /// SAID registered for anchor checking. Returns the resulting `MergeContext`
+    /// which can be queried via `anchors_all_saids()`.
+    async fn verify_anchor(
+        &mut self,
+        prefix: &str,
+        said: &str,
+        force_fetch: bool,
+    ) -> Result<Verification, KelsError> {
+        self.fetch_registry_events(prefix, force_fetch).await?;
+        let (_, _, events) = self.prefix_map.get(prefix).ok_or_else(|| {
+            KelsError::RegistryFailure(format!(
+                "Could not find {} in available trusted registries",
+                prefix
+            ))
+        })?;
+        let events = events.clone();
+        let mut verifier = KelVerifier::new(prefix);
+        verifier.check_anchors(std::iter::once(said.to_string()));
+        verifier.verify_page(&events)?;
+        Ok(verifier.into_verification())
     }
 
     /// Fetch completed proposals from any available registry.

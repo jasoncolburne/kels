@@ -524,7 +524,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         let mut verifier = kels::KelVerifier::new(prefix);
         match verifier.verify_page(&page.events) {
             Ok(_) => {
-                let ctx = verifier.into_merge_context();
+                let ctx = verifier.into_verification();
                 println!("  Verified: Yes");
                 if ctx.is_contested() {
                     println!("  Status: {}", "CONTESTED".red());
@@ -591,7 +591,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     // Verify for status display
     let mut verifier = kels::KelVerifier::new(prefix);
     if verifier.verify_page(&events).is_ok() {
-        let ctx = verifier.into_merge_context();
+        let ctx = verifier.into_verification();
         if ctx.is_contested() {
             println!("  Status: {}", "CONTESTED".red());
         } else if ctx.is_decommissioned() {
@@ -656,7 +656,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let ctx = kels::verified_merge_context(
+    let ctx = kels::completed_verification(
         &mut kels::StorePageLoader::new(&kel_store),
         prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,

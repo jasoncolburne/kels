@@ -206,7 +206,7 @@ impl KelsPeerVerifier {
             }
         }
 
-        let ctx = verifier.into_merge_context();
+        let ctx = verifier.into_verification();
 
         if ctx.is_divergent() {
             return Err(GossipError::VerificationFailed(format!(

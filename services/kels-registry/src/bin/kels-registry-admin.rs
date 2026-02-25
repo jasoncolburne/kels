@@ -1007,7 +1007,7 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
     let event_count = page.events.len();
     let mut verifier = kels::KelVerifier::new(&prefix);
     let ctx = if verifier.verify_page(&page.events).is_ok() {
-        Some(verifier.into_merge_context())
+        Some(verifier.into_verification())
     } else {
         None
     };
