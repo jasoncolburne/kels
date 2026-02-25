@@ -38,8 +38,9 @@ RUN apt-get update && \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy built binary
+# Copy built binary and migrations
 COPY --from=builder /app/kels-gossip /app/kels-gossip
+COPY --from=builder /app/services/kels-gossip/migrations /app/services/kels-gossip/migrations
 
 EXPOSE 4001
 

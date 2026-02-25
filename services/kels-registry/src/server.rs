@@ -104,7 +104,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let postgres_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@postgres:5432/kels".to_string());
 
-    info!("Connecting to Redis at {}", redis_url);
+    info!("Connecting to Redis");
     let redis_client = RedisClient::open(redis_url.as_str())
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)

@@ -212,7 +212,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Node ID: {}", config.node_id);
     info!("KELS URL (local): {}", config.kels_url);
     info!("KELS URL (advertised): {}", config.kels_advertise_url);
-    info!("Redis URL: {}", config.redis_url);
+    info!("Connecting to Redis");
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
     info!(
@@ -332,7 +332,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         };
 
     // Initialize PostgreSQL for local registry KEL store
-    info!("Connecting to database at {}", config.database_url);
+    info!("Connecting to database");
     let gossip_repo = {
         use verifiable_storage_postgres::RepositoryConnection;
         let repo = repository::GossipRepository::connect(&config.database_url)

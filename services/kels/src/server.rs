@@ -54,7 +54,7 @@ pub async fn run(
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database connected");
 
-    info!("Connecting to Redis at {}", redis_url);
+    info!("Connecting to Redis");
     let redis_client = RedisClient::open(redis_url)
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)
