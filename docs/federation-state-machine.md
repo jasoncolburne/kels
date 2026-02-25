@@ -40,7 +40,7 @@ pub struct StateMachineData {
     pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     pub votes: HashMap<String, Vote>,
-    pub member_kels: HashMap<String, Kel>,
+    pub member_contexts: HashMap<String, Verification>,
 }
 ```
 
@@ -48,9 +48,9 @@ pub struct StateMachineData {
 
 Active and inactive peers are stored in separate HashMaps, both keyed by `peer_prefix`. Active peers are the trusted peer set. Inactive peers are deactivated peers preserved for audit trail — when a peer is removed, it moves from `active_peers` to `inactive_peers` rather than being deleted.
 
-### Member KELs
+### Member Contexts
 
-The `member_kels` HashMap stores Raft-replicated KELs for each federation member, keyed by prefix. Members submit their own key events via `SubmitKeyEvents` (forwarded to the leader if submitted on a follower). On `apply()`, events are verified against the existing KEL using `Kel::merge()` — this handles deduplication, chain verification, and divergence detection. Member KELs are included in snapshots and survive restarts.
+The `member_contexts` HashMap stores Raft-replicated verified state (`Verification` tokens) for each federation member, keyed by prefix. Members submit their own key events via `SubmitKeyEvents` (forwarded to the leader if submitted on a follower). On `apply()`, events are verified against the existing state using `KelVerifier` — first submission uses `KelVerifier::new()`, subsequent submissions use `KelVerifier::resume()`. Member events are persisted to `MemberKelRepository` and `Verification` tokens are updated in memory. Included in snapshots and survive restarts.
 
 A background sync loop on every node fetches the local identity KEL every 30 seconds and submits any new events to Raft. The admin CLI also eagerly submits events after each `anchor()` call.
 
@@ -89,7 +89,7 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
     - Additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`
     - Removals: returns the approved proposal — the leader handler then deactivates the peer, anchors it, and submits `RemovePeer`
     - Both: moves proposal to completed.
-- **SubmitKeyEvents**: Merges events into `member_kels` for the given prefix. Uses `Kel::from_events()` for the first submission (empty KEL) and `Kel::merge()` for subsequent submissions
+- **SubmitKeyEvents**: Verifies and stores events for the given prefix. Uses `KelVerifier::new()` for the first submission and `KelVerifier::resume()` for subsequent submissions. Events are persisted to `MemberKelRepository`, and the in-memory `Verification` token is updated
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -136,7 +136,7 @@ Before applying a proposal:
 Before applying key events:
 
 1. **Member check**: Verify the event prefix belongs to a federation member (`config.is_member(prefix)`)
-2. **KEL merge**: Merge events into the existing member KEL using `Kel::merge()` — handles dedup, chain verification, divergence detection
+2. **KEL verification**: Verify events using `KelVerifier` (first submission: `KelVerifier::new()`, subsequent: `KelVerifier::resume()`). Divergence is rejected. Events stored in `MemberKelRepository`, `Verification` token updated
 3. **Security events**: Log divergence/contest/protected at error level as critical security events (indicates compromised registry signing key)
 
 ### Approved Proposal Side Effects
@@ -188,8 +188,8 @@ The peer set flows to multiple consumers:
 
 The state machine supports snapshotting for efficient Raft log compaction:
 
-- **Snapshot**: Serializes `active_peers`, `inactive_peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_kels` to JSON
-- **Restore**: Deserializes and verifies all proposal chains and member KELs before accepting. Proposals with invalid chains are dropped during restore. Member KELs are verified with `kel.verify()` before restoring.
+- **Snapshot**: Serializes `active_peers`, `inactive_peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_contexts` to JSON
+- **Restore**: Deserializes and verifies all proposal chains before accepting. Proposals with invalid chains are dropped during restore. Member events are re-verified with `completed_verification()` from `MemberKelRepository` before restoring `Verification` tokens.
 
 ## KEL Sync Loop
 

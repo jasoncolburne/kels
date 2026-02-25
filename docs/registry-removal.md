@@ -28,8 +28,8 @@ The `dec` event signals a clean, intentional termination of the KEL.
 
 The `dec` event is submitted to Raft via the KEL sync loop (within 30s). Once in Raft:
 
-- `Kel::is_decommissioned()` returns `true` for this prefix
-- `Kel::merge()` rejects any further events with `KelsError::KelDecommissioned`
+- `Verification::is_decommissioned()` returns `true` for this prefix
+- The submit handler rejects any further events with `KelsError::KelDecommissioned`
 - The KEL is frozen at its final state
 
 ### Step 3: Remove from Federation

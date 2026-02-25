@@ -198,17 +198,22 @@ return result
 
 ## Submit Handler Architecture
 
-The KELS service's `submit_events` handler routes submissions through two paths based on bounded metadata from `MergeContext` (tips, is_contested, diverged_at_serial):
+The KELS service's `submit_events` handler routes submissions through two paths based on the `Verification` token obtained from `completed_verification()` under an advisory lock:
 
 ### Fast Path (~99% of submissions)
 
 Conditions: single tip (non-divergent), submitted events chain from the tip, KEL not contested.
 
-Uses `KelVerifier::from_merge_context()` for incremental verification against the tip + last establishment event. **No full KEL load** — only bounded metadata queries. Events are inserted directly.
+Uses `KelVerifier::resume(prefix, &ctx)` for incremental verification against the verified `Verification` token. **No full KEL load** — the `Verification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
 
 ### Full Path (divergence/recovery/overlap)
 
-Falls back to paginated KEL loading (`MAX_EVENTS_PER_KEL_QUERY` events per page) + `Kel::merge()` for correctness. Handles all edge cases: already-divergent KELs, recovery, contest, inception overlap, gap detection.
+Uses bounded DB operations with the verified `Verification` token. No full KEL in memory. Each case is handled independently:
+
+- **Already divergent + contest**: Query events from `diverged_at_serial` onward to check recovery key revelation. Verify contest event, insert.
+- **Already divergent + recovery**: Walk owner chain backward via paginated DB queries, collect adversary events, archive them, insert recovery events.
+- **New divergence/overlap**: Fetch referenced event by SAID, check for duplicates, fork if needed.
+- **Inception overlap**: Batch check submitted SAIDs, skip duplicates, process remaining.
 
 ## Pagination
 

@@ -189,6 +189,14 @@ This ensures the server's in-memory signing state is always consistent with the 
 - **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
 - **Authenticated rotation endpoint:** The `POST /api/identity/rotate` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized rotation triggers.
 
+## DB Compromise + Key Compromise
+
+If an adversary compromises both a KELS node's database and a signing key, they could remove legitimate events and replace them with their own in the database. On an unreplicated node, this is a problem — the adversary's events would be served as if they were legitimate.
+
+However, with a full backbone deployment (recommended), any sync operation with other nodes will surface the conflicting events as divergence across the gossip mesh. The legitimate events exist on other nodes and will be gossiped back. Recovery proceeds as usual via the `rec` event, and the divergence alerts operators to investigate the compromised node.
+
+**Mitigation:** Deploy with replication (multiple KELS nodes behind a gossip mesh). The gossip protocol's anti-entropy loop will detect and reconcile inconsistencies. Single-node deployments accept this risk.
+
 ## Summary of Residual Risks
 
 All protocol-level attack vectors have mitigations. The protocol's security properties are derived from cryptographic invariants (signatures, SAID integrity, forward commitments, dual-signature requirements) rather than access control, so there are no residual risks that depend on deployment configuration.

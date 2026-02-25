@@ -340,7 +340,7 @@ The provided Garden configuration is a test harness, not a production deployment
 
 ## Contributing
 
-The core logic lives in `Kel::merge()` and `Kel::verify()` in `lib/kels/src/types/kel.rs`. Correct replication across all scenarios — divergence, recovery, contest, decommission, and their interactions with gossip propagation timing — is the hardest thing to verify. If you can think of interesting scenarios or race conditions, check the adversarial test scripts in `clients/test/scripts/` first — they may already cover what you have in mind. If not, please submit a pull request or open an issue.
+The core logic lives in `KelVerifier` (`lib/kels/src/types/verifier.rs`) for streaming verification and the submit handler (`services/kels/src/handlers.rs`) for merge routing. Correct replication across all scenarios — divergence, recovery, contest, decommission, and their interactions with gossip propagation timing — is the hardest thing to verify. If you can think of interesting scenarios or race conditions, check the adversarial test scripts in `clients/test/scripts/` first — they may already cover what you have in mind. If not, please submit a pull request or open an issue.
 
 ## License
 

@@ -13,200 +13,127 @@ KEL verification ensures:
 
 Events are linked by their `previous` SAID field. Generation is computed dynamically by following the chain from inception (generation 0).
 
-## Verification Phases
+## Verification Algorithm
 
-### Phase 1: Forward Pass (Structure Verification)
+`KelVerifier` processes events in a single forward pass, verifying structure and cryptography simultaneously. Events must arrive in `serial ASC, said ASC` order with complete generations.
 
-The forward pass iterates through events by following `previous` links, validating structural properties.
+### Per-Event Checks
 
-#### 1.1 Chain Building
-
-Events are sorted by following the `previous` chain from inception:
+For each event in the page:
 
 ```
-start with inception events (previous = None)
-for each generation:
-    find events whose previous matches current generation's SAIDs
-    add to sorted list
-```
+verify_event(event):
+    // 1. SAID integrity
+    event.verify()  // Recompute SAID, compare to stored
 
-#### 1.2 Divergence Detection
-
-```
-if multiple events share the same previous AND no divergence detected yet:
-    record divergence_info = {
-        diverged_at_generation: generation,
-        divergent_saids: [event SAIDs at this generation]
-    }
-```
-
-Multiple events with the same `previous` indicates divergence (conflicting event chains).
-
-#### 1.3 Event Basics
-
-For each event:
-
-```
-verify_event_basics(event, prefix):
-    // Verify SAID is self-consistent
-    event.verify()  // Computes SAID and compares to stored SAID
-
-    // Verify prefix matches KEL prefix
-    if event.prefix != kel_prefix:
+    // 2. Prefix consistency
+    if event.prefix != verifier.prefix:
         return Error("Prefix mismatch")
+
+    // 3. Structure validation
+    validate_structure(event)  // Required fields present for event kind
+
+    // 4. Serial continuity
+    if event.serial != expected_serial:
+        return Error("Serial gap or regression")
+
+    // 5. Chain continuity (previous pointer matches a known branch tip)
+    match event to a branch via event.previous
+    if no matching branch:
+        return Error("Previous SAID not found")
+
+    // 6. Anchor format validation
+    if event.anchor exists:
+        verify anchor is a valid CESR digest
 ```
 
-#### 1.4 Valid Tails Tracking
+### Generation Processing
 
-Note: There is no separate chaining verification step in the forward pass. Chain integrity is validated implicitly by `walk_generations()` (which follows `previous` links to build the generation map) and explicitly by the backward pass (which walks `previous` pointers and checks serial monotonicity).
-
-```
-for each event:
-    if event.previous exists:
-        valid_tails.remove(event.previous)
-    valid_tails.insert(event.said)
-```
-
-This tracks the "tips" of all event chains. At the end:
-- Single tail = linear KEL
-- Multiple tails = divergent KEL
-
-### Phase 2: Backward Pass (Cryptographic Verification)
-
-For each valid tail, walk backward verifying cryptographic properties.
+Events at the same serial form a **generation**. The verifier processes all events in a generation together:
 
 ```
-for each tail_said in valid_tails:
-    verify_branch_from_tail(tail_said)
+verify_generation(events_at_serial):
+    if events_at_serial.len() > branches.len():
+        // More events than branches = divergence detected
+        fork BranchState for new branches
+        record diverged_at_serial if first divergence
+
+    for each event:
+        match to branch via event.previous
+        verify crypto for that branch
 ```
 
-#### 2.1 Backward Walk
+### Establishment Event Processing
+
+When an establishment event is encountered (icp, rot, rec, ror, cnt, dec):
 
 ```
-verify_branch_from_tail(tail_said):
-    current_said = tail_said
-    next_establishment = None  // Later establishment event
-    revealed_recovery_key = None
-    pending_events = []  // Non-establishment events awaiting verification
+process_establishment(event, branch):
+    new_public_key = parse(event.public_key)
 
-    while current_said exists:
-        event = get_event(current_said)
-
-        if event.is_establishment():
-            process_establishment_event(event)
-        else:
-            pending_events.push(event)
-
-        if event.previous exists:
-            // Verify serial monotonicity: previous event must have serial == event.serial - 1
-            prev_event = get_event(event.previous)
-            if event.serial != prev_event.serial + 1:
-                return Error("Serial not monotonically increasing")
-            current_said = event.previous
-        else:
-            // Inception event must have serial 0
-            if event.serial != 0:
-                return Error("Inception event has non-zero serial")
-            break
-```
-
-#### 2.2 Establishment Event Processing
-
-```
-process_establishment_event(event):
-    public_key = parse(event.public_key)
-
-    // Verify rotation hash commitment
-    if next_establishment exists:
-        verify_establishment_security(event, next_establishment)
-
-    // Verify recovery key revelation
-    if event.has_recovery_hash AND revealed_recovery_key:
-        verify_recovery_key_revelation(event, revealed_recovery_key)
-
-    // Track recovery key state
-    if event.reveals_recovery_key():
-        revealed_recovery_key = event.recovery_key
-    else if event.has_recovery_hash:
-        revealed_recovery_key = None  // New commitment resets revelation
-
-    // Verify pending non-establishment events
-    for pending in pending_events:
-        verify_signatures(pending, public_key)
-    pending_events.clear()
-
-    // Verify this event's signature
-    verify_signatures(event, public_key)
-
-    next_establishment = event
-```
-
-#### 2.3 Pre-rotation Verification
-
-```
-verify_establishment_security(event, future_event):
-    if event.rotation_hash exists:
-        expected_hash = compute_rotation_hash(future_event.public_key)
-        if event.rotation_hash != expected_hash:
+    // Verify rotation hash commitment (forward commitment from previous establishment)
+    if branch.pending_rotation_hash exists:
+        expected = compute_rotation_hash(new_public_key)
+        if branch.pending_rotation_hash != expected:
             return Error("Public key does not match rotation hash")
+
+    // Verify recovery hash commitment
+    if branch.pending_recovery_hash exists AND event.reveals_recovery_key():
+        expected = compute_rotation_hash(event.recovery_key)
+        if branch.pending_recovery_hash != expected:
+            return Error("Recovery key does not match recovery hash")
+
+    // Update branch state
+    branch.current_public_key = new_public_key
+    branch.pending_rotation_hash = event.rotation_hash
+    branch.pending_recovery_hash = event.recovery_hash
+    branch.establishment_tip = event
 ```
 
-This ensures the pre-rotation commitment is honored: the rotation hash in event N must match the public key revealed in event N+1.
-
-#### 2.4 Recovery Key Verification
-
-```
-verify_recovery_key_revelation(event, recovery_key):
-    expected_hash = compute_rotation_hash(recovery_key)
-    if event.recovery_hash != expected_hash:
-        return Error("Recovery key does not match recovery hash")
-```
-
-Similar to rotation verification, but for recovery keys.
-
-#### 2.5 Signature Verification
+### Signature Verification
 
 ```
 verify_signatures(signed_event, public_key):
-    // The SAID is a Blake3 hash of the canonical JSON content,
-    // so signing/verifying the SAID bytes is equivalent to signing
-    // the canonical content but more efficient.
+    // SAID is Blake3 hash of canonical JSON — signing the SAID bytes
+    // is equivalent to signing the content but more efficient
     data = signed_event.event.said.as_bytes()
 
-    // Verify primary signature
+    // Primary signature
     signature = parse_signature(signed_event.signature)
     public_key.verify(data, signature)
 
-    // Verify recovery signature if present (dual authorization)
+    // Recovery signature (dual authorization for rec, ror, cnt, dec)
     if signed_event.recovery_signature exists:
         recovery_key = parse_key(signed_event.event.recovery_key)
         recovery_sig = parse_signature(signed_event.recovery_signature)
         recovery_key.verify(data, recovery_sig)
 ```
 
-### Phase 3: Final Validation
-
-```
-if pending_events not empty:
-    return Error("Non-establishment events before inception")
-
-if revealed_recovery_key is still set:
-    return Error("Recovery key revealed before commitment")
-```
-
 ## Verification Return Value
 
-```
-verify() -> Result<Option<DivergenceInfo>, KelsError>
+`KelVerifier::into_verification()` produces a `Verification` token — the proof-of-verification type:
 
-Success cases:
-- Ok(None) = KEL is valid and linear (no divergence)
-- Ok(Some(DivergenceInfo)) = KEL is valid but divergent
-
-DivergenceInfo:
-    diverged_at_generation: u64
-    divergent_saids: HashSet<String>
 ```
+Verification:
+    prefix: String
+    branch_tips: Vec<BranchTip>   // one per branch (1 = linear, N = divergent)
+    is_contested: bool
+    diverged_at_serial: Option<u64>
+    anchored_saids: HashSet<String>
+    queried_saids: HashSet<String>
+
+BranchTip:
+    tip: SignedKeyEvent            // chain head (latest event on this branch)
+    establishment_tip: SignedKeyEvent  // last establishment event (provides signing key)
+```
+
+Derived accessors:
+- `current_public_key()` → `None` if divergent (ambiguous)
+- `last_establishment_event()` → `None` if divergent
+- `is_decommissioned()` → contested, or single branch with decommission tip
+- `is_divergent()` → `branch_tips.len() > 1`
+- `effective_tail_said()` → single tip SAID or `hash_tip_saids()` for divergent
+- `is_said_anchored()`, `anchors_all_saids()` → inline anchor checking results
 
 ## Key Properties Verified
 
@@ -225,9 +152,9 @@ DivergenceInfo:
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and reported via `DivergenceInfo`
-- All branches of a divergent KEL are verified independently
-- The merge protocol is responsible for resolving divergence
+- Divergence is detected and tracked in the `Verification` token (`is_divergent()`, `diverged_at_serial()`)
+- All branches of a divergent KEL are verified independently (the verifier forks `BranchState` per branch)
+- The submit handler is responsible for resolving divergence
 
 ## Event Types and Their Signatures
 
@@ -248,23 +175,27 @@ Events with recovery signatures require dual authorization, making them the high
 
 ## Streaming Verification (KelVerifier)
 
-`KelVerifier` provides incremental forward-walking verification for scenarios where the full KEL shouldn't be loaded into memory. It maintains cryptographic state across pages:
+`KelVerifier` is the sole verification mechanism for KELs. It walks forward through events page by page, verifying cryptographic integrity without loading the full KEL into memory. It supports both linear and divergent KELs by tracking per-branch state.
+
+Events are processed in **generations** (all events at a given serial). When multiple events appear at the same serial (divergence), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
 
 ```
 struct KelVerifier {
     prefix: String,
-    last_serial: Option<u64>,
-    last_said: Option<String>,
-    current_public_key: Option<String>,
-    pending_rotation_hash: Option<String>,
-    pending_recovery_hash: Option<String>,
+    branches: HashMap<String, BranchState>,  // keyed by tip SAID
+    last_verified_serial: Option<u64>,
+    diverged_at_serial: Option<u64>,
+    is_contested: bool,
+    queried_saids: HashSet<String>,   // anchor checking
+    anchored_saids: HashSet<String>,  // anchor checking
 }
 ```
 
 ### Constructors
 
-- `KelVerifier::new(prefix)` — Start from inception. Used for full verification of untrusted KELs (e.g., streaming a peer's KEL page by page via `sync_and_verify()`).
-- `KelVerifier::from_merge_context(prefix, tip_serial, tip_said, last_establishment)` — Resume from known DB state. Used by the submit handler's fast path to verify appended events without loading the full KEL.
+- `KelVerifier::new(prefix)` — Start from inception. Full verification of untrusted KELs.
+- `KelVerifier::resume(prefix, &Verification)` — Resume from a verified `Verification` token. Used by the submit handler's fast path to verify appended events without re-verifying the entire KEL.
+- `KelVerifier::from_branch_tip(prefix, &BranchTip)` — Resume verification from a specific branch tip. Used for verifying events against a specific branch in divergence/recovery scenarios.
 
 ### Usage
 
@@ -277,18 +208,24 @@ loop {
     if !has_more { break; }
     since = events.last().map(|e| &e.event.said);
 }
+let verification = verifier.into_verification();
 ```
+
+### Inline Anchor Checking
+
+Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `Verification` token via `is_said_anchored()` and `anchors_all_saids()`.
+
+### Paginated Verification Helper
+
+`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `StorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `Verification` token. The `max_pages` parameter prevents resource exhaustion (default 512 pages = ~262K events).
 
 ### Checks Per Event
 
 1. SAID integrity (`event.verify()`)
 2. Prefix matches verifier's prefix
-3. Serial continuity (`serial == last_serial + 1`)
-4. Previous-pointer continuity (`previous == last_said`)
+3. Serial continuity (events arrive in generation order)
+4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure()`)
-6. For establishment events: rotation hash forward commitment, recovery hash commitment
-7. Signature verification (primary + dual for recovery events)
-
-### Relationship to Kel::verify()
-
-`Kel::verify()` is the original backward-walking verifier that requires all events in memory. It handles divergent KELs (multiple tails) by verifying each branch independently. `KelVerifier` walks forward and is single-branch only — the caller feeds it a linear chain. Both perform the same cryptographic checks; they differ only in direction and memory requirements.
+6. Anchor format validation (anchors must be valid CESR digests)
+7. For establishment events: rotation hash forward commitment, recovery hash commitment
+8. Signature verification (primary + dual for recovery events)

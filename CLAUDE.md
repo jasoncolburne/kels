@@ -166,8 +166,10 @@ Events are stored in PostgreSQL via the `verifiable-storage` framework:
 - `SignedEvents` derive macro generates signature table operations with paginated `get_signed_history(prefix, limit, offset)` returning `(Vec<SignedKeyEvent>, bool)`
 - `Chained` trait provides `derive_prefix`, `derive_said`, `increment`, `verify_prefix`, `verify_said`
 - `SelfAddressed` trait provides content-addressable storage via SAID
-- Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock. Provides `get_merge_context()` for bounded metadata queries (tips, contested, divergence) and `get_last_establishment_event()`.
-- `KelVerifier` — streaming forward-walking chain verifier for incremental verification without full KEL load. Used by submit handler fast path and `sync_and_verify()`.
+- Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock. Implements `PageLoader` for advisory-locked paginated reads during verify-then-write operations.
+- `KelVerifier` — streaming forward-walking chain verifier for incremental verification without full KEL load. Supports multi-branch divergent KELs via generation-based processing. Produces `Verification` tokens (proof-of-verification) via `into_verification()`. Used by submit handler, `sync_and_verify()`, and all consuming paths.
+- `Verification` — proof-of-verification token. Cannot be constructed directly — only via `KelVerifier::into_verification()`. Provides access to verified KEL state (branch tips, divergence, decommission, anchor checking results). Functions that consume KEL data accept `&Verification` to prove the KEL was verified.
+- `completed_verification(loader, prefix, page_size, max_pages, anchors)` — guard function that pages through a `PageLoader` with `KelVerifier`, returning a trusted `Verification` token. `max_pages` prevents resource exhaustion.
 - `PagedKelSource` / `PagedKelSink` / `sync_and_verify()` — generic streaming pattern for verified KEL transfer between stores.
 - Pre-serialized JSON cache in Redis for KELs ≤ 512 events; larger KELs are not cached
 - Redis pub/sub for cache invalidation across instances
