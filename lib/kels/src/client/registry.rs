@@ -1148,7 +1148,7 @@ impl MultiRegistryClient {
 
     /// Fetch and cache a single registry's verified events.
     ///
-    /// Returns the cached `MergeContext` for the given prefix. If `force_fetch` is true,
+    /// Returns the cached `Verification` for the given prefix. If `force_fetch` is true,
     /// re-fetches from the registry.
     async fn fetch_registry_events(
         &mut self,
@@ -1175,7 +1175,7 @@ impl MultiRegistryClient {
     /// Re-verify cached events for a prefix with anchor checking.
     ///
     /// Fetches (or uses cached) events, then runs `KelVerifier` with the given
-    /// SAID registered for anchor checking. Returns the resulting `MergeContext`
+    /// SAID registered for anchor checking. Returns the resulting `Verification`
     /// which can be queried via `anchors_all_saids()`.
     async fn verify_anchor(
         &mut self,

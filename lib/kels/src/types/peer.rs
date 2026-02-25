@@ -40,7 +40,7 @@ pub struct SignedRequest<T> {
 impl<T: Serialize> SignedRequest<T> {
     /// Verify the request signature against a verified KEL context.
     ///
-    /// Uses the current public key from the `MergeContext` (proof-of-verification token).
+    /// Uses the current public key from the `Verification` (proof-of-verification token).
     /// Fails secure if the KEL is divergent (no unambiguous key).
     pub fn verify_signature_with_ctx(&self, ctx: &Verification) -> Result<(), KelsError> {
         if ctx.is_divergent() {

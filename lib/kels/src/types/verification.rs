@@ -1,8 +1,8 @@
-//! MergeContext — proof-of-verification token for KEL state.
+//! Verification — proof-of-verification token for KEL state.
 //!
-//! `MergeContext` is the ONLY way to access verified KEL state. It cannot be
+//! `Verification` is the ONLY way to access verified KEL state. It cannot be
 //! constructed directly — it must be obtained through `KelVerifier::into_verification()`.
-//! Having a `MergeContext` proves the KEL was verified.
+//! Having a `Verification` proves the KEL was verified.
 
 use std::collections::HashSet;
 
@@ -26,7 +26,7 @@ pub struct BranchTip {
 /// Proof-of-verification token for KEL state.
 ///
 /// Cannot be constructed directly — only via `KelVerifier::into_verification()`.
-/// Having a `MergeContext` proves the KEL was fully verified.
+/// Having a `Verification` proves the KEL was fully verified.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verification {
     prefix: String,

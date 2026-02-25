@@ -4,7 +4,7 @@
 //! Tracks evolving cryptographic state as it walks forward through the chain,
 //! supporting both linear and divergent KELs.
 //!
-//! After verification, call `into_verification()` to get a `MergeContext` — the
+//! After verification, call `into_verification()` to get a `Verification` — the
 //! proof-of-verification token that provides access to verified KEL state.
 //!
 //! `PagedKelSource` / `PagedKelSink` / `sync_and_verify` provide a generic pattern
@@ -49,7 +49,7 @@ struct BranchState {
 /// (all events at a given serial must be in the same page). Use
 /// `truncate_incomplete_generation()` to ensure this at page boundaries.
 ///
-/// After verification, call `into_verification()` to produce a `MergeContext`
+/// After verification, call `into_verification()` to produce a `Verification`
 /// (proof-of-verification token).
 pub struct KelVerifier {
     prefix: String,
@@ -116,7 +116,7 @@ impl KelVerifier {
         }
     }
 
-    /// Resume from a verified `MergeContext`.
+    /// Resume from a verified `Verification`.
     pub fn resume(prefix: impl Into<String>, ctx: &Verification) -> Self {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
@@ -153,7 +153,7 @@ impl KelVerifier {
     ///
     /// Call this before `verify_page()`. As the verifier walks events, it checks
     /// each `ixn` event's `anchor` field against these SAIDs. Results are available
-    /// via `MergeContext::anchored_saids()` after calling `into_verification()`.
+    /// via `Verification::anchored_saids()` after calling `into_verification()`.
     pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = String>) {
         self.queried_saids.extend(saids);
     }
@@ -196,7 +196,7 @@ impl KelVerifier {
         Ok(())
     }
 
-    /// Consume the verifier and produce a `MergeContext` (proof-of-verification token).
+    /// Consume the verifier and produce a `Verification` (proof-of-verification token).
     pub fn into_verification(self) -> Verification {
         let branch_tips: Vec<BranchTip> = self
             .branches
@@ -606,14 +606,14 @@ impl PageLoader for StorePageLoader<'_> {
     }
 }
 
-/// Verify a full KEL using paginated reads, returning a trusted `MergeContext`.
+/// Verify a full KEL using paginated reads, returning a trusted `Verification`.
 ///
 /// Pages through the loader with `KelVerifier` and returns the proof-of-verification
 /// token. `max_pages` limits resource exhaustion from enormous KELs — fails secure
 /// if exceeded.
 ///
 /// `anchor_saids` optionally registers SAIDs to check for anchoring during the walk.
-/// Results are available via `MergeContext::anchored_saids()` / `anchors_all_saids()`.
+/// Results are available via `Verification::anchored_saids()` / `anchors_all_saids()`.
 ///
 /// Use `StorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
 /// locked transaction wrapper to read under advisory lock.
@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verified_merge_context_with_anchor_checking() {
+    async fn test_completed_verification_with_anchor_checking() {
         use cesr::{Digest, Matter};
 
         let target_anchor = Digest::blake3_256(b"target-anchor").qb64();

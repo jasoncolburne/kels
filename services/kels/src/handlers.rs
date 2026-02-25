@@ -343,7 +343,7 @@ pub(crate) async fn submit_events(
         .begin_locked_transaction(&prefix)
         .await?;
 
-    // Verify existing KEL (paginated, under advisory lock) to get trusted MergeContext
+    // Verify existing KEL (paginated, under advisory lock) to get trusted Verification
     let ctx = kels::completed_verification(
         &mut tx,
         &prefix,
@@ -415,7 +415,7 @@ pub(crate) async fn submit_events(
         (events.clone(), KelMergeResult::Accepted, None)
     } else {
         // ==================== Full Path (divergence/recovery/overlap, rare) ====================
-        // Bounded DB operations using the verified MergeContext. No full KEL in memory.
+        // Bounded DB operations using the verified Verification. No full KEL in memory.
         // Advisory lock held throughout (TOCTOU-safe).
 
         // Contested KELs reject all submissions

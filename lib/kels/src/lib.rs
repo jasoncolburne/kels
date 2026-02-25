@@ -93,7 +93,7 @@ pub const MAX_BATCH_PREFIXES: usize = 64;
 /// Maximum number of events fetched in a single KEL database query or HTTP page.
 pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
 
-/// Default maximum number of pages to walk during `verified_merge_context()`.
+/// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
 /// At 512 events per page, 512 pages = ~262K events before failing secure.
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
