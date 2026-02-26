@@ -523,19 +523,21 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         // Verify with KelVerifier
         let mut verifier = kels::KelVerifier::new(prefix);
         match verifier.verify_page(&page.events) {
-            Ok(_) => {
-                let ctx = verifier.into_verification();
-                println!("  Verified: Yes");
-                if ctx.is_contested() {
-                    println!("  Status: {}", "CONTESTED".red());
-                } else if ctx.is_decommissioned() {
-                    println!("  Status: {}", "DECOMMISSIONED".red());
-                } else if ctx.is_divergent() {
-                    println!("  Status: {}", "DIVERGENT".yellow());
-                } else {
-                    println!("  Status: {}", "OK".green());
+            Ok(_) => match verifier.into_verification() {
+                Ok(ctx) => {
+                    println!("  Verified: Yes");
+                    if ctx.is_contested() {
+                        println!("  Status: {}", "CONTESTED".red());
+                    } else if ctx.is_decommissioned() {
+                        println!("  Status: {}", "DECOMMISSIONED".red());
+                    } else if ctx.is_divergent() {
+                        println!("  Status: {}", "DIVERGENT".yellow());
+                    } else {
+                        println!("  Status: {}", "OK".green());
+                    }
                 }
-            }
+                Err(e) => println!("  Verified: {}", e),
+            },
             Err(e) => println!("  Verified: {}", e),
         }
 
@@ -590,8 +592,9 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
 
     // Verify for status display
     let mut verifier = kels::KelVerifier::new(prefix);
-    if verifier.verify_page(&events).is_ok() {
-        let ctx = verifier.into_verification();
+    if verifier.verify_page(&events).is_ok()
+        && let Ok(ctx) = verifier.into_verification()
+    {
         if ctx.is_contested() {
             println!("  Status: {}", "CONTESTED".red());
         } else if ctx.is_decommissioned() {

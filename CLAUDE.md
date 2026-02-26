@@ -7,6 +7,13 @@
 - `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
 - `make coverage` produces per-file coverage with `cargo-llvm-cov`.
 - Dependency crates live at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`.
+- After substantial changes, verify the full deployment pipeline:
+  1. Deployment — services start and pass health checks
+  2. Federation — registries form Raft cluster, member KELs sync
+  3. Voting — peer proposals, multi-party votes, approval threshold
+  4. Gossip network — peers connect, mesh forms, events propagate
+  5. Adversarial tests — divergence, recovery, contest, decommission
+  6. Gossip tests — anti-entropy, delta sync, bootstrap
 
 ## Code Style
 
@@ -41,6 +48,7 @@ Never import inline within function bodies.
 - No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
 - This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
+- Never hardcode event kind strings (`"icp"`, `"kels/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 
 ## Core Concepts
 
@@ -158,6 +166,20 @@ All recorded/persisted data MUST be KEL-backed and verified independently before
 - **At KEL refresh time** — When re-fetching a peer's KEL, verify the KEL structure before updating the cached version.
 - **Never leave verification as a TODO** — If you write code that ingests external data without verification, that is a security vulnerability. Implement verification inline or flag it immediately.
 - **Ephemeral data is the only exception** — Handshakes and transient protocol messages don't need anchoring. Everything else does.
+
+### Verification Invariant
+
+**The DB cannot be trusted** — it may have been altered. All operations on KEL data fall into three categories:
+
+1. **Serving** — returning data to a client/peer. No verification needed; the receiver is responsible for verifying what they get.
+2. **Consuming** — using data for security decisions (anchoring, key extraction, divergence, merge routing). MUST verify the full KEL first. The only way to access consumed data is through `Verification`, which can only be obtained via `KelVerifier::into_verification()`. This eliminates TOCTOU vulnerabilities — check and use happen in the same pass.
+3. **Resolving** — comparing state to decide whether to sync. A wrong answer triggers an unnecessary sync (which itself verifies), not a security hole. Standalone functions (e.g., `effective_tail_said_from_events()`) are acceptable here without full verification.
+
+**`Verification` as proof of verification.** Functions that consume KEL data accept `&Verification` as a parameter. Having a `Verification` proves the KEL was verified. `Verification` fields are private, the constructor is `pub(crate)` (via `#[crate_new]` on the `SelfAddressed` derive), and the only way to obtain one is through `KelVerifier::into_verification()`. `Verification` derives `SelfAddressed` for content-addressable comparison — two `Verification`s with the same SAID represent the same verified KEL state.
+
+**Merge verification.** When merging new events into an existing KEL (submit handler), first verify the entire existing KEL in the DB using `KelVerifier` with paginated reads. Call `into_verification()` to get a trusted context (don't re-query the DB — use the verified data). Then use that context to verify the new incoming events.
+
+**Anchor checking is inlined into verification.** Register SAIDs to check with `KelVerifier::check_anchors()` before the walk. The verifier checks anchors as it iterates through events. Results are available via `Verification::anchored_saids()`. No separate DB queries for anchoring.
 
 ### Storage
 

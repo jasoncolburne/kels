@@ -2,7 +2,8 @@
 
 use async_trait::async_trait;
 use kels::{
-    EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState, SignedKeyEvent,
+    EventKind, EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState,
+    SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
 use std::collections::{HashMap, HashSet};
@@ -380,16 +381,7 @@ impl KelTransaction {
         let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
             .eq("prefix", &self.prefix)
             .lte("serial", serial)
-            .r#in(
-                "kind",
-                vec![
-                    "icp".to_string(),
-                    "rot".to_string(),
-                    "dip".to_string(),
-                    "rec".to_string(),
-                    "ror".to_string(),
-                ],
-            )
+            .r#in("kind", EventKind::establishment_kinds())
             .order_by("serial", Order::Desc)
             .limit(1);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;

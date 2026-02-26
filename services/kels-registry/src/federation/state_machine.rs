@@ -9,7 +9,149 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Verification, Vote};
+use kels::{
+    Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Verification, Vote,
+};
+
+/// Handle SubmitKeyEvents with DB-backed verification.
+///
+/// 1. Verify existing DB events (streamed)
+/// 2. Integrity check: compare DB Verification SAID with Raft copy
+/// 3. Filter submitted events to genuinely new ones (by SAID)
+/// 4. Resume verifier, verify new events
+/// 5. Persist new events to DB
+/// 6. Update Raft member_contexts with final Verification
+async fn apply_submit_key_events(
+    events: &[SignedKeyEvent],
+    repo: &crate::raft_store::MemberKelRepository,
+    sm: &mut StateMachineData,
+) -> FederationResponse {
+    if events.is_empty() {
+        return FederationResponse::KeyEventsRejected("Empty events list".to_string());
+    }
+
+    let prefix = events[0].event.prefix.clone();
+
+    if events.iter().any(|e| e.event.prefix != prefix) {
+        return FederationResponse::KeyEventsRejected("Mixed prefixes in events".to_string());
+    }
+
+    // Step 1: Verify existing DB state
+    let store = kels::RepositoryKelStore::new(Arc::new(
+        crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
+    ));
+    let db_result = kels::completed_verification(
+        &mut kels::StorePageLoader::new(&store),
+        &prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await;
+
+    // Step 2: Integrity check — if DB has events, SAID must match Raft
+    let db_ctx = match db_result {
+        Ok(ctx) if !ctx.is_empty() => {
+            if let Some(raft_ctx) = sm.member_contexts.get(&prefix)
+                && ctx.said() != raft_ctx.said()
+            {
+                tracing::error!(
+                    prefix = %prefix,
+                    db_said = %ctx.said(),
+                    raft_said = %raft_ctx.said(),
+                    "SECURITY: DB/Raft Verification SAID mismatch"
+                );
+                return FederationResponse::KeyEventsRejected(
+                    "DB/Raft state mismatch detected".to_string(),
+                );
+            }
+            Some(ctx)
+        }
+        Ok(_) => None, // DB empty for this prefix
+        Err(e) => {
+            if sm.member_contexts.contains_key(&prefix) {
+                // DB has events (Raft knows about them) but verification failed
+                tracing::error!(
+                    prefix = %prefix,
+                    error = %e,
+                    "SECURITY: DB verification failed but Raft has context"
+                );
+                return FederationResponse::KeyEventsRejected(format!(
+                    "DB verification failed: {}",
+                    e
+                ));
+            }
+            None // No DB events, no Raft context — fresh prefix
+        }
+    };
+
+    // Step 3: Filter submitted events to genuinely new ones (by SAID)
+    let new_start = if let Some(ref ctx) = db_ctx {
+        let tip_said = ctx
+            .branch_tips()
+            .first()
+            .map(|bt| bt.tip.event.said.as_str());
+        if let Some(said) = tip_said {
+            match events.iter().position(|e| e.event.said == said) {
+                Some(pos) => pos + 1,
+                None => 0, // tip not found in submitted — verify all from scratch
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let new_events = &events[new_start..];
+
+    if new_events.is_empty() {
+        return FederationResponse::KeyEventsAccepted {
+            prefix,
+            new_count: 0,
+        };
+    }
+
+    // Step 4: Resume verifier from DB state and verify new events
+    let mut verifier = if let Some(ref ctx) = db_ctx {
+        kels::KelVerifier::resume(&prefix, ctx)
+    } else {
+        kels::KelVerifier::new(&prefix)
+    };
+
+    if let Err(e) = verifier.verify_page(new_events) {
+        return FederationResponse::KeyEventsRejected(format!("KEL verification failed: {}", e));
+    }
+
+    let ctx = match verifier.into_verification() {
+        Ok(c) => c,
+        Err(e) => {
+            return FederationResponse::KeyEventsRejected(format!(
+                "Verification finalization failed: {}",
+                e
+            ));
+        }
+    };
+
+    if ctx.is_divergent() {
+        tracing::error!("SECURITY: member KEL divergence detected for {}", prefix);
+        return FederationResponse::KeyEventsRejected("Member KEL divergence detected".to_string());
+    }
+
+    // Step 5: Persist new events to DB
+    let batch: Vec<_> = new_events
+        .iter()
+        .map(|e| (e.event.clone(), e.event_signatures()))
+        .collect();
+    if let Err(e) = repo.create_batch_with_signatures(batch).await {
+        tracing::debug!("Member KEL DB persist (may be duplicate): {}", e);
+    }
+
+    // Step 6: Update Raft state
+    let new_count = new_events.len();
+    sm.member_contexts.insert(prefix.clone(), ctx);
+
+    FederationResponse::KeyEventsAccepted { prefix, new_count }
+}
 
 /// Verify a SAID is anchored in a member's KEL stored in the MemberKelRepository.
 /// Consuming: paginated read + verification + inline anchor check.
@@ -429,17 +571,23 @@ impl StateMachineData {
                     );
                 }
 
-                let existing_ctx = self.member_contexts.get(&prefix);
-
-                let mut verifier = if let Some(ctx) = existing_ctx {
-                    kels::KelVerifier::resume(&prefix, ctx)
-                } else {
-                    kels::KelVerifier::new(&prefix)
-                };
+                // Verify the complete submitted event chain from inception.
+                // Callers (e.g. sync_kel_to_leader) may send the full KEL including
+                // already-known events — we verify everything and deduplicate by SAID.
+                let mut verifier = kels::KelVerifier::new(&prefix);
 
                 match verifier.verify_page(&events) {
                     Ok(()) => {
-                        let ctx = verifier.into_verification();
+                        let ctx = match verifier.into_verification() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                return FederationResponse::KeyEventsRejected(format!(
+                                    "Verification finalization failed: {}",
+                                    e
+                                ));
+                            }
+                        };
+
                         // Member KELs should never diverge
                         if ctx.is_divergent() {
                             tracing::error!(
@@ -450,12 +598,28 @@ impl StateMachineData {
                                 "Member KEL divergence detected".to_string(),
                             );
                         }
-                        let count = events.len();
+
+                        // Count genuinely new events by SAID comparison with existing tip
+                        let new_count = if let Some(existing) = self.member_contexts.get(&prefix) {
+                            let tip_said = existing
+                                .branch_tips()
+                                .first()
+                                .map(|bt| bt.tip.event.said.as_str());
+                            match tip_said {
+                                Some(said) => {
+                                    match events.iter().position(|e| e.event.said == said) {
+                                        Some(pos) => events.len() - pos - 1,
+                                        None => events.len(),
+                                    }
+                                }
+                                None => events.len(),
+                            }
+                        } else {
+                            events.len()
+                        };
+
                         self.member_contexts.insert(prefix.clone(), ctx);
-                        FederationResponse::KeyEventsAccepted {
-                            prefix,
-                            new_count: count,
-                        }
+                        FederationResponse::KeyEventsAccepted { prefix, new_count }
                     }
                     Err(e) => FederationResponse::KeyEventsRejected(format!(
                         "KEL verification failed: {}",
@@ -1243,23 +1407,23 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    let response = sm.apply(request.clone());
-
-                    // Persist member KEL events to DB after successful in-memory apply
+                    // Handle SubmitKeyEvents with DB-backed verification:
+                    // 1. Verify existing DB events
+                    // 2. Integrity check against Raft
+                    // 3. Filter + verify new events
+                    // 4. Persist new events to DB
+                    // 5. Update Raft member_contexts
                     if let FederationRequest::SubmitKeyEvents(ref events) = request
-                        && matches!(response, FederationResponse::KeyEventsAccepted { .. })
                         && let Some(ref repo) = self.member_kel_repo
                     {
-                        let batch: Vec<_> = events
-                            .iter()
-                            .map(|e| (e.event.clone(), e.event_signatures()))
-                            .collect();
-                        if let Err(e) = repo.create_batch_with_signatures(batch).await {
-                            tracing::debug!("Member KEL DB persist (may be duplicate): {}", e);
+                        let response = apply_submit_key_events(events, repo, &mut sm).await;
+                        if let Some(r) = responder {
+                            r.send(response);
                         }
+                        continue;
                     }
 
-                    response
+                    sm.apply(request.clone())
                 }
                 EntryPayload::Membership(membership) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), membership);

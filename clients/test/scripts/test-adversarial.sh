@@ -117,7 +117,7 @@ check_server_kel_event_count() {
     local expected_count="$2"
     local actual_count
     for _ in $(seq 1 10); do
-        actual_count=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq '. | length')
+        actual_count=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq '.events | length')
         [ "$actual_count" = "$expected_count" ] && return 0
         sleep 0.2
     done
@@ -137,7 +137,7 @@ check_kel_ends_with() {
     # Retry for eventual consistency across replicas
     local actual_kinds
     for _ in $(seq 1 10); do
-        actual_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r ".[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
+        actual_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r ".events[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
         [ "$actual_kinds" = "$expected_kinds" ] && return 0
         sleep 0.2
     done
@@ -145,7 +145,7 @@ check_kel_ends_with() {
     echo "Expected last $expected_count events to be: $expected_kinds"
     echo "Actual last $expected_count events are: $actual_kinds"
     local all_kinds
-    all_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r '.[].event.kind' | tr '\n' ',' | sed 's/,$//')
+    all_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r '.events[].event.kind' | tr '\n' ',' | sed 's/,$//')
     echo "Full KEL event kinds: $all_kinds"
     return 1
 }

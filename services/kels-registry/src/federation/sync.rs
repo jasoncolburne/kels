@@ -16,6 +16,10 @@ use super::FederationNode;
 /// Every node (not leader-only) periodically fetches its own KEL from the
 /// identity service and submits events to Raft. Each member is responsible
 /// for syncing its own KEL. Deduplication happens in the Raft apply logic.
+///
+/// Eagerly retries every 2s until the first successful sync (so member KELs
+/// are available for anchoring checks as soon as the federation forms), then
+/// falls into the regular interval.
 pub async fn run_kel_sync_loop(
     node: Arc<FederationNode>,
     identity_client: Arc<IdentityClient>,
@@ -23,6 +27,23 @@ pub async fn run_kel_sync_loop(
 ) {
     info!("Starting KEL sync loop (interval: {:?})", sync_interval);
 
+    // Eager sync: retry quickly until the federation is reachable and our
+    // KEL is submitted. This avoids a 30s gap between federation formation
+    // and member KEL availability.
+    loop {
+        match sync_own_kel(&node, &identity_client).await {
+            Ok(()) => {
+                info!("Initial KEL sync completed");
+                break;
+            }
+            Err(e) => {
+                debug!("Waiting for federation: {}", e);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+
+    // Regular interval
     let mut ticker = interval(sync_interval);
 
     loop {

@@ -856,7 +856,7 @@ mod tests {
 
         let mut verifier = KelVerifier::new(&prefix);
         verifier.verify_page(&events).unwrap();
-        let ctx = verifier.into_verification();
+        let ctx = verifier.into_verification().unwrap();
         assert!(ctx.is_divergent());
 
         let signed = SignedRequest {

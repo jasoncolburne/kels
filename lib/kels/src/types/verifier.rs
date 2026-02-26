@@ -10,11 +10,11 @@
 //! `PagedKelSource` / `PagedKelSink` / `sync_and_verify` provide a generic pattern
 //! for streaming events from a source through a verifier into a destination.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
 use cesr::{Digest, Matter, PublicKey, Signature};
-use verifiable_storage::Chained;
+use verifiable_storage::{Chained, SelfAddressed};
 
 use super::events::SignedKeyEvent;
 use super::verification::{BranchTip, Verification};
@@ -62,9 +62,9 @@ pub struct KelVerifier {
     /// Whether a contest event has been seen.
     is_contested: bool,
     /// Anchor checking: SAIDs we're looking for.
-    queried_saids: HashSet<String>,
+    queried_saids: BTreeSet<String>,
     /// Anchor checking: SAIDs we've found anchored.
-    anchored_saids: HashSet<String>,
+    anchored_saids: BTreeSet<String>,
 }
 
 impl KelVerifier {
@@ -76,8 +76,8 @@ impl KelVerifier {
             last_verified_serial: None,
             diverged_at_serial: None,
             is_contested: false,
-            queried_saids: HashSet::new(),
-            anchored_saids: HashSet::new(),
+            queried_saids: BTreeSet::new(),
+            anchored_saids: BTreeSet::new(),
         }
     }
 
@@ -111,8 +111,8 @@ impl KelVerifier {
             last_verified_serial,
             diverged_at_serial: None,
             is_contested: false,
-            queried_saids: HashSet::new(),
-            anchored_saids: HashSet::new(),
+            queried_saids: BTreeSet::new(),
+            anchored_saids: BTreeSet::new(),
         }
     }
 
@@ -144,8 +144,8 @@ impl KelVerifier {
             last_verified_serial,
             diverged_at_serial: ctx.diverged_at_serial(),
             is_contested: ctx.is_contested(),
-            queried_saids: HashSet::new(),
-            anchored_saids: HashSet::new(),
+            queried_saids: BTreeSet::new(),
+            anchored_saids: BTreeSet::new(),
         }
     }
 
@@ -197,8 +197,8 @@ impl KelVerifier {
     }
 
     /// Consume the verifier and produce a `Verification` (proof-of-verification token).
-    pub fn into_verification(self) -> Verification {
-        let branch_tips: Vec<BranchTip> = self
+    pub fn into_verification(self) -> Result<Verification, KelsError> {
+        let mut branch_tips: Vec<BranchTip> = self
             .branches
             .into_values()
             .map(|bs| BranchTip {
@@ -207,14 +207,20 @@ impl KelVerifier {
             })
             .collect();
 
-        Verification::new(
+        // Deterministic ordering for SAID derivation
+        branch_tips.sort_by(|a, b| a.tip.event.said.cmp(&b.tip.event.said));
+
+        let mut v = Verification::new(
             self.prefix,
             branch_tips,
             self.is_contested,
             self.diverged_at_serial,
             self.anchored_saids,
             self.queried_saids,
-        )
+        );
+        v.derive_said()
+            .map_err(|e| KelsError::InvalidKel(format!("SAID derivation failed: {}", e)))?;
+        Ok(v)
     }
 
     /// Verify a complete generation (all events at a given serial).
@@ -651,7 +657,7 @@ pub async fn completed_verification(
         }
     }
 
-    Ok(verifier.into_verification())
+    verifier.into_verification()
 }
 
 // ==================== Sync Abstraction ====================
@@ -754,7 +760,7 @@ mod tests {
         let prefix = events[0].event.prefix.clone();
         let mut verifier = KelVerifier::new(&prefix);
         verifier.verify_page(events).unwrap();
-        verifier.into_verification()
+        verifier.into_verification().unwrap()
     }
 
     /// Verify events with anchor checking and return Verification
@@ -766,7 +772,7 @@ mod tests {
         let mut verifier = KelVerifier::new(&prefix);
         verifier.check_anchors(anchors);
         verifier.verify_page(events).unwrap();
-        verifier.into_verification()
+        verifier.into_verification().unwrap()
     }
 
     /// In-memory store for testing
@@ -1558,7 +1564,7 @@ mod tests {
         let prefix = ctx.prefix().to_string();
         let mut verifier = KelVerifier::resume(&prefix, &ctx);
         verifier.verify_page(std::slice::from_ref(&ixn2)).unwrap();
-        let ctx2 = verifier.into_verification();
+        let ctx2 = verifier.into_verification().unwrap();
 
         assert_eq!(ctx2.branch_tips()[0].tip.event.said, ixn2.event.said);
     }
@@ -1585,7 +1591,7 @@ mod tests {
         verifier
             .verify_page(std::slice::from_ref(&owner_ixn2))
             .unwrap();
-        let ctx = verifier.into_verification();
+        let ctx = verifier.into_verification().unwrap();
 
         assert_eq!(ctx.branch_tips()[0].tip.event.said, owner_ixn2.event.said);
     }

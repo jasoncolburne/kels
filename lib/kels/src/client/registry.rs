@@ -1098,7 +1098,7 @@ impl MultiRegistryClient {
                             );
                             continue;
                         }
-                        let ctx = verifier.into_verification();
+                        let ctx = verifier.into_verification()?;
 
                         // Verify prefix is in trusted set
                         if !self.trusted_prefixes.contains(ctx.prefix()) {
@@ -1194,7 +1194,7 @@ impl MultiRegistryClient {
         let mut verifier = KelVerifier::new(prefix);
         verifier.check_anchors(std::iter::once(said.to_string()));
         verifier.verify_page(&events)?;
-        Ok(verifier.into_verification())
+        verifier.into_verification()
     }
 
     /// Fetch completed proposals from any available registry.

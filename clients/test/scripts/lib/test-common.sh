@@ -113,7 +113,7 @@ get_event_count() {
     local prefix="$2"
     local resp
     resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
+    echo "$resp" | jq '.events | length'
 }
 
 get_latest_said() {
@@ -121,5 +121,5 @@ get_latest_said() {
     local prefix="$2"
     local resp
     resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
-    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
+    echo "$resp" | jq -r '.events | sort_by(.event.version) | .[-1].event.said // empty'
 }

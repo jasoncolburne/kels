@@ -206,7 +206,9 @@ impl KelsPeerVerifier {
             }
         }
 
-        let ctx = verifier.into_verification();
+        let ctx = verifier
+            .into_verification()
+            .map_err(|e| GossipError::VerificationFailed(format!("Verification failed: {}", e)))?;
 
         if ctx.is_divergent() {
             return Err(GossipError::VerificationFailed(format!(

@@ -211,7 +211,9 @@ async fn verify_and_authorize<T: serde::Serialize>(
             break;
         }
     }
-    let ctx = verifier.into_verification();
+    let ctx = verifier
+        .into_verification()
+        .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?;
 
     signed_request
         .verify_signature_with_ctx(&ctx)
@@ -523,7 +525,9 @@ pub async fn federation_rpc(
             verifier
                 .verify_page(&page.events)
                 .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
-            verifier.into_verification()
+            verifier
+                .into_verification()
+                .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?
         }
     };
 
@@ -692,7 +696,9 @@ async fn verify_admin_request<T: Serialize>(
             break;
         }
     }
-    let ctx = verifier.into_verification();
+    let ctx = verifier
+        .into_verification()
+        .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?;
 
     signed_request
         .verify_signature_with_ctx(&ctx)

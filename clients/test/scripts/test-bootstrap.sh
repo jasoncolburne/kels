@@ -82,7 +82,7 @@ get_kel_length() {
     local prefix="$2"
     local resp
     resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
+    echo "$resp" | jq '.events | length'
 }
 
 # Poll until prefix counts match between two nodes (or timeout)

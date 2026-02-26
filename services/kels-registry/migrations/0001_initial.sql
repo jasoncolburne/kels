@@ -92,8 +92,7 @@ CREATE TABLE IF NOT EXISTS member_key_events (
     recovery_hash CHAR(44),
     kind TEXT NOT NULL,
     anchor CHAR(44),
-    delegating_prefix CHAR(44),
-    created_at TIMESTAMPTZ NOT NULL
+    delegating_prefix CHAR(44)
 );
 
 CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix ON member_key_events(prefix);
@@ -103,8 +102,7 @@ CREATE TABLE IF NOT EXISTS member_key_event_signatures (
     said CHAR(44) PRIMARY KEY,
     event_said CHAR(44) NOT NULL,
     public_key TEXT NOT NULL,
-    signature TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
+    signature TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_member_key_event_sigs_event_said ON member_key_event_signatures(event_said);

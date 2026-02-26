@@ -761,8 +761,9 @@ async fn handle_overlap_submission(
 
     let branch_serial = branch_point.event.serial;
 
-    // Decommissioned KEL blocks new divergence
-    if ctx.is_decommissioned() {
+    // Decommissioned KEL blocks new divergence — unless submitting a single contest event
+    let is_contest_only = new_events.len() == 1 && new_events[0].event.is_contest();
+    if ctx.is_decommissioned() && !is_contest_only {
         return Err(ApiError::unauthorized(
             "KEL merge failed: KEL is decommissioned".to_string(),
         ));
