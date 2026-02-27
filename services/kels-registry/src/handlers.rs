@@ -1398,20 +1398,20 @@ pub async fn get_registry_kel(
 pub async fn get_registry_kels(
     State(state): State<Arc<FederationState>>,
 ) -> Result<Json<HashMap<String, SignedKeyEventPage>>, ApiError> {
-    let member_prefixes = state.node.member_prefixes();
-    let member_contexts = state.node.get_all_member_contexts().await;
     let mut result: HashMap<String, SignedKeyEventPage> = HashMap::new();
 
-    // Read each member's KEL from the MemberKelRepository (DB-backed)
-    for prefix in &member_prefixes {
-        if member_contexts.contains_key(prefix)
-            && let Ok(page) = state
-                .node
-                .state_machine()
-                .read_member_kel_page(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-                .await
+    // Read KELs for all trusted prefixes from the DB. This includes current
+    // members and removed registries whose KELs are still stored locally
+    // (needed for vote verification after federation shrink).
+    for prefix in kels::trusted_prefixes() {
+        if let Ok(page) = state
+            .node
+            .state_machine()
+            .read_member_kel_page(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
+            .await
+            && !page.events.is_empty()
         {
-            result.insert(prefix.clone(), page);
+            result.insert(prefix.to_string(), page);
         }
     }
 

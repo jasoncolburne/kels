@@ -570,6 +570,32 @@ impl MultiRegistryClient {
             .map(|(prefix, (_, _, events))| (prefix.as_str(), events.as_slice()))
     }
 
+    /// Load locally-stored registry KEL events into the cache.
+    ///
+    /// Verifies the events with `KelVerifier` and stores them in `prefix_map`.
+    /// These entries survive `fetch_verified_registry_kels` — remote data overwrites
+    /// local entries for the same prefix, but local entries for prefixes not returned
+    /// by remote registries (e.g. removed registries) are preserved.
+    pub fn load_local_events(
+        &mut self,
+        prefix: &str,
+        events: Vec<SignedKeyEvent>,
+    ) -> Result<(), KelsError> {
+        if events.is_empty() || !self.trusted_prefixes.contains(prefix) {
+            return Ok(());
+        }
+
+        let mut verifier = KelVerifier::new(prefix);
+        verifier.verify_page(&events).map_err(|e| {
+            KelsError::VerificationFailed(format!("Local KEL verify failed: {}", e))
+        })?;
+        let ctx = verifier.into_verification()?;
+
+        self.prefix_map
+            .insert(prefix.to_string(), (String::new(), ctx, events));
+        Ok(())
+    }
+
     /// List all registered nodes as NodeInfo (for client discovery with latency testing).
     ///
     /// Performs full verification: structural integrity, peer anchoring in registry KEL,
@@ -1067,7 +1093,8 @@ impl MultiRegistryClient {
             force_fetch,
             self.urls.len()
         );
-        self.prefix_map.clear();
+        // Don't clear prefix_map — locally-loaded entries (from load_local_events)
+        // survive remote fetch. Remote data overwrites per-prefix on success.
         self.url_map.clear();
 
         // Fetch all member KELs (including decommissioned) from any available registry

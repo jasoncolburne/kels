@@ -50,6 +50,7 @@ use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use gossip_layer::{GossipCommand, GossipEvent};
 use hsm_signer::{IdentityGossipSigner, IdentityRegistrySigner, KelsPeerVerifier, SignerError};
+use kels::MAX_EVENTS_PER_KEL_RESPONSE;
 
 #[derive(Error, Debug)]
 pub enum ServiceError {
@@ -63,6 +64,30 @@ pub enum ServiceError {
     Bootstrap(#[from] bootstrap::BootstrapError),
     #[error("Signer error: {0}")]
     Signer(#[from] SignerError),
+}
+
+/// Load registry KELs from the local DB into a `MultiRegistryClient`.
+///
+/// This ensures the client can verify votes from registries that may no longer
+/// be reachable (e.g. removed during federation shrink). The local DB has their
+/// KELs from when they were active members.
+async fn load_local_registry_kels(
+    client: &mut kels::MultiRegistryClient,
+    repo: &repository::RegistryKelRepository,
+) {
+    for prefix in kels::trusted_prefixes() {
+        match repo
+            .get_signed_history(prefix, MAX_EVENTS_PER_KEL_RESPONSE as u64, 0)
+            .await
+        {
+            Ok((events, _)) if !events.is_empty() => {
+                if let Err(e) = client.load_local_events(prefix, events) {
+                    debug!("Failed to load local registry KEL for {}: {}", prefix, e);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Service configuration
@@ -431,6 +456,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
     let mut allowlist_client = MultiRegistryClient::new(federation_registry_urls.clone());
+    load_local_registry_kels(&mut allowlist_client, &gossip_repo.registry_kels).await;
     match allowlist::refresh_allowlist(&mut allowlist_client, &allowlist, Some(&config.node_id))
         .await
     {
@@ -620,6 +646,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
     let mut refresh_client = MultiRegistryClient::new(federation_registry_urls);
+    load_local_registry_kels(&mut refresh_client, &gossip_repo.registry_kels).await;
     let refresh_node_id = config.node_id.clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
