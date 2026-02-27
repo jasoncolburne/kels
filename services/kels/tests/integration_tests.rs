@@ -933,3 +933,281 @@ async fn test_submit_recovery_event_requires_dual_signature() {
     let error: kels::ErrorResponse = response.json().await.unwrap();
     assert!(error.error.contains("Dual signatures required"));
 }
+
+/// Helper to build a KEL with `count` interaction events after inception.
+/// Returns the prefix and the full list of signed events (inception + interactions).
+async fn build_large_kel(count: usize) -> (String, Vec<SignedKeyEvent>) {
+    let (inception, mut builder) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+    let mut events = vec![inception];
+
+    for i in 0..count {
+        let ixn = create_interaction(&mut builder, &make_anchor(&format!("anchor-{}", i))).await;
+        events.push(ixn);
+    }
+
+    (prefix, events)
+}
+
+/// Helper to submit events in chunks of up to 500 (staying under the 512 limit).
+async fn submit_chunked(harness: &SharedHarness, events: &[SignedKeyEvent]) {
+    for chunk in events.chunks(500) {
+        let response = harness
+            .client()
+            .post(harness.url("/api/kels/events"))
+            .json(&chunk.to_vec())
+            .send()
+            .await
+            .expect("Failed to submit events");
+
+        assert_eq!(response.status(), 200);
+        let result: BatchSubmitResponse = response.json().await.unwrap();
+        assert!(result.applied);
+    }
+}
+
+#[tokio::test]
+async fn test_batch_fetch_multi_page_kels() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Build two KELs each with 513 events (1 inception + 512 interactions).
+    // 513 > 512 (MAX_EVENTS_PER_KEL_RESPONSE), so each will need pagination.
+    let (prefix_a, events_a) = build_large_kel(512).await;
+    let (prefix_b, events_b) = build_large_kel(512).await;
+
+    // Submit both in chunks (max 512 per submission)
+    submit_chunked(harness, &events_a).await;
+    submit_chunked(harness, &events_b).await;
+
+    // Batch fetch — first page for both
+    let request = BatchKelsRequest {
+        prefixes: [(prefix_a.clone(), None), (prefix_b.clone(), None)]
+            .into_iter()
+            .collect(),
+    };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to batch fetch");
+
+    assert_eq!(response.status(), 200);
+
+    let result: std::collections::HashMap<String, SignedKeyEventPage> =
+        response.json().await.unwrap();
+    assert_eq!(result.len(), 2);
+
+    // Both should have exactly 512 events (the max per response) and hasMore=true
+    let page_a = result.get(&prefix_a).unwrap();
+    let page_b = result.get(&prefix_b).unwrap();
+    assert_eq!(page_a.events.len(), 512);
+    assert!(page_a.has_more);
+    assert_eq!(page_b.events.len(), 512);
+    assert!(page_b.has_more);
+
+    // Follow up: fetch remaining events for each prefix individually using ?since=SAID
+    let last_said_a = &page_a.events.last().unwrap().event.said;
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}?since={}", prefix_a, last_said_a)))
+        .send()
+        .await
+        .expect("Failed to fetch remaining events for prefix_a");
+
+    assert_eq!(response.status(), 200);
+    let page_a2: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page_a2.events.len(), 1); // The 513th event
+    assert!(!page_a2.has_more);
+
+    let last_said_b = &page_b.events.last().unwrap().event.said;
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}?since={}", prefix_b, last_said_b)))
+        .send()
+        .await
+        .expect("Failed to fetch remaining events for prefix_b");
+
+    assert_eq!(response.status(), 200);
+    let page_b2: SignedKeyEventPage = response.json().await.unwrap();
+    assert_eq!(page_b2.events.len(), 1); // The 513th event
+    assert!(!page_b2.has_more);
+
+    // Verify total event counts
+    let total_a = page_a.events.len() + page_a2.events.len();
+    let total_b = page_b.events.len() + page_b2.events.len();
+    assert_eq!(total_a, 513);
+    assert_eq!(total_b, 513);
+
+    // Verify event continuity — last event from page 1 should precede first event of page 2
+    assert_eq!(
+        page_a2.events[0].event.previous.as_deref(),
+        Some(last_said_a.as_str())
+    );
+    assert_eq!(
+        page_b2.events[0].event.previous.as_deref(),
+        Some(last_said_b.as_str())
+    );
+}
+
+#[tokio::test]
+async fn test_batch_fetch_with_since_skips_known_events() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Build a KEL with 513 events
+    let (prefix, events) = build_large_kel(512).await;
+    submit_chunked(harness, &events).await;
+
+    // Batch fetch with since=SAID of event 510 (0-indexed), so we should get events 511 and 512
+    let since_said = events[510].event.said.clone();
+    let request = BatchKelsRequest {
+        prefixes: [(prefix.clone(), Some(since_said))].into_iter().collect(),
+    };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to batch fetch with since");
+
+    assert_eq!(response.status(), 200);
+
+    let result: std::collections::HashMap<String, SignedKeyEventPage> =
+        response.json().await.unwrap();
+    let page = result.get(&prefix).unwrap();
+    assert_eq!(page.events.len(), 2); // events at index 511 and 512
+    assert!(!page.has_more);
+    assert_eq!(page.events[0].event.said, events[511].event.said);
+    assert_eq!(page.events[1].event.said, events[512].event.said);
+}
+
+#[tokio::test]
+async fn test_batch_fetch_asymmetric_multi_page_kels() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Build one large KEL (1537 events = 4 pages: 512+512+512+1) and one medium KEL (513 = 2 pages: 512+1).
+    // The medium KEL finishes after page 2 while the large KEL still has 2 pages to go —
+    // this exercises the client pagination loop continuing past the point where one identifier completes.
+    let (prefix_large, events_large) = build_large_kel(1536).await; // 1 icp + 1536 ixn = 1537
+    let (prefix_medium, events_medium) = build_large_kel(512).await; // 1 icp + 512 ixn = 513
+
+    submit_chunked(harness, &events_large).await;
+    submit_chunked(harness, &events_medium).await;
+
+    // Batch fetch — first page for both (page 1)
+    let request = BatchKelsRequest {
+        prefixes: [(prefix_large.clone(), None), (prefix_medium.clone(), None)]
+            .into_iter()
+            .collect(),
+    };
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/kels"))
+        .json(&request)
+        .send()
+        .await
+        .expect("Failed to batch fetch");
+
+    assert_eq!(response.status(), 200);
+
+    let result: std::collections::HashMap<String, SignedKeyEventPage> =
+        response.json().await.unwrap();
+
+    // Both truncated to 512, both have more
+    let page_large = result.get(&prefix_large).unwrap();
+    let page_medium = result.get(&prefix_medium).unwrap();
+    assert_eq!(page_large.events.len(), 512);
+    assert!(page_large.has_more);
+    assert_eq!(page_medium.events.len(), 512);
+    assert!(page_medium.has_more);
+
+    // Simulate a real client pagination loop using the batch endpoint.
+    // Each iteration sends a batch request for only the prefixes that still have more pages.
+    let mut all_events: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
+        std::collections::HashMap::new();
+    let mut cursors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for (prefix, page) in &result {
+        all_events.insert(prefix.clone(), page.events.clone());
+        if page.has_more {
+            cursors.insert(
+                prefix.clone(),
+                page.events.last().unwrap().event.said.clone(),
+            );
+        }
+    }
+
+    let mut iterations = 0;
+    while !cursors.is_empty() {
+        iterations += 1;
+        assert!(iterations <= 10, "Pagination loop did not converge");
+
+        // Build batch request with since cursors for prefixes still in flight
+        let request = BatchKelsRequest {
+            prefixes: cursors
+                .iter()
+                .map(|(p, s)| (p.clone(), Some(s.clone())))
+                .collect(),
+        };
+
+        let response = harness
+            .client()
+            .post(harness.url("/api/kels/kels"))
+            .json(&request)
+            .send()
+            .await
+            .expect("Failed to batch fetch next page");
+
+        assert_eq!(response.status(), 200);
+
+        let pages: std::collections::HashMap<String, SignedKeyEventPage> =
+            response.json().await.unwrap();
+
+        // Only the in-flight prefixes should be in the response
+        assert_eq!(pages.len(), cursors.len());
+
+        cursors.clear();
+        for (prefix, page) in &pages {
+            assert!(!page.events.is_empty(), "Non-final page returned 0 events");
+            all_events
+                .get_mut(prefix)
+                .unwrap()
+                .extend(page.events.clone());
+            if page.has_more {
+                cursors.insert(
+                    prefix.clone(),
+                    page.events.last().unwrap().event.said.clone(),
+                );
+            }
+        }
+    }
+
+    // The medium KEL finished on iteration 1 (its page 2 of 2).
+    // The large KEL needed iterations 1, 2, 3 (pages 2, 3, 4 of 4).
+    // On iteration 1 the batch had both prefixes; iterations 2-3 had only the large prefix.
+    assert_eq!(iterations, 3);
+
+    let large = &all_events[&prefix_large];
+    let medium = &all_events[&prefix_medium];
+    assert_eq!(large.len(), 1537);
+    assert_eq!(medium.len(), 513);
+
+    // Verify every event matches the original submission order
+    for (i, event) in large.iter().enumerate() {
+        assert_eq!(event.event.said, events_large[i].event.said);
+    }
+    for (i, event) in medium.iter().enumerate() {
+        assert_eq!(event.event.said, events_medium[i].event.said);
+    }
+}
