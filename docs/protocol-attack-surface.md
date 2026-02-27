@@ -108,20 +108,20 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 
 ## KEL Verification Bypass Attempts
 
-### Forward Pass Bypass
+### Verification Bypass
 
 **Attack:** Submit events that pass structure verification but have broken cryptographic properties.
-- **Mitigation:** KEL verification is two-phase. Phase 1 (forward pass) checks structure, chaining, and SAID integrity. Phase 2 (backward pass) walks from each tail backward, verifying pre-rotation commitments, recovery key commitments, and all signatures. Both phases must pass.
+- **Mitigation:** `KelVerifier` performs all checks in a single forward pass — structure, chaining, SAID integrity, pre-rotation commitments, recovery key commitments, and signature verification are all validated as each event is processed. There is no separate backward pass; forward commitments (rotation hash, recovery hash) are tracked per-branch and verified when the next establishment event reveals the committed key.
 
 ### Pre-rotation Commitment Violation
 
 **Attack:** Submit a rotation event whose public key doesn't match the rotation hash committed in the previous establishment event.
-- **Mitigation:** The backward pass explicitly verifies `rotation_hash` commitments — `compute_rotation_hash(future_event.public_key)` must equal the committed `rotation_hash`. Violations are rejected.
+- **Mitigation:** The verifier tracks `pending_rotation_hash` per branch and verifies `compute_rotation_hash(event.public_key)` matches the committed hash when processing each establishment event. Violations are rejected.
 
 ### Recovery Key Commitment Violation
 
 **Attack:** Submit a recovery event with a recovery key that doesn't match the committed recovery hash.
-- **Mitigation:** Same mechanism as rotation — `recovery_hash` is verified against the revealed recovery key. Violations are rejected.
+- **Mitigation:** Same mechanism as rotation — `pending_recovery_hash` is tracked per branch and verified against the revealed recovery key when processing recovery-revealing events. Violations are rejected.
 
 ## Client-Side Attacks
 

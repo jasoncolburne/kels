@@ -233,10 +233,11 @@ While these protocols could be upgraded with quantum-safe signature algorithms, 
 | `GET` | `/health` | Health check |
 | `GET` | `/ready` | Readiness check (gossip sync status) |
 | `POST` | `/api/kels/events` | Submit signed events |
-| `GET` | `/api/kels/kel/:prefix` | Fetch KEL by prefix |
-| `GET` | `/api/kels/kel/:prefix?audit=true` | Fetch KEL with audit records |
+| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-512) |
+| `GET` | `/api/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
+| `GET` | `/api/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
 | `GET` | `/api/kels/events/:said/exists` | Check if event exists by SAID |
-| `POST` | `/api/kels/kels` | Batch fetch multiple KELs |
+| `POST` | `/api/kels/kels` | Batch fetch multiple KELs (max 64 prefixes) |
 | `POST` | `/api/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
 ## Development
@@ -312,6 +313,8 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Protocol Attack Surface](docs/protocol-attack-surface.md) - Security analysis of KEL protocol
 - [Registry Removal](docs/registry-removal.md) - Federation member decommission procedure
 - [Rejection Threshold](docs/rejection-threshold.md) - Peer proposal rejection mechanics
+- [Security Invariant](docs/security-invariant.md) - DB trust model and verification categories
+- [Streaming Verification](docs/streaming-verification-architecture.md) - Paginated verification without full KEL load
 
 ## Production Readiness
 

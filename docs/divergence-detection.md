@@ -72,8 +72,8 @@ Client                              KELS Server
   │      { applied: true,                │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel() ─────────────────────>│
-  │<──── [all events including forks] ───│
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
   │                                      │
   │ detect divergence locally            │
   │ create rec event from owner's tail   │
@@ -97,8 +97,8 @@ Client                              KELS Server
   │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel() ─────────────────────>│
-  │<──── [all events including forks] ───│
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
   │                                      │
   │ sync local state with server         │
   │ create rec event from owner's tail   │
@@ -226,34 +226,25 @@ Response:
 
 Where `divergedAt` is the generation number (0-indexed position in chain) where divergence was detected, or null if no divergence.
 
-### Fetch KEL
+### Fetch KEL (paginated)
 
 ```
-GET /api/kels/kel/:prefix
+GET /api/kels/kel/:prefix?limit=512&since=<SAID>
 
-Response: [SignedKeyEvent, ...]
+Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 ```
 
-### Fetch KEL with Audit Records
+Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-512, default 512). Loop with `hasMore` for full retrieval.
+
+### Fetch Audit Records
 
 ```
-GET /api/kels/kel/:prefix?audit=true
+GET /api/kels/kel/:prefix/audit
 
-Response: {
-  "events": [SignedKeyEvent, ...],
-  "audit_records": [KelsAuditRecord, ...]
-}
+Response: [KelsAuditRecord, ...]
 ```
 
-### Fetch Since SAID
-
-```
-GET /api/kels/kel/:prefix/since/:said
-
-Response: [SignedKeyEvent, ...]
-```
-
-SAID-based queries return all events added after a given event, including divergent events.
+Audit records are separate from the paginated KEL endpoint.
 
 ## CLI Commands
 
