@@ -155,12 +155,12 @@ impl FromStr for EventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
-    Accepted,  // Events appended normally
-    Recovered, // Recovery succeeded
-    Contested, // Contest accepted, KEL locked
-    Diverged,  // Divergent event accepted, KEL now frozen
-    Rejected,  // Already divergent, submit rec to recover
-    Protected, // Adversary used recovery key, submit contest
+    Accepted,        // Events appended normally
+    Recovered,       // Recovery succeeded
+    Contested,       // Contest accepted, KEL locked
+    Diverged,        // Divergent event accepted, KEL now frozen
+    RecoverRequired, // Already divergent, submit rec to recover
+    ContestRequired, // Adversary used recovery key, submit contest
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]

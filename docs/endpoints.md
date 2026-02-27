@@ -65,7 +65,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 - `get_kels_batch` returns per-prefix `SignedKeyEventPage {events, hasMore}` with max 512 events per prefix. Callers with `hasMore: true` should loop using `fetch_kel(prefix, since=lastSAID, limit)` to get remaining events.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
 - `KELS_MAX_PAGES_PER_KEL` environment variable (default 64) controls maximum pagination loops for callers fetching large KELs.
-- Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `RecoveryProtected`, `RateLimited`, `InternalError`
+- Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
 
 ## KELS Registry Service
 

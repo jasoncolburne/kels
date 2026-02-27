@@ -211,7 +211,7 @@ echo "Adversary events injected on node-e and node-f"
 
 # Owner does rotate-recovery (ror) on node-d
 # This creates a 3-way fork: adv_rot on node-e, adv_ixn on node-f, ror on node-d
-# Node-d's ror reveals recovery, so adversary events arriving at node-d are RecoveryProtected
+# Node-d's ror reveals recovery, so adversary events arriving at node-d are ContestRequired
 # Owner's ror propagates to frozen nodes as Recoverable (they accept it into the fork)
 run_test "Owner rotates recovery key on node-d" kels-cli -u "$NODE_D_URL" rotate-recovery --prefix "$PREFIX3"
 

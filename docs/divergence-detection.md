@@ -296,7 +296,7 @@ Once divergence is detected, the KEL is frozen:
 ### Recovery Protection
 
 Protection is based on whether existing divergent events reveal the recovery key, not on generation comparison:
-- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions _before_ the revealing event are rejected with `Protected`
+- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions return `ContestRequired`
 - Only contest (`cnt`) events are allowed through when divergence occurs before a recovery-revealing event — once anyone reveals recovery, the only valid response is to contest
 - Enables proactive protection: rotating recovery key (`ror`) causes future adversary submissions before that point to require contest
 

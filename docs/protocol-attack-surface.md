@@ -89,12 +89,12 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Recovery Race
 
 **Attack:** Adversary (who also has the recovery key) races the owner to submit `rec` first.
-- **Mitigation:** If the adversary submits a recovery-revealing event, the merge protocol returns `Protected` for non-contest submissions before the revealing event. The owner must `cnt` (contest) instead, which permanently freezes the KEL. This is the correct security outcome — it prevents an attacker with the recovery key from winning a recovery race.
+- **Mitigation:** If the adversary submits a recovery-revealing event, the merge protocol returns `ContestRequired` for non-contest submissions. The owner must `cnt` (contest) instead, which permanently freezes the KEL. This is the correct security outcome — it prevents an attacker with the recovery key from winning a recovery race.
 
 ### Re-divergence After Recovery
 
 **Attack:** After the owner recovers, adversary re-submits events at the same generation to re-diverge.
-- **Mitigation:** Recovery protection — once a recovery-revealing event exists in a divergent branch, divergence before that event is rejected with `Protected` (only `cnt` is allowed through). This is an important security invariant that prevents recovery battles.
+- **Mitigation:** Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (only `cnt` is allowed through). This is an important security invariant that prevents recovery battles.
 
 ### Contested KEL Bypass
 

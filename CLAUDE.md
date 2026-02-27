@@ -95,8 +95,8 @@ When events are submitted, the KEL merge produces one of:
 - **Recovered** — divergence was resolved by a recovery event
 - **Contested** — adversary revealed recovery key, KEL permanently frozen
 - **Diverged** — conflicting events detected, awaiting recovery
-- **Rejected** — events failed validation
-- **Protected** — adversary used recovery key; owner should contest
+- **RecoverRequired** — KEL is divergent, submit recovery to resolve
+- **ContestRequired** — recovery key revealed, submit contest to freeze
 
 ## Architecture
 

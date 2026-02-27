@@ -101,8 +101,8 @@ pub enum KelsStatus {
     NetworkError = 5,
     /// KEL has not been incepted yet
     NotIncepted = 6,
-    /// Recovery protected - adversary used recovery key, contest required
-    RecoveryProtected = 7,
+    /// Contest required - recovery key revealed, submit contest to freeze
+    ContestRequired = 7,
     /// Generic error - check kels_last_error() for details
     Error = 8,
 }
@@ -283,7 +283,7 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
         KelsError::DivergenceDetected { .. } => KelsStatus::DivergenceDetected,
-        KelsError::RecoveryProtected => KelsStatus::RecoveryProtected,
+        KelsError::ContestRequired => KelsStatus::ContestRequired,
         KelsError::HttpError(_) | KelsError::ServerError(..) => KelsStatus::NetworkError,
         _ => KelsStatus::Error,
     }
@@ -1903,7 +1903,7 @@ mod tests {
         assert_eq!(KelsStatus::KelFrozen as i32, 4);
         assert_eq!(KelsStatus::NetworkError as i32, 5);
         assert_eq!(KelsStatus::NotIncepted as i32, 6);
-        assert_eq!(KelsStatus::RecoveryProtected as i32, 7);
+        assert_eq!(KelsStatus::ContestRequired as i32, 7);
         assert_eq!(KelsStatus::Error as i32, 8);
     }
 
@@ -2087,9 +2087,9 @@ mod tests {
     }
 
     #[test]
-    fn test_map_error_to_status_recovery_protected() {
-        let err = KelsError::RecoveryProtected;
-        assert_eq!(map_error_to_status(&err), KelsStatus::RecoveryProtected);
+    fn test_map_error_to_status_contest_required() {
+        let err = KelsError::ContestRequired;
+        assert_eq!(map_error_to_status(&err), KelsStatus::ContestRequired);
     }
 
     #[test]

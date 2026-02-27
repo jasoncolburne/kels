@@ -115,8 +115,8 @@ impl KelsClient {
             Err(KelsError::ContestedKel(err.error))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            if err.code == ErrorCode::RecoveryProtected {
-                Err(KelsError::RecoveryProtected)
+            if err.code == ErrorCode::ContestRequired {
+                Err(KelsError::ContestRequired)
             } else {
                 Err(KelsError::ServerError(err.error, err.code))
             }
@@ -475,12 +475,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_submit_events_recovery_protected() {
+        async fn test_submit_events_contest_required() {
             let mock_server = MockServer::start().await;
 
             let error = ErrorResponse {
-                error: "Recovery protected".to_string(),
-                code: ErrorCode::RecoveryProtected,
+                error: "Contest required".to_string(),
+                code: ErrorCode::ContestRequired,
             };
 
             Mock::given(method("POST"))
@@ -495,7 +495,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
 
-            assert!(matches!(result, Err(KelsError::RecoveryProtected)));
+            assert!(matches!(result, Err(KelsError::ContestRequired)));
         }
 
         #[tokio::test]

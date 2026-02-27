@@ -8,7 +8,8 @@ use kels::{
 use libkels_derive::SignedEvents;
 use std::collections::{HashMap, HashSet};
 use verifiable_storage::{
-    ColumnQuery, ScalarSubquery, SelfAddressed, StorageError, TransactionExecutor, Value,
+    ColumnQuery, CorrelatedSubquery, ScalarSubquery, SelfAddressed, StorageError,
+    TransactionExecutor, Value,
 };
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -163,25 +164,42 @@ impl KeyEventRepository {
         })
     }
 
-    /// Compute the effective SAID for a prefix by finding all tip events.
+    /// Compute the effective SAID for a prefix by finding tip events (events with no successor).
     ///
-    /// Fetches all events for the prefix, identifies tips (events not referenced
-    /// as `previous` by any other event), and delegates to [`kels::compute_effective_tail_said`].
+    /// Uses a NOT EXISTS subquery to find tips directly in SQL rather than loading
+    /// all events into memory. Returns the tip SAID for non-divergent KELs, or a
+    /// deterministic hash of sorted tip SAIDs for divergent KELs.
     pub async fn compute_prefix_effective_said(
         &self,
         prefix: &str,
     ) -> Result<Option<String>, StorageError> {
-        let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
-            .eq("prefix", prefix)
-            .order_by("said", Order::Asc);
-        let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
+        let query = ColumnQuery::new(Self::TABLE_NAME, "said")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .filter(Filter::NotExists(CorrelatedSubquery::new(
+                Self::TABLE_NAME,
+                "_cs",
+                Self::TABLE_NAME,
+                vec![("previous".to_string(), "said".to_string())],
+                vec![Filter::Eq(
+                    "_cs.prefix".to_string(),
+                    Value::String(prefix.to_string()),
+                )],
+            )))
+            .order(Order::Asc);
 
-        let pairs: Vec<(&str, Option<&str>)> = events
-            .iter()
-            .map(|e| (e.said.as_str(), e.previous.as_deref()))
-            .collect();
+        let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
 
-        Ok(kels::compute_effective_tail_said(&pairs))
+        match tip_saids.len() {
+            0 => Ok(None),
+            1 => Ok(Some(tip_saids.into_iter().next().unwrap_or_default())),
+            _ => {
+                let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
+                Ok(Some(kels::hash_tip_saids(&refs)))
+            }
+        }
     }
 
     /// Quick check: does any serial number appear more than once for this prefix?

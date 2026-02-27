@@ -50,22 +50,22 @@ async fn apply_submit_key_events(
     .await;
 
     // Step 2: Integrity check — if DB has events, SAID must match Raft
-    let db_ctx = match db_result {
-        Ok(ctx) if !ctx.is_empty() => {
-            if let Some(raft_ctx) = sm.member_contexts.get(&prefix)
-                && ctx.said() != raft_ctx.said()
+    let db_verification = match db_result {
+        Ok(verification) if !verification.is_empty() => {
+            if let Some(raft_verification) = sm.member_contexts.get(&prefix)
+                && verification.said() != raft_verification.said()
             {
                 tracing::error!(
                     prefix = %prefix,
-                    db_said = %ctx.said(),
-                    raft_said = %raft_ctx.said(),
+                    db_said = %verification.said(),
+                    raft_said = %raft_verification.said(),
                     "SECURITY: DB/Raft Verification SAID mismatch"
                 );
                 return FederationResponse::KeyEventsRejected(
                     "DB/Raft state mismatch detected".to_string(),
                 );
             }
-            Some(ctx)
+            Some(verification)
         }
         Ok(_) => None, // DB empty for this prefix
         Err(e) => {
@@ -86,7 +86,7 @@ async fn apply_submit_key_events(
     };
 
     // Step 3: Filter submitted events to genuinely new ones (by SAID)
-    let new_start = if let Some(ref ctx) = db_ctx {
+    let new_start = if let Some(ref ctx) = db_verification {
         let tip_said = ctx
             .branch_tips()
             .first()
@@ -105,6 +105,11 @@ async fn apply_submit_key_events(
     let new_events = &events[new_start..];
 
     if new_events.is_empty() {
+        // DB already has all submitted events (e.g. Raft log replay after restart).
+        // Still update member_contexts so the prefix is visible via get_registry_kels.
+        if let Some(ctx) = db_verification {
+            sm.member_contexts.insert(prefix.clone(), ctx);
+        }
         return FederationResponse::KeyEventsAccepted {
             prefix,
             new_count: 0,
@@ -112,7 +117,7 @@ async fn apply_submit_key_events(
     }
 
     // Step 4: Resume verifier from DB state and verify new events
-    let mut verifier = if let Some(ref ctx) = db_ctx {
+    let mut verifier = if let Some(ref ctx) = db_verification {
         kels::KelVerifier::resume(&prefix, ctx)
     } else {
         kels::KelVerifier::new(&prefix)

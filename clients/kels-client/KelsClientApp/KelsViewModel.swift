@@ -457,11 +457,11 @@ class KelsViewModel: ObservableObject {
                 errorMessage = "Recovery failed"
             }
             await refreshStatus()
-        } catch KelsClientError.recoveryProtected {
-            log("Recovery protected - adversary used recovery key, contest required")
+        } catch KelsClientError.contestRequired {
+            log("Contest required: recovery key revealed")
             needsContest = true
             needsRecovery = false
-            errorMessage = "Adversary used recovery key. Use 'Contest' to freeze the KEL."
+            errorMessage = "Contest required: recovery key revealed. Use 'Contest' to freeze the KEL."
         } catch {
             log("ERROR: Recovery failed: \(error.localizedDescription)")
             errorMessage = "Recovery failed: \(error.localizedDescription)"
@@ -568,11 +568,11 @@ class KelsViewModel: ObservableObject {
     // MARK: - Error Handling
 
     private func checkForDivergence(error: Error) -> Bool {
-        // Check for recovery protection (adversary used recovery key)
-        if case KelsClientError.recoveryProtected = error {
+        // Check for contest required (recovery key revealed)
+        if case KelsClientError.contestRequired = error {
             needsContest = true
-            log("Contest needed - adversary used recovery key")
-            errorMessage = "Adversary used recovery key. Use 'Contest' to freeze the KEL."
+            log("Contest required: recovery key revealed")
+            errorMessage = "Contest required: recovery key revealed. Use 'Contest' to freeze the KEL."
             return true
         }
 

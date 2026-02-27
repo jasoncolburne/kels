@@ -46,7 +46,9 @@ pub mod store;
 pub mod types;
 
 #[cfg(feature = "redis")]
-pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
+pub use cache::{
+    LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
+};
 #[cfg(feature = "server")]
 pub use server::shutdown_signal;
 
