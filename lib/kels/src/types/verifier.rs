@@ -1634,4 +1634,1009 @@ mod tests {
         assert_eq!(builder3.confirmed_count(), 3);
         assert_eq!(builder3.pending_events().len(), 0);
     }
+
+    // ==================== Comprehensive verification scenarios ====================
+    //
+    // Exercises the full verification stack: multi-page pagination,
+    // divergence at page boundaries, recovery, contest, decommission,
+    // anchor checking across pages, resume/incremental verification,
+    // delegated inception, sync abstraction, and truncation safety.
+
+    /// Build N interaction events on a builder, returning the last one.
+    async fn build_interactions(
+        builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
+        count: usize,
+        label_prefix: &str,
+    ) -> SignedKeyEvent {
+        let mut last = None;
+        for i in 0..count {
+            last = Some(
+                builder
+                    .interact(&anchor(&format!("{}-{}", label_prefix, i)))
+                    .await
+                    .unwrap(),
+            );
+        }
+        last.unwrap()
+    }
+
+    // ---- Multi-page linear KEL with rotations ----
+
+    #[tokio::test]
+    async fn test_multi_page_kel_with_rotations() {
+        // Build a 600-event KEL that spans 2 pages (page_size=512), with
+        // rotations interspersed. Verifies that key state transitions are
+        // tracked correctly across page boundaries.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        for i in 0..599 {
+            if i % 100 == 99 {
+                builder.rotate().await.unwrap();
+            } else {
+                builder
+                    .interact(&anchor(&format!("evt-{}", i)))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let events = builder.events().to_vec();
+        assert_eq!(events.len(), 600);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!ctx.is_divergent());
+        assert!(!ctx.is_contested());
+        assert!(!ctx.is_decommissioned());
+        assert_eq!(ctx.branch_tips().len(), 1);
+        assert_eq!(
+            ctx.branch_tips()[0].tip.event.said,
+            events.last().unwrap().event.said
+        );
+
+        // Last establishment event should be the last rotation (at serial 500)
+        let last_est = ctx.last_establishment_event().unwrap();
+        assert!(last_est.event.is_rotation());
+
+        // Key should differ from inception key
+        assert_ne!(
+            ctx.current_public_key().unwrap(),
+            icp.event.public_key.as_ref().unwrap()
+        );
+    }
+
+    // ---- Anchor checking across page boundary ----
+
+    #[tokio::test]
+    async fn test_anchor_checking_across_pages() {
+        // Place an anchor in the first page and another in the second page.
+        // Verify both are found with completed_verification.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let early_anchor = anchor("early-target");
+        let late_anchor = anchor("late-target");
+
+        // First page: events 0..512
+        for i in 0..510 {
+            if i == 50 {
+                builder.interact(&early_anchor).await.unwrap();
+            } else {
+                builder
+                    .interact(&anchor(&format!("filler-{}", i)))
+                    .await
+                    .unwrap();
+            }
+        }
+        // Second page: events 512+
+        for i in 0..20 {
+            if i == 10 {
+                builder.interact(&late_anchor).await.unwrap();
+            } else {
+                builder
+                    .interact(&anchor(&format!("filler2-{}", i)))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let events = builder.events().to_vec();
+        assert!(events.len() > 512);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            10,
+            vec![early_anchor.clone(), late_anchor.clone()],
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_said_anchored(&early_anchor));
+        assert!(ctx.is_said_anchored(&late_anchor));
+        assert!(ctx.anchors_all_saids());
+    }
+
+    // ---- Divergence entirely on second page ----
+
+    #[tokio::test]
+    async fn test_divergence_starts_on_second_page() {
+        // Owner builds exactly 512 events (serials 0..511, filling one page).
+        // Both owner and adversary add events at serial 512, which falls
+        // entirely on page 2 — no split generation.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        for i in 0..511 {
+            owner.interact(&anchor(&format!("o-{}", i))).await.unwrap();
+        }
+        // Owner has 512 events (serial 0..511). Clone for adversary.
+        let mut adversary = owner.clone();
+
+        // Both add an event at serial 512
+        let owner_ixn = owner.interact(&anchor("owner-512")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-512")).await.unwrap();
+        assert_eq!(owner_ixn.event.serial, 512);
+        assert_eq!(adv_ixn.event.serial, 512);
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(adv_ixn);
+        sort_events(&mut all_events);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &all_events).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(512));
+        assert_eq!(ctx.branch_tips().len(), 2);
+        assert!(ctx.current_public_key().is_none());
+    }
+
+    // ---- Long owner chain with early adversary injection ----
+
+    #[tokio::test]
+    async fn test_long_owner_chain_with_early_adversary() {
+        // Owner: icp + 1023 ixn (1024 events, 2 full pages).
+        // Adversary: branches after icp, adds 1 ixn at serial 1.
+        // Tests: multi-page divergent verification where one branch is
+        // much longer than the other. The short adversary branch should
+        // be carried forward across pages.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let mut adversary = owner.clone();
+
+        // Owner builds long chain
+        let owner_tip = build_interactions(&mut owner, 1023, "owner").await;
+        assert_eq!(owner_tip.event.serial, 1023);
+
+        // Adversary injects one event at serial 1
+        let adv_ixn = adversary.interact(&anchor("adversary-1")).await.unwrap();
+        assert_eq!(adv_ixn.event.serial, 1);
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(adv_ixn.clone());
+        sort_events(&mut all_events);
+        assert_eq!(all_events.len(), 1025);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &all_events).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(1));
+        assert_eq!(ctx.branch_tips().len(), 2);
+
+        let tip_saids: std::collections::HashSet<_> = ctx
+            .branch_tips()
+            .iter()
+            .map(|t| t.tip.event.said.as_str())
+            .collect();
+        assert!(tip_saids.contains(owner_tip.event.said.as_str()));
+        assert!(tip_saids.contains(adv_ixn.event.said.as_str()));
+    }
+
+    // ---- Divergence with rotations on both branches ----
+
+    #[tokio::test]
+    async fn test_divergent_branches_with_rotations() {
+        // Owner: icp, ixn, rot, ixn
+        // Adversary: icp, rot (different branch), ixn
+        // Both branches rotate independently — verifier must track
+        // independent crypto state per branch.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        owner.incept().await.unwrap();
+        let mut adversary = owner.clone();
+
+        // Owner branch: ixn @ 1, rot @ 2, ixn @ 3
+        owner.interact(&anchor("owner-1")).await.unwrap();
+        let owner_rot = owner.rotate().await.unwrap();
+        let owner_tip = owner.interact(&anchor("owner-3")).await.unwrap();
+
+        // Adversary branch: rot @ 1, ixn @ 2, ixn @ 3
+        let adv_rot = adversary.rotate().await.unwrap();
+        adversary.interact(&anchor("adv-2")).await.unwrap();
+        let adv_tip = adversary.interact(&anchor("adv-3")).await.unwrap();
+
+        let mut events = owner.events().to_vec();
+        events.extend(adversary.events()[1..].iter().cloned());
+        sort_events(&mut events);
+
+        let ctx = verify(&events);
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(1));
+        assert_eq!(ctx.branch_tips().len(), 2);
+
+        // Each branch tip should have the correct establishment event
+        for tip in ctx.branch_tips() {
+            if tip.tip.event.said == owner_tip.event.said {
+                assert_eq!(
+                    tip.establishment_tip.event.said, owner_rot.event.said,
+                    "Owner branch should reference owner's rotation"
+                );
+            } else {
+                assert_eq!(tip.tip.event.said, adv_tip.event.said);
+                assert_eq!(
+                    tip.establishment_tip.event.said, adv_rot.event.said,
+                    "Adversary branch should reference adversary's rotation"
+                );
+            }
+        }
+    }
+
+    // ---- Recovery after divergence ----
+
+    #[tokio::test]
+    async fn test_recovery_after_divergence() {
+        // Owner incepts, adversary branches, owner recovers.
+        // After recovery, the KEL should be non-divergent.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+
+        let (current_key, next_key, recovery_key) = clone_keys(&owner);
+        let mut adversary = KeyEventBuilder::with_events(
+            SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
+            None,
+            None,
+            vec![icp.clone()],
+        );
+
+        let owner_ixn = owner.interact(&anchor("owner-1")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-1")).await.unwrap();
+
+        // Verify pre-recovery divergence
+        let mut divergent_events = vec![icp.clone(), owner_ixn.clone(), adv_ixn.clone()];
+        sort_events(&mut divergent_events);
+        let ctx = verify(&divergent_events);
+        assert!(ctx.is_divergent());
+
+        // Owner recovers
+        let rec = owner.recover(false).await.unwrap();
+        assert!(rec.event.is_recover());
+        assert!(rec.event.reveals_recovery_key());
+
+        // Verify owner chain including recovery is valid
+        let owner_ctx = verify(owner.events());
+        assert!(!owner_ctx.is_divergent());
+        assert!(
+            owner_ctx
+                .last_establishment_event()
+                .unwrap()
+                .event
+                .is_recover()
+        );
+    }
+
+    // ---- Contest permanently freezes a divergent KEL ----
+
+    #[tokio::test]
+    async fn test_contest_freezes_kel() {
+        // Adversary reveals recovery key via rotate_recovery.
+        // Owner contests. The contested KEL is permanently frozen.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let mut adversary = owner.clone();
+
+        let owner_ixn = owner.interact(&anchor("owner")).await.unwrap();
+        let adv_ror = adversary.rotate_recovery().await.unwrap();
+
+        // Contest
+        let cnt = owner.contest().await.unwrap();
+        assert!(cnt.event.is_contest());
+        assert!(cnt.event.reveals_recovery_key());
+
+        // Combine all events
+        let mut events = vec![icp, owner_ixn, adv_ror, cnt.clone()];
+        sort_events(&mut events);
+
+        let ctx = verify(&events);
+        assert!(ctx.is_contested());
+        assert!(ctx.is_decommissioned());
+        assert!(ctx.is_divergent());
+
+        // Contest event should appear in a branch tip
+        let has_cnt = ctx
+            .branch_tips()
+            .iter()
+            .any(|t| t.tip.event.said == cnt.event.said);
+        assert!(has_cnt);
+    }
+
+    // ---- Decommission ends the KEL ----
+
+    #[tokio::test]
+    async fn test_decommission_then_no_more_events() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&anchor("data")).await.unwrap();
+        builder.decommission().await.unwrap();
+
+        let ctx = verify(builder.events());
+        assert!(ctx.is_decommissioned());
+        assert!(!ctx.is_contested());
+        assert!(!ctx.is_divergent());
+
+        // Builder should refuse further events
+        assert!(builder.interact(&anchor("rejected")).await.is_err());
+    }
+
+    // ---- Resume incremental verification across pages ----
+
+    #[tokio::test]
+    async fn test_resume_across_multiple_increments() {
+        // Simulate three incremental verifications: page 1, page 2, page 3.
+        // Each time resume from the previous Verification and verify the next batch.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        // Build 30 events total
+        for i in 0..29 {
+            builder
+                .interact(&anchor(&format!("inc-{}", i)))
+                .await
+                .unwrap();
+        }
+        let events = builder.events().to_vec();
+        assert_eq!(events.len(), 30);
+
+        // Verify first 10
+        let ctx1 = verify(&events[..10]);
+        assert_eq!(ctx1.branch_tips()[0].tip.event.serial, 9);
+
+        // Resume and verify next 10
+        let prefix = ctx1.prefix().to_string();
+        let mut v2 = KelVerifier::resume(&prefix, &ctx1);
+        v2.verify_page(&events[10..20]).unwrap();
+        let ctx2 = v2.into_verification().unwrap();
+        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 19);
+
+        // Resume and verify last 10
+        let mut v3 = KelVerifier::resume(&prefix, &ctx2);
+        v3.verify_page(&events[20..30]).unwrap();
+        let ctx3 = v3.into_verification().unwrap();
+        assert_eq!(ctx3.branch_tips()[0].tip.event.serial, 29);
+
+        // Final tip should match
+        assert_eq!(
+            ctx3.branch_tips()[0].tip.event.said,
+            events.last().unwrap().event.said
+        );
+    }
+
+    // ---- Resume preserves divergence state ----
+
+    #[tokio::test]
+    async fn test_resume_preserves_divergence() {
+        // Diverge at serial 1, then resume and verify more events on each branch.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let mut adversary = owner.clone();
+
+        let owner_ixn1 = owner.interact(&anchor("o1")).await.unwrap();
+        let adv_ixn1 = adversary.interact(&anchor("a1")).await.unwrap();
+
+        let mut page1 = vec![icp, owner_ixn1, adv_ixn1];
+        sort_events(&mut page1);
+        let ctx1 = verify(&page1);
+        assert!(ctx1.is_divergent());
+        assert_eq!(ctx1.diverged_at_serial(), Some(1));
+
+        // Both branches extend
+        let owner_ixn2 = owner.interact(&anchor("o2")).await.unwrap();
+        let adv_ixn2 = adversary.interact(&anchor("a2")).await.unwrap();
+        let mut page2 = vec![owner_ixn2.clone(), adv_ixn2.clone()];
+        sort_events(&mut page2);
+
+        let prefix = ctx1.prefix().to_string();
+        let mut v2 = KelVerifier::resume(&prefix, &ctx1);
+        v2.verify_page(&page2).unwrap();
+        let ctx2 = v2.into_verification().unwrap();
+
+        assert!(ctx2.is_divergent());
+        assert_eq!(ctx2.diverged_at_serial(), Some(1));
+        assert_eq!(ctx2.branch_tips().len(), 2);
+        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 2);
+        assert_eq!(ctx2.branch_tips()[1].tip.event.serial, 2);
+    }
+
+    // ---- Delegated inception verification ----
+
+    #[tokio::test]
+    async fn test_delegated_inception_verifies() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let dip = builder
+            .incept_delegated("EDelegatingPrefix________________________________")
+            .await
+            .unwrap();
+
+        assert!(dip.event.is_delegated_inception());
+        assert_eq!(
+            dip.event.delegating_prefix.as_deref(),
+            Some("EDelegatingPrefix________________________________")
+        );
+
+        let ixn = builder.interact(&anchor("delegated-data")).await.unwrap();
+
+        let ctx = verify(builder.events());
+        assert!(!ctx.is_empty());
+        assert!(!ctx.is_divergent());
+        assert_eq!(ctx.branch_tips()[0].tip.event.said, ixn.event.said);
+    }
+
+    // ---- Effective SAID determinism ----
+
+    #[tokio::test]
+    async fn test_effective_said_is_deterministic_across_orderings() {
+        // Two divergent branches produce the same effective SAID regardless
+        // of which order they appear internally.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let mut adversary = owner.clone();
+
+        let ixn_a = owner.interact(&anchor("a")).await.unwrap();
+        let ixn_b = adversary.interact(&anchor("b")).await.unwrap();
+
+        // Order 1: a then b
+        let mut events1 = vec![icp.clone(), ixn_a.clone(), ixn_b.clone()];
+        sort_events(&mut events1);
+        let ctx1 = verify(&events1);
+
+        // Verify it's not just the tip SAID
+        let effective = ctx1.effective_tail_said().unwrap();
+        assert_ne!(effective, ixn_a.event.said);
+        assert_ne!(effective, ixn_b.event.said);
+
+        // Verify determinism: same events, same result
+        let ctx2 = verify(&events1);
+        assert_eq!(
+            ctx1.effective_tail_said(),
+            ctx2.effective_tail_said(),
+            "Effective SAID must be deterministic"
+        );
+    }
+
+    // ---- Truncation of incomplete generation ----
+
+    #[tokio::test]
+    async fn test_truncate_splits_divergent_generation_correctly() {
+        // Truncation compares last_count vs second_last_count. For it to
+        // detect an incomplete generation, the divergence must extend over
+        // multiple serials so the second-to-last serial establishes the
+        // expected width.
+        //
+        // Setup: 2-way divergence at serial 1 that extends to serial 2.
+        // Events: [icp@0, a1@1, b1@1, a2@2, b2@2] = 5 events
+        // Simulate page ending at 4 events: [icp@0, a1@1, b1@1, a2@2]
+        // Serial 2 has 1 event but serial 1 has 2 → 1 < 2 → truncation
+        // removes the lone serial-2 event. Remaining page still has the
+        // complete divergent generation at serial 1.
+        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        b1.incept().await.unwrap();
+        let mut b2 = b1.clone();
+
+        b1.interact(&anchor("b1-s1")).await.unwrap();
+        b2.interact(&anchor("b2-s1")).await.unwrap();
+        b1.interact(&anchor("b1-s2")).await.unwrap();
+        b2.interact(&anchor("b2-s2")).await.unwrap();
+
+        let mut all = b1.events().to_vec();
+        all.extend(b2.events()[1..].iter().cloned());
+        sort_events(&mut all);
+        // [icp@0, a1@1, b1@1, a2@2, b2@2]
+        assert_eq!(all.len(), 5);
+
+        // Simulate page ending with 4 events: icp + 2 at serial 1 + 1 at serial 2
+        let mut partial = all[..4].to_vec();
+        let truncated = truncate_incomplete_generation(&mut partial);
+        assert_eq!(
+            truncated, 1,
+            "Should remove the 1 incomplete serial-2 event"
+        );
+        assert_eq!(partial.len(), 3, "icp + both serial-1 events should remain");
+        assert_eq!(partial.last().unwrap().event.serial, 1);
+    }
+
+    #[tokio::test]
+    async fn test_truncate_no_op_on_complete_generation() {
+        // A complete generation should not be truncated.
+        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = b1.incept().await.unwrap();
+        let mut b2 = b1.clone();
+
+        let ixn1 = b1.interact(&anchor("x1")).await.unwrap();
+        let ixn2 = b2.interact(&anchor("x2")).await.unwrap();
+
+        let mut all = vec![icp, ixn1, ixn2];
+        sort_events(&mut all);
+
+        // Both serial-1 events present: 2 at serial 1, 1 at serial 0
+        // last_count (2) >= second_last_count (1), no truncation
+        let truncated = truncate_incomplete_generation(&mut all);
+        assert_eq!(truncated, 0);
+        assert_eq!(all.len(), 3);
+    }
+
+    // ---- Paginated divergence with truncation ----
+
+    #[tokio::test]
+    async fn test_paginated_divergence_spanning_page_boundary() {
+        // 3-way divergence extending over multiple serials so that
+        // truncation can detect an incomplete generation at the page boundary.
+        //
+        // 5 linear events (serials 0-4), then 3-way divergence at serials 5-7
+        // (3 events per serial). Total: 5 + 9 = 14 events.
+        // Page size 9: first page gets indices 0..9 = serials 0-4 (5 events)
+        // + serial 5 (3 events) + 1 of 3 at serial 6. Truncation detects
+        // serial 6 has fewer events than serial 5 (1 < 3) and removes it.
+        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = b1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        // 4 linear events (serials 1-4)
+        for i in 0..4 {
+            b1.interact(&anchor(&format!("pre-{}", i))).await.unwrap();
+        }
+
+        // Clone at serial 4 for two adversaries
+        let mut b2 = b1.clone();
+        let mut b3 = b1.clone();
+
+        // All three branches extend for 3 serials (5, 6, 7)
+        for i in 0..3 {
+            b1.interact(&anchor(&format!("b1-{}", i))).await.unwrap();
+            b2.interact(&anchor(&format!("b2-{}", i))).await.unwrap();
+            b3.interact(&anchor(&format!("b3-{}", i))).await.unwrap();
+        }
+
+        let mut all_events = b1.events().to_vec();
+        all_events.extend(b2.events()[5..].iter().cloned());
+        all_events.extend(b3.events()[5..].iter().cloned());
+        sort_events(&mut all_events);
+        // 5 linear + 9 divergent = 14 events
+        assert_eq!(all_events.len(), 14);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &all_events).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            9,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(5));
+        assert_eq!(ctx.branch_tips().len(), 3);
+        // All three branch tips should be at serial 7
+        assert!(ctx.branch_tips().iter().all(|t| t.tip.event.serial == 7));
+    }
+
+    // ---- sync_and_verify abstraction ----
+
+    #[tokio::test]
+    async fn test_sync_and_verify_transfers_events() {
+        // Use sync_and_verify to stream events from a source store
+        // through verification into a sink store.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        for i in 0..19 {
+            builder
+                .interact(&anchor(&format!("sync-{}", i)))
+                .await
+                .unwrap();
+        }
+        let events = builder.events().to_vec();
+        assert_eq!(events.len(), 20);
+
+        struct VecSource(Vec<SignedKeyEvent>);
+        #[async_trait]
+        impl PagedKelSource for VecSource {
+            async fn fetch_page(
+                &self,
+                _prefix: &str,
+                since: Option<&str>,
+                limit: usize,
+            ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+                let start = if let Some(said) = since {
+                    self.0
+                        .iter()
+                        .position(|e| e.event.said == said)
+                        .map(|p| p + 1)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let end = (start + limit).min(self.0.len());
+                let page = self.0[start..end].to_vec();
+                let has_more = end < self.0.len();
+                Ok((page, has_more))
+            }
+        }
+
+        struct CollectSink(std::sync::Mutex<Vec<SignedKeyEvent>>);
+        #[async_trait]
+        impl PagedKelSink for CollectSink {
+            async fn store_page(
+                &self,
+                _prefix: &str,
+                events: &[SignedKeyEvent],
+            ) -> Result<(), KelsError> {
+                self.0.lock().unwrap().extend(events.iter().cloned());
+                Ok(())
+            }
+        }
+
+        let source = VecSource(events.clone());
+        let sink = CollectSink(std::sync::Mutex::new(Vec::new()));
+        let mut verifier = KelVerifier::new(&prefix);
+
+        sync_and_verify(&prefix, &source, &sink, &mut verifier, 7, 100)
+            .await
+            .unwrap();
+
+        let ctx = verifier.into_verification().unwrap();
+        assert!(!ctx.is_divergent());
+        assert_eq!(
+            ctx.branch_tips()[0].tip.event.said,
+            events.last().unwrap().event.said
+        );
+
+        let stored = sink.0.lock().unwrap();
+        assert_eq!(stored.len(), 20);
+    }
+
+    // ---- Full lifecycle: incept → interact → rotate → diverge → recover ----
+
+    #[tokio::test]
+    async fn test_full_lifecycle() {
+        // Full lifecycle test: incept, interact, rotate, adversary branches,
+        // verify divergence, owner recovers, verify recovery.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        // Normal operations
+        owner.interact(&anchor("data-1")).await.unwrap();
+        owner.interact(&anchor("data-2")).await.unwrap();
+        let rot = owner.rotate().await.unwrap();
+        owner.interact(&anchor("data-3")).await.unwrap();
+
+        // Adversary branches after rotation (has post-rotation keys).
+        // Clone at current state, then both add events at the same serial.
+        let (ck, nk, rk) = clone_keys(&owner);
+        let mut adversary = KeyEventBuilder::with_events(
+            SoftwareKeyProvider::with_all_keys(ck, nk, rk),
+            None,
+            None,
+            owner.events().to_vec(),
+        );
+        let owner_ixn2 = owner.interact(&anchor("data-4")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adversary")).await.unwrap();
+        assert_eq!(owner_ixn2.event.serial, adv_ixn.event.serial);
+
+        // Store divergent state
+        let mut all_events = owner.events().to_vec();
+        all_events.push(adv_ixn.clone());
+        sort_events(&mut all_events);
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &all_events).await.unwrap();
+
+        // Verify divergence
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            512,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.branch_tips().len(), 2);
+
+        // Owner recovers
+        let rec = owner.recover(false).await.unwrap();
+        assert!(rec.event.is_recover());
+
+        // Verify the owner's chain after recovery is clean
+        let recovered_ctx = verify(owner.events());
+        assert!(!recovered_ctx.is_divergent());
+        assert!(
+            recovered_ctx
+                .last_establishment_event()
+                .unwrap()
+                .event
+                .is_recover()
+        );
+
+        // The recovery event should be signed by the new key
+        let rec_key = rec.event.public_key.as_ref().unwrap();
+        assert_ne!(rec_key, rot.event.public_key.as_ref().unwrap());
+    }
+
+    // ---- from_branch_tip used for recovery verification ----
+
+    #[tokio::test]
+    async fn test_from_branch_tip_for_recovery_path() {
+        // Simulate the submit handler's recovery verification path:
+        // verify a divergent KEL, pick the owner branch tip, then verify
+        // recovery events against that specific branch.
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let mut adversary = owner.clone();
+
+        owner.interact(&anchor("owner")).await.unwrap();
+        let _adv_ixn = adversary.interact(&anchor("adv")).await.unwrap();
+
+        // Owner continues and recovers
+        let owner_ixn2 = owner.interact(&anchor("owner2")).await.unwrap();
+        let rec = owner.recover(false).await.unwrap();
+
+        // Construct a branch tip for the owner's pre-recovery state
+        let owner_tip = BranchTip {
+            tip: owner_ixn2.clone(),
+            establishment_tip: icp.clone(),
+        };
+
+        // Verify recovery event against owner branch
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip);
+        verifier.verify_page(std::slice::from_ref(&rec)).unwrap();
+        let ctx = verifier.into_verification().unwrap();
+
+        assert!(!ctx.is_divergent());
+        assert!(ctx.last_establishment_event().unwrap().event.is_recover());
+    }
+
+    // ---- Verification SAID is content-addressable ----
+
+    #[tokio::test]
+    async fn test_verification_said_is_content_addressable() {
+        // Two independent verifications of the same events must produce
+        // the same Verification SAID.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&anchor("a")).await.unwrap();
+        builder.rotate().await.unwrap();
+
+        let events = builder.events().to_vec();
+        let ctx1 = verify(&events);
+        let ctx2 = verify(&events);
+
+        assert_eq!(ctx1.said(), ctx2.said());
+    }
+
+    // ---- Empty KEL produces empty Verification ----
+
+    #[tokio::test]
+    async fn test_empty_kel_verification() {
+        let store = MemoryStore::new();
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            "ENonexistent_Prefix_________________________",
+            512,
+            10,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(ctx.is_empty());
+        assert!(!ctx.is_divergent());
+        assert!(!ctx.is_contested());
+        assert!(ctx.current_public_key().is_none());
+        assert!(ctx.effective_tail_said().is_none());
+    }
+
+    // ---- Rotate recovery (ror) verification ----
+
+    #[tokio::test]
+    async fn test_rotate_recovery_changes_recovery_key() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let ror = builder.rotate_recovery().await.unwrap();
+
+        assert!(ror.event.reveals_recovery_key());
+        assert!(ror.event.recovery_key.is_some());
+        assert!(ror.event.recovery_hash.is_some());
+
+        // Verify the forward commitment: inception's recovery_hash should
+        // match hash of the recovery key revealed in ror
+        let icp_recovery_hash = icp.event.recovery_hash.as_ref().unwrap();
+        let ror_recovery_key = ror.event.recovery_key.as_ref().unwrap();
+        assert_eq!(
+            *icp_recovery_hash,
+            compute_rotation_hash(ror_recovery_key),
+            "Recovery key revealed in ror must match inception's recovery_hash commitment"
+        );
+
+        let ctx = verify(builder.events());
+        assert!(!ctx.is_divergent());
+        assert!(!ctx.is_contested());
+    }
+
+    // ---- Verification rejects wrong prefix ----
+
+    #[tokio::test]
+    async fn test_rejects_wrong_prefix() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+
+        let mut verifier = KelVerifier::new("EWrongPrefix____________________________________");
+        let result = verifier.verify_page(builder.events());
+        assert!(result.is_err());
+    }
+
+    // ---- Verification rejects non-sequential serials ----
+
+    #[tokio::test]
+    async fn test_rejects_serial_gap() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&anchor("a")).await.unwrap();
+        builder.interact(&anchor("b")).await.unwrap();
+
+        let events = builder.events().to_vec();
+        // Skip serial 1, feed serial 0 then serial 2
+        let prefix = events[0].event.prefix.clone();
+        let mut verifier = KelVerifier::new(&prefix);
+        verifier
+            .verify_page(std::slice::from_ref(&events[0]))
+            .unwrap();
+        let result = verifier.verify_page(std::slice::from_ref(&events[2]));
+        assert!(result.is_err());
+    }
+
+    // ---- Small page sizes force many pages ----
+
+    #[tokio::test]
+    async fn test_tiny_page_size_verifies_correctly() {
+        // Use page_size=3 to force many page loads. This stress-tests the
+        // pagination loop in completed_verification.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        for i in 0..29 {
+            builder
+                .interact(&anchor(&format!("tiny-{}", i)))
+                .await
+                .unwrap();
+        }
+
+        let store = MemoryStore::new();
+        store.save(&prefix, builder.events()).await.unwrap();
+
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            3, // very small pages
+            100,
+            std::iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!ctx.is_divergent());
+        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 29);
+    }
+
+    // ---- Multi-page with anchor checking and resume combined ----
+
+    #[tokio::test]
+    async fn test_paginated_anchor_check_then_resume() {
+        // Phase 1: verify a KEL via completed_verification with anchor checking.
+        // Phase 2: add more events with new anchors, resume, verify new anchors.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let anchor1 = anchor("phase1-anchor");
+        builder.interact(&anchor1).await.unwrap();
+        for i in 0..8 {
+            builder
+                .interact(&anchor(&format!("pad-{}", i)))
+                .await
+                .unwrap();
+        }
+
+        let store = MemoryStore::new();
+        store.save(&prefix, builder.events()).await.unwrap();
+
+        // Phase 1: verify with anchor check
+        let ctx1 = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            5,
+            100,
+            vec![anchor1.clone()],
+        )
+        .await
+        .unwrap();
+        assert!(ctx1.is_said_anchored(&anchor1));
+        assert_eq!(ctx1.branch_tips()[0].tip.event.serial, 9);
+
+        // Phase 2: add more events with a new anchor
+        let anchor2 = anchor("phase2-anchor");
+        builder.interact(&anchor2).await.unwrap();
+        for i in 0..4 {
+            builder
+                .interact(&anchor(&format!("pad2-{}", i)))
+                .await
+                .unwrap();
+        }
+
+        // Resume from ctx1 and check new anchor
+        let new_events = &builder.events()[10..]; // events after ctx1
+        let mut verifier = KelVerifier::resume(&prefix, &ctx1);
+        verifier.check_anchors(vec![anchor2.clone()]);
+        verifier.verify_page(new_events).unwrap();
+        let ctx2 = verifier.into_verification().unwrap();
+
+        assert!(ctx2.is_said_anchored(&anchor2));
+        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 14);
+    }
 }
