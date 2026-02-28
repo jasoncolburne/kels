@@ -501,28 +501,43 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
 
+    // Fetch all pages
+    let mut all_events = Vec::new();
+    let mut since: Option<String> = None;
+    loop {
+        let page = client
+            .fetch_key_events(prefix, since.as_deref(), MAX_EVENTS_PER_KEL_RESPONSE)
+            .await?;
+        if page.events.is_empty() {
+            break;
+        }
+        since = page.events.last().map(|e| e.event.said.clone());
+        let has_more = page.has_more;
+        all_events.extend(page.events);
+        if !has_more {
+            break;
+        }
+    }
+
     if audit {
         println!(
             "{}",
             format!("Fetching KEL {} with audit records...", prefix).green()
         );
-        let page = client
-            .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
-            .await?;
         let audit_records = client.fetch_kel_audit(prefix).await?;
 
         println!();
         println!("{}", format!("KEL: {}", prefix).cyan().bold());
-        println!("  Events: {}", page.events.len());
+        println!("  Events: {}", all_events.len());
 
-        if let Some(last) = page.events.last() {
+        if let Some(last) = all_events.last() {
             println!("  Latest SAID: {}", last.event.said);
             println!("  Latest Type: {}", last.event.kind);
         }
 
         // Verify with KelVerifier
         let mut verifier = kels::KelVerifier::new(prefix);
-        match verifier.verify_page(&page.events) {
+        match verifier.verify_page(&all_events) {
             Ok(_) => match verifier.into_verification() {
                 Ok(ctx) => {
                     println!("  Verified: Yes");
@@ -543,7 +558,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
 
         println!();
         println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in page.events.iter().enumerate() {
+        for (i, signed_event) in all_events.iter().enumerate() {
             let event = &signed_event.event;
             println!(
                 "  [{}] {} - {}",
@@ -576,23 +591,19 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     }
 
     println!("{}", format!("Fetching KEL {}...", prefix).green());
-    let page = client
-        .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
-        .await?;
-    let events = page.events;
 
     println!();
     println!("{}", format!("KEL: {}", prefix).cyan().bold());
-    println!("  Events: {}", events.len());
+    println!("  Events: {}", all_events.len());
 
-    if let Some(last) = events.last() {
+    if let Some(last) = all_events.last() {
         println!("  Latest SAID: {}", last.event.said);
         println!("  Latest Type: {}", last.event.kind);
     }
 
     // Verify for status display
     let mut verifier = kels::KelVerifier::new(prefix);
-    if verifier.verify_page(&events).is_ok()
+    if verifier.verify_page(&all_events).is_ok()
         && let Ok(ctx) = verifier.into_verification()
     {
         if ctx.is_contested() {
@@ -610,7 +621,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
 
     println!();
     println!("{}", "Events:".yellow().bold());
-    for (i, signed_event) in events.iter().enumerate() {
+    for (i, signed_event) in all_events.iter().enumerate() {
         let event = &signed_event.event;
         println!(
             "  [{}] {} - {}",

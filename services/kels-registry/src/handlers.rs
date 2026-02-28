@@ -398,26 +398,46 @@ pub struct FederationState {
 /// the 30-second background loop may not have picked up the new anchor yet.
 async fn ensure_own_kel_synced(state: &FederationState) {
     let fut = async {
-        if let Ok(own_page) = state
+        // Determine what Raft already has — use the tip SAID as the delta cursor
+        let first_page = match state
             .identity_client
             .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
             .await
-            && let Some(first) = own_page.events.first()
         {
-            let prefix = &first.event.prefix;
-            let raft_count = state
-                .node
-                .get_member_context(prefix)
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        let prefix = match first_page.events.first() {
+            Some(e) => e.event.prefix.clone(),
+            None => return,
+        };
+
+        let raft_effective_said = state
+            .node
+            .get_member_context(&prefix)
+            .await
+            .and_then(|ctx| ctx.effective_tail_said());
+
+        // Delta fetch from Raft's effective SAID (or full fetch if Raft has nothing)
+        let mut since = raft_effective_said;
+        loop {
+            let page = match state
+                .identity_client
+                .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
                 .await
-                .and_then(|ctx| {
-                    ctx.branch_tips()
-                        .first()
-                        .map(|bt| bt.tip.event.serial as usize + 1)
-                })
-                .unwrap_or(0);
-            if own_page.events.len() > raft_count {
-                let events = own_page.events[raft_count..].to_vec();
-                let _ = state.node.submit_key_events(events).await;
+            {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            if page.events.is_empty() {
+                break;
+            }
+            let has_more = page.has_more;
+            since = page.events.last().map(|e| e.event.said.clone());
+            let _ = state.node.submit_key_events(page.events).await;
+            if !has_more {
+                break;
             }
         }
     };

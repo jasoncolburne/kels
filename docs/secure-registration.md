@@ -56,7 +56,7 @@ The registry namespace includes a dedicated identity service (single replica) th
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/identity` | Get registry prefix |
-| `GET` | `/api/identity/kel` | Get registry's KEL (paginated; `?limit=N&offset=N`) |
+| `GET` | `/api/identity/kel` | Get registry's KEL (paginated; `?limit=N&since=SAID`) |
 | `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
 | `POST` | `/api/identity/sign` | Sign data with registry's current key |
 | `POST` | `/api/identity/ecdh` | ECDH key agreement |

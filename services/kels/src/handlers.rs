@@ -391,7 +391,8 @@ pub(crate) async fn submit_events(
         }
 
         // Resume verification from the verified context
-        let mut verifier = KelVerifier::resume(&prefix, &ctx);
+        let mut verifier = KelVerifier::resume(&prefix, &ctx)
+            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
         verifier
             .verify_page(&events)
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -457,7 +458,8 @@ pub(crate) async fn submit_events(
             && ctx.branch_tips().len() == 1
             && new_first_previous == Some(ctx.branch_tips()[0].tip.event.said.as_str())
         {
-            let mut verifier = KelVerifier::resume(&prefix, &ctx);
+            let mut verifier = KelVerifier::resume(&prefix, &ctx)
+                .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
             verifier
                 .verify_page(&new_events)
                 .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -824,7 +826,8 @@ async fn handle_divergent_submission(
         }
 
         // 5. Verify the contest event against the verified chain
-        let mut verifier = KelVerifier::resume(prefix, &full_ctx);
+        let mut verifier = KelVerifier::resume(prefix, &full_ctx)
+            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
         verifier
             .verify_page(std::slice::from_ref(first))
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -889,7 +892,8 @@ async fn handle_divergent_submission(
             establishment_tip: establishment,
         };
 
-        let mut event_verifier = KelVerifier::from_branch_tip(prefix, &anchor_tip);
+        let mut event_verifier = KelVerifier::from_branch_tip(prefix, &anchor_tip)
+            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
         event_verifier
             .verify_page(new_events)
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -990,7 +994,8 @@ async fn handle_overlap_submission(
     };
 
     // Verify submitted events against the branch point state
-    let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip);
+    let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip)
+        .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
     verifier
         .verify_page(new_events)
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
@@ -1419,8 +1424,7 @@ pub(crate) async fn get_kels_batch(
                         // Fast path: return cached bytes directly (cached KELs ≤ limit)
                         if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
                         {
-                            // Cached KELs are always ≤ MAX_EVENTS_PER_KEL_RESPONSE
-                            let page_bytes = build_page_bytes(&bytes, false);
+                            let page_bytes = build_page_bytes(&bytes);
                             return Ok((prefix, page_bytes));
                         }
 
@@ -1545,15 +1549,13 @@ pub(crate) async fn get_kels_batch(
 }
 
 /// Wrap cached event bytes (a JSON array) into a SignedKeyEventPage JSON object.
-fn build_page_bytes(event_array_bytes: &[u8], has_more: bool) -> Vec<u8> {
+/// Cached KELs are always ≤ MAX_EVENTS_PER_KEL_RESPONSE, so hasMore is always false.
+fn build_page_bytes(event_array_bytes: &[u8]) -> Vec<u8> {
     // {"events":<array>,"hasMore":false}
-    let has_more_str = if has_more { "true" } else { "false" };
     let mut bytes = Vec::with_capacity(event_array_bytes.len() + 30);
     bytes.extend_from_slice(b"{\"events\":");
     bytes.extend_from_slice(event_array_bytes);
-    bytes.extend_from_slice(b",\"hasMore\":");
-    bytes.extend_from_slice(has_more_str.as_bytes());
-    bytes.push(b'}');
+    bytes.extend_from_slice(b",\"hasMore\":false}");
     bytes
 }
 

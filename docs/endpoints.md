@@ -29,7 +29,7 @@ HSM-backed key management for cryptographic identity (KEL). Used by both registr
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check probe |
 | GET | `/api/identity` | None | Get registry prefix |
-| GET | `/api/identity/kel` | None | Get registry KEL (paginated; `?limit=N&offset=N`); returns `SignedKeyEventPage {events, hasMore}` |
+| GET | `/api/identity/kel` | None | Get registry KEL (paginated; `?limit=N&since=SAID`); returns `SignedKeyEventPage {events, hasMore}` |
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
@@ -37,7 +37,7 @@ HSM-backed key management for cryptographic identity (KEL). Used by both registr
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 512) and `?offset=N` (default 0)
+- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 512) and `?since=SAID` for delta fetch
 - Sign returns qb64-encoded signature + public key
 - Rotate accepts `SignedRequest<RotateRequest>` — signature verified against own KEL. Mode can be `standard` (signing key), `recovery` (recovery key), or `scheduled` (auto-selects based on rotation count). All rotations go through `perform_rotation()` which updates the builder's key provider in-place, keeping the server in sync. Also called internally by the auto-rotation loop (every 30 days).
 - No external network exposure expected

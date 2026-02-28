@@ -118,7 +118,7 @@ async fn apply_submit_key_events(
 
     // Step 4: Resume verifier from DB state and verify new events
     let mut verifier = if let Some(ref ctx) = db_verification {
-        kels::KelVerifier::resume(&prefix, ctx)
+        kels::KelVerifier::resume(&prefix, ctx)?
     } else {
         kels::KelVerifier::new(&prefix)
     };

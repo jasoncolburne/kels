@@ -147,7 +147,7 @@ pub async fn get_identity(
 #[derive(Debug, Deserialize)]
 pub struct KeyEventsQuery {
     pub limit: Option<usize>,
-    pub offset: Option<u64>,
+    pub since: Option<String>,
 }
 
 /// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
@@ -164,11 +164,19 @@ pub async fn get_key_events(
         .limit
         .unwrap_or(MAX_EVENTS_PER_KEL_QUERY)
         .min(MAX_EVENTS_PER_KEL_QUERY);
-    let offset = query.offset.unwrap_or(0);
+
+    if let Some(ref since_said) = query.since {
+        let (events, has_more) = state
+            .kel_repo
+            .get_signed_history_since(prefix, since_said, limit as u64)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to fetch key events: {}", e)))?;
+        return Ok(Json(SignedKeyEventPage { events, has_more }));
+    }
 
     let (events, has_more) = state
         .kel_store
-        .load(prefix, limit as u64, offset)
+        .load(prefix, limit as u64, 0)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch key events: {}", e)))?;
 

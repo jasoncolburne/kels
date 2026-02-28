@@ -6,7 +6,9 @@ use kels::KeyEvent;
 use libkels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
-use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
+use verifiable_storage_postgres::{
+    Filter, Order, PgPool, Query, QueryExecutor, ScalarSubquery, Stored, Value,
+};
 
 /// Maps KEL state to HSM key handles. Updated only on establishment events (icp, rot).
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -125,6 +127,71 @@ impl KeyEventRepository {
             prefix: prefix.to_string(),
         })
     }
+
+    /// Fetch signed events after a given SAID (delta fetch).
+    /// Uses the since event's serial to find events at >= that serial,
+    /// then filters out the since event itself.
+    pub async fn get_signed_history_since(
+        &self,
+        prefix: &str,
+        since_said: &str,
+        limit: u64,
+    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
+        let subquery = ScalarSubquery::new(
+            Self::TABLE_NAME,
+            "serial",
+            vec![Filter::Eq(
+                "said".to_string(),
+                Value::String(since_said.to_string()),
+            )],
+        );
+
+        // Fetch limit + 2: one extra for the since event we'll filter out, one extra for has_more
+        let clamped_limit = limit.min(i64::MAX as u64 - 2);
+        let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .gte_scalar_subquery("serial", subquery)
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc)
+            .limit(clamped_limit + 2);
+        let mut events: Vec<KeyEvent> = self.pool.fetch(query).await?;
+
+        // Filter out the since event itself
+        events.retain(|e| e.said != since_said);
+
+        let has_more = events.len() > clamped_limit as usize;
+        if has_more {
+            events.truncate(limit as usize);
+        }
+
+        if events.is_empty() {
+            return Ok((vec![], false));
+        }
+
+        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+        let sig_query = Query::<kels::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
+            .r#in("event_said", saids);
+        let signatures: Vec<kels::EventSignature> = self.pool.fetch(sig_query).await?;
+        let mut sig_map: std::collections::HashMap<String, Vec<kels::EventSignature>> =
+            std::collections::HashMap::new();
+        for sig in signatures {
+            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        }
+
+        let mut result = Vec::with_capacity(events.len());
+        for event in events {
+            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+                StorageError::StorageError(format!("No signatures found for event {}", event.said))
+            })?;
+            let sig_pairs: Vec<(String, String)> = sigs
+                .iter()
+                .map(|s| (s.public_key.clone(), s.signature.clone()))
+                .collect();
+            result.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
+        }
+
+        Ok((result, has_more))
+    }
 }
 
 /// Transaction with advisory lock on a KEL prefix.
@@ -144,7 +211,6 @@ impl LockedKelTransaction {
         let clamped_limit = limit.min(i64::MAX as u64 - 1);
         let query = Query::<KeyEvent>::for_table(KeyEventRepository::TABLE_NAME)
             .eq("prefix", &self.prefix)
-            .gte("serial", 0u64)
             .order_by("serial", Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 1)

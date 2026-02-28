@@ -36,6 +36,28 @@ struct BranchState {
     pending_recovery_hash: Option<String>,
 }
 
+fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsError> {
+    let pk = tip
+        .establishment_tip
+        .event
+        .public_key
+        .as_ref()
+        .ok_or_else(|| {
+            KelsError::InvalidKel("Branch tip establishment event has no public key".into())
+        })?;
+
+    Ok((
+        tip.tip.event.said.clone(),
+        BranchState {
+            tip: tip.tip.clone(),
+            establishment_tip: tip.establishment_tip.clone(),
+            current_public_key: pk.clone(),
+            pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
+            pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
+        },
+    ))
+}
+
 /// Stateful forward-walking chain verifier.
 ///
 /// Verifies events incrementally, page by page. Tracks evolving cryptographic state
@@ -86,26 +108,16 @@ impl KelVerifier {
     /// Used for divergence/recovery scenarios where events need to be verified
     /// against a specific branch (not all branches). Creates a single-branch
     /// verifier from the branch tip's crypto state.
-    pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Self {
+    pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
-        if let Some(ref pk) = tip.establishment_tip.event.public_key {
-            branches.insert(
-                tip.tip.event.said.clone(),
-                BranchState {
-                    tip: tip.tip.clone(),
-                    establishment_tip: tip.establishment_tip.clone(),
-                    current_public_key: pk.clone(),
-                    pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
-                    pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
-                },
-            );
-        }
+        let (said, state) = branch_state_from_tip(tip)?;
+        branches.insert(said, state);
 
         let last_verified_serial = Some(tip.tip.event.serial);
 
-        Self {
+        Ok(Self {
             prefix,
             branches,
             last_verified_serial,
@@ -113,32 +125,22 @@ impl KelVerifier {
             is_contested: false,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
-        }
+        })
     }
 
     /// Resume from a verified `Verification`.
-    pub fn resume(prefix: impl Into<String>, ctx: &Verification) -> Self {
+    pub fn resume(prefix: impl Into<String>, ctx: &Verification) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
         for bt in ctx.branch_tips() {
-            if let Some(ref pk) = bt.establishment_tip.event.public_key {
-                branches.insert(
-                    bt.tip.event.said.clone(),
-                    BranchState {
-                        tip: bt.tip.clone(),
-                        establishment_tip: bt.establishment_tip.clone(),
-                        current_public_key: pk.clone(),
-                        pending_rotation_hash: bt.establishment_tip.event.rotation_hash.clone(),
-                        pending_recovery_hash: bt.establishment_tip.event.recovery_hash.clone(),
-                    },
-                );
-            }
+            let (said, state) = branch_state_from_tip(bt)?;
+            branches.insert(said, state);
         }
 
         let last_verified_serial = ctx.branch_tips().iter().map(|bt| bt.tip.event.serial).max();
 
-        Self {
+        Ok(Self {
             prefix,
             branches,
             last_verified_serial,
@@ -146,7 +148,7 @@ impl KelVerifier {
             is_contested: ctx.is_contested(),
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
-        }
+        })
     }
 
     /// Register SAIDs to check for anchoring during verification.
@@ -359,14 +361,6 @@ impl KelVerifier {
         // Verify signature with the event's own public key
         let public_key = PublicKey::from_qb64(qb64)?;
         Self::verify_signatures(signed_event, &public_key)?;
-
-        // Anchor checking
-        if event.is_interaction()
-            && let Some(ref anchor) = event.anchor
-            && self.queried_saids.contains(anchor.as_str())
-        {
-            self.anchored_saids.insert(anchor.clone());
-        }
 
         // Initialize branch
         self.branches.insert(
@@ -1562,7 +1556,7 @@ mod tests {
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
 
         let prefix = ctx.prefix().to_string();
-        let mut verifier = KelVerifier::resume(&prefix, &ctx);
+        let mut verifier = KelVerifier::resume(&prefix, &ctx).unwrap();
         verifier.verify_page(std::slice::from_ref(&ixn2)).unwrap();
         let ctx2 = verifier.into_verification().unwrap();
 
@@ -1587,7 +1581,7 @@ mod tests {
 
         let owner_ixn2 = owner.interact(&anchor("owner2")).await.unwrap();
 
-        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip);
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip).unwrap();
         verifier
             .verify_page(std::slice::from_ref(&owner_ixn2))
             .unwrap();
@@ -2043,13 +2037,13 @@ mod tests {
 
         // Resume and verify next 10
         let prefix = ctx1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &ctx1);
+        let mut v2 = KelVerifier::resume(&prefix, &ctx1).unwrap();
         v2.verify_page(&events[10..20]).unwrap();
         let ctx2 = v2.into_verification().unwrap();
         assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 19);
 
         // Resume and verify last 10
-        let mut v3 = KelVerifier::resume(&prefix, &ctx2);
+        let mut v3 = KelVerifier::resume(&prefix, &ctx2).unwrap();
         v3.verify_page(&events[20..30]).unwrap();
         let ctx3 = v3.into_verification().unwrap();
         assert_eq!(ctx3.branch_tips()[0].tip.event.serial, 29);
@@ -2086,7 +2080,7 @@ mod tests {
         sort_events(&mut page2);
 
         let prefix = ctx1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &ctx1);
+        let mut v2 = KelVerifier::resume(&prefix, &ctx1).unwrap();
         v2.verify_page(&page2).unwrap();
         let ctx2 = v2.into_verification().unwrap();
 
@@ -2443,7 +2437,7 @@ mod tests {
         };
 
         // Verify recovery event against owner branch
-        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip);
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip).unwrap();
         verifier.verify_page(std::slice::from_ref(&rec)).unwrap();
         let ctx = verifier.into_verification().unwrap();
 
@@ -2631,7 +2625,7 @@ mod tests {
 
         // Resume from ctx1 and check new anchor
         let new_events = &builder.events()[10..]; // events after ctx1
-        let mut verifier = KelVerifier::resume(&prefix, &ctx1);
+        let mut verifier = KelVerifier::resume(&prefix, &ctx1).unwrap();
         verifier.check_anchors(vec![anchor2.clone()]);
         verifier.verify_page(new_events).unwrap();
         let ctx2 = verifier.into_verification().unwrap();
