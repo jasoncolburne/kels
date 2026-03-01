@@ -154,7 +154,7 @@ Gossip nodes use persistent HSM-backed identities:
 - Uses the `serial` field on `KeyEvent` for efficient DB-ordered queries (`ORDER BY serial ASC`)
 - Falls back to **full KEL fetch** when delta is unavailable (e.g., new prefix, network error)
 - **Recovery-aware audit fetch**: when a delta fetch fails with `KeyNotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/kels/kel/:prefix` + `/api/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
-- Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split at the first recovery-revealing event and submitted in stages so merge() processes recovery correctly
+- Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split before the event preceding the first recovery-revealing event and submitted in stages so merge() processes recovery correctly. The owner's event at the divergence serial is bundled with the recovery event — this ensures nodes that have only adversary events at that serial (no owner event) can insert the owner event as part of recovery processing (the submit handler's divergent recovery branch handles this via look-ahead for `rec` in the batch)
 - KELS handles duplicate events idempotently
 
 ### Registry-based discovery (not hardcoded bootstrap peers)
@@ -256,7 +256,9 @@ The gossip layer doesn't need special divergence logic - KELS handles all verifi
 
 `clients/test/scripts/test-adversarial-advanced.sh` verifies multi-node adversarial scenarios:
 - Dual adversary injection on separate nodes + owner recovery propagation
-- Triple simultaneous events (adversary + adversary + owner) with delayed gossip
+- Triple adversary injection (3 adversary events on 3 nodes) + owner recovery
+- Triple simultaneous events (2 adversary + 1 owner on 3 nodes) causing mixed divergence pairs across nodes + owner recovery propagation
+- Adversary attack timed with owner recovery-rotation (ror), then owner recovery
 
 `clients/test/scripts/test-consistency.sh` verifies cross-node consistency:
 - All nodes have the same set of prefixes

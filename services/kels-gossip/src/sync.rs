@@ -347,16 +347,22 @@ impl SyncHandler {
                                     // Step 1: Submit archived adversary events
                                     let _ = self.submit_events_to_kels(&archived_events).await;
 
-                                    // Step 2+3: Split clean chain at first recovery-revealing event.
+                                    // Step 2+3: Split clean chain before the event preceding the
+                                    // first recovery-revealing event. This bundles the owner's
+                                    // event at the divergence serial with rec, so nodes that have
+                                    // only adversary events at that serial can insert the owner
+                                    // event as part of recovery.
                                     let applied = if let Some(idx) = clean_chain
                                         .iter()
                                         .position(|e| e.event.reveals_recovery_key())
-                                        && idx > 0
+                                        && idx > 1
                                     {
-                                        let _ =
-                                            self.submit_events_to_kels(&clean_chain[..idx]).await;
-                                        let recovery_applied =
-                                            self.submit_events_to_kels(&clean_chain[idx..]).await?;
+                                        let _ = self
+                                            .submit_events_to_kels(&clean_chain[..idx - 1])
+                                            .await;
+                                        let recovery_applied = self
+                                            .submit_events_to_kels(&clean_chain[idx - 1..])
+                                            .await?;
                                         if !recovery_applied {
                                             self.submit_events_to_kels(&clean_chain).await?
                                         } else {
