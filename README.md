@@ -130,6 +130,13 @@ make clean        # Clean build artifacts
 make test-comprehensive   # Deploy all services and run full test suite
 ```
 
+`make test-comprehensive` leaves a working stack running in Kubernetes. You can play with it, or
+bring it down entirely with:
+
+```bash
+make clean-garden
+```
+
 ### Deploying with Garden
 
 Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
@@ -138,7 +145,7 @@ Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
 
 First, add the following entries to `/etc/hosts` to enable local hostname resolution:
 
-```
+```text
 127.0.0.1 kels.kels-node-a.kels
 127.0.0.1 kels.kels-node-b.kels
 127.0.0.1 kels.kels-node-c.kels
