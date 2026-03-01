@@ -46,6 +46,8 @@ pub mod serving;
 pub mod store;
 pub mod types;
 
+use std::env;
+
 #[cfg(feature = "redis")]
 pub use cache::{
     LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
@@ -104,7 +106,7 @@ pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
 
 /// Read the max verification pages from env, falling back to the default.
 pub fn max_verification_pages() -> usize {
-    std::env::var("KELS_MAX_VERIFICATION_PAGES")
+    env::var("KELS_MAX_VERIFICATION_PAGES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_MAX_VERIFICATION_PAGES)

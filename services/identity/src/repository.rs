@@ -1,5 +1,7 @@
 //! PostgreSQL Repository for Identity Service
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use kels::{EventKind, KelServer, KelsError, KeyEvent, SignedKeyEvent};
@@ -176,8 +178,7 @@ impl KeyEventRepository {
         let sig_query = Query::<kels::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
             .r#in("event_said", saids);
         let signatures: Vec<kels::EventSignature> = self.pool.fetch(sig_query).await?;
-        let mut sig_map: std::collections::HashMap<String, Vec<kels::EventSignature>> =
-            std::collections::HashMap::new();
+        let mut sig_map: HashMap<String, Vec<kels::EventSignature>> = HashMap::new();
         for sig in signatures {
             sig_map.entry(sig.event_said.clone()).or_default().push(sig);
         }
@@ -306,8 +307,7 @@ impl LockedKelTransaction {
             Query::<kels::EventSignature>::for_table(KeyEventRepository::SIGNATURES_TABLE_NAME)
                 .r#in("event_said", saids);
         let signatures: Vec<kels::EventSignature> = self.tx.fetch(sig_query).await?;
-        let mut sig_map: std::collections::HashMap<String, Vec<kels::EventSignature>> =
-            std::collections::HashMap::new();
+        let mut sig_map: HashMap<String, Vec<kels::EventSignature>> = HashMap::new();
         for sig in signatures {
             sig_map.entry(sig.event_said.clone()).or_default().push(sig);
         }

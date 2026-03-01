@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    process,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -10,7 +11,7 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinSet};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
@@ -411,7 +412,7 @@ async fn main() -> Result<()> {
         Ok(_) => println!("{}", "KELS server is healthy!".green()),
         Err(e) => {
             eprintln!("{}", format!("KELS server not available: {}", e).red());
-            std::process::exit(1);
+            process::exit(1);
         }
     }
 
@@ -419,7 +420,7 @@ async fn main() -> Result<()> {
         let prefix = args
             .prefix
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("--skip-setup requires --prefix to be specified"))?;
+            .ok_or_else(|| anyhow!("--skip-setup requires --prefix to be specified"))?;
         setup_existing_kels(&args.url, prefix).await?
     } else {
         setup_new_kels(&client, &args.url).await?

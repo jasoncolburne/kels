@@ -39,7 +39,7 @@ mod repository;
 mod server;
 mod sync;
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info};
 
@@ -211,25 +211,25 @@ impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ServiceError> {
         let env = EnvValues {
-            node_id: std::env::var("NODE_ID").ok(),
-            kels_url: std::env::var("KELS_URL").ok(),
-            kels_advertise_url: std::env::var("KELS_ADVERTISE_URL").ok(),
-            database_url: std::env::var("DATABASE_URL").ok(),
-            redis_url: std::env::var("REDIS_URL").ok(),
-            hsm_url: std::env::var("HSM_URL").ok(),
-            identity_url: std::env::var("IDENTITY_URL").ok(),
-            federation_registry_urls: std::env::var("FEDERATION_REGISTRY_URLS").ok(),
-            listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
-            advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
-            topic: std::env::var("GOSSIP_TOPIC").ok(),
-            allowlist_refresh_interval_secs: std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
+            node_id: env::var("NODE_ID").ok(),
+            kels_url: env::var("KELS_URL").ok(),
+            kels_advertise_url: env::var("KELS_ADVERTISE_URL").ok(),
+            database_url: env::var("DATABASE_URL").ok(),
+            redis_url: env::var("REDIS_URL").ok(),
+            hsm_url: env::var("HSM_URL").ok(),
+            identity_url: env::var("IDENTITY_URL").ok(),
+            federation_registry_urls: env::var("FEDERATION_REGISTRY_URLS").ok(),
+            listen_addr: env::var("GOSSIP_LISTEN_ADDR").ok(),
+            advertise_addr: env::var("GOSSIP_ADVERTISE_ADDR").ok(),
+            topic: env::var("GOSSIP_TOPIC").ok(),
+            allowlist_refresh_interval_secs: env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
-            http_listen_host: std::env::var("HTTP_LISTEN_HOST").ok(),
-            http_listen_port: std::env::var("HTTP_LISTEN_PORT")
+            http_listen_host: env::var("HTTP_LISTEN_HOST").ok(),
+            http_listen_port: env::var("HTTP_LISTEN_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok()),
-            anti_entropy_interval_secs: std::env::var("ANTI_ENTROPY_INTERVAL_SECS")
+            anti_entropy_interval_secs: env::var("ANTI_ENTROPY_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
         };

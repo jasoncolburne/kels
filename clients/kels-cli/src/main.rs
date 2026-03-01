@@ -1,10 +1,10 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::path::PathBuf;
+use std::{iter, path::PathBuf};
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
@@ -208,7 +208,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
         let registry_urls = parse_registry_urls(&cli.registry);
         if registry_urls.is_empty() {
-            return Err(anyhow::anyhow!("No registry URLs provided"));
+            return Err(anyhow!("No registry URLs provided"));
         }
 
         let mut registry_client = MultiRegistryClient::new(registry_urls);
@@ -234,7 +234,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
 
         let url = match nodes.first() {
             Some(n) => n.kels_url.clone(),
-            None => return Err(anyhow::anyhow!("Failed to find kels url of fastest node")),
+            None => return Err(anyhow!("Failed to find kels url of fastest node")),
         };
         Ok(KelsClient::new(&url))
     } else {
@@ -252,7 +252,7 @@ fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     let registry_urls = parse_registry_urls(&cli.registry);
     if registry_urls.is_empty() {
-        return Err(anyhow::anyhow!("No registry URLs provided"));
+        return Err(anyhow!("No registry URLs provided"));
     }
 
     println!(
@@ -350,7 +350,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         }) => {
             // Keys were committed internally - save them before returning error
             config.save_provider(builder.key_provider()).await?;
-            Err(anyhow::anyhow!(
+            Err(anyhow!(
                 "Divergence detected at: {}, submission_accepted: true",
                 diverged_at
             ))
@@ -528,7 +528,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         max_verification_pages(),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    .map_err(|e| anyhow!("{}", e))?;
 
     if audit {
         println!(
@@ -651,12 +651,12 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
         kels::max_verification_pages(),
-        std::iter::empty(),
+        iter::empty(),
     )
     .await?;
 
     if ctx.is_empty() {
-        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+        return Err(anyhow!("KEL not found locally: {}", prefix));
     }
 
     let event_count = ctx
@@ -803,7 +803,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
         .load(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
         .await?;
     if events.is_empty() {
-        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+        return Err(anyhow!("KEL not found locally: {}", prefix));
     }
     if count >= events.len() {
         println!(
@@ -835,10 +835,10 @@ async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
         max_verification_pages(),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    .map_err(|e| anyhow!("{}", e))?;
 
     if all_events.is_empty() {
-        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+        return Err(anyhow!("KEL not found locally: {}", prefix));
     }
 
     let json = serde_json::to_string_pretty(&all_events)?;
@@ -866,9 +866,9 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
         max_verification_pages(),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
-        return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
+        return Err(anyhow!("KEL not found locally: {}", prefix));
     }
 
     // Load the key provider (adversary has the same keys as owner)

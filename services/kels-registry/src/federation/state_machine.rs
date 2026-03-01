@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     io::{self, Cursor},
+    iter,
     sync::Arc,
 };
 use tokio::sync::Mutex;
@@ -45,7 +46,7 @@ async fn apply_submit_key_events(
         &prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
         kels::max_verification_pages(),
-        std::iter::empty::<String>(),
+        iter::empty::<String>(),
     )
     .await;
 
@@ -181,7 +182,7 @@ async fn verify_member_anchoring_from_repo(
         member_prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
         kels::max_verification_pages(),
-        std::iter::once(said.to_string()),
+        iter::once(said.to_string()),
     )
     .await
     .map_err(|e| format!("Member KEL verification failed: {}", e))?;

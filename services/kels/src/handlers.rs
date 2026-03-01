@@ -16,9 +16,12 @@ use kels::{
     MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache, SignedKeyEvent,
     SignedKeyEventPage, Verification,
 };
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    iter, slice,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tracing::{debug, warn};
 
 use crate::repository::KelsRepository;
@@ -347,7 +350,7 @@ pub(crate) async fn submit_events(
         &prefix,
         MAX_EVENTS_PER_KEL_QUERY as u64,
         kels::max_verification_pages(),
-        std::iter::empty(),
+        iter::empty(),
     )
     .await
     .map_err(|e| ApiError::internal_error(format!("KEL verification failed: {}", e)))?;
@@ -812,7 +815,7 @@ async fn handle_divergent_submission(
             prefix,
             MAX_EVENTS_PER_KEL_QUERY as u64,
             kels::max_verification_pages(),
-            std::iter::empty::<String>(),
+            iter::empty::<String>(),
         )
         .await
         .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
@@ -839,7 +842,7 @@ async fn handle_divergent_submission(
         let mut verifier = KelVerifier::resume(prefix, &full_ctx)
             .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
         verifier
-            .verify_page(std::slice::from_ref(first))
+            .verify_page(slice::from_ref(first))
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
         tx.insert_signed_event(first).await?;
@@ -1277,7 +1280,7 @@ pub(crate) async fn list_prefixes(
             &signed_request.peer_prefix,
             MAX_EVENTS_PER_KEL_QUERY as u64,
             kels::max_verification_pages(),
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;

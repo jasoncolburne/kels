@@ -14,11 +14,10 @@ use kels::{
     SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider,
 };
 use reqwest::Client;
-use std::net::TcpListener;
-use std::sync::OnceLock;
+use std::{collections::HashMap, net::TcpListener, sync::OnceLock, time::Duration};
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
-use tokio::sync::OnceCell;
+use tokio::{sync::OnceCell, time::sleep};
 
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
 
@@ -43,7 +42,7 @@ async fn retry_get_port<I: Image>(container: &ContainerAsync<I>, port: u16) -> O
         if let Ok(p) = container.get_host_port_ipv4(port).await {
             return Some(p);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
     }
     None
 }
@@ -166,7 +165,7 @@ impl SharedHarness {
         // Wait for server to be ready with timeout detection
         let health_url = format!("{}/health", base_url);
         let startup_client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
 
@@ -180,7 +179,7 @@ impl SharedHarness {
                 }
                 Ok(_) => {
                     consecutive_refused = 0;
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    sleep(Duration::from_millis(100)).await;
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -192,7 +191,7 @@ impl SharedHarness {
                     } else {
                         consecutive_refused = 0;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    sleep(Duration::from_millis(100)).await;
                 }
             }
         }
@@ -216,7 +215,7 @@ impl SharedHarness {
 
     fn client(&self) -> Client {
         Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap()
     }
@@ -399,8 +398,7 @@ async fn test_batch_get_kels() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, SignedKeyEventPage> =
-        response.json().await.unwrap();
+    let result: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
     assert_eq!(result.len(), 2);
     assert!(result.contains_key(&prefix1));
     assert!(result.contains_key(&prefix2));
@@ -597,7 +595,7 @@ async fn test_batch_kels_exceeds_max_prefixes() {
     };
 
     // Create request with 65 prefixes (max is 64)
-    let prefixes: std::collections::HashMap<String, Option<String>> =
+    let prefixes: HashMap<String, Option<String>> =
         (0..65).map(|i| (format!("prefix_{}", i), None)).collect();
     let request = BatchKelsRequest { prefixes };
 
@@ -671,8 +669,7 @@ async fn test_batch_get_kels_with_missing_prefixes() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, SignedKeyEventPage> =
-        response.json().await.unwrap();
+    let result: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
 
     // Both prefixes should be in result, but nonexistent will have empty events
     assert!(result.contains_key(&existing_prefix));
@@ -998,8 +995,7 @@ async fn test_batch_fetch_multi_page_kels() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, SignedKeyEventPage> =
-        response.json().await.unwrap();
+    let result: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
     assert_eq!(result.len(), 2);
 
     // Both should have exactly 512 events (the max per response) and hasMore=true
@@ -1080,8 +1076,7 @@ async fn test_batch_fetch_with_since_skips_known_events() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, SignedKeyEventPage> =
-        response.json().await.unwrap();
+    let result: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
     let page = result.get(&prefix).unwrap();
     assert_eq!(page.events.len(), 2); // events at index 511 and 512
     assert!(!page.has_more);
@@ -1121,8 +1116,7 @@ async fn test_batch_fetch_asymmetric_multi_page_kels() {
 
     assert_eq!(response.status(), 200);
 
-    let result: std::collections::HashMap<String, SignedKeyEventPage> =
-        response.json().await.unwrap();
+    let result: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
 
     // Both truncated to 512, both have more
     let page_large = result.get(&prefix_large).unwrap();
@@ -1134,9 +1128,8 @@ async fn test_batch_fetch_asymmetric_multi_page_kels() {
 
     // Simulate a real client pagination loop using the batch endpoint.
     // Each iteration sends a batch request for only the prefixes that still have more pages.
-    let mut all_events: std::collections::HashMap<String, Vec<SignedKeyEvent>> =
-        std::collections::HashMap::new();
-    let mut cursors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut all_events: HashMap<String, Vec<SignedKeyEvent>> = HashMap::new();
+    let mut cursors: HashMap<String, String> = HashMap::new();
 
     for (prefix, page) in &result {
         all_events.insert(prefix.clone(), page.events.clone());
@@ -1171,8 +1164,7 @@ async fn test_batch_fetch_asymmetric_multi_page_kels() {
 
         assert_eq!(response.status(), 200);
 
-        let pages: std::collections::HashMap<String, SignedKeyEventPage> =
-            response.json().await.unwrap();
+        let pages: HashMap<String, SignedKeyEventPage> = response.json().await.unwrap();
 
         // Only the in-flight prefixes should be in the response
         assert_eq!(pages.len(), cursors.len());

@@ -1,6 +1,6 @@
 //! Identity Service REST API Handlers
 
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 use tokio::sync::RwLock;
 
 use axum::{
@@ -296,7 +296,7 @@ pub async fn rotate(
         &prefix,
         MAX_EVENTS_PER_KEL_QUERY as u64,
         kels::max_verification_pages(),
-        std::iter::empty(),
+        iter::empty(),
     )
     .await
     .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;

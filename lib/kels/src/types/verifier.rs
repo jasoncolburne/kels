@@ -10,7 +10,10 @@
 //! `PagedKelSource` / `PagedKelSink` / `transfer_key_events` provide divergence-aware
 //! streaming of events from a source through a verifier into a destination.
 
-use std::collections::{BTreeSet, HashMap};
+use std::{
+    collections::{BTreeSet, HashMap},
+    slice,
+};
 
 use async_trait::async_trait;
 use cesr::{Digest, Matter, PublicKey, Signature};
@@ -1066,9 +1069,9 @@ async fn transfer_key_events(
     // this only fires if we ran out of max_pages with an event still held)
     if let Some(ref held) = held_back {
         if let Some(ref mut v) = verifier {
-            v.verify_page(std::slice::from_ref(held))?;
+            v.verify_page(slice::from_ref(held))?;
         }
-        sink.store_page(prefix, std::slice::from_ref(held)).await?;
+        sink.store_page(prefix, slice::from_ref(held)).await?;
     }
 
     // Flush deferred event last
@@ -1251,7 +1254,11 @@ pub fn partition_for_submission(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::RwLock};
+    use std::{
+        collections::{HashMap, HashSet},
+        iter,
+        sync::RwLock,
+    };
 
     use async_trait::async_trait;
     use cesr::{Matter, PrivateKey};
@@ -1394,7 +1401,7 @@ mod tests {
             &prefix,
             512,
             100,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -1460,7 +1467,7 @@ mod tests {
             &prefix,
             512,
             100,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -1491,7 +1498,7 @@ mod tests {
             &prefix,
             512,
             100,
-            std::iter::once(target_anchor.clone()),
+            iter::once(target_anchor.clone()),
         )
         .await
         .unwrap();
@@ -1505,7 +1512,7 @@ mod tests {
             &prefix,
             512,
             100,
-            std::iter::once(missing_anchor.clone()),
+            iter::once(missing_anchor.clone()),
         )
         .await
         .unwrap();
@@ -1539,7 +1546,7 @@ mod tests {
             &prefix,
             5,
             2,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -1905,8 +1912,7 @@ mod tests {
 
         let tips = ctx.branch_tips();
         assert_eq!(tips.len(), 2);
-        let tip_saids: std::collections::HashSet<_> =
-            tips.iter().map(|t| t.tip.event.said.as_str()).collect();
+        let tip_saids: HashSet<_> = tips.iter().map(|t| t.tip.event.said.as_str()).collect();
         assert!(tip_saids.contains(owner_ixn.event.said.as_str()));
         assert!(tip_saids.contains(adversary_rot.event.said.as_str()));
     }
@@ -2118,7 +2124,7 @@ mod tests {
 
         let prefix = ctx.prefix().to_string();
         let mut verifier = KelVerifier::resume(&prefix, &ctx).unwrap();
-        verifier.verify_page(std::slice::from_ref(&ixn2)).unwrap();
+        verifier.verify_page(slice::from_ref(&ixn2)).unwrap();
         let ctx2 = verifier.into_verification().unwrap();
 
         assert_eq!(ctx2.branch_tips()[0].tip.event.said, ixn2.event.said);
@@ -2143,9 +2149,7 @@ mod tests {
         let owner_ixn2 = owner.interact(&anchor("owner2")).await.unwrap();
 
         let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip).unwrap();
-        verifier
-            .verify_page(std::slice::from_ref(&owner_ixn2))
-            .unwrap();
+        verifier.verify_page(slice::from_ref(&owner_ixn2)).unwrap();
         let ctx = verifier.into_verification().unwrap();
 
         assert_eq!(ctx.branch_tips()[0].tip.event.said, owner_ixn2.event.said);
@@ -2248,7 +2252,7 @@ mod tests {
             &prefix,
             512,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -2365,7 +2369,7 @@ mod tests {
             &prefix,
             512,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -2411,7 +2415,7 @@ mod tests {
             &prefix,
             512,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -2420,7 +2424,7 @@ mod tests {
         assert_eq!(ctx.diverged_at_serial(), Some(1));
         assert_eq!(ctx.branch_tips().len(), 2);
 
-        let tip_saids: std::collections::HashSet<_> = ctx
+        let tip_saids: HashSet<_> = ctx
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.said.as_str())
@@ -2642,7 +2646,7 @@ mod tests {
         assert_eq!(ctx2.diverged_at_serial(), Some(1));
         assert_eq!(ctx2.branch_tips().len(), 2);
         // Owner branch advanced to serial 2, adversary stays at serial 1
-        let tip_serials: std::collections::HashSet<_> = ctx2
+        let tip_serials: HashSet<_> = ctx2
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.serial)
@@ -2818,7 +2822,7 @@ mod tests {
             &prefix,
             7,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -2827,7 +2831,7 @@ mod tests {
         assert_eq!(ctx.diverged_at_serial(), Some(5));
         assert_eq!(ctx.branch_tips().len(), 2);
         // Owner branch tip at serial 7, adversary at serial 5
-        let tip_serials: std::collections::HashSet<_> = ctx
+        let tip_serials: HashSet<_> = ctx
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.serial)
@@ -2879,7 +2883,7 @@ mod tests {
             &prefix,
             512,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -2932,7 +2936,7 @@ mod tests {
 
         // Verify recovery event against owner branch
         let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip).unwrap();
-        verifier.verify_page(std::slice::from_ref(&rec)).unwrap();
+        verifier.verify_page(slice::from_ref(&rec)).unwrap();
         let ctx = verifier.into_verification().unwrap();
 
         assert!(!ctx.is_divergent());
@@ -2967,7 +2971,7 @@ mod tests {
             "ENonexistent_Prefix_________________________",
             512,
             10,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();
@@ -3031,10 +3035,8 @@ mod tests {
         // Skip serial 1, feed serial 0 then serial 2
         let prefix = events[0].event.prefix.clone();
         let mut verifier = KelVerifier::new(&prefix);
-        verifier
-            .verify_page(std::slice::from_ref(&events[0]))
-            .unwrap();
-        let result = verifier.verify_page(std::slice::from_ref(&events[2]));
+        verifier.verify_page(slice::from_ref(&events[0])).unwrap();
+        let result = verifier.verify_page(slice::from_ref(&events[2]));
         assert!(result.is_err());
     }
 
@@ -3063,7 +3065,7 @@ mod tests {
             &prefix,
             3, // very small pages
             100,
-            std::iter::empty(),
+            iter::empty(),
         )
         .await
         .unwrap();

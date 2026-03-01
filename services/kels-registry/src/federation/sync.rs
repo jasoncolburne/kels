@@ -4,7 +4,7 @@
 //! ensuring member KELs survive restarts and are available for verification.
 
 use std::{sync::Arc, time::Duration};
-use tokio::time::interval;
+use tokio::time::{interval, sleep};
 use tracing::{debug, info};
 
 use kels::IdentityClient;
@@ -38,7 +38,7 @@ pub async fn run_kel_sync_loop(
             }
             Err(e) => {
                 debug!("Waiting for federation: {}", e);
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                sleep(Duration::from_secs(2)).await;
             }
         }
     }

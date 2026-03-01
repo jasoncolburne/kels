@@ -6,6 +6,7 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    iter,
     sync::Arc,
     time::Duration,
 };
@@ -748,7 +749,7 @@ impl MultiRegistryClient {
     /// Returns true if the peer's SAID is found as an anchor in the registry KEL.
     /// Retries once with a forced refetch if not found in the cached KEL.
     pub async fn verify_peer_anchoring(&mut self, peer: &Peer) -> Result<bool, KelsError> {
-        let saids = || std::iter::once(peer.said.clone());
+        let saids = || iter::once(peer.said.clone());
         let maybe_ctx = retry_once!(
             self.verify_anchors(&peer.authorizing_kel, saids(), false),
             |ctx: &Verification| ctx.anchors_all_saids(),
@@ -998,7 +999,7 @@ impl MultiRegistryClient {
                 voter = %vote.voter,
                 "verify_proposal_dag: checking vote anchoring"
             );
-            let saids = || std::iter::once(vote.said.clone());
+            let saids = || iter::once(vote.said.clone());
             let maybe_ctx = retry_once!(
                 self.verify_anchors(&vote.voter, saids(), false),
                 |ctx: &Verification| ctx.anchors_all_saids(),
