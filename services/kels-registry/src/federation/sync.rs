@@ -60,15 +60,27 @@ async fn sync_own_kel(
     node: &FederationNode,
     identity_client: &IdentityClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let own_page = identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await?;
-    let own_prefix = match own_page.events.first() {
+    let mut all_events = Vec::new();
+    let mut since: Option<String> = None;
+    loop {
+        let page = identity_client
+            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await?;
+        if page.events.is_empty() {
+            break;
+        }
+        since = page.events.last().map(|e| e.event.said.clone());
+        all_events.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+    }
+    let own_prefix = match all_events.first() {
         Some(e) => e.event.prefix.clone(),
         None => return Ok(()),
     };
 
-    let identity_count = own_page.events.len();
+    let identity_count = all_events.len();
 
     // Check Raft state for current tip serial to compute delta
     let raft_event_count = node
@@ -90,7 +102,7 @@ async fn sync_own_kel(
         );
         // Only submit events Raft doesn't have yet — KelVerifier::resume
         // expects events starting after the last verified serial.
-        let events = own_page.events[raft_event_count..].to_vec();
+        let events = all_events[raft_event_count..].to_vec();
         match node.submit_key_events(events).await {
             Ok(crate::federation::FederationResponse::KeyEventsAccepted { new_count, .. }) => {
                 info!(

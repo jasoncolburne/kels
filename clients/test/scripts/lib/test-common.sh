@@ -108,18 +108,55 @@ kel_exists_on_node() {
     [ "$http_code" = "200" ]
 }
 
+# Fetch all events for a prefix, paginating through all pages.
+# Outputs a JSON array of all signed events.
+fetch_all_events() {
+    local url="$1"
+    local prefix="$2"
+    local all_events="[]"
+    local since=""
+
+    while true; do
+        local query_url="$url/api/kels/kel/$prefix"
+        if [ -n "$since" ]; then
+            query_url="${query_url}?since=${since}"
+        fi
+
+        local resp
+        resp=$(curl -s -f "$query_url" 2>/dev/null) || break
+
+        local events has_more
+        events=$(echo "$resp" | jq '.events')
+        has_more=$(echo "$resp" | jq '.hasMore')
+
+        if [ "$(echo "$events" | jq 'length')" -eq 0 ]; then
+            break
+        fi
+
+        all_events=$(echo "$all_events" "$events" | jq -s '.[0] + .[1]')
+
+        if [ "$has_more" != "true" ]; then
+            break
+        fi
+
+        since=$(echo "$events" | jq -r '.[-1].event.said')
+    done
+
+    echo "$all_events"
+}
+
 get_event_count() {
     local url="$1"
     local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq '.events | length'
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq 'length'
 }
 
 get_latest_said() {
     local url="$1"
     local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
-    echo "$resp" | jq -r '.events | sort_by(.event.version) | .[-1].event.said // empty'
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq -r 'sort_by(.event.version) | .[-1].event.said // empty'
 }

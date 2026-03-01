@@ -724,14 +724,6 @@ pub struct BatchKelsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KelResponse {
-    pub events: Vec<SignedKeyEvent>, // May include divergent events at same version
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audit_records: Option<Vec<KelsAuditRecord>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SignedKeyEventPage {
     pub events: Vec<SignedKeyEvent>,
     pub has_more: bool,

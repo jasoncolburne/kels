@@ -173,7 +173,7 @@ All recorded/persisted data MUST be KEL-backed and verified independently before
 
 1. **Serving** — returning data to a client/peer. No verification needed; the receiver is responsible for verifying what they get.
 2. **Consuming** — using data for security decisions (anchoring, key extraction, divergence, merge routing). MUST verify the full KEL first. The only way to access consumed data is through `Verification`, which can only be obtained via `KelVerifier::into_verification()`. This eliminates TOCTOU vulnerabilities — check and use happen in the same pass.
-3. **Resolving** — comparing state to decide whether to sync. A wrong answer triggers an unnecessary sync (which itself verifies), not a security hole. Standalone functions (e.g., `effective_tail_said_from_events()`) are acceptable here without full verification.
+3. **Resolving** — comparing state to decide whether to sync. A wrong answer triggers an unnecessary sync (which itself verifies), not a security hole. Standalone functions (e.g., `compute_prefix_effective_said()`) are acceptable here without full verification.
 
 **`Verification` as proof of verification.** Functions that consume KEL data accept `&Verification` as a parameter. Having a `Verification` proves the KEL was verified. `Verification` fields are private, the constructor is `pub(crate)` (via `#[crate_new]` on the `SelfAddressed` derive), and the only way to obtain one is through `KelVerifier::into_verification()`. `Verification` derives `SelfAddressed` for content-addressable comparison — two `Verification`s with the same SAID represent the same verified KEL state.
 

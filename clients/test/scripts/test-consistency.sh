@@ -191,8 +191,8 @@ while IFS= read -r prefix; do
         name="${ALL_REACHABLE_NAMES[$i]}"
         url="${ALL_REACHABLE_URLS[$i]}"
 
-        kel_response=$(curl -sf "${url}/api/kels/kel/${prefix}" 2>/dev/null)
-        if [ $? -ne 0 ]; then
+        all_events=$(fetch_all_events "${url}" "${prefix}")
+        if [ "$(echo "$all_events" | jq 'length')" -eq 0 ]; then
             digests+=("MISSING")
             counts+=("0")
             states+=("missing")
@@ -200,16 +200,16 @@ while IFS= read -r prefix; do
             continue
         fi
 
-        event_count=$(echo "$kel_response" | jq '.events | length' 2>/dev/null)
-        digest=$(echo "$kel_response" | jq -cS '[.events[] | .signatures |= sort_by(.publicKey)]' | sha256sum | awk '{print $1}')
+        event_count=$(echo "$all_events" | jq 'length' 2>/dev/null)
+        digest=$(echo "$all_events" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | sha256sum | awk '{print $1}')
 
         # Determine behavioral state from event kinds and structure
-        state=$(echo "$kel_response" | jq -r '
-            [.events[].event.kind] as $kinds |
+        state=$(echo "$all_events" | jq -r '
+            [.[].event.kind] as $kinds |
             if ($kinds | any(. == "kels/v1/cnt")) then "contested"
             elif ($kinds | any(. == "kels/v1/dec")) then "decommissioned"
             elif ($kinds | any(. == "kels/v1/rec" or . == "kels/v1/ror")) then "recovered"
-            elif ([.events[].event.previous | select(. != null)] | group_by(.) | any(length > 1)) then "frozen"
+            elif ([.[].event.previous | select(. != null)] | group_by(.) | any(length > 1)) then "frozen"
             else "normal"
             end
         ' 2>/dev/null)

@@ -1,6 +1,7 @@
 //! kels-bench - KELS Load Testing Tool
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -8,8 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{sync::Mutex, task::JoinSet};
-
-use std::collections::HashMap;
 
 use anyhow::Result;
 use clap::Parser;

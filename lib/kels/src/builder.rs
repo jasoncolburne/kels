@@ -14,7 +14,6 @@ use crate::{
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
-    #[allow(dead_code)]
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
     events: Vec<SignedKeyEvent>,

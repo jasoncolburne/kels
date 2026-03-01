@@ -66,7 +66,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
 - `get_kels_batch` returns per-prefix `SignedKeyEventPage {events, hasMore}` with max 512 events per prefix. Callers with `hasMore: true` should loop using `fetch_key_events(prefix, since=lastSAID, limit)` to get remaining events.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
-- `KELS_MAX_PAGES_PER_KEL` environment variable (default 64) controls maximum pagination loops for callers fetching large KELs.
+- `KELS_MAX_VERIFICATION_PAGES` environment variable (default 512) controls maximum pagination loops for callers fetching large KELs.
 - Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
 
 ## KELS Registry Service

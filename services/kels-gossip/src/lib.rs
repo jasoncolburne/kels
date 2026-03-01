@@ -76,16 +76,27 @@ async fn load_local_registry_kels(
     repo: &repository::RegistryKelRepository,
 ) {
     for prefix in kels::trusted_prefixes() {
-        match repo
-            .get_signed_history(prefix, MAX_EVENTS_PER_KEL_RESPONSE as u64, 0)
-            .await
-        {
-            Ok((events, _)) if !events.is_empty() => {
-                if let Err(e) = client.load_local_events(prefix, events) {
-                    debug!("Failed to load local registry KEL for {}: {}", prefix, e);
+        let mut all_events = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            match repo
+                .get_signed_history(prefix, MAX_EVENTS_PER_KEL_RESPONSE as u64, offset)
+                .await
+            {
+                Ok((events, has_more)) if !events.is_empty() => {
+                    offset += events.len() as u64;
+                    all_events.extend(events);
+                    if !has_more {
+                        break;
+                    }
                 }
+                _ => break,
             }
-            _ => {}
+        }
+        if !all_events.is_empty()
+            && let Err(e) = client.load_local_events(prefix, all_events)
+        {
+            debug!("Failed to load local registry KEL for {}: {}", prefix, e);
         }
     }
 }

@@ -83,8 +83,8 @@ wait_for_event_count() {
 kels_match() {
     local prefix="$1"
     local hash_a hash_b
-    hash_a=$(curl -s "$NODE_A_URL/api/kels/kel/$prefix" | jq -cS '[.events[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
-    hash_b=$(curl -s "$NODE_B_URL/api/kels/kel/$prefix" | jq -cS '[.events[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
+    hash_a=$(fetch_all_events "$NODE_A_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
+    hash_b=$(fetch_all_events "$NODE_B_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
     [ "$hash_a" = "$hash_b" ]
 }
 
@@ -290,7 +290,7 @@ run_test "Decommission KEL on node-a" kels-cli -u "$NODE_A_URL" decommission --p
 run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8"
 
 # Verify the last event on node-b is a dec event
-LAST_KIND=$(curl -s "$NODE_B_URL/api/kels/kel/$PREFIX8" | jq -r '.events[-1].event.kind')
+LAST_KIND=$(fetch_all_events "$NODE_B_URL" "$PREFIX8" | jq -r '.[-1].event.kind')
 run_test "Node-b shows dec event" [ "$LAST_KIND" = "kels/v1/dec" ]
 
 echo ""

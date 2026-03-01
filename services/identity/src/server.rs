@@ -172,7 +172,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
-        kel_store: kel_store.clone(),
         kels_url,
     });
 

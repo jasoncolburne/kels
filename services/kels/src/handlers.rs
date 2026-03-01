@@ -563,7 +563,6 @@ pub(crate) async fn submit_events(
 
 // ==================== Full merge path helpers ====================
 
-/// Find which branch tip an event extends (via its `previous` pointer).
 /// Check if any event from `diverged_at` serial onward reveals the recovery key.
 /// Paginated scan — never loads full KEL.
 async fn recovery_revealed_in_divergent_events(

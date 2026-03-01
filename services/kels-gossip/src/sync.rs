@@ -905,7 +905,6 @@ pub async fn run_anti_entropy_loop(
                 let Some(kels_url) = kels_url else {
                     continue;
                 };
-                // Resolving: compute effective tail SAID for sync comparison
                 // Resolving: get local effective SAID for delta comparison
                 let local_said = local_client
                     .fetch_effective_said(kel_prefix)
@@ -1046,7 +1045,7 @@ pub async fn run_anti_entropy_loop(
 
             let events_map = remote_client.fetch_kels(&request).await.unwrap_or_default();
 
-            for (state, _local_said) in &to_fetch {
+            for (state, local_said) in &to_fetch {
                 let result = match events_map.get(&state.prefix) {
                     Some(page) if !page.events.is_empty() => {
                         let count = page.events.len();
@@ -1076,7 +1075,7 @@ pub async fn run_anti_entropy_loop(
                         // Resolving: check if local KEL is already divergent (three-way).
                         // Use the local effective SAID we already fetched — if it exists
                         // and differs from the remote, record seen to stop retrying.
-                        if _local_said.is_some() {
+                        if local_said.is_some() {
                             // We had local state but merge still failed — likely three-way divergence
                             record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
                         } else {

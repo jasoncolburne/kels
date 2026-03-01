@@ -11,7 +11,7 @@ use axum::{
 };
 use base64::Engine;
 use kels::{
-    KelStore, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
     MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,6 @@ pub struct AppState {
     pub repo: Arc<IdentityRepository>,
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
-    pub kel_store: Arc<dyn KelStore>,
     pub kels_url: Option<String>,
 }
 

@@ -81,8 +81,9 @@ get_kel_length() {
     local url="$1"
     local prefix="$2"
     local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq '.events | length'
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq 'length'
 }
 
 # Poll until prefix counts match between two nodes (or timeout)

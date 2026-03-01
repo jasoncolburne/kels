@@ -71,21 +71,19 @@ pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
     CachedKel, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
-    EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
-    NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
+    EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
+    NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
     ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
     RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
-    SignedRequest, StatusUpdateRequest, Vote, compute_effective_tail_said, generate_nonce,
-    hash_tip_saids, validate_timestamp,
+    SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids, validate_timestamp,
 };
 pub use types::{
-    BranchTip, CollectSink, HttpKelSink, HttpKelSource, KelVerifier, NoOpSink, PageLoader,
-    PagedKelSink, PagedKelSource, StoreKelSource, StorePageLoader, Verification,
-    collect_key_events, completed_verification, compute_rotation_hash, forward_key_events,
-    partition_for_submission, resolve_key_events, truncate_incomplete_generation,
-    verify_key_events,
+    BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
+    StoreKelSource, StorePageLoader, Verification, collect_key_events, completed_verification,
+    compute_rotation_hash, forward_key_events, partition_for_submission, resolve_key_events,
+    truncate_incomplete_generation, verify_key_events,
 };
 
 /// Maximum number of events allowed in a single submit_events request.

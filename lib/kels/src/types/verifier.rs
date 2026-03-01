@@ -810,7 +810,7 @@ impl PagedKelSource for HttpKelSource {
 }
 
 /// Sink that discards events — used for verify-only flows.
-pub struct NoOpSink;
+pub(crate) struct NoOpSink;
 
 #[async_trait]
 impl PagedKelSink for NoOpSink {
@@ -822,7 +822,7 @@ impl PagedKelSink for NoOpSink {
 /// Sink that collects events into a `Vec` — used for verify+collect flows.
 ///
 /// **WARNING:** This entity collects events in an unbounded loop, use with care.
-pub struct CollectSink {
+pub(crate) struct CollectSink {
     events: tokio::sync::RwLock<Vec<SignedKeyEvent>>,
 }
 

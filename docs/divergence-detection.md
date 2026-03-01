@@ -220,11 +220,11 @@ Content-Type: application/json
 Response:
 {
   "applied": true,
-  "divergedAt": <generation> | null
+  "divergedAt": <serial> | null
 }
 ```
 
-Where `divergedAt` is the generation number (0-indexed position in chain) where divergence was detected, or null if no divergence.
+Where `divergedAt` is the serial number (0-indexed position in chain) where divergence was detected, or null if no divergence.
 
 ### Fetch KEL (paginated)
 

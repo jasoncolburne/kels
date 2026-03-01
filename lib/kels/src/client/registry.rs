@@ -414,8 +414,6 @@ impl KelsRegistryClient {
         Ok(map)
     }
 
-    /// Fetch the registry's KEL for verification.
-    ///
     /// Fetch registry key events (paginated).
     ///
     /// This is an unauthenticated endpoint - nodes use this to verify
@@ -1781,7 +1779,7 @@ mod tests {
     #[tokio::test]
     async fn test_multi_client_all_kels_fail() {
         let server1 = MockServer::start().await;
-        Mock::given(method("GET"))
+        Mock::given(method("POST"))
             .and(path("/api/member-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 1",
@@ -1791,7 +1789,7 @@ mod tests {
             .await;
 
         let server2 = MockServer::start().await;
-        Mock::given(method("GET"))
+        Mock::given(method("POST"))
             .and(path("/api/member-kels"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error 2",

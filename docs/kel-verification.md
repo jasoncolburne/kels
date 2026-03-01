@@ -119,8 +119,8 @@ Verification:
     branch_tips: Vec<BranchTip>   // one per branch (1 = linear, N = divergent)
     is_contested: bool
     diverged_at_serial: Option<u64>
-    anchored_saids: HashSet<String>
-    queried_saids: HashSet<String>
+    anchored_saids: BTreeSet<String>
+    queried_saids: BTreeSet<String>
 
 BranchTip:
     tip: SignedKeyEvent            // chain head (latest event on this branch)
@@ -186,8 +186,8 @@ struct KelVerifier {
     last_verified_serial: Option<u64>,
     diverged_at_serial: Option<u64>,
     is_contested: bool,
-    queried_saids: HashSet<String>,   // anchor checking
-    anchored_saids: HashSet<String>,  // anchor checking
+    queried_saids: BTreeSet<String>,   // anchor checking
+    anchored_saids: BTreeSet<String>,  // anchor checking
 }
 ```
 

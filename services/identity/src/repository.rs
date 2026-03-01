@@ -330,10 +330,6 @@ impl LockedKelTransaction {
     pub async fn commit(self) -> Result<(), StorageError> {
         self.tx.commit().await
     }
-
-    pub async fn rollback(self) -> Result<(), StorageError> {
-        self.tx.rollback().await
-    }
 }
 
 #[async_trait]

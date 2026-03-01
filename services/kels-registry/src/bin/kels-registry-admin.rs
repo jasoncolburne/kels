@@ -999,14 +999,26 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         .get_prefix()
         .await
         .context("Failed to get identity prefix")?;
-    let page = ctx
-        .identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-        .context("Failed to get identity KEL")?;
-    let event_count = page.events.len();
+    let mut all_events = Vec::new();
+    let mut since: Option<String> = None;
+    loop {
+        let page = ctx
+            .identity_client
+            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            .context("Failed to get identity KEL")?;
+        if page.events.is_empty() {
+            break;
+        }
+        since = page.events.last().map(|e| e.event.said.clone());
+        all_events.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+    }
+    let event_count = all_events.len();
     let mut verifier = kels::KelVerifier::new(&prefix);
-    let ctx = if verifier.verify_page(&page.events).is_ok() {
+    let ctx = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()
     } else {
         None
