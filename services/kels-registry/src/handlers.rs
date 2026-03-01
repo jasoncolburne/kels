@@ -506,30 +506,16 @@ pub async fn federation_rpc(
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
-            let url = format!("{}/api/registry-kel", member.url.trim_end_matches('/'));
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .map_err(|e| ApiError::internal_error(e.to_string()))?;
-            let resp = client.get(&url).send().await.map_err(|e| {
-                ApiError::unauthorized(format!("Failed to fetch sender KEL: {}", e))
-            })?;
-            if !resp.status().is_success() {
-                return Err(ApiError::unauthorized(format!(
-                    "Failed to fetch sender KEL: {}",
-                    resp.status()
-                )));
-            }
-            let page: kels::SignedKeyEventPage = resp.json().await.map_err(|e| {
-                ApiError::unauthorized(format!("Failed to parse sender KEL: {}", e))
-            })?;
-            let mut verifier = kels::KelVerifier::new(&signed_rpc.sender_prefix);
-            verifier
-                .verify_page(&page.events)
-                .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?;
-            verifier
-                .into_verification()
-                .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?
+            let source = kels::HttpKelSource::new(&member.url, "/api/registry-kel");
+            kels::verify_key_events(
+                &signed_rpc.sender_prefix,
+                &source,
+                kels::KelVerifier::new(&signed_rpc.sender_prefix),
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+            )
+            .await
+            .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?
         }
     };
 

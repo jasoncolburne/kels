@@ -10,6 +10,15 @@ use async_trait::async_trait;
 
 use crate::{error::KelsError, types::SignedKeyEvent};
 
+#[cfg(test)]
+pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
+    use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
+    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+    let icp = builder.incept().await.unwrap();
+    let prefix = icp.event.prefix.clone();
+    (prefix, vec![icp])
+}
+
 /// Trait for persisting KELs. When `owner_prefix` is set, `cache()` protects the owner's
 /// authoritative state from being overwritten by server-fetched data.
 #[async_trait]
@@ -53,7 +62,6 @@ mod tests {
     use std::{collections::HashMap, sync::RwLock};
 
     use super::*;
-    use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
 
     /// In-memory store for testing
     struct MemoryStore {
@@ -122,17 +130,10 @@ mod tests {
         }
     }
 
-    async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        (prefix, vec![icp])
-    }
-
     #[tokio::test]
     async fn test_cache_saves_non_owner_kel() {
         let store = MemoryStore::new();
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = super::create_test_events().await;
 
         store.cache(&prefix, &events).await.unwrap();
 
@@ -143,7 +144,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_skips_owner_kel() {
         let store = MemoryStore::new();
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = super::create_test_events().await;
 
         // Set owner prefix to match KEL
         store.set_owner_prefix(Some(&prefix));

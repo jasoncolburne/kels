@@ -13,6 +13,25 @@ use verifiable_storage::{
 };
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
+/// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
+fn zip_events_with_signatures(
+    events: Vec<KeyEvent>,
+    sig_map: &HashMap<String, Vec<EventSignature>>,
+) -> Result<Vec<SignedKeyEvent>, StorageError> {
+    let mut result = Vec::with_capacity(events.len());
+    for event in events {
+        let sigs = sig_map.get(&event.said).ok_or_else(|| {
+            StorageError::StorageError(format!("No signatures found for event {}", event.said))
+        })?;
+        let sig_pairs: Vec<(String, String)> = sigs
+            .iter()
+            .map(|s| (s.public_key.clone(), s.signature.clone()))
+            .collect();
+        result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
+    }
+    Ok(result)
+}
+
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
 #[signed_events(signatures_table = "kels_key_event_signatures")]
@@ -87,20 +106,8 @@ impl KeyEventRepository {
         }
 
         let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let signatures = self.get_signatures_by_saids(&saids).await?;
-
-        let mut signed_events = Vec::with_capacity(events.len());
-        for event in events {
-            let sigs = signatures.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let sig_pairs: Vec<(String, String)> = sigs
-                .iter()
-                .map(|s| (s.public_key.clone(), s.signature.clone()))
-                .collect();
-            signed_events.push(SignedKeyEvent::from_signatures(event, sig_pairs));
-        }
-
+        let sig_map = self.get_signatures_by_saids(&saids).await?;
+        let signed_events = zip_events_with_signatures(events, &sig_map)?;
         Ok((signed_events, has_more))
     }
 
@@ -300,6 +307,37 @@ impl KelTransaction {
     const SIGNATURES_TABLE: &'static str = KeyEventRepository::SIGNATURES_TABLE_NAME;
     const AUDIT_TABLE: &'static str = AuditRecordRepository::TABLE_NAME;
 
+    /// Fetch signatures for a single event and return as `SignedKeyEvent`.
+    async fn assemble_signed_event(
+        &mut self,
+        event: KeyEvent,
+    ) -> Result<SignedKeyEvent, StorageError> {
+        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
+            .eq("event_said", &event.said);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let sig_map = HashMap::from([(event.said.clone(), signatures)]);
+        zip_events_with_signatures(vec![event], &sig_map).map(|mut v| v.remove(0))
+    }
+
+    /// Fetch signatures for a batch of events and return as `Vec<SignedKeyEvent>`.
+    async fn assemble_signed_events(
+        &mut self,
+        events: Vec<KeyEvent>,
+    ) -> Result<Vec<SignedKeyEvent>, StorageError> {
+        if events.is_empty() {
+            return Ok(vec![]);
+        }
+        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+        let query =
+            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
+        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
+        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+        for sig in signatures {
+            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        }
+        zip_events_with_signatures(events, &sig_map)
+    }
+
     /// Get a paginated page of signed events for this prefix starting from `since_serial`.
     ///
     /// Returns `(events, has_more)` using the limit+1 pop pattern.
@@ -329,26 +367,7 @@ impl KelTransaction {
             return Ok((vec![], false));
         }
 
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let query =
-            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
-        for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
-        }
-        let mut result = Vec::with_capacity(events.len());
-        for event in events {
-            let sigs = sig_map.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let sig_pairs: Vec<(String, String)> = sigs
-                .iter()
-                .map(|s| (s.public_key.clone(), s.signature.clone()))
-                .collect();
-            result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
-        }
-
+        let result = self.assemble_signed_events(events).await?;
         Ok((result, has_more))
     }
 
@@ -417,15 +436,7 @@ impl KelTransaction {
             return Ok(None);
         };
 
-        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
-            .eq("event_said", &event.said);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_pairs: Vec<(String, String)> = signatures
-            .iter()
-            .map(|s| (s.public_key.clone(), s.signature.clone()))
-            .collect();
-
-        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
+        Ok(Some(self.assemble_signed_event(event).await?))
     }
 
     /// Get the last establishment event at or before a given serial for this prefix.
@@ -446,15 +457,7 @@ impl KelTransaction {
             return Ok(None);
         };
 
-        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
-            .eq("event_said", &event.said);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_pairs: Vec<(String, String)> = signatures
-            .iter()
-            .map(|s| (s.public_key.clone(), s.signature.clone()))
-            .collect();
-
-        Ok(Some(SignedKeyEvent::from_signatures(event, sig_pairs)))
+        Ok(Some(self.assemble_signed_event(event).await?))
     }
 
     /// Load a page of signed events by offset (for PageLoader impl).
@@ -482,26 +485,7 @@ impl KelTransaction {
             return Ok((vec![], false));
         }
 
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let query =
-            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
-        for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
-        }
-        let mut result = Vec::with_capacity(events.len());
-        for event in events {
-            let sigs = sig_map.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let sig_pairs: Vec<(String, String)> = sigs
-                .iter()
-                .map(|s| (s.public_key.clone(), s.signature.clone()))
-                .collect();
-            result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
-        }
-
+        let result = self.assemble_signed_events(events).await?;
         Ok((result, has_more))
     }
 

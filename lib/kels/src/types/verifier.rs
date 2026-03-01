@@ -7,8 +7,8 @@
 //! After verification, call `into_verification()` to get a `Verification` — the
 //! proof-of-verification token that provides access to verified KEL state.
 //!
-//! `PagedKelSource` / `PagedKelSink` / `sync_and_verify` provide a generic pattern
-//! for streaming events from a source through a verifier into a destination.
+//! `PagedKelSource` / `PagedKelSink` / `transfer_key_events` provide divergence-aware
+//! streaming of events from a source through a verifier into a destination.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -345,7 +345,7 @@ impl KelVerifier {
         // serial. That only happens if one branch is shorter. Keep those
         // branches as-is.
         for (said, state) in &self.branches {
-            if !new_branches.values().any(|_| true)
+            if new_branches.is_empty()
                 || events
                     .iter()
                     .any(|e| e.event.previous.as_deref() == Some(said.as_str()))
@@ -560,6 +560,11 @@ impl KelVerifier {
 /// fewer events than the second-to-last, the incomplete generation is removed.
 /// Returns the number of events truncated (caller should not advance the offset
 /// past these).
+///
+/// **Limitation:** Cannot detect an incomplete generation at the linear-to-divergent
+/// transition — a divergent pair (count 2) whose first page only includes one event
+/// looks identical to a normal linear event (count 1). `transfer_key_events` handles
+/// this via the held-back event strategy instead of relying on this function.
 pub fn truncate_incomplete_generation(events: &mut Vec<SignedKeyEvent>) -> usize {
     if events.len() < 2 {
         return 0;
@@ -634,6 +639,43 @@ impl PageLoader for StorePageLoader<'_> {
     }
 }
 
+/// Adapts a `KelStore` (offset-based) into a `PagedKelSource` (SAID-based).
+///
+/// Resolves `since` SAIDs by scanning for the matching event. Suitable for
+/// local stores where a full scan is acceptable.
+pub struct StoreKelSource<'a>(&'a dyn KelStore);
+
+impl<'a> StoreKelSource<'a> {
+    pub fn new(store: &'a dyn KelStore) -> Self {
+        Self(store)
+    }
+}
+
+#[async_trait]
+impl PagedKelSource for StoreKelSource<'_> {
+    async fn fetch_page(
+        &self,
+        prefix: &str,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        if let Some(said) = since {
+            // Scan to find the offset of the `since` SAID
+            let (all, _) = self.0.load(prefix, u64::MAX, 0).await?;
+            let offset = all
+                .iter()
+                .position(|e| e.event.said == said)
+                .ok_or_else(|| KelsError::KeyNotFound(prefix.to_string()))?;
+            let start = offset + 1;
+            let end = (start + limit).min(all.len());
+            let has_more = end < all.len();
+            Ok((all[start..end].to_vec(), has_more))
+        } else {
+            self.0.load(prefix, limit as u64, 0).await
+        }
+    }
+}
+
 /// Verify a full KEL using paginated reads, returning a trusted `Verification`.
 ///
 /// Pages through the loader with `KelVerifier` and returns the proof-of-verification
@@ -674,7 +716,7 @@ pub async fn completed_verification(
         verifier.verify_page(&events)?;
         offset += advanced;
 
-        if !has_more || truncated > 0 && advanced == 0 {
+        if !has_more || (truncated > 0 && advanced == 0) {
             break;
         }
     }
@@ -685,6 +727,11 @@ pub async fn completed_verification(
 // ==================== Sync Abstraction ====================
 
 /// Source of paginated signed key events (e.g., HTTP client, local DB).
+///
+/// Implementations must return events in `serial ASC, kind sort_priority ASC, said ASC`
+/// order. The `bool` return value indicates whether more pages are available (`has_more`).
+/// Pages should contain complete generations (all events at a given serial together),
+/// though `transfer_key_events` tolerates split generations via its held-back event strategy.
 #[async_trait]
 pub trait PagedKelSource: Send + Sync {
     async fn fetch_page(
@@ -699,45 +746,6 @@ pub trait PagedKelSource: Send + Sync {
 #[async_trait]
 pub trait PagedKelSink: Send + Sync {
     async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
-}
-
-/// Stream pages from source → verify with KelVerifier → store in sink.
-///
-/// Loops: fetch page → `verifier.verify_page()` → `sink.store_page()` → advance cursor.
-/// Stops when `!has_more` or `max_pages` reached.
-pub async fn sync_and_verify(
-    prefix: &str,
-    source: &impl PagedKelSource,
-    sink: &impl PagedKelSink,
-    verifier: &mut KelVerifier,
-    page_size: usize,
-    max_pages: usize,
-) -> Result<(), KelsError> {
-    let mut since: Option<String> = None;
-
-    for _ in 0..max_pages {
-        let (events, has_more) = source
-            .fetch_page(prefix, since.as_deref(), page_size)
-            .await?;
-
-        if events.is_empty() {
-            break;
-        }
-
-        verifier.verify_page(&events)?;
-
-        let last_said = events.last().map(|e| e.event.said.clone());
-
-        sink.store_page(prefix, &events).await?;
-
-        if !has_more {
-            break;
-        }
-
-        since = last_said;
-    }
-
-    Ok(())
 }
 
 // ==================== HTTP Source/Sink Implementations ====================
@@ -812,6 +820,8 @@ impl PagedKelSink for NoOpSink {
 }
 
 /// Sink that collects events into a `Vec` — used for verify+collect flows.
+///
+/// **WARNING:** This entity collects events in an unbounded loop, use with care.
 pub struct CollectSink {
     events: tokio::sync::RwLock<Vec<SignedKeyEvent>>,
 }
@@ -1092,6 +1102,8 @@ pub async fn verify_key_events(
 }
 
 /// Verify + collect: pages through source, verifies, returns events + `Verification`.
+///
+/// **WARNING:** This is an unbounded call, and should be used with care.
 pub async fn collect_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
@@ -1126,6 +1138,8 @@ pub async fn forward_key_events(
 }
 
 /// Resolve: pages through source, collects events (no verification).
+///
+/// **WARNING:** This is an unbounded call, and should be used with care.
 pub async fn resolve_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
@@ -2810,81 +2824,6 @@ mod tests {
             .collect();
         assert!(tip_serials.contains(&5));
         assert!(tip_serials.contains(&7));
-    }
-
-    // ---- sync_and_verify abstraction ----
-
-    #[tokio::test]
-    async fn test_sync_and_verify_transfers_events() {
-        // Use sync_and_verify to stream events from a source store
-        // through verification into a sink store.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        for i in 0..19 {
-            builder
-                .interact(&anchor(&format!("sync-{}", i)))
-                .await
-                .unwrap();
-        }
-        let events = builder.events().to_vec();
-        assert_eq!(events.len(), 20);
-
-        struct VecSource(Vec<SignedKeyEvent>);
-        #[async_trait]
-        impl PagedKelSource for VecSource {
-            async fn fetch_page(
-                &self,
-                _prefix: &str,
-                since: Option<&str>,
-                limit: usize,
-            ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-                let start = if let Some(said) = since {
-                    self.0
-                        .iter()
-                        .position(|e| e.event.said == said)
-                        .map(|p| p + 1)
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-                let end = (start + limit).min(self.0.len());
-                let page = self.0[start..end].to_vec();
-                let has_more = end < self.0.len();
-                Ok((page, has_more))
-            }
-        }
-
-        struct CollectSink(std::sync::Mutex<Vec<SignedKeyEvent>>);
-        #[async_trait]
-        impl PagedKelSink for CollectSink {
-            async fn store_page(
-                &self,
-                _prefix: &str,
-                events: &[SignedKeyEvent],
-            ) -> Result<(), KelsError> {
-                self.0.lock().unwrap().extend(events.iter().cloned());
-                Ok(())
-            }
-        }
-
-        let source = VecSource(events.clone());
-        let sink = CollectSink(std::sync::Mutex::new(Vec::new()));
-        let mut verifier = KelVerifier::new(&prefix);
-
-        sync_and_verify(&prefix, &source, &sink, &mut verifier, 7, 100)
-            .await
-            .unwrap();
-
-        let ctx = verifier.into_verification().unwrap();
-        assert!(!ctx.is_divergent());
-        assert_eq!(
-            ctx.branch_tips()[0].tip.event.said,
-            events.last().unwrap().event.said
-        );
-
-        let stored = sink.0.lock().unwrap();
-        assert_eq!(stored.len(), 20);
     }
 
     // ---- Full lifecycle: incept → interact → rotate → diverge → recover ----

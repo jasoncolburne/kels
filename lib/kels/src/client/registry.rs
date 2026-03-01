@@ -750,10 +750,11 @@ impl MultiRegistryClient {
     /// Returns true if the peer's SAID is found as an anchor in the registry KEL.
     /// Retries once with a forced refetch if not found in the cached KEL.
     pub async fn verify_peer_anchoring(&mut self, peer: &Peer) -> Result<bool, KelsError> {
+        let saids = || std::iter::once(peer.said.clone());
         let maybe_ctx = retry_once!(
-            self.verify_anchor(&peer.authorizing_kel, &peer.said, false),
+            self.verify_anchors(&peer.authorizing_kel, saids(), false),
             |ctx: &Verification| ctx.anchors_all_saids(),
-            self.verify_anchor(&peer.authorizing_kel, &peer.said, true),
+            self.verify_anchors(&peer.authorizing_kel, saids(), true),
         )?;
 
         if maybe_ctx.is_none() {
@@ -929,50 +930,67 @@ impl MultiRegistryClient {
             return false;
         }
 
-        for said in record_saids {
-            debug!(
-                peer_prefix = %peer_prefix,
-                said = %said,
-                proposer = %proposer,
-                "verify_proposal_dag: checking proposal record anchoring"
-            );
-            let maybe_ctx = retry_once!(
-                self.verify_anchor(&proposer, said, false),
-                |ctx: &Verification| ctx.anchors_all_saids(),
-                self.verify_anchor(&proposer, said, true),
-            );
+        // 2+3. Batch anchor checks: proposer record SAIDs + proposer's vote SAID
+        // in one walk, then each other voter individually.
+        let mut proposer_saids: Vec<String> = record_saids.cloned().collect();
 
-            match maybe_ctx {
-                Ok(Some(_)) => {
-                    debug!(said = %said, "verify_proposal_dag: proposal record anchor OK");
-                }
-                Ok(None) => {
-                    warn!(
-                        peer_prefix = %peer_prefix,
-                        said = %said,
-                        "{} proposal record SAID not anchored in proposer's KEL", kind
-                    );
-                    return false;
-                }
-                Err(e) => {
-                    warn!(
-                        peer_prefix = %peer_prefix,
-                        error = %e,
-                        "Failed to fetch proposer's KEL for {} proposal anchoring", kind
-                    );
-                    return false;
-                }
+        // Collect eligible votes, separating the proposer's vote from others
+        let eligible_votes: Vec<&Vote> = votes
+            .iter()
+            .filter(|v| v.approve && member_prefixes.contains(v.voter.as_str()))
+            .collect();
+
+        // If the proposer also voted, include that SAID in the proposer batch
+        let mut proposer_voted = false;
+        for vote in &eligible_votes {
+            if vote.voter == proposer {
+                proposer_saids.push(vote.said.clone());
+                proposer_voted = true;
             }
         }
 
-        // 3. Verify vote anchoring: each approval vote's SAID anchored in voter's KEL
-        let mut verified_voters: HashSet<String> = HashSet::new();
-        for vote in votes {
-            if !vote.approve {
-                continue;
-            }
+        debug!(
+            peer_prefix = %peer_prefix,
+            proposer = %proposer,
+            saids = proposer_saids.len(),
+            "verify_proposal_dag: checking proposer anchoring (records + vote)"
+        );
+        let maybe_ctx = retry_once!(
+            self.verify_anchors(&proposer, proposer_saids.iter().cloned(), false),
+            |ctx: &Verification| ctx.anchors_all_saids(),
+            self.verify_anchors(&proposer, proposer_saids.iter().cloned(), true),
+        );
 
-            if !member_prefixes.contains(vote.voter.as_str()) {
+        match maybe_ctx {
+            Ok(Some(_)) => {
+                debug!(proposer = %proposer, "verify_proposal_dag: proposer anchoring OK");
+            }
+            Ok(None) => {
+                warn!(
+                    peer_prefix = %peer_prefix,
+                    proposer = %proposer,
+                    "{} proposal/vote SAIDs not all anchored in proposer's KEL", kind
+                );
+                return false;
+            }
+            Err(e) => {
+                warn!(
+                    peer_prefix = %peer_prefix,
+                    error = %e,
+                    "Failed to fetch proposer's KEL for {} anchoring", kind
+                );
+                return false;
+            }
+        }
+
+        let mut verified_voters: HashSet<String> = HashSet::new();
+        if proposer_voted {
+            verified_voters.insert(proposer.clone());
+        }
+
+        // Verify remaining voters (non-proposer) individually
+        for vote in &eligible_votes {
+            if vote.voter == proposer {
                 continue;
             }
 
@@ -982,10 +1000,11 @@ impl MultiRegistryClient {
                 voter = %vote.voter,
                 "verify_proposal_dag: checking vote anchoring"
             );
+            let saids = || std::iter::once(vote.said.clone());
             let maybe_ctx = retry_once!(
-                self.verify_anchor(&vote.voter, &vote.said, false),
+                self.verify_anchors(&vote.voter, saids(), false),
                 |ctx: &Verification| ctx.anchors_all_saids(),
-                self.verify_anchor(&vote.voter, &vote.said, true),
+                self.verify_anchors(&vote.voter, saids(), true),
             );
 
             match maybe_ctx {
@@ -1242,12 +1261,17 @@ impl MultiRegistryClient {
     /// Re-verify cached events for a prefix with anchor checking.
     ///
     /// Fetches (or uses cached) events, then runs `KelVerifier` with the given
-    /// SAID registered for anchor checking. Returns the resulting `Verification`
+    /// SAIDs registered for anchor checking. Returns the resulting `Verification`
     /// which can be queried via `anchors_all_saids()`.
-    async fn verify_anchor(
+    ///
+    /// Re-verification is required because anchor SAIDs must be registered before
+    /// the walk — the cached `Verification` in `prefix_map` was produced without
+    /// these SAIDs and cannot answer anchor queries retroactively. Batch multiple
+    /// SAIDs per prefix to avoid redundant walks.
+    async fn verify_anchors(
         &mut self,
         prefix: &str,
-        said: &str,
+        saids: impl IntoIterator<Item = String>,
         force_fetch: bool,
     ) -> Result<Verification, KelsError> {
         self.fetch_registry_events(prefix, force_fetch).await?;
@@ -1259,7 +1283,7 @@ impl MultiRegistryClient {
         })?;
         let events = events.clone();
         let mut verifier = KelVerifier::new(prefix);
-        verifier.check_anchors(std::iter::once(said.to_string()));
+        verifier.check_anchors(saids);
         verifier.verify_page(&events)?;
         verifier.into_verification()
     }

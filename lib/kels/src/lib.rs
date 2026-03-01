@@ -82,9 +82,10 @@ pub use types::{
 };
 pub use types::{
     BranchTip, CollectSink, HttpKelSink, HttpKelSource, KelVerifier, NoOpSink, PageLoader,
-    PagedKelSink, PagedKelSource, StorePageLoader, Verification, collect_key_events,
-    completed_verification, compute_rotation_hash, forward_key_events, partition_for_submission,
-    resolve_key_events, sync_and_verify, truncate_incomplete_generation, verify_key_events,
+    PagedKelSink, PagedKelSource, StoreKelSource, StorePageLoader, Verification,
+    collect_key_events, completed_verification, compute_rotation_hash, forward_key_events,
+    partition_for_submission, resolve_key_events, truncate_incomplete_generation,
+    verify_key_events,
 };
 
 /// Maximum number of events allowed in a single submit_events request.

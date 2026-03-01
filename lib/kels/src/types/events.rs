@@ -129,19 +129,11 @@ impl EventKind {
     /// Returns the DB string representations of all establishment event kinds.
     /// Used to query for the last establishment event without hardcoding kind strings in SQL.
     pub fn establishment_kinds() -> Vec<String> {
-        [
-            Self::Icp,
-            Self::Dip,
-            Self::Rot,
-            Self::Rec,
-            Self::Ror,
-            Self::Dec,
-            Self::Cnt,
-        ]
-        .iter()
-        .filter(|k| k.is_establishment())
-        .map(|k| k.as_str().to_string())
-        .collect()
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_establishment())
+            .map(|k| k.as_str().to_string())
+            .collect()
     }
 }
 

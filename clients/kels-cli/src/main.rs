@@ -10,8 +10,10 @@ use colored::Colorize;
 #[cfg(feature = "dev-tools")]
 use kels::EventKind;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE,
-    MultiRegistryClient, NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    FileKelStore, HttpKelSource, KelStore, KelVerifier, KelsClient, KeyEventBuilder,
+    MAX_EVENTS_PER_KEL_RESPONSE, MultiRegistryClient, NodeStatus, ProviderConfig,
+    SoftwareKeyProvider, SoftwareProviderConfig, Verification, collect_key_events,
+    max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -498,26 +500,35 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
+fn print_kel_status(ctx: &Verification, verbose: bool) {
+    if verbose {
+        println!("  Verified: Yes");
+    }
+    if ctx.is_contested() {
+        println!("  Status: {}", "CONTESTED".red());
+    } else if ctx.is_decommissioned() {
+        println!("  Status: {}", "DECOMMISSIONED".red());
+    } else if ctx.is_divergent() {
+        println!("  Status: {}", "DIVERGENT".yellow());
+    } else {
+        println!("  Status: {}", "OK".green());
+    }
+}
+
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
+    let source = HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+    let verifier = KelVerifier::new(prefix);
 
-    // Fetch all pages
-    let mut all_events = Vec::new();
-    let mut since: Option<String> = None;
-    loop {
-        let page = client
-            .fetch_key_events(prefix, since.as_deref(), MAX_EVENTS_PER_KEL_RESPONSE)
-            .await?;
-        if page.events.is_empty() {
-            break;
-        }
-        since = page.events.last().map(|e| e.event.said.clone());
-        let has_more = page.has_more;
-        all_events.extend(page.events);
-        if !has_more {
-            break;
-        }
-    }
+    let (ctx, all_events) = collect_key_events(
+        prefix,
+        &source,
+        verifier,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if audit {
         println!(
@@ -535,26 +546,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!("  Latest Type: {}", last.event.kind);
         }
 
-        // Verify with KelVerifier
-        let mut verifier = kels::KelVerifier::new(prefix);
-        match verifier.verify_page(&all_events) {
-            Ok(_) => match verifier.into_verification() {
-                Ok(ctx) => {
-                    println!("  Verified: Yes");
-                    if ctx.is_contested() {
-                        println!("  Status: {}", "CONTESTED".red());
-                    } else if ctx.is_decommissioned() {
-                        println!("  Status: {}", "DECOMMISSIONED".red());
-                    } else if ctx.is_divergent() {
-                        println!("  Status: {}", "DIVERGENT".yellow());
-                    } else {
-                        println!("  Status: {}", "OK".green());
-                    }
-                }
-                Err(e) => println!("  Verified: {}", e),
-            },
-            Err(e) => println!("  Verified: {}", e),
-        }
+        print_kel_status(&ctx, true);
 
         println!();
         println!("{}", "Events:".yellow().bold());
@@ -601,23 +593,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         println!("  Latest Type: {}", last.event.kind);
     }
 
-    // Verify for status display
-    let mut verifier = kels::KelVerifier::new(prefix);
-    if verifier.verify_page(&all_events).is_ok()
-        && let Ok(ctx) = verifier.into_verification()
-    {
-        if ctx.is_contested() {
-            println!("  Status: {}", "CONTESTED".red());
-        } else if ctx.is_decommissioned() {
-            println!("  Status: {}", "DECOMMISSIONED".red());
-        } else if ctx.is_divergent() {
-            println!("  Status: {}", "DIVERGENT".yellow());
-        } else {
-            println!("  Status: {}", "OK".green());
-        }
-    } else {
-        println!("  Status: {}", "INVALID".red());
-    }
+    print_kel_status(&ctx, false);
 
     println!();
     println!("{}", "Events:".yellow().bold());
@@ -851,21 +827,15 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 #[cfg(feature = "dev-tools")]
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
-    let page_size = kels::MAX_EVENTS_PER_KEL_QUERY as u64;
-    let mut offset = 0u64;
-    let mut all_events = Vec::new();
-
-    loop {
-        let (events, has_more) = kel_store.load(prefix, page_size, offset).await?;
-        if events.is_empty() {
-            break;
-        }
-        offset += events.len() as u64;
-        all_events.extend(events);
-        if !has_more {
-            break;
-        }
-    }
+    let source = kels::StoreKelSource::new(&kel_store);
+    let all_events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if all_events.is_empty() {
         return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
@@ -888,20 +858,15 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
 
     // Load the local KEL to get the chain state (dev-tools, not production)
     let kel_store = create_kel_store(cli, prefix)?;
-    let page_size = kels::MAX_EVENTS_PER_KEL_QUERY as u64;
-    let mut events = Vec::new();
-    let mut offset = 0u64;
-    loop {
-        let (page, has_more) = kel_store.load(prefix, page_size, offset).await?;
-        if page.is_empty() {
-            break;
-        }
-        offset += page.len() as u64;
-        events.extend(page);
-        if !has_more {
-            break;
-        }
-    }
+    let source = kels::StoreKelSource::new(&kel_store);
+    let events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow::anyhow!("KEL not found locally: {}", prefix));
     }

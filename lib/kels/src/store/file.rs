@@ -108,14 +108,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{SoftwareKeyProvider, builder::KeyEventBuilder};
-
-    async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        (prefix, vec![icp])
-    }
 
     #[test]
     fn test_new_creates_directory() {
@@ -175,7 +167,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = crate::store::create_test_events().await;
         let event_count = events.len();
 
         store.save(&prefix, &events).await.unwrap();
@@ -189,7 +181,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = crate::store::create_test_events().await;
 
         store.save(&prefix, &events).await.unwrap();
 
@@ -206,7 +198,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = crate::store::create_test_events().await;
 
         store.save(&prefix, &events).await.unwrap();
 
@@ -244,8 +236,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix1, events1) = create_test_events().await;
-        let (prefix2, events2) = create_test_events().await;
+        let (prefix1, events1) = crate::store::create_test_events().await;
+        let (prefix2, events2) = crate::store::create_test_events().await;
 
         store.save(&prefix1, &events1).await.unwrap();
         store.save(&prefix2, &events2).await.unwrap();
@@ -270,7 +262,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = crate::store::create_test_events().await;
 
         // Set this KEL's prefix as the owner
         store.set_owner_prefix(Some(&prefix));
@@ -288,7 +280,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (prefix, events) = create_test_events().await;
+        let (prefix, events) = crate::store::create_test_events().await;
 
         // Set a different owner prefix
         store.set_owner_prefix(Some("different_prefix"));
