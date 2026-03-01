@@ -567,13 +567,14 @@ pub(crate) async fn submit_events(
 // ==================== Full merge path helpers ====================
 
 /// Check if any event from `diverged_at` serial onward reveals the recovery key.
-/// Paginated scan — never loads full KEL.
+/// Paginated scan — never loads full KEL. Fails secure if max_pages exceeded.
 async fn recovery_revealed_in_divergent_events(
     tx: &mut crate::repository::KelTransaction,
     diverged_at: u64,
 ) -> Result<bool, ApiError> {
+    let max_pages = kels::max_verification_pages();
     let mut from_serial = diverged_at;
-    loop {
+    for _ in 0..max_pages {
         let (page, has_more) = tx
             .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
             .await
@@ -591,6 +592,10 @@ async fn recovery_revealed_in_divergent_events(
             return Ok(false);
         }
     }
+    // Fail secure: treat as recovery revealed (most restrictive outcome)
+    Err(ApiError::internal_error(
+        "Scan exceeded max_pages limit — cannot determine recovery state".to_string(),
+    ))
 }
 
 /// Walk backward from `start_said` collecting event SAIDs until reaching
@@ -625,21 +630,23 @@ async fn trace_chain_backward_to_serial(
 /// Scan divergent events from `diverged_at` serial onward.
 /// Returns (adversary_events, adversary_revealed_recovery).
 /// Adversary events are those NOT in `owner_saids`.
+/// Fails secure if max_pages exceeded.
 async fn scan_divergent_events(
     tx: &mut crate::repository::KelTransaction,
     diverged_at: u64,
     owner_saids: &HashSet<String>,
 ) -> Result<(Vec<SignedKeyEvent>, bool), ApiError> {
+    let max_pages = kels::max_verification_pages();
     let mut adversary = Vec::new();
     let mut revealed = false;
     let mut from_serial = diverged_at;
-    loop {
+    for _ in 0..max_pages {
         let (page, has_more) = tx
             .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
             .await
             .map_err(|e| ApiError::internal_error(e.to_string()))?;
         if page.is_empty() {
-            break;
+            return Ok((adversary, revealed));
         }
         for event in &page {
             if !owner_saids.contains(&event.event.said) {
@@ -653,10 +660,12 @@ async fn scan_divergent_events(
             from_serial = last.event.serial + 1;
         }
         if !has_more {
-            break;
+            return Ok((adversary, revealed));
         }
     }
-    Ok((adversary, revealed))
+    Err(ApiError::internal_error(
+        "Scan exceeded max_pages limit — cannot scan divergent events".to_string(),
+    ))
 }
 
 /// Walk backward from `start_said` following `previous` pointers until finding
@@ -692,23 +701,24 @@ async fn trace_establishment_backward(
 /// Verify a sub-chain from serial 0 up to (but not including) `stop_serial`.
 /// Uses paginated reads under the advisory lock. Returns the `KelVerifier` state
 /// after processing events before `stop_serial` — divergence in the sub-chain is
-/// expected and allowed.
+/// expected and allowed. Fails secure if max_pages exceeded.
 async fn verify_chain_before_serial(
     tx: &mut crate::repository::KelTransaction,
     prefix: &str,
     stop_serial: u64,
 ) -> Result<KelVerifier, ApiError> {
+    let max_pages = kels::max_verification_pages();
     let mut verifier = KelVerifier::new(prefix);
     let mut from_serial: u64 = 0;
     let page_size = MAX_EVENTS_PER_KEL_QUERY as u64;
 
-    loop {
+    for _ in 0..max_pages {
         let (page, has_more) = tx
             .get_signed_history_since(from_serial, page_size)
             .await
             .map_err(|e| ApiError::internal_error(e.to_string()))?;
         if page.is_empty() {
-            break;
+            return Ok(verifier);
         }
 
         // Only include events before stop_serial
@@ -717,7 +727,7 @@ async fn verify_chain_before_serial(
             .filter(|e| e.event.serial < stop_serial)
             .collect();
         if filtered.is_empty() {
-            break;
+            return Ok(verifier);
         }
 
         // Build a contiguous slice for verify_page by collecting clones
@@ -728,26 +738,30 @@ async fn verify_chain_before_serial(
 
         // If any event in this page was at or past stop_serial, we're done
         if page.last().is_some_and(|e| e.event.serial >= stop_serial) {
-            break;
+            return Ok(verifier);
         }
         if let Some(last) = page.last() {
             from_serial = last.event.serial + 1;
         }
         if !has_more {
-            break;
+            return Ok(verifier);
         }
     }
 
-    Ok(verifier)
+    Err(ApiError::internal_error(
+        "Scan exceeded max_pages limit — cannot verify sub-chain".to_string(),
+    ))
 }
 
 /// Check if any non-contest event at or after `from_serial` reveals the recovery key.
+/// Fails secure if max_pages exceeded.
 async fn non_contest_recovery_revealed_since(
     tx: &mut crate::repository::KelTransaction,
     from_serial: u64,
 ) -> Result<bool, ApiError> {
+    let max_pages = kels::max_verification_pages();
     let mut serial = from_serial;
-    loop {
+    for _ in 0..max_pages {
         let (page, has_more) = tx
             .get_signed_history_since(serial, MAX_EVENTS_PER_KEL_QUERY as u64)
             .await
@@ -768,6 +782,10 @@ async fn non_contest_recovery_revealed_since(
             return Ok(false);
         }
     }
+    // Fail secure: treat as recovery revealed (most restrictive outcome)
+    Err(ApiError::internal_error(
+        "Scan exceeded max_pages limit — cannot determine recovery state".to_string(),
+    ))
 }
 
 /// Handle submission to an already-divergent KEL.
@@ -1020,14 +1038,17 @@ async fn handle_overlap_submission(
         .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
     // Collect old divergent events (existing events from branch_serial+1 onward)
+    let max_pages = kels::max_verification_pages();
     let mut old_divergent_events = Vec::new();
     let mut from_serial = branch_serial + 1;
-    loop {
+    let mut exhausted = false;
+    for _ in 0..max_pages {
         let (page, has_more) = tx
             .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
             .await
             .map_err(|e| ApiError::internal_error(e.to_string()))?;
         if page.is_empty() {
+            exhausted = true;
             break;
         }
         if let Some(last) = page.last() {
@@ -1035,8 +1056,14 @@ async fn handle_overlap_submission(
         }
         old_divergent_events.extend(page);
         if !has_more {
+            exhausted = true;
             break;
         }
+    }
+    if !exhausted {
+        return Err(ApiError::internal_error(
+            "Scan exceeded max_pages limit — cannot collect divergent events".to_string(),
+        ));
     }
 
     // Check if old divergent events reveal recovery key

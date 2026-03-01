@@ -260,6 +260,7 @@ impl SyncHandler {
         }
 
         let mut fetched_events = None;
+        let max_pages = kels::max_verification_pages();
 
         for (peer_prefix, kels_url) in &peers {
             // Per-peer rate limiting
@@ -290,10 +291,15 @@ impl SyncHandler {
             let events = if let Some(ref effective_said) = local_effective_said {
                 // Delta fetch: only events after our local state
                 match remote_client
-                    .fetch_key_events(prefix, Some(effective_said), MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_all_key_events(
+                        prefix,
+                        Some(effective_said),
+                        MAX_EVENTS_PER_KEL_RESPONSE,
+                        max_pages,
+                    )
                     .await
                 {
-                    Ok(page) => page.events,
+                    Ok(events) => events,
                     Err(KelsError::KeyNotFound(_)) => {
                         // Since SAID was removed by recovery/contest on remote.
                         // Fetch events and audit records separately.
@@ -302,13 +308,17 @@ impl SyncHandler {
                             prefix
                         );
                         let events_result = remote_client
-                            .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .fetch_all_key_events(
+                                prefix,
+                                None,
+                                MAX_EVENTS_PER_KEL_RESPONSE,
+                                max_pages,
+                            )
                             .await;
                         let audit_result = remote_client.fetch_kel_audit(prefix).await;
 
                         match (events_result, audit_result) {
-                            (Ok(page), Ok(audit_records)) => {
-                                let clean_chain = page.events;
+                            (Ok(clean_chain), Ok(audit_records)) => {
                                 let archived_events = audit_records
                                     .last()
                                     .and_then(|record| match record.as_signed_key_events() {
@@ -395,10 +405,15 @@ impl SyncHandler {
                             kels_url, prefix, e
                         );
                         match remote_client
-                            .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                            .fetch_all_key_events(
+                                prefix,
+                                None,
+                                MAX_EVENTS_PER_KEL_RESPONSE,
+                                max_pages,
+                            )
                             .await
                         {
-                            Ok(page) => page.events,
+                            Ok(events) => events,
                             Err(KelsError::KeyNotFound(_)) => {
                                 warn!("KEL not found on remote for {}", prefix);
                                 continue;
@@ -413,10 +428,10 @@ impl SyncHandler {
             } else {
                 // No local state — fetch full KEL
                 match remote_client
-                    .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                    .fetch_all_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE, max_pages)
                     .await
                 {
-                    Ok(page) => page.events,
+                    Ok(events) => events,
                     Err(KelsError::KeyNotFound(_)) => {
                         warn!("KEL not found on remote for {}", prefix);
                         continue;
@@ -489,14 +504,12 @@ impl SyncHandler {
             );
             let remote_client = KelsClient::new(&kels_url);
             match remote_client
-                .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
+                .fetch_all_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE, max_pages)
                 .await
             {
-                Ok(page) => {
+                Ok(events) => {
                     // Serving/forwarding: submit to local KELS which verifies on ingest
-                    self.submit_events_to_kels(&page.events)
-                        .await
-                        .unwrap_or(false)
+                    self.submit_events_to_kels(&events).await.unwrap_or(false)
                 }
                 Err(e) => {
                     warn!("Failed to fetch full KEL for retry: {}", e);

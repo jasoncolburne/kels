@@ -152,6 +152,56 @@ impl KelsClient {
         }
     }
 
+    /// Fetch all KEL events by paginating through all pages.
+    ///
+    /// Accumulates events from all pages into a single `Vec`. Uses `max_pages`
+    /// to bound resource consumption — returns an error if exceeded.
+    ///
+    /// - `since`: Optional SAID for delta fetch (events after this SAID).
+    /// - `limit`: Page size per request.
+    /// - `max_pages`: Maximum number of pages to fetch before failing.
+    pub async fn fetch_all_key_events(
+        &self,
+        prefix: &str,
+        since: Option<&str>,
+        limit: usize,
+        max_pages: usize,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let mut all_events = Vec::new();
+        let mut current_since = since.map(String::from);
+        let mut exhausted = false;
+
+        for _ in 0..max_pages {
+            let page = self
+                .fetch_key_events(prefix, current_since.as_deref(), limit)
+                .await?;
+
+            if page.events.is_empty() {
+                exhausted = true;
+                break;
+            }
+
+            let last_said = page.events.last().map(|e| e.event.said.clone());
+            all_events.extend(page.events);
+
+            if !page.has_more {
+                exhausted = true;
+                break;
+            }
+
+            current_since = last_said;
+        }
+
+        if !exhausted {
+            return Err(KelsError::InvalidKel(format!(
+                "KEL fetch for {} exceeds max_pages limit ({})",
+                prefix, max_pages,
+            )));
+        }
+
+        Ok(all_events)
+    }
+
     /// Fetch the effective tail SAID for a prefix.
     ///
     /// **RESOLVING ONLY — NOT VERIFIED.** Use only for sync comparison.

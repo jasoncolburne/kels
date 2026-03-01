@@ -322,8 +322,11 @@ impl KelVerifier {
             // Verify the event against this branch's crypto state
             let new_state = self.verify_chain_event(event, branch)?;
 
-            // Track anchor checking
-            if event.event.is_interaction()
+            // Track anchor checking — exclude events in the divergent region.
+            // Divergent events are untrusted (adversary may have forged anchors),
+            // so only pre-divergence anchors are recorded.
+            if self.diverged_at_serial.is_none_or(|ds| serial < ds)
+                && event.event.is_interaction()
                 && let Some(ref anchor) = event.event.anchor
                 && self.queried_saids.contains(anchor.as_str())
             {
@@ -700,11 +703,13 @@ pub async fn completed_verification(
     let mut verifier = KelVerifier::new(prefix);
     verifier.check_anchors(anchor_saids);
     let mut offset: u64 = 0;
+    let mut exhausted = false;
 
     for _ in 0..max_pages {
         let (mut events, has_more) = loader.load_page(prefix, page_size, offset).await?;
 
         if events.is_empty() {
+            exhausted = true;
             break;
         }
 
@@ -723,8 +728,18 @@ pub async fn completed_verification(
         // (every event belonged to an incomplete final generation) — continuing
         // would loop forever since the offset can't advance.
         if !has_more || (truncated > 0 && advanced == 0) {
+            exhausted = true;
             break;
         }
+    }
+
+    // Fail secure: if we ran out of pages before exhausting the source,
+    // return an error rather than a partial Verification.
+    if !exhausted {
+        return Err(KelsError::InvalidKel(format!(
+            "KEL for {} exceeds max_pages limit ({}) — verification incomplete",
+            prefix, max_pages,
+        )));
     }
 
     verifier.into_verification()
@@ -1554,19 +1569,23 @@ mod tests {
         store.save(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events max, but we have 21
-        let ctx = completed_verification(
+        let result = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             5,
             2,
             iter::empty(),
         )
-        .await
-        .unwrap();
+        .await;
 
-        // Should have verified only the first 10 events (2 pages of 5)
-        // The context is valid but incomplete — tip is at serial 9, not 20
-        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 9);
+        // Should fail secure — incomplete verification returns an error
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("max_pages limit"),
+            "Error should mention max_pages limit, got: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -2037,11 +2056,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_anchors_on_divergent_branches() {
+    async fn test_anchors_on_divergent_branches_excluded() {
+        // Anchors on divergent branches must NOT be trusted — an adversary could
+        // forge anchors on their branch. Both owner and adversary anchors at the
+        // divergence serial are excluded (fail secure). Pre-divergence anchors
+        // remain trusted.
+        let a_pre = anchor("pre-divergence");
         let a_owner = anchor("owner");
         let a_adv = anchor("adversary");
         let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         owner.incept().await.unwrap();
+        owner.interact(&a_pre).await.unwrap();
         let mut adversary = owner.clone();
 
         owner.interact(&a_owner).await.unwrap();
@@ -2051,10 +2076,110 @@ mod tests {
         events.push(adversary_ixn);
         sort_events(&mut events);
 
-        let ctx = verify_with_anchors(&events, [a_owner.clone(), a_adv.clone()]);
+        let ctx = verify_with_anchors(&events, [a_pre.clone(), a_owner.clone(), a_adv.clone()]);
         assert!(ctx.is_divergent());
-        assert!(ctx.is_said_anchored(&a_owner));
-        assert!(ctx.is_said_anchored(&a_adv));
+        // Pre-divergence anchor is trusted
+        assert!(ctx.is_said_anchored(&a_pre));
+        // Neither anchor at the divergence serial should be trusted
+        assert!(!ctx.is_said_anchored(&a_owner));
+        assert!(!ctx.is_said_anchored(&a_adv));
+        assert!(!ctx.anchors_all_saids());
+    }
+
+    #[tokio::test]
+    async fn test_anchors_after_divergence_excluded_multi_serial() {
+        // Regression: anchors at serials beyond diverged_at_serial are also excluded.
+        // Chain: icp(0), ixn(1, pre-anchor), diverge at 2, owner extends to 3 with anchor.
+        let a_pre = anchor("before");
+        let a_post = anchor("after");
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        owner.incept().await.unwrap();
+        owner.interact(&a_pre).await.unwrap(); // serial 1
+        let mut adversary = owner.clone();
+
+        // serial 2: divergence
+        owner.interact(&anchor("filler")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-filler")).await.unwrap();
+
+        // serial 3: owner extends with the anchor we care about
+        owner.interact(&a_post).await.unwrap();
+
+        let mut events = owner.events().to_vec();
+        events.push(adv_ixn);
+        sort_events(&mut events);
+
+        let ctx = verify_with_anchors(&events, [a_pre.clone(), a_post.clone()]);
+        assert!(ctx.is_divergent());
+        assert_eq!(ctx.diverged_at_serial(), Some(2));
+        // Pre-divergence anchor is trusted
+        assert!(ctx.is_said_anchored(&a_pre));
+        // Post-divergence anchor (even from owner) is NOT trusted
+        assert!(!ctx.is_said_anchored(&a_post));
+    }
+
+    #[tokio::test]
+    async fn test_max_pages_exact_boundary_succeeds() {
+        // Boundary: KEL fits exactly within max_pages * page_size — should succeed.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let mut events = vec![icp];
+        for i in 0..9 {
+            let ixn = builder
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .await
+                .unwrap();
+            events.push(ixn);
+        }
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        // Page size 5, max 2 pages = 10 events, we have exactly 10
+        let ctx = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            5,
+            2,
+            iter::empty(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 9);
+    }
+
+    #[tokio::test]
+    async fn test_max_pages_one_over_boundary_fails() {
+        // One event over max_pages * page_size — should fail secure.
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+
+        let mut events = vec![icp];
+        for i in 0..10 {
+            let ixn = builder
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .await
+                .unwrap();
+            events.push(ixn);
+        }
+
+        let store = MemoryStore::new();
+        store.save(&prefix, &events).await.unwrap();
+
+        // Page size 5, max 2 pages = 10 events, we have 11
+        let result = completed_verification(
+            &mut StorePageLoader::new(&store),
+            &prefix,
+            5,
+            2,
+            iter::empty(),
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     // ==================== KelVerifier — effective SAID ====================
