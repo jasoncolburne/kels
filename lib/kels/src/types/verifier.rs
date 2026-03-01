@@ -86,6 +86,8 @@ pub struct KelVerifier {
     diverged_at_serial: Option<u64>,
     /// Whether a contest event has been seen.
     is_contested: bool,
+    /// Total number of verified events.
+    event_count: usize,
     /// Anchor checking: SAIDs we're looking for.
     queried_saids: BTreeSet<String>,
     /// Anchor checking: SAIDs we've found anchored.
@@ -101,6 +103,7 @@ impl KelVerifier {
             last_verified_serial: None,
             diverged_at_serial: None,
             is_contested: false,
+            event_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         }
@@ -126,6 +129,7 @@ impl KelVerifier {
             last_verified_serial,
             diverged_at_serial: None,
             is_contested: false,
+            event_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         })
@@ -149,6 +153,7 @@ impl KelVerifier {
             last_verified_serial,
             diverged_at_serial: ctx.diverged_at_serial(),
             is_contested: ctx.is_contested(),
+            event_count: ctx.event_count(),
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         })
@@ -198,6 +203,8 @@ impl KelVerifier {
             self.verify_generation(serial, &generation)?;
         }
 
+        self.event_count += events.len();
+
         Ok(())
     }
 
@@ -220,6 +227,7 @@ impl KelVerifier {
             branch_tips,
             self.is_contested,
             self.diverged_at_serial,
+            self.event_count,
             self.anchored_saids,
             self.queried_saids,
         );

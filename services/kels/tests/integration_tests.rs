@@ -1203,3 +1203,317 @@ async fn test_batch_fetch_asymmetric_multi_page_kels() {
         assert_eq!(event.event.said, events_medium[i].event.said);
     }
 }
+
+// ==================== Divergence / Recovery / Contest ====================
+
+/// Submit conflicting interactions at the same serial to create divergence.
+#[tokio::test]
+async fn test_divergence_creation() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Create KEL: icp + 2 interactions
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("ixn2")).await;
+
+    // Submit icp + 2 interactions
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception, ixn1, ixn2])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
+
+    // Clone builder at current state (after serial 2) to create a fork
+    let mut builder_b = builder_a.clone();
+
+    // Builder A creates interaction at serial 3
+    let ixn3_a = create_interaction(&mut builder_a, &make_anchor("branch-a")).await;
+
+    // Submit builder A's interaction
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn3_a])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
+
+    // Builder B creates a different interaction at serial 3 (same previous)
+    let ixn3_b = create_interaction(&mut builder_b, &make_anchor("branch-b")).await;
+
+    // Submit builder B's conflicting interaction — should cause divergence
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn3_b])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert_eq!(result.diverged_at, Some(3));
+
+    // GET the KEL and verify divergence: two events at serial 3
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    // 3 events (icp + 2 ixn) + 2 divergent events at serial 3 = 5
+    assert_eq!(page.events.len(), 5);
+    let serial_3_events: Vec<_> = page.events.iter().filter(|e| e.event.serial == 3).collect();
+    assert_eq!(serial_3_events.len(), 2);
+}
+
+/// Create divergence and then recover from it.
+#[tokio::test]
+async fn test_recovery_from_divergence() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Create KEL: icp + 2 interactions
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("rec-ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("rec-ixn2")).await;
+
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception, ixn1, ixn2])
+        .send()
+        .await
+        .unwrap();
+
+    // Fork
+    let mut builder_b = builder_a.clone();
+
+    // Create divergence
+    let ixn3_a = create_interaction(&mut builder_a, &make_anchor("rec-branch-a")).await;
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn3_a])
+        .send()
+        .await
+        .unwrap();
+
+    let ixn3_b = create_interaction(&mut builder_b, &make_anchor("rec-branch-b")).await;
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn3_b])
+        .send()
+        .await
+        .unwrap();
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert_eq!(result.diverged_at, Some(3));
+
+    // Submit recovery from builder A (the legitimate owner).
+    // recover(true) creates rec + rot events chaining from builder_a's tip (ixn3_a).
+    let _ = builder_a.recover(true).await.unwrap();
+    let all_events = builder_a.events();
+    let rec_idx = all_events
+        .iter()
+        .position(|e| e.event.is_recover())
+        .unwrap();
+    let recovery_events = all_events[rec_idx..].to_vec();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&recovery_events)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+
+    // GET KEL — should show the recovered chain
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    // After recovery, the KEL should have the authoritative branch events
+    assert!(page.events.iter().any(|e| e.event.is_recover()));
+
+    // Subsequent normal appends should work
+    let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-recovery")).await;
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn_after])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
+}
+
+/// Contest freezes a KEL after recovery key is revealed.
+///
+/// Flow: owner rotates recovery (revealing the recovery key), then the adversary
+/// submits a contest at the same serial (creating divergence + freeze in one step)
+/// via handle_overlap_submission.
+#[tokio::test]
+async fn test_contest_freezes_kel() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Create KEL: icp + 2 interactions
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn2")).await;
+
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception, ixn1, ixn2])
+        .send()
+        .await
+        .unwrap();
+
+    // Fork before the recovery-revealing event
+    let mut builder_b = builder_a.clone();
+
+    // Builder A does rotate_recovery (reveals recovery key) at serial 3
+    let ror_event = builder_a.rotate_recovery().await.unwrap();
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ror_event])
+        .send()
+        .await
+        .unwrap();
+
+    // Builder B (adversary who also knows recovery key) submits a contest at serial 3.
+    // This hits handle_overlap_submission: old events reveal recovery, new event is contest → Contested.
+    let contest_event = builder_b.contest().await.unwrap();
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![contest_event])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_some());
+
+    // GET KEL — should contain contest event
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert!(page.events.iter().any(|e| e.event.is_contest()));
+
+    // Further submissions should be rejected (KEL is frozen)
+    let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-contest")).await;
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn_after])
+        .send()
+        .await
+        .unwrap();
+    // Contested KEL should reject new events
+    assert_ne!(response.status(), 200);
+}
+
+/// Submit overlapping events (some already exist on server) that diverge mid-chain.
+/// This exercises handle_overlap_submission: the server deduplicates the overlap
+/// and stores only the divergent event.
+#[tokio::test]
+async fn test_overlap_submission_creates_divergence() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Create KEL: icp + 2 interactions, then fork
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn2")).await;
+
+    // Clone at fork point (after serial 2)
+    let mut builder_b = builder_a.clone();
+
+    // Builder A extends to serial 3
+    let ixn3_a = create_interaction(&mut builder_a, &make_anchor("ovl-branch-a")).await;
+
+    // Submit full chain from builder A: icp + ixn1 + ixn2 + ixn3_a
+    harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![inception, ixn1.clone(), ixn2.clone(), ixn3_a])
+        .send()
+        .await
+        .unwrap();
+
+    // Builder B creates a different serial 3
+    let ixn3_b = create_interaction(&mut builder_b, &make_anchor("ovl-branch-b")).await;
+
+    // Submit overlapping events: ixn1, ixn2 (already exist) + divergent ixn3_b.
+    // Server deduplicates ixn1 and ixn2, then detects ixn3_b diverges from ixn3_a.
+    let response = harness
+        .client()
+        .post(harness.url("/api/kels/events"))
+        .json(&vec![ixn1, ixn2, ixn3_b])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: BatchSubmitResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert_eq!(result.diverged_at, Some(3));
+
+    // Verify the KEL has divergent events
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    let serial_3_events: Vec<_> = page.events.iter().filter(|e| e.event.serial == 3).collect();
+    assert_eq!(serial_3_events.len(), 2);
+}

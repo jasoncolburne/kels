@@ -13,6 +13,7 @@ use futures::stream::StreamExt;
 use kels::{
     Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Verification, Vote,
 };
+use verifiable_storage::StorageError;
 
 /// Handle SubmitKeyEvents with DB-backed verification.
 ///
@@ -158,7 +159,21 @@ async fn apply_submit_key_events(
         .map(|e| (e.event.clone(), e.event_signatures()))
         .collect();
     if let Err(e) = repo.create_batch_with_signatures(batch).await {
-        tracing::debug!("Member KEL DB persist (may be duplicate): {}", e);
+        match e {
+            StorageError::DuplicateRecord(_) => {
+                tracing::debug!(
+                    "Member KEL DB persist (duplicate, expected on replay): {}",
+                    e
+                );
+            }
+            _ => {
+                tracing::error!(
+                    "Member KEL DB persist failed for {}: {} — events may be missing on restart",
+                    prefix,
+                    e
+                );
+            }
+        }
     }
 
     // Step 6: Update Raft state

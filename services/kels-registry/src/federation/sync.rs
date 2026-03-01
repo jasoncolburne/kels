@@ -86,12 +86,7 @@ async fn sync_own_kel(
     let raft_event_count = node
         .get_member_context(&own_prefix)
         .await
-        .and_then(|ctx| {
-            // For non-divergent KELs, tip serial + 1 = event count
-            ctx.branch_tips()
-                .first()
-                .map(|bt| bt.tip.event.serial as usize + 1)
-        })
+        .map(|ctx| ctx.event_count())
         .unwrap_or(0);
 
     if identity_count > raft_event_count {

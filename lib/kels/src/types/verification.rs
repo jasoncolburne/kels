@@ -39,6 +39,7 @@ pub struct Verification {
     branch_tips: Vec<BranchTip>,
     is_contested: bool,
     diverged_at_serial: Option<u64>,
+    event_count: usize,
     anchored_saids: BTreeSet<String>,
     queried_saids: BTreeSet<String>,
 }
@@ -96,6 +97,11 @@ impl Verification {
     /// The lowest serial where divergence occurs (if divergent).
     pub fn diverged_at_serial(&self) -> Option<u64> {
         self.diverged_at_serial
+    }
+
+    /// The total number of verified events in the KEL.
+    pub fn event_count(&self) -> usize {
+        self.event_count
     }
 
     /// Whether the KEL has been decommissioned.

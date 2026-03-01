@@ -659,15 +659,10 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
 
-    let event_count = ctx
-        .branch_tips()
-        .iter()
-        .map(|bt| bt.tip.event.serial + 1)
-        .max()
-        .unwrap_or(0);
+    let event_count = ctx.event_count();
 
     println!("{}", format!("KEL Status: {}", prefix).cyan().bold());
-    println!("  Local Events: ~{}", event_count);
+    println!("  Local Events: {}", event_count);
 
     if let Some(bt) = ctx.branch_tips().first() {
         println!("  Latest SAID:  {}", bt.tip.event.said);

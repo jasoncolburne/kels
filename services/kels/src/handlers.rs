@@ -344,7 +344,11 @@ pub(crate) async fn submit_events(
         .begin_locked_transaction(&prefix)
         .await?;
 
-    // Verify existing KEL (paginated, under advisory lock) to get trusted Verification
+    // Re-verify the entire KEL on every submission. We cannot cache Verification tokens
+    // because the DB cannot be trusted (verification invariant). Trusting a cached token
+    // would mean trusting the DB to attest its own integrity — a tampered DB with a stale
+    // token could cause us to accept invalid events.
+    // TODO: optimize verification with batch signature verification and eager/parallel page loading
     let ctx = kels::completed_verification(
         &mut tx,
         &prefix,
@@ -1166,7 +1170,7 @@ pub(crate) async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
     Query(params): Query<KeyEventsQuery>,
-) -> Result<Json<SignedKeyEventPage>, ApiError> {
+) -> Result<Response, ApiError> {
     let limit = params
         .limit
         .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
@@ -1181,21 +1185,20 @@ pub(crate) async fn get_kel(
             limit,
         )
         .await?;
-        return Ok(Json(page));
+        return Ok(Json(page).into_response());
     }
 
     // Full fetch path — try cache for default limit
     if limit as usize == MAX_EVENTS_PER_KEL_RESPONSE {
         match state.kel_cache.get_full_serialized(&prefix).await {
             Ok(Some(bytes)) => {
-                // Cached KELs are ≤ MAX_EVENTS_PER_KEL_RESPONSE, so has_more = false
-                let events: Vec<SignedKeyEvent> = serde_json::from_slice(&bytes).map_err(|e| {
-                    ApiError::internal_error(format!("Cache deserialization: {}", e))
-                })?;
-                return Ok(Json(SignedKeyEventPage {
-                    events,
-                    has_more: false,
-                }));
+                // Zero-copy: wrap cached event array bytes into page JSON directly
+                let page_bytes = build_page_bytes(&bytes);
+                return Ok(Response::builder()
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(page_bytes))
+                    .map_err(|e| ApiError::internal_error(format!("Response build error: {}", e)))?
+                    .into_response());
             }
             Ok(None) => {}
             Err(e) => {
@@ -1214,7 +1217,7 @@ pub(crate) async fn get_kel(
         warn!("Failed to cache KEL: {}", e);
     }
 
-    Ok(Json(page))
+    Ok(Json(page).into_response())
 }
 
 /// Dedicated audit endpoint — returns only audit records for a prefix.

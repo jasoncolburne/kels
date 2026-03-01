@@ -1157,11 +1157,7 @@ pub async fn admin_vote_proposal(
                                 .node
                                 .get_member_context(prefix)
                                 .await
-                                .and_then(|ctx| {
-                                    ctx.branch_tips()
-                                        .first()
-                                        .map(|bt| bt.tip.event.serial as usize + 1)
-                                })
+                                .map(|ctx| ctx.event_count())
                                 .unwrap_or(0);
                             if own_page.events.len() > raft_count {
                                 let events = own_page.events[raft_count..].to_vec();
@@ -1265,11 +1261,7 @@ pub async fn admin_vote_proposal(
                             .node
                             .get_member_context(prefix)
                             .await
-                            .and_then(|ctx| {
-                                ctx.branch_tips()
-                                    .first()
-                                    .map(|bt| bt.tip.event.serial as usize + 1)
-                            })
+                            .map(|ctx| ctx.event_count())
                             .unwrap_or(0);
                         if own_page.events.len() > raft_count {
                             let events = own_page.events[raft_count..].to_vec();
