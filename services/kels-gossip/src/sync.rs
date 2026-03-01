@@ -1082,7 +1082,11 @@ pub async fn run_anti_entropy_loop(
                         // Use the local effective SAID we already fetched — if it exists
                         // and differs from the remote, record seen to stop retrying.
                         if local_said.is_some() {
-                            // We had local state but merge still failed — likely three-way divergence
+                            // We had local state but merge still failed — likely three-way
+                            // divergence (nodes hold different adversary branch pairs). Record
+                            // the remote's SAID as seen to stop retrying. This is a resolving
+                            // heuristic: a wrong guess either causes an unnecessary retry or
+                            // skips one sync cycle — neither is a security issue.
                             record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
                         } else {
                             record_stale_prefix(redis.as_ref(), &state.prefix, &peer_prefix).await;

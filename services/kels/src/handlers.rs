@@ -858,7 +858,10 @@ async fn handle_divergent_submission(
         // Determine the first serial of submitted events
         let first_serial = new_events[0].event.serial;
 
-        // 1. Ensure no recovery-revealing event at or after the first submitted serial
+        // 1. Scan from first_serial (not diverged_at) because the pre-divergence
+        //    sub-chain is verified separately in step 2. If any event at or after the
+        //    submission's starting serial reveals the recovery key, the adversary has
+        //    demonstrated recovery-key knowledge and recovery is unsafe — contest instead.
         if recovery_revealed_in_divergent_events(tx, first_serial).await? {
             return Err(ApiError::unauthorized(
                 "KEL merge failed: Contest required — recovery key revealed at or after submission serial".to_string(),
@@ -890,6 +893,9 @@ async fn handle_divergent_submission(
             .ok_or_else(|| {
                 ApiError::unauthorized("Recovery does not extend a known event".to_string())
             })?;
+        // The anchor must be in the trusted pre-divergence chain (verified in step 2).
+        // Reject if it's at or after first_serial — an attacker could craft a recovery
+        // that chains from a newly-submitted event, bypassing adversary-event checks.
         if anchor_event.event.serial >= first_serial {
             return Err(ApiError::unauthorized(
                 "Recovery chain-from event is not before first submitted serial".to_string(),
@@ -1115,7 +1121,10 @@ async fn handle_overlap_submission(
         return Ok((KelMergeResult::Recovered, None));
     }
 
-    // No recovery — insert just the first divergent event to create divergence
+    // No recovery event in the batch — insert only the single forking event to
+    // establish divergence and freeze the KEL. Subsequent adversary events in the
+    // batch are intentionally dropped: storing more would extend the adversary's
+    // branch without benefit. The owner can now submit rec or cnt to resolve.
     let divergent_event = new_events
         .iter()
         .find(|e| e.event.previous.as_deref() == Some(first_previous))

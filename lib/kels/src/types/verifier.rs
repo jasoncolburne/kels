@@ -719,6 +719,9 @@ pub async fn completed_verification(
         verifier.verify_page(&events)?;
         offset += advanced;
 
+        // Break if the source is exhausted, or if truncation removed all events
+        // (every event belonged to an incomplete final generation) — continuing
+        // would loop forever since the offset can't advance.
         if !has_more || (truncated > 0 && advanced == 0) {
             break;
         }
@@ -956,8 +959,9 @@ async fn transfer_key_events(
         if has_more && deferred.is_none() {
             held_back = events.pop();
         } else if deferred.is_none() && events.len() > page_size {
-            // Last page with prepended held-back event exceeds page_size.
-            // Split the overflow into a separate submission.
+            // Last page with a prepended held-back event from the previous page
+            // exceeds page_size. Pop the extra event to keep each store_page call
+            // within MAX_EVENTS_PER_SUBMISSION (which equals page_size).
             held_back = events.pop();
         }
 
@@ -974,7 +978,10 @@ async fn transfer_key_events(
         if let Some(ref deferred_event) = deferred {
             // Phase 2: divergence already resolved, send continuing branch events
             sink.store_page(prefix, &events).await?;
-            // After divergence, since must be the effective SAID (hash of tip SAIDs)
+            // After divergence, the server computes "effective SAID" as a hash of
+            // sorted tip SAIDs. A single-event SAID won't match any DB event in a
+            // divergent KEL, so the since cursor must use the same hash so the
+            // server's since-resolution recognizes we're in sync.
             if let Some(last) = events.last() {
                 since = Some(super::sync::hash_tip_saids(&[
                     last.event.said.as_str(),
@@ -1027,8 +1034,12 @@ async fn transfer_key_events(
                     }
                     sink.store_page(prefix, after_pair).await?;
                 } else {
-                    // Both branches end at divergence serial — no more events
-                    // on this page. Defer the one that reveals recovery key.
+                    // Both branches end at divergence serial — no continuation.
+                    // Defer the recovery-revealing event so it's submitted second:
+                    // the server's merge treats recovery-revealing events as the
+                    // signal for ContestRequired. Submitting the non-revealing
+                    // event first establishes divergence, then the revealing one
+                    // lands on the shorter branch.
                     if ev_b.event.reveals_recovery_key() {
                         sink.store_page(prefix, &[ev_a]).await?;
                         deferred = Some(ev_b);
@@ -1225,7 +1236,9 @@ pub fn partition_for_submission(
     {
         (div_idx + 1, div_idx)
     } else {
-        // Both are terminal — defer the one that reveals recovery key
+        // Both are terminal (neither is referenced by a later event). Defer the
+        // recovery-revealing event so it's submitted after divergence is established;
+        // submitting it first would trigger ContestRequired prematurely.
         if ev_b.event.reveals_recovery_key() {
             (div_idx, div_idx + 1)
         } else {

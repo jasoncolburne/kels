@@ -67,6 +67,7 @@ impl MemberKelRepository {
             )],
         );
 
+        // Fetch limit + 2: one extra for the since event we'll filter out, one extra for has_more
         let clamped_limit = limit.min(i64::MAX as u64 - 2);
         let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)

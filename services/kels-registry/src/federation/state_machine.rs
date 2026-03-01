@@ -86,7 +86,8 @@ async fn apply_submit_key_events(
         }
     };
 
-    // Step 3: Filter submitted events to genuinely new ones (by SAID)
+    // Step 3: Filter submitted events to genuinely new ones (by SAID).
+    // Only one branch tip exists here — divergent member KELs are rejected in step 2.
     let new_start = if let Some(ref ctx) = db_verification {
         let tip_said = ctx
             .branch_tips()
