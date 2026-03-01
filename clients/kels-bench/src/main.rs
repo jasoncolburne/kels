@@ -221,7 +221,7 @@ async fn setup_new_kels(
 ) -> Result<(Vec<TestKelConfig>, Vec<TestKelConfig>)> {
     println!("{}", "Setting up test KELs...".green().bold());
 
-    let lengths = [1, 8, 32, 128];
+    let lengths = [1, 8, 32, 64, 128, 256, 512];
     let mut singular_kels = Vec::new();
     for &len in &lengths {
         println!("  Creating {}-event KEL...", len);
