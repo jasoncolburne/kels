@@ -268,7 +268,7 @@ impl KelsRegistryClient {
         if response.status().is_success() {
             Ok(response.json().await?)
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(node_id.to_string()))
+            Err(KelsError::EventNotFound(node_id.to_string()))
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -1615,7 +1615,7 @@ mod tests {
         let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
         let result = client.update_status("unknown", NodeStatus::Ready).await;
 
-        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+        assert!(matches!(result, Err(KelsError::EventNotFound(_))));
     }
 
     #[tokio::test]

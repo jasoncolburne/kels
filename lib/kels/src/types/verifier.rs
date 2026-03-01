@@ -655,8 +655,11 @@ impl PageLoader for StorePageLoader<'_> {
 
 /// Adapts a `KelStore` (offset-based) into a `PagedKelSource` (SAID-based).
 ///
-/// Resolves `since` SAIDs by scanning for the matching event. Suitable for
-/// local stores where a full scan is acceptable.
+/// Resolves `since` SAIDs by scanning for the matching event.
+///
+/// **Warning:** `fetch_page` with `since` loads the entire KEL into memory (O(N))
+/// to find the offset of the `since` SAID. Only suitable for dev-tools and CLI
+/// usage, not production workloads.
 pub struct StoreKelSource<'a>(&'a dyn KelStore);
 
 impl<'a> StoreKelSource<'a> {
@@ -679,7 +682,7 @@ impl PagedKelSource for StoreKelSource<'_> {
             let offset = all
                 .iter()
                 .position(|e| e.event.said == said)
-                .ok_or_else(|| KelsError::KeyNotFound(prefix.to_string()))?;
+                .ok_or_else(|| KelsError::EventNotFound(prefix.to_string()))?;
             let start = offset + 1;
             let end = (start + limit).min(all.len());
             let has_more = end < all.len();
@@ -828,7 +831,7 @@ impl PagedKelSource for HttpKelSource {
             })?;
             Ok((page.events, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
+            Err(KelsError::EventNotFound(prefix.to_string()))
         } else {
             let err: super::ErrorResponse = resp.json().await.map_err(|e| {
                 KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
@@ -943,6 +946,14 @@ impl PagedKelSink for HttpKelSink {
 /// - The deferred event is flushed last
 ///
 /// When `verifier` is `Some`, each page is verified before divergence processing.
+///
+/// # Composite SAID cursor fragility
+///
+/// After divergence detection, the `since` cursor becomes a composite hash of
+/// sorted tip SAIDs (via `hash_tip_saids`), not a real event SAID. If the source
+/// KEL state changes between fetches (e.g., recovery resolves the divergence),
+/// the composite SAID becomes stale and the source returns an `EventNotFound`
+/// error. Callers should handle this by retrying the transfer from scratch.
 async fn transfer_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),

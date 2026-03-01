@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
-    #[error("Key not found: {0}")]
-    KeyNotFound(String),
+    #[error("Event not found: {0}")]
+    EventNotFound(String),
 
     #[error("No current key available")]
     NoCurrentKey,
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = KelsError::KeyNotFound("test_key".to_string());
+        let err = KelsError::EventNotFound("test_key".to_string());
         assert!(err.to_string().contains("test_key"));
 
         let err = KelsError::NoCurrentKey;

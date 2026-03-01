@@ -1018,12 +1018,15 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
     }
     let event_count = all_events.len();
     let mut verifier = kels::KelVerifier::new(&prefix);
-    let ctx = if verifier.verify_page(&all_events).is_ok() {
+    let verification = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()
     } else {
         None
     };
-    let is_decommissioned = ctx.as_ref().map(|c| c.is_decommissioned()).unwrap_or(false);
+    let is_decommissioned = verification
+        .as_ref()
+        .map(|c| c.is_decommissioned())
+        .unwrap_or(false);
 
     if json {
         let status = serde_json::json!({

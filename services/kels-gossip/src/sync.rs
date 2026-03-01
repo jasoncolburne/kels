@@ -300,7 +300,7 @@ impl SyncHandler {
                     .await
                 {
                     Ok(events) => events,
-                    Err(KelsError::KeyNotFound(_)) => {
+                    Err(KelsError::EventNotFound(_)) => {
                         // Since SAID was removed by recovery/contest on remote.
                         // Fetch events and audit records separately.
                         info!(
@@ -388,8 +388,8 @@ impl SyncHandler {
                                     return Ok(());
                                 }
                             }
-                            (Err(KelsError::KeyNotFound(_)), _)
-                            | (_, Err(KelsError::KeyNotFound(_))) => {
+                            (Err(KelsError::EventNotFound(_)), _)
+                            | (_, Err(KelsError::EventNotFound(_))) => {
                                 warn!("KEL not found on remote for {}", prefix);
                                 continue;
                             }
@@ -414,7 +414,7 @@ impl SyncHandler {
                             .await
                         {
                             Ok(events) => events,
-                            Err(KelsError::KeyNotFound(_)) => {
+                            Err(KelsError::EventNotFound(_)) => {
                                 warn!("KEL not found on remote for {}", prefix);
                                 continue;
                             }
@@ -432,7 +432,7 @@ impl SyncHandler {
                     .await
                 {
                     Ok(events) => events,
-                    Err(KelsError::KeyNotFound(_)) => {
+                    Err(KelsError::EventNotFound(_)) => {
                         warn!("KEL not found on remote for {}", prefix);
                         continue;
                     }

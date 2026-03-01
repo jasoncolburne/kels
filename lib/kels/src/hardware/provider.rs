@@ -237,7 +237,7 @@ impl KeyProvider for HardwareKeyProvider {
         if let Some(handle) = key_handle {
             self.enclave.get_public_key(handle)
         } else {
-            return Err(KelsError::KeyNotFound("Public key not found".to_string()));
+            return Err(KelsError::EventNotFound("Public key not found".to_string()));
         }
     }
 

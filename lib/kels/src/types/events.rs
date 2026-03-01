@@ -682,6 +682,12 @@ pub struct BatchSubmitResponse {
     pub applied: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveSaidResponse {
+    pub said: String,
+}
+
 /// Audit record for tracking archived events during recovery/contest
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "kels_audit_records")]

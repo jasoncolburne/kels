@@ -278,7 +278,7 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
 
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
-        KelsError::KeyNotFound(_) => KelsStatus::KelNotFound,
+        KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
         KelsError::NotIncepted => KelsStatus::NotIncepted,
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
@@ -2059,7 +2059,7 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_key_not_found() {
-        let err = KelsError::KeyNotFound("test".to_string());
+        let err = KelsError::EventNotFound("test".to_string());
         assert_eq!(map_error_to_status(&err), KelsStatus::KelNotFound);
     }
 

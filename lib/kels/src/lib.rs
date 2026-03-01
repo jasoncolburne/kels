@@ -48,6 +48,8 @@ pub mod types;
 
 use std::env;
 
+use tracing::warn;
+
 #[cfg(feature = "redis")]
 pub use cache::{
     LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
@@ -72,14 +74,15 @@ pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
-    CachedKel, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
-    EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
-    NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
-    ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
-    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
-    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
-    SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids, validate_timestamp,
+    CachedKel, CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode,
+    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent,
+    KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer,
+    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, PrefixListResponse,
+    PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotes,
+    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
+    RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent,
+    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids,
+    validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
@@ -106,10 +109,19 @@ pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
 
 /// Read the max verification pages from env, falling back to the default.
 pub fn max_verification_pages() -> usize {
-    env::var("KELS_MAX_VERIFICATION_PAGES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MAX_VERIFICATION_PAGES)
+    match env::var("KELS_MAX_VERIFICATION_PAGES") {
+        Ok(s) => match s.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                warn!(
+                    "KELS_MAX_VERIFICATION_PAGES is set but not a valid usize: {:?}, using default {}",
+                    s, DEFAULT_MAX_VERIFICATION_PAGES
+                );
+                DEFAULT_MAX_VERIFICATION_PAGES
+            }
+        },
+        Err(_) => DEFAULT_MAX_VERIFICATION_PAGES,
+    }
 }
 
 /// Maximum number of events returned in a single KEL response page.

@@ -145,7 +145,7 @@ impl KelsClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
+            Err(KelsError::EventNotFound(prefix.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -239,7 +239,7 @@ impl KelsClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
+            Err(KelsError::EventNotFound(prefix.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -589,7 +589,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.fetch_key_events("nonexistent", None, 512).await;
 
-            assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+            assert!(matches!(result, Err(KelsError::EventNotFound(_))));
         }
 
         #[tokio::test]

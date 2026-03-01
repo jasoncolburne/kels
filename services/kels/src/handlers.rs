@@ -1,5 +1,12 @@
 //! KELS REST API Handlers
 
+use std::{
+    collections::HashSet,
+    iter, slice,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use axum::{
     Json,
     extract::{ConnectInfo, Path, Query, State},
@@ -10,17 +17,11 @@ use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use futures_util::future::join_all;
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, BranchTip, ErrorCode, ErrorResponse, KelMergeResult,
-    KelVerifier, KelsAuditRecord, KelsError, KeyEventsQuery, MAX_BATCH_PREFIXES,
-    MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_QUERY, MAX_EVENTS_PER_KEL_RESPONSE,
-    MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache, SignedKeyEvent,
-    SignedKeyEventPage, Verification,
-};
-use std::{
-    collections::HashSet,
-    iter, slice,
-    sync::Arc,
-    time::{Duration, Instant},
+    BatchKelsRequest, BatchSubmitResponse, BranchTip, EffectiveSaidResponse, ErrorCode,
+    ErrorResponse, KelMergeResult, KelVerifier, KelsAuditRecord, KelsError, KeyEventsQuery,
+    MAX_BATCH_PREFIXES, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache,
+    SignedKeyEvent, SignedKeyEventPage, Verification,
 };
 use tracing::{debug, warn};
 
@@ -163,7 +164,7 @@ impl From<KelsError> for ApiError {
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
             KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
-            KelsError::KeyNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
+            KelsError::EventNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
             | KelsError::InvalidKel(_)
@@ -1254,7 +1255,7 @@ pub(crate) async fn event_exists(
 pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<EffectiveSaidResponse>, ApiError> {
     let effective = state
         .repo
         .key_events
@@ -1262,7 +1263,7 @@ pub(crate) async fn get_effective_said(
         .await?;
 
     match effective {
-        Some(said) => Ok(Json(serde_json::json!({ "said": said }))),
+        Some(said) => Ok(Json(EffectiveSaidResponse { said })),
         None => Err(ApiError::not_found(format!("Prefix {} not found", prefix))),
     }
 }
@@ -1466,7 +1467,7 @@ pub(crate) async fn get_kels_batch(
                         .await
                         {
                             Ok(page) => page,
-                            Err(KelsError::KeyNotFound(_)) => {
+                            Err(KelsError::EventNotFound(_)) => {
                                 warn!(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix

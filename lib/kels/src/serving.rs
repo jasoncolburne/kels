@@ -52,7 +52,7 @@ pub trait KelServer: Send + Sync {
 ///   return an empty page (caller is in sync); otherwise error. If found,
 ///   validate prefix ownership, then `load_page_since`.
 /// - **Full path** (`since = None`): `load_page(prefix, limit, 0)`. Empty
-///   result returns `Err(KeyNotFound)`.
+///   result returns `Err(EventNotFound)`.
 pub async fn serve_kel_page(
     server: &dyn KelServer,
     prefix: &str,
@@ -73,7 +73,7 @@ pub async fn serve_kel_page(
                         has_more: false,
                     });
                 }
-                return Err(KelsError::KeyNotFound(format!(
+                return Err(KelsError::EventNotFound(format!(
                     "Since SAID {} not found",
                     since_said
                 )));
@@ -94,7 +94,7 @@ pub async fn serve_kel_page(
     let (events, has_more) = server.load_page(prefix, limit, 0).await?;
 
     if events.is_empty() {
-        return Err(KelsError::KeyNotFound(format!(
+        return Err(KelsError::EventNotFound(format!(
             "No KEL found for prefix {}",
             prefix
         )));
@@ -250,7 +250,7 @@ mod tests {
     async fn test_full_fetch_empty_returns_key_not_found() {
         let server = MockKelServer::new();
         let result = serve_kel_page(&server, "ENOPREFIX", None, 10).await;
-        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+        assert!(matches!(result, Err(KelsError::EventNotFound(_))));
     }
 
     #[tokio::test]
@@ -299,7 +299,7 @@ mod tests {
 
         // "EUNKNOWN" is not a real event and doesn't match the effective SAID
         let result = serve_kel_page(&server, prefix, Some("EUNKNOWN"), 10).await;
-        assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+        assert!(matches!(result, Err(KelsError::EventNotFound(_))));
     }
 
     #[tokio::test]
