@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS kels_key_events (
 
 CREATE INDEX IF NOT EXISTS kels_key_events_prefix_idx ON kels_key_events(prefix);
 CREATE INDEX IF NOT EXISTS kels_key_events_prefix_serial_idx ON kels_key_events(prefix, serial);
+CREATE INDEX IF NOT EXISTS kels_key_events_prefix_previous_idx ON kels_key_events(prefix, previous);
 
 -- Signatures table
 CREATE TABLE IF NOT EXISTS kels_key_event_signatures (

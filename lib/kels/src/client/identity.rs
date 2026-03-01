@@ -70,6 +70,11 @@ impl IdentityClient {
         }
     }
 
+    /// The base URL of the identity service.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
         match response.json::<IdentityErrorResponse>().await {
             Ok(e) => KelsError::HardwareError(e.error),

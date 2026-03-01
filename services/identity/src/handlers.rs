@@ -10,7 +10,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use kels::{KelStore, KelsError, KeyEventBuilder, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEventPage};
+use kels::{
+    KelStore, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -144,12 +147,6 @@ pub async fn get_identity(
     }))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct KeyEventsQuery {
-    pub limit: Option<usize>,
-    pub since: Option<String>,
-}
-
 /// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
 pub async fn get_key_events(
     State(state): State<Arc<AppState>>,
@@ -162,25 +159,18 @@ pub async fn get_key_events(
 
     let limit = query
         .limit
-        .unwrap_or(MAX_EVENTS_PER_KEL_QUERY)
-        .min(MAX_EVENTS_PER_KEL_QUERY);
+        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
+        .min(MAX_EVENTS_PER_KEL_RESPONSE) as u64;
 
-    if let Some(ref since_said) = query.since {
-        let (events, has_more) = state
-            .kel_repo
-            .get_signed_history_since(prefix, since_said, limit as u64)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to fetch key events: {}", e)))?;
-        return Ok(Json(SignedKeyEventPage { events, has_more }));
-    }
+    let page = kels::serve_kel_page(
+        state.kel_repo.as_ref(),
+        prefix,
+        query.since.as_deref(),
+        limit,
+    )
+    .await?;
 
-    let (events, has_more) = state
-        .kel_store
-        .load(prefix, limit as u64, 0)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch key events: {}", e)))?;
-
-    Ok(Json(SignedKeyEventPage { events, has_more }))
+    Ok(Json(page))
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.

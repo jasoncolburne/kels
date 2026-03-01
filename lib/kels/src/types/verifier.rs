@@ -67,7 +67,7 @@ fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsE
 /// serial (divergence), the verifier forks branch state and verifies each branch
 /// independently.
 ///
-/// Events MUST be fed in `serial ASC, said ASC` order with complete generations
+/// Events MUST be fed in `serial ASC, kind sort_priority ASC, said ASC` order with complete generations
 /// (all events at a given serial must be in the same page). Use
 /// `truncate_incomplete_generation()` to ensure this at page boundaries.
 ///
@@ -175,7 +175,7 @@ impl KelVerifier {
 
     /// Verify a page of events against the running state.
     ///
-    /// Events must be sorted `serial ASC, said ASC` and complete generations
+    /// Events must be sorted `serial ASC, kind sort_priority ASC, said ASC` and complete generations
     /// must not be split across pages. Use `truncate_incomplete_generation()`
     /// to ensure this.
     pub fn verify_page(&mut self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
@@ -263,6 +263,34 @@ impl KelVerifier {
             )));
         }
 
+        // Invariant: max 2 events per generation. The DB submission logic
+        // (handle_overlap_submission) only inserts one divergent event, so the DB
+        // can never have more than 2 events at the same serial. Reject anything
+        // else as invalid — the DB cannot be trusted.
+        if events.len() > 2 {
+            return Err(KelsError::InvalidKel(format!(
+                "Generation at serial {} has {} events, max 2 allowed",
+                serial,
+                events.len()
+            )));
+        }
+
+        // Invariant: after divergence, only 1 event per generation. Once divergent,
+        // handle_divergent_submission only accepts rec/cnt. Recovery archives/deletes
+        // adversary events. The shorter branch never extends beyond the divergence
+        // point — it is always exactly 1 event.
+        if let Some(div_serial) = self.diverged_at_serial
+            && serial > div_serial
+            && events.len() > 1
+        {
+            return Err(KelsError::InvalidKel(format!(
+                "Generation at serial {} has {} events after divergence at serial {}",
+                serial,
+                events.len(),
+                div_serial
+            )));
+        }
+
         // Detect divergence: more events than branches means new fork
         let num_branches = self.branches.len();
         if events.len() > num_branches && self.diverged_at_serial.is_none() {
@@ -312,7 +340,7 @@ impl KelVerifier {
         // (events are ordered serial ASC, so if a branch has no event
         // at this serial, it means its tip is stale)
         //
-        // Actually, in a divergent KEL stored as serial ASC said ASC,
+        // Actually, in a divergent KEL stored as serial ASC, kind sort_priority ASC, said ASC,
         // branches that were NOT extended simply don't have events at this
         // serial. That only happens if one branch is shorter. Keep those
         // branches as-is.
@@ -528,7 +556,7 @@ impl KelVerifier {
 
 /// Truncate a page of events so that the last generation is complete.
 ///
-/// Events are expected in `serial ASC, said ASC` order. If the last serial has
+/// Events are expected in `serial ASC, kind sort_priority ASC, said ASC` order. If the last serial has
 /// fewer events than the second-to-last, the incomplete generation is removed.
 /// Returns the number of events truncated (caller should not advance the offset
 /// past these).
@@ -712,6 +740,491 @@ pub async fn sync_and_verify(
     Ok(())
 }
 
+// ==================== HTTP Source/Sink Implementations ====================
+
+/// HTTP-based source of paginated signed key events.
+///
+/// Works with any KELS-compatible HTTP endpoint. The path template may contain
+/// `{prefix}` which is replaced with the actual prefix on each request.
+///
+/// Used by `verify_key_events`, `collect_key_events`, `forward_key_events`, and
+/// `resolve_key_events` to abstract over different service endpoints.
+pub struct HttpKelSource {
+    base_url: String,
+    /// Path template, e.g. "/api/kels/kel/{prefix}" or "/api/identity/kel"
+    path: String,
+    client: reqwest::Client,
+}
+
+impl HttpKelSource {
+    pub fn new(base_url: &str, path: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            path: path.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl PagedKelSource for HttpKelSource {
+    async fn fetch_page(
+        &self,
+        prefix: &str,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        let path = self.path.replace("{prefix}", prefix);
+        let mut url = format!("{}{}?limit={}", self.base_url, path, limit);
+        if let Some(since_said) = since {
+            url.push_str(&format!("&since={}", since_said));
+        }
+
+        let resp =
+            self.client.get(&url).send().await.map_err(|e| {
+                KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
+            })?;
+
+        if resp.status().is_success() {
+            let page: super::SignedKeyEventPage = resp.json().await.map_err(|e| {
+                KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
+            })?;
+            Ok((page.events, page.has_more))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::KeyNotFound(prefix.to_string()))
+        } else {
+            let err: super::ErrorResponse = resp.json().await.map_err(|e| {
+                KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
+            })?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+}
+
+/// Sink that discards events — used for verify-only flows.
+pub struct NoOpSink;
+
+#[async_trait]
+impl PagedKelSink for NoOpSink {
+    async fn store_page(&self, _prefix: &str, _events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        Ok(())
+    }
+}
+
+/// Sink that collects events into a `Vec` — used for verify+collect flows.
+pub struct CollectSink {
+    events: tokio::sync::RwLock<Vec<SignedKeyEvent>>,
+}
+
+impl Default for CollectSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CollectSink {
+    pub fn new() -> Self {
+        Self {
+            events: tokio::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    pub async fn into_events(self) -> Vec<SignedKeyEvent> {
+        self.events.into_inner()
+    }
+}
+
+#[async_trait]
+impl PagedKelSink for CollectSink {
+    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.events.write().await.extend_from_slice(events);
+        Ok(())
+    }
+}
+
+/// HTTP-based sink that submits events to a KELS service.
+///
+/// The path template may contain `{prefix}` which is replaced with the actual prefix.
+pub struct HttpKelSink {
+    base_url: String,
+    /// Path, e.g. "/api/kels/events"
+    path: String,
+    client: reqwest::Client,
+}
+
+impl HttpKelSink {
+    pub fn new(base_url: &str, path: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            path: path.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl PagedKelSink for HttpKelSink {
+    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let path = self.path.replace("{prefix}", prefix);
+        let url = format!("{}{}", self.base_url, path);
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(events)
+            .send()
+            .await
+            .map_err(|e| KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else if resp.status() == reqwest::StatusCode::GONE {
+            let err: super::ErrorResponse = resp.json().await.map_err(|e| {
+                KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
+            })?;
+            Err(KelsError::ContestedKel(err.error))
+        } else {
+            let err: super::ErrorResponse = resp.json().await.map_err(|e| {
+                KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
+            })?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+}
+
+// ==================== Transfer Functions ====================
+
+/// Core transfer function: pages through source, optionally verifies, sends to sink.
+///
+/// Handles divergence-aware ordering structurally (from serial numbers):
+/// - Pre-divergence events are sent directly to the sink
+/// - At divergence (2 events at the same serial), identifies the continuing branch
+///   (referenced by subsequent events) and defers the shorter branch event
+/// - Post-divergence events from the continuing branch are sent to the sink
+/// - The deferred event is flushed last
+///
+/// When `verifier` is `Some`, each page is verified before divergence processing.
+async fn transfer_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    sink: &(dyn PagedKelSink + Sync),
+    mut verifier: Option<&mut KelVerifier>,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(), KelsError> {
+    let mut since: Option<String> = None;
+    let mut deferred: Option<SignedKeyEvent> = None;
+    // Hold back the last event when has_more is true. If the next page's
+    // first event has the same serial, we've found a divergent pair. If not,
+    // it's just a normal event and we process it with the next batch.
+    let mut held_back: Option<SignedKeyEvent> = None;
+
+    for _ in 0..max_pages {
+        let (fetched, has_more) = source
+            .fetch_page(prefix, since.as_deref(), page_size)
+            .await?;
+
+        // Prepend held-back event from previous page
+        let mut events = if let Some(held) = held_back.take() {
+            let mut v = vec![held];
+            v.extend(fetched);
+            v
+        } else {
+            fetched
+        };
+
+        if events.is_empty() {
+            break;
+        }
+
+        // Hold back the last event when more pages are coming and divergence
+        // hasn't been detected yet. This ensures we never split a divergent
+        // pair across pages. After divergence is resolved, no need to hold back.
+        if has_more && deferred.is_none() {
+            held_back = events.pop();
+        } else if deferred.is_none() && events.len() > page_size {
+            // Last page with prepended held-back event exceeds page_size.
+            // Split the overflow into a separate submission.
+            held_back = events.pop();
+        }
+
+        if events.is_empty() {
+            // Only had the held-back event, will be prepended to next page
+            continue;
+        }
+
+        // Verify the events we're about to process
+        if let Some(ref mut v) = verifier {
+            v.verify_page(&events)?;
+        }
+
+        if let Some(ref deferred_event) = deferred {
+            // Phase 2: divergence already resolved, send continuing branch events
+            sink.store_page(prefix, &events).await?;
+            // After divergence, since must be the effective SAID (hash of tip SAIDs)
+            if let Some(last) = events.last() {
+                since = Some(super::sync::hash_tip_saids(&[
+                    last.event.said.as_str(),
+                    deferred_event.event.said.as_str(),
+                ]));
+            }
+        } else {
+            // Phase 1: scan for divergence (duplicate serials)
+            let mut divergence_idx: Option<usize> = None;
+
+            for i in 1..events.len() {
+                if events[i].event.serial == events[i - 1].event.serial {
+                    divergence_idx = Some(i - 1);
+                    break;
+                }
+            }
+
+            if let Some(div_idx) = divergence_idx {
+                // Invariant: max 2 events per generation
+                let div_serial = events[div_idx].event.serial;
+                let same_serial_count = events
+                    .iter()
+                    .filter(|e| e.event.serial == div_serial)
+                    .count();
+                if same_serial_count > 2 {
+                    return Err(KelsError::InvalidKel(format!(
+                        "Generation at serial {} has {} events, max 2 allowed",
+                        div_serial, same_serial_count
+                    )));
+                }
+
+                // Send pre-divergence events
+                if div_idx > 0 {
+                    sink.store_page(prefix, &events[..div_idx]).await?;
+                }
+
+                let ev_a = events[div_idx].clone();
+                let ev_b = events[div_idx + 1].clone();
+                let after_pair = &events[div_idx + 2..];
+
+                if !after_pair.is_empty() {
+                    // Next event's previous identifies the continuing branch
+                    let next_prev = after_pair[0].event.previous.as_deref();
+                    if next_prev == Some(ev_a.event.said.as_str()) {
+                        sink.store_page(prefix, &[ev_a]).await?;
+                        deferred = Some(ev_b);
+                    } else {
+                        sink.store_page(prefix, &[ev_b]).await?;
+                        deferred = Some(ev_a);
+                    }
+                    sink.store_page(prefix, after_pair).await?;
+                } else {
+                    // Both branches end at divergence serial — no more events
+                    // on this page. Defer the one that reveals recovery key.
+                    if ev_b.event.reveals_recovery_key() {
+                        sink.store_page(prefix, &[ev_a]).await?;
+                        deferred = Some(ev_b);
+                    } else {
+                        sink.store_page(prefix, &[ev_b]).await?;
+                        deferred = Some(ev_a);
+                    }
+                }
+
+                // Compute effective SAID for divergent since cursor
+                if let (Some(continuing_tip), Some(deferred_ref)) =
+                    (events.last(), deferred.as_ref())
+                {
+                    since = Some(super::sync::hash_tip_saids(&[
+                        continuing_tip.event.said.as_str(),
+                        deferred_ref.event.said.as_str(),
+                    ]));
+                }
+            } else {
+                // No divergence on this page
+                sink.store_page(prefix, &events).await?;
+                since = events.last().map(|e| e.event.said.clone());
+            }
+        }
+
+        if !has_more {
+            break;
+        }
+
+        // The since cursor must skip past the held-back event so the next
+        // fetch doesn't return it again (we already have it in memory).
+        if let Some(ref held) = held_back {
+            since = Some(held.event.said.clone());
+        }
+    }
+
+    // Process the final held-back event (last page had has_more=false so
+    // this only fires if we ran out of max_pages with an event still held)
+    if let Some(ref held) = held_back {
+        if let Some(ref mut v) = verifier {
+            v.verify_page(std::slice::from_ref(held))?;
+        }
+        sink.store_page(prefix, std::slice::from_ref(held)).await?;
+    }
+
+    // Flush deferred event last
+    if let Some(event) = deferred {
+        sink.store_page(prefix, &[event]).await?;
+    }
+
+    Ok(())
+}
+
+/// Verify-only: pages through source, verifies, returns `Verification`.
+pub async fn verify_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    verifier: KelVerifier,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<Verification, KelsError> {
+    let sink = NoOpSink;
+    let mut verifier = verifier;
+    transfer_key_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+    )
+    .await?;
+    verifier.into_verification()
+}
+
+/// Verify + collect: pages through source, verifies, returns events + `Verification`.
+pub async fn collect_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    verifier: KelVerifier,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(Verification, Vec<SignedKeyEvent>), KelsError> {
+    let sink = CollectSink::new();
+    let mut verifier = verifier;
+    transfer_key_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+    )
+    .await?;
+    let ctx = verifier.into_verification()?;
+    Ok((ctx, sink.into_events().await))
+}
+
+/// Forward without verification: pages through source, sends to sink.
+pub async fn forward_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    sink: &(dyn PagedKelSink + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(), KelsError> {
+    transfer_key_events(prefix, source, sink, None, page_size, max_pages).await
+}
+
+/// Resolve: pages through source, collects events (no verification).
+pub async fn resolve_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<Vec<SignedKeyEvent>, KelsError> {
+    let sink = CollectSink::new();
+    transfer_key_events(prefix, source, &sink, None, page_size, max_pages).await?;
+    Ok(sink.into_events().await)
+}
+
+// ==================== Partition for Submission ====================
+
+/// Partition in-memory events for divergence-aware submission.
+///
+/// Returns `(primary, deferred, recovery)`:
+/// - `primary`: pre-divergence events + continuing branch events
+/// - `deferred`: the single shorter-branch event (if not recovery-revealing)
+/// - `recovery`: the single shorter-branch event (if recovery-revealing)
+///
+/// Events must be sorted `serial ASC, kind sort_priority ASC, said ASC`.
+///
+/// ## Why the shorter branch is always exactly 1 event
+///
+/// 1. `handle_overlap_submission` inserts only the first divergent event (1 event).
+/// 2. Once divergent, `handle_divergent_submission` only accepts `rec` or `cnt` —
+///    all others return `RecoverRequired`.
+/// 3. Recovery archives/deletes adversary events — doesn't extend the shorter branch.
+/// 4. Contest can't extend the shorter branch: when the adversary revealed recovery,
+///    `handle_overlap_submission` forces the divergent event to BE the contest
+///    (`ContestRequired` otherwise). The contest IS the single divergent event.
+pub fn partition_for_submission(
+    events: Vec<SignedKeyEvent>,
+) -> (
+    Vec<SignedKeyEvent>,
+    Vec<SignedKeyEvent>,
+    Vec<SignedKeyEvent>,
+) {
+    if events.is_empty() {
+        return (vec![], vec![], vec![]);
+    }
+
+    // Find divergence point: first duplicate serial
+    let mut divergence_idx: Option<usize> = None;
+    for i in 1..events.len() {
+        if events[i].event.serial == events[i - 1].event.serial {
+            divergence_idx = Some(i - 1);
+            break;
+        }
+    }
+
+    let Some(div_idx) = divergence_idx else {
+        return (events, vec![], vec![]);
+    };
+
+    let ev_a = &events[div_idx];
+    let ev_b = &events[div_idx + 1];
+    let after_pair = &events[div_idx + 2..];
+
+    // Identify shorter branch: the event NOT referenced by any later event's `previous`
+    let continuing_is_a = after_pair
+        .iter()
+        .any(|e| e.event.previous.as_deref() == Some(ev_a.event.said.as_str()));
+
+    let (_continuing_idx, deferred_idx) = if continuing_is_a {
+        (div_idx, div_idx + 1)
+    } else if after_pair
+        .iter()
+        .any(|e| e.event.previous.as_deref() == Some(ev_b.event.said.as_str()))
+    {
+        (div_idx + 1, div_idx)
+    } else {
+        // Both are terminal — defer the one that reveals recovery key
+        if ev_b.event.reveals_recovery_key() {
+            (div_idx, div_idx + 1)
+        } else {
+            (div_idx + 1, div_idx)
+        }
+    };
+
+    let deferred_event = events[deferred_idx].clone();
+
+    // Build primary: pre-divergence + continuing event + post-divergence
+    let mut primary = Vec::with_capacity(events.len() - 1);
+    for (i, event) in events.into_iter().enumerate() {
+        if i == deferred_idx {
+            continue;
+        }
+        primary.push(event);
+    }
+
+    // Classify deferred event: recovery bucket if it reveals recovery key
+    if deferred_event.event.reveals_recovery_key() {
+        (primary, vec![], vec![deferred_event])
+    } else {
+        (primary, vec![deferred_event], vec![])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::RwLock};
@@ -739,12 +1252,18 @@ mod tests {
         Digest::blake3_256(label.as_bytes()).qb64()
     }
 
-    /// Sort events the way the DB would: serial ASC, said ASC
+    /// Sort events the way the DB would: serial ASC, kind sort_priority ASC, said ASC
     fn sort_events(events: &mut [SignedKeyEvent]) {
         events.sort_by(|a, b| {
             a.event
                 .serial
                 .cmp(&b.event.serial)
+                .then(
+                    a.event
+                        .kind
+                        .sort_priority()
+                        .cmp(&b.event.kind.sort_priority()),
+                )
                 .then(a.event.said.cmp(&b.event.said))
         });
     }
@@ -903,15 +1422,9 @@ mod tests {
         assert_eq!(adversary_ixn.event.serial, 2);
 
         // Combined events: owner chain + adversary event at serial 2
-        // Sort by serial ASC, said ASC (DB ordering)
         let mut all_events = owner_events.clone();
         all_events.push(adversary_ixn.clone());
-        all_events.sort_by(|a, b| {
-            a.event
-                .serial
-                .cmp(&b.event.serial)
-                .then(a.event.said.cmp(&b.event.said))
-        });
+        sort_events(&mut all_events);
 
         // Save to store
         let store = MemoryStore::new();
@@ -1036,12 +1549,7 @@ mod tests {
         // Two events at serial 1, simulating divergence
         // If a page ends with only one of them, truncate should remove it
         let mut events = [icp, ixn1.clone(), ixn2.clone()].to_vec();
-        events.sort_by(|a, b| {
-            a.event
-                .serial
-                .cmp(&b.event.serial)
-                .then(a.event.said.cmp(&b.event.said))
-        });
+        sort_events(&mut events);
 
         // Simulate page that has icp + first divergent event but not second
         let mut partial_page = events[..2].to_vec();
@@ -1283,9 +1791,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_divergence_three_way() {
+    async fn test_three_events_at_same_serial_rejected() {
+        // The DB can never have 3 events at the same serial — handle_overlap_submission
+        // only inserts one divergent event. The verifier must reject this as invalid.
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
         let mut builder3 = builder1.clone();
 
@@ -1296,10 +1807,36 @@ mod tests {
         let mut events = vec![icp, ixn1, ixn2, ixn3];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(1));
-        assert_eq!(ctx.branch_tips().len(), 3);
+        let mut verifier = KelVerifier::new(&prefix);
+        let result = verifier.verify_page(&events);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("max 2 allowed"));
+    }
+
+    #[tokio::test]
+    async fn test_second_divergence_after_existing_rejected() {
+        // Once a KEL is divergent, only 1 event per generation is allowed.
+        // A second divergence (2 events at a serial after the divergence point) is invalid.
+        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let mut builder2 = builder1.clone();
+
+        // Diverge at serial 1
+        let ixn1a = builder1.interact(&anchor("a1")).await.unwrap();
+        let ixn1b = builder2.interact(&anchor("a2")).await.unwrap();
+
+        // Both continue at serial 2 (invalid — after divergence, only 1 event per generation)
+        let ixn2a = builder1.interact(&anchor("a3")).await.unwrap();
+        let ixn2b = builder2.interact(&anchor("a4")).await.unwrap();
+
+        let mut events = vec![icp, ixn1a, ixn1b, ixn2a, ixn2b];
+        sort_events(&mut events);
+
+        let mut verifier = KelVerifier::new(&prefix);
+        let result = verifier.verify_page(&events);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("after divergence"));
     }
 
     #[tokio::test]
@@ -1872,10 +2409,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergent_branches_with_rotations() {
-        // Owner: icp, ixn, rot, ixn
-        // Adversary: icp, rot (different branch), ixn
-        // Both branches rotate independently — verifier must track
-        // independent crypto state per branch.
+        // Owner continues with rotation after divergence.
+        // Adversary branch is a single event (the DB invariant).
+        // Verifier tracks independent crypto state per branch.
         let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         owner.incept().await.unwrap();
         let mut adversary = owner.clone();
@@ -1885,13 +2421,11 @@ mod tests {
         let owner_rot = owner.rotate().await.unwrap();
         let owner_tip = owner.interact(&anchor("owner-3")).await.unwrap();
 
-        // Adversary branch: rot @ 1, ixn @ 2, ixn @ 3
-        let adv_rot = adversary.rotate().await.unwrap();
-        adversary.interact(&anchor("adv-2")).await.unwrap();
-        let adv_tip = adversary.interact(&anchor("adv-3")).await.unwrap();
+        // Adversary branch: single event at serial 1 (shorter branch invariant)
+        let adv_ixn = adversary.interact(&anchor("adv-1")).await.unwrap();
 
         let mut events = owner.events().to_vec();
-        events.extend(adversary.events()[1..].iter().cloned());
+        events.push(adv_ixn.clone());
         sort_events(&mut events);
 
         let ctx = verify(&events);
@@ -1899,7 +2433,7 @@ mod tests {
         assert_eq!(ctx.diverged_at_serial(), Some(1));
         assert_eq!(ctx.branch_tips().len(), 2);
 
-        // Each branch tip should have the correct establishment event
+        // Owner branch tip should have the rotation as establishment tip
         for tip in ctx.branch_tips() {
             if tip.tip.event.said == owner_tip.event.said {
                 assert_eq!(
@@ -1907,11 +2441,8 @@ mod tests {
                     "Owner branch should reference owner's rotation"
                 );
             } else {
-                assert_eq!(tip.tip.event.said, adv_tip.event.said);
-                assert_eq!(
-                    tip.establishment_tip.event.said, adv_rot.event.said,
-                    "Adversary branch should reference adversary's rotation"
-                );
+                assert_eq!(tip.tip.event.said, adv_ixn.event.said);
+                // Adversary's establishment tip is the inception (no rotation on that branch)
             }
         }
     }
@@ -2059,7 +2590,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_preserves_divergence() {
-        // Diverge at serial 1, then resume and verify more events on each branch.
+        // Diverge at serial 1, then resume and verify the continuing branch extends.
+        // The shorter branch is exactly 1 event (DB invariant).
         let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
@@ -2073,11 +2605,9 @@ mod tests {
         assert!(ctx1.is_divergent());
         assert_eq!(ctx1.diverged_at_serial(), Some(1));
 
-        // Both branches extend
+        // Only the continuing branch extends (1 event per generation after divergence)
         let owner_ixn2 = owner.interact(&anchor("o2")).await.unwrap();
-        let adv_ixn2 = adversary.interact(&anchor("a2")).await.unwrap();
-        let mut page2 = vec![owner_ixn2.clone(), adv_ixn2.clone()];
-        sort_events(&mut page2);
+        let page2 = vec![owner_ixn2.clone()];
 
         let prefix = ctx1.prefix().to_string();
         let mut v2 = KelVerifier::resume(&prefix, &ctx1).unwrap();
@@ -2087,8 +2617,14 @@ mod tests {
         assert!(ctx2.is_divergent());
         assert_eq!(ctx2.diverged_at_serial(), Some(1));
         assert_eq!(ctx2.branch_tips().len(), 2);
-        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 2);
-        assert_eq!(ctx2.branch_tips()[1].tip.event.serial, 2);
+        // Owner branch advanced to serial 2, adversary stays at serial 1
+        let tip_serials: std::collections::HashSet<_> = ctx2
+            .branch_tips()
+            .iter()
+            .map(|t| t.tip.event.serial)
+            .collect();
+        assert!(tip_serials.contains(&1));
+        assert!(tip_serials.contains(&2));
     }
 
     // ---- Delegated inception verification ----
@@ -2212,14 +2748,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_paginated_divergence_spanning_page_boundary() {
-        // 3-way divergence extending over multiple serials so that
-        // truncation can detect an incomplete generation at the page boundary.
+        // 2-way divergence at serial 5 with the divergent pair landing at the
+        // boundary between pages. Page size chosen so page 1 ends with the
+        // two divergent events, and page 2 starts with the continuing branch.
         //
-        // 5 linear events (serials 0-4), then 3-way divergence at serials 5-7
-        // (3 events per serial). Total: 5 + 9 = 14 events.
-        // Page size 9: first page gets indices 0..9 = serials 0-4 (5 events)
-        // + serial 5 (3 events) + 1 of 3 at serial 6. Truncation detects
-        // serial 6 has fewer events than serial 5 (1 < 3) and removes it.
+        // 5 linear events (serials 0-4), then 2-way divergence at serial 5.
+        // Owner continues for serials 6-7, adversary has just 1 event at serial 5.
+        // Total: 5 + 1 (adv) + 3 (owner serials 5,6,7) = 9 events.
+        // Sorted: 5 linear + 2 at serial 5 + 1 at serial 6 + 1 at serial 7 = 9.
+        //
+        // Page size 7: first page = serials 0-4 (5 events) + serial 5 (2 events) = 7.
+        // Truncation: serial 5 has 2 events, no incomplete generation. Full page.
+        // Page 2: serials 6-7 (2 events).
         let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = b1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
@@ -2229,23 +2769,22 @@ mod tests {
             b1.interact(&anchor(&format!("pre-{}", i))).await.unwrap();
         }
 
-        // Clone at serial 4 for two adversaries
+        // Clone at serial 4 for adversary
         let mut b2 = b1.clone();
-        let mut b3 = b1.clone();
 
-        // All three branches extend for 3 serials (5, 6, 7)
+        // Owner continues for 3 serials (5, 6, 7)
         for i in 0..3 {
             b1.interact(&anchor(&format!("b1-{}", i))).await.unwrap();
-            b2.interact(&anchor(&format!("b2-{}", i))).await.unwrap();
-            b3.interact(&anchor(&format!("b3-{}", i))).await.unwrap();
         }
 
+        // Adversary has just 1 event at serial 5 (shorter branch invariant)
+        b2.interact(&anchor("b2-0")).await.unwrap();
+
         let mut all_events = b1.events().to_vec();
-        all_events.extend(b2.events()[5..].iter().cloned());
-        all_events.extend(b3.events()[5..].iter().cloned());
+        all_events.push(b2.events()[5].clone());
         sort_events(&mut all_events);
-        // 5 linear + 9 divergent = 14 events
-        assert_eq!(all_events.len(), 14);
+        // 5 linear + 2 at serial 5 + 1 at serial 6 + 1 at serial 7 = 9
+        assert_eq!(all_events.len(), 9);
 
         let store = MemoryStore::new();
         store.save(&prefix, &all_events).await.unwrap();
@@ -2253,7 +2792,7 @@ mod tests {
         let ctx = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            9,
+            7,
             10,
             std::iter::empty(),
         )
@@ -2262,9 +2801,15 @@ mod tests {
 
         assert!(ctx.is_divergent());
         assert_eq!(ctx.diverged_at_serial(), Some(5));
-        assert_eq!(ctx.branch_tips().len(), 3);
-        // All three branch tips should be at serial 7
-        assert!(ctx.branch_tips().iter().all(|t| t.tip.event.serial == 7));
+        assert_eq!(ctx.branch_tips().len(), 2);
+        // Owner branch tip at serial 7, adversary at serial 5
+        let tip_serials: std::collections::HashSet<_> = ctx
+            .branch_tips()
+            .iter()
+            .map(|t| t.tip.event.serial)
+            .collect();
+        assert!(tip_serials.contains(&5));
+        assert!(tip_serials.contains(&7));
     }
 
     // ---- sync_and_verify abstraction ----
@@ -2579,6 +3124,319 @@ mod tests {
     }
 
     // ---- Multi-page with anchor checking and resume combined ----
+
+    // ==================== PagedKelSource mock for transfer tests ====================
+
+    /// In-memory PagedKelSource that serves events with since-based pagination.
+    struct MemoryKelSource {
+        events: Vec<SignedKeyEvent>,
+    }
+
+    impl MemoryKelSource {
+        fn new(events: Vec<SignedKeyEvent>) -> Self {
+            Self { events }
+        }
+    }
+
+    #[async_trait]
+    impl PagedKelSource for MemoryKelSource {
+        async fn fetch_page(
+            &self,
+            _prefix: &str,
+            since: Option<&str>,
+            limit: usize,
+        ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
+            let start = match since {
+                Some(said) => self
+                    .events
+                    .iter()
+                    .position(|e| e.event.said == said)
+                    .map(|i| i + 1)
+                    .unwrap_or(self.events.len()),
+                None => 0,
+            };
+            if start >= self.events.len() {
+                return Ok((vec![], false));
+            }
+            let end = (start + limit).min(self.events.len());
+            let has_more = end < self.events.len();
+            Ok((self.events[start..end].to_vec(), has_more))
+        }
+    }
+
+    // ==================== transfer_key_events tests ====================
+
+    #[tokio::test]
+    async fn test_verify_key_events_linear() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        builder.interact(&anchor("a1")).await.unwrap();
+        builder.interact(&anchor("a2")).await.unwrap();
+
+        let source = MemoryKelSource::new(builder.events().to_vec());
+        let ctx = verify_key_events(
+            &prefix,
+            &source,
+            KelVerifier::new(&prefix),
+            2, // small page size to force pagination
+            100,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(ctx.branch_tips().len(), 1);
+        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 2);
+        assert!(!ctx.is_divergent());
+    }
+
+    #[tokio::test]
+    async fn test_collect_key_events_linear() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        builder.interact(&anchor("a1")).await.unwrap();
+        builder.interact(&anchor("a2")).await.unwrap();
+
+        let source = MemoryKelSource::new(builder.events().to_vec());
+        let (ctx, events) =
+            collect_key_events(&prefix, &source, KelVerifier::new(&prefix), 100, 100)
+                .await
+                .unwrap();
+
+        assert_eq!(events.len(), 3);
+        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 2);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_key_events_linear() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        builder.interact(&anchor("a1")).await.unwrap();
+
+        let source = MemoryKelSource::new(builder.events().to_vec());
+        let events = resolve_key_events(&prefix, &source, 100, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_forward_key_events_linear() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        builder.interact(&anchor("a1")).await.unwrap();
+
+        let source = MemoryKelSource::new(builder.events().to_vec());
+        let sink = CollectSink::new();
+        forward_key_events(&prefix, &source, &sink, 100, 100)
+            .await
+            .unwrap();
+
+        let collected = sink.into_events().await;
+        assert_eq!(collected.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_key_events_divergent() {
+        // Owner: icp, o1, o2, o3, o4, o5
+        // Adversary: a1 at serial 2 (diverges from o1)
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        let o1 = owner.interact(&anchor("o1")).await.unwrap();
+
+        // Clone builder for adversary after serial 1
+        let mut adversary = owner.clone();
+        let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
+        assert_eq!(a1.event.serial, 2);
+
+        // Owner continues
+        owner.interact(&anchor("o2")).await.unwrap();
+        owner.interact(&anchor("o3")).await.unwrap();
+        owner.interact(&anchor("o4")).await.unwrap();
+        owner.interact(&anchor("o5")).await.unwrap();
+
+        // Combine and sort (DB ordering: serial ASC, kind sort_priority ASC, said ASC)
+        let mut all_events = owner.events().to_vec();
+        all_events.push(a1.clone());
+        sort_events(&mut all_events);
+
+        let source = MemoryKelSource::new(all_events);
+        let sink = CollectSink::new();
+        forward_key_events(&prefix, &source, &sink, 100, 100)
+            .await
+            .unwrap();
+
+        let collected = sink.into_events().await;
+        // Owner: icp(0) + o1(1) + o2(2) + o3(3) + o4(4) + o5(5) = 6, plus a1 = 7
+        assert_eq!(collected.len(), 7);
+        // Deferred event (adversary) should be last
+        assert_eq!(collected.last().unwrap().event.said, a1.event.said);
+        // First events should be the continuing branch
+        assert_eq!(collected[0].event.said, icp.event.said);
+        assert_eq!(collected[1].event.said, o1.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_key_events_divergent_page_boundary() {
+        // Test divergence at the end of a page boundary
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        owner.interact(&anchor("o1")).await.unwrap();
+
+        let mut adversary = owner.clone();
+        let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
+
+        // Owner continues
+        owner.interact(&anchor("o2")).await.unwrap();
+        owner.interact(&anchor("o3")).await.unwrap();
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(a1.clone());
+        sort_events(&mut all_events);
+
+        // Use page_size=3 so divergence (serial 2, two events) falls at page boundary
+        // Page 1: icp(0), o1(1), first_of_serial_2 — divergence at end of page
+        let source = MemoryKelSource::new(all_events);
+        let sink = CollectSink::new();
+        forward_key_events(&prefix, &source, &sink, 3, 100)
+            .await
+            .unwrap();
+
+        let collected = sink.into_events().await;
+        assert_eq!(collected.len(), 5); // icp(0) + o1(1) + o2(2) + o3(3) + a1(2) = 5
+        // Deferred event should be last
+        assert_eq!(collected.last().unwrap().event.said, a1.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_key_events_no_verifier() {
+        // Structural divergence detection works without crypto verification
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = owner.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        owner.interact(&anchor("o1")).await.unwrap();
+
+        let mut adversary = owner.clone();
+        let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
+        owner.interact(&anchor("o2")).await.unwrap();
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(a1.clone());
+        sort_events(&mut all_events);
+
+        // resolve_key_events uses no verifier
+        let source = MemoryKelSource::new(all_events);
+        let events = resolve_key_events(&prefix, &source, 100, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(events.len(), 4); // icp(0) + o1(1) + o2(2) + a1(2) = 4
+        // Both serial-2 events present, one deferred to last position
+        let last_two_saids: Vec<&str> = events[2..].iter().map(|e| e.event.said.as_str()).collect();
+        assert!(last_two_saids.contains(&a1.event.said.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_key_events_max_pages() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let icp = builder.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
+        for i in 0..10 {
+            builder.interact(&anchor(&format!("a{}", i))).await.unwrap();
+        }
+
+        // Only allow 2 pages of 3 events — should get 6 events, not all 11
+        let source = MemoryKelSource::new(builder.events().to_vec());
+        let events = resolve_key_events(&prefix, &source, 3, 2).await.unwrap();
+
+        assert_eq!(events.len(), 6);
+    }
+
+    // ==================== partition_for_submission tests ====================
+
+    #[tokio::test]
+    async fn test_partition_for_submission_no_divergence() {
+        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        builder.incept().await.unwrap();
+        builder.interact(&anchor("a1")).await.unwrap();
+        builder.interact(&anchor("a2")).await.unwrap();
+
+        let events = builder.events().to_vec();
+        let (primary, deferred, recovery) = partition_for_submission(events.clone());
+
+        assert_eq!(primary.len(), 3);
+        assert!(deferred.is_empty());
+        assert!(recovery.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_partition_for_submission_with_divergence() {
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        owner.incept().await.unwrap();
+        owner.interact(&anchor("o1")).await.unwrap();
+
+        let mut adversary = owner.clone();
+        let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
+
+        owner.interact(&anchor("o2")).await.unwrap();
+        owner.interact(&anchor("o3")).await.unwrap();
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(a1.clone());
+        sort_events(&mut all_events);
+
+        let (primary, deferred, recovery) = partition_for_submission(all_events);
+
+        // Primary: icp + o1 + continuing_event + o3 + o4
+        // Deferred: adversary event (doesn't reveal recovery key)
+        assert!(!primary.is_empty());
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].event.said, a1.event.said);
+        assert!(recovery.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_partition_for_submission_with_recovery() {
+        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        owner.incept().await.unwrap();
+        owner.interact(&anchor("o1")).await.unwrap();
+
+        // Clone before divergence point
+        let mut adversary = owner.clone();
+
+        // Owner continues normally
+        owner.interact(&anchor("o2")).await.unwrap();
+
+        // Adversary creates a recovery event (reveals recovery key)
+        let rec = adversary.recover(false).await.unwrap();
+        assert!(rec.event.reveals_recovery_key());
+
+        let mut all_events = owner.events().to_vec();
+        all_events.push(rec.clone());
+        sort_events(&mut all_events);
+
+        let (primary, deferred, recovery_bucket) = partition_for_submission(all_events);
+
+        // Recovery-revealing event goes in recovery bucket, not deferred
+        assert!(!primary.is_empty());
+        assert!(deferred.is_empty());
+        assert_eq!(recovery_bucket.len(), 1);
+        assert_eq!(recovery_bucket[0].event.said, rec.event.said);
+    }
+
+    #[tokio::test]
+    async fn test_partition_for_submission_empty() {
+        let (primary, deferred, recovery) = partition_for_submission(vec![]);
+        assert!(primary.is_empty());
+        assert!(deferred.is_empty());
+        assert!(recovery.is_empty());
+    }
 
     #[tokio::test]
     async fn test_paginated_anchor_check_then_resume() {

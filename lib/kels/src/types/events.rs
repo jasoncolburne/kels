@@ -82,6 +82,25 @@ impl EventKind {
         }
     }
 
+    const ALL: [Self; 8] = [
+        Self::Icp,
+        Self::Dip,
+        Self::Ixn,
+        Self::Rot,
+        Self::Ror,
+        Self::Dec,
+        Self::Rec,
+        Self::Cnt,
+    ];
+
+    /// Returns the sort priority mapping for use with `order_by_case` in DB queries.
+    pub fn sort_priority_mapping() -> Vec<(&'static str, i64)> {
+        Self::ALL
+            .iter()
+            .map(|k| (k.as_str(), k.sort_priority() as i64))
+            .collect()
+    }
+
     pub fn is_inception(&self) -> bool {
         matches!(self, Self::Icp | Self::Dip)
     }

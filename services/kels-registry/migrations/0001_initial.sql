@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS member_key_events (
 
 CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix ON member_key_events(prefix);
 CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_serial ON member_key_events(prefix, serial);
+CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_previous ON member_key_events(prefix, previous);
 
 CREATE TABLE IF NOT EXISTS member_key_event_signatures (
     said CHAR(44) PRIMARY KEY,

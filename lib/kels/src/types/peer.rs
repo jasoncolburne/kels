@@ -845,12 +845,18 @@ mod tests {
         let ixn1 = builder1.interact(&anchor1).await.unwrap();
         let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
-        // Sort events by serial ASC, said ASC (DB ordering)
+        // Sort events the way the DB would: serial ASC, kind sort_priority ASC, said ASC
         let mut events = vec![icp, ixn1, ixn2];
         events.sort_by(|a, b| {
             a.event
                 .serial
                 .cmp(&b.event.serial)
+                .then(
+                    a.event
+                        .kind
+                        .sort_priority()
+                        .cmp(&b.event.kind.sort_priority()),
+                )
                 .then(a.event.said.cmp(&b.event.said))
         });
 

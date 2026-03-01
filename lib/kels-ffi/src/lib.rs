@@ -1845,7 +1845,7 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
 
     let fetch_result = runtime.block_on(async {
         let mut registry = MultiRegistryClient::new(vec![url.clone()]);
-        registry.fetch_verified_registry_kels(true).await?;
+        registry.fetch_verified_member_key_events(true).await?;
         let prefix = registry.prefix_for_url(&url).await?;
 
         Ok(prefix)

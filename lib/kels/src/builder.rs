@@ -166,9 +166,14 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             && let Some(prefix) = self.prefix()
         {
             // Fetch server events (paginated)
-            let page = client
-                .fetch_key_events(prefix, None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
-                .await?;
+            let source = crate::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+            let server_events = crate::resolve_key_events(
+                prefix,
+                &source,
+                crate::MAX_EVENTS_PER_KEL_QUERY,
+                crate::max_verification_pages(),
+            )
+            .await?;
 
             let local_saids: HashSet<&str> = self
                 .events()
@@ -177,8 +182,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                 .collect();
 
             // Events on the server that we don't have locally = adversary events
-            let adversary_events: Vec<_> = page
-                .events
+            let adversary_events: Vec<_> = server_events
                 .iter()
                 .filter(|e| !local_saids.contains(e.event.said.as_str()))
                 .collect();

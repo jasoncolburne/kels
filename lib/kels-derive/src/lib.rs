@@ -136,7 +136,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ///
             /// Returns `(events, has_more)` — fetches `limit + 1` rows and pops the extra
             /// to determine whether more pages exist.
-            /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
+            /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
             pub async fn get_signed_history(
                 &self,
                 prefix: &str,
@@ -150,6 +150,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .order_by("serial", verifiable_storage_postgres::Order::Asc)
+                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
                     .order_by("said", verifiable_storage_postgres::Order::Asc)
                     .limit(clamped_limit + 1)
                     .offset(offset);

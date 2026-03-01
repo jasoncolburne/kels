@@ -106,7 +106,7 @@ async fn apply_submit_key_events(
 
     if new_events.is_empty() {
         // DB already has all submitted events (e.g. Raft log replay after restart).
-        // Still update member_contexts so the prefix is visible via get_registry_kels.
+        // Still update member_contexts so the prefix is visible via get_all_member_key_events.
         if let Some(ctx) = db_verification {
             sm.member_contexts.insert(prefix.clone(), ctx);
         }
@@ -118,7 +118,15 @@ async fn apply_submit_key_events(
 
     // Step 4: Resume verifier from DB state and verify new events
     let mut verifier = if let Some(ref ctx) = db_verification {
-        kels::KelVerifier::resume(&prefix, ctx)?
+        match kels::KelVerifier::resume(&prefix, ctx) {
+            Ok(v) => v,
+            Err(e) => {
+                return FederationResponse::KeyEventsRejected(format!(
+                    "Failed to resume verifier: {}",
+                    e
+                ));
+            }
+        }
     } else {
         kels::KelVerifier::new(&prefix)
     };
@@ -905,6 +913,11 @@ impl StateMachineStore {
     pub fn with_member_kel_repo(mut self, repo: crate::raft_store::MemberKelRepository) -> Self {
         self.member_kel_repo = Some(repo);
         self
+    }
+
+    /// Get a reference to the member KEL repository if configured.
+    pub fn member_kel_repo(&self) -> Option<&crate::raft_store::MemberKelRepository> {
+        self.member_kel_repo.as_ref()
     }
 
     /// Get access to the inner data.

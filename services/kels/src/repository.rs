@@ -2,14 +2,14 @@
 
 use async_trait::async_trait;
 use kels::{
-    EventKind, EventSignature, KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState,
-    SignedKeyEvent,
+    EventKind, EventSignature, KelServer, KelsAuditRecord, KelsError, KeyEvent, PrefixListResponse,
+    PrefixState, SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
 use std::collections::{HashMap, HashSet};
 use verifiable_storage::{
-    ColumnQuery, CorrelatedSubquery, ScalarSubquery, SelfAddressed, StorageError,
-    TransactionExecutor, Value,
+    ChainedRepository, ColumnQuery, CorrelatedSubquery, ScalarSubquery, SelfAddressed,
+    StorageError, TransactionExecutor, Value,
 };
 use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -45,7 +45,7 @@ impl KeyEventRepository {
     /// Uses a scalar subquery to find the serial of the since event, then fetches
     /// events with `serial >= that serial`, filtering out the since event itself.
     /// Returns `(events, has_more)` using the limit+1 pop pattern.
-    /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
+    /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
     pub async fn get_signed_history_since(
         &self,
         prefix: &str,
@@ -68,6 +68,7 @@ impl KeyEventRepository {
             .eq("prefix", prefix)
             .gte_scalar_subquery("serial", subquery)
             .order_by("serial", Order::Asc)
+            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 2);
         let mut events: Vec<KeyEvent> = self.pool.fetch(query).await?;
@@ -252,6 +253,42 @@ impl KeyEventRepository {
     }
 }
 
+#[async_trait]
+impl KelServer for KeyEventRepository {
+    async fn load_page(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.get_signed_history(prefix, limit, offset)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn load_page_since(
+        &self,
+        prefix: &str,
+        since_said: &str,
+        limit: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.get_signed_history_since(prefix, since_said, limit)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        self.compute_prefix_effective_said(prefix)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, KelsError> {
+        let event: Option<KeyEvent> = self.get_by_said(said).await.map_err(KelsError::from)?;
+        Ok(event.map(|e| e.prefix))
+    }
+}
+
 /// Transaction with advisory lock. Lock held until commit/rollback/drop.
 pub struct KelTransaction {
     tx: <PgPool as QueryExecutor>::Transaction,
@@ -266,7 +303,7 @@ impl KelTransaction {
     /// Get a paginated page of signed events for this prefix starting from `since_serial`.
     ///
     /// Returns `(events, has_more)` using the limit+1 pop pattern.
-    /// Events are ordered by `serial ASC, said ASC` for deterministic pagination.
+    /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
     pub async fn get_signed_history_since(
         &mut self,
         since_serial: u64,
@@ -278,6 +315,7 @@ impl KelTransaction {
             .eq("prefix", &self.prefix)
             .gte("serial", since_serial)
             .order_by("serial", Order::Asc)
+            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 1);
         let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
@@ -429,6 +467,7 @@ impl KelTransaction {
         let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
             .eq("prefix", &self.prefix)
             .order_by("serial", Order::Asc)
+            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 1)
             .offset(offset);

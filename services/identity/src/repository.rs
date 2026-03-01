@@ -2,12 +2,15 @@
 
 use async_trait::async_trait;
 
-use kels::KeyEvent;
+use kels::{EventKind, KelServer, KelsError, KeyEvent, SignedKeyEvent};
 use libkels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
+use verifiable_storage::{
+    ChainedRepository, ColumnQuery, CorrelatedSubquery, SelfAddressed, StorageDatetime,
+    StorageError, TransactionExecutor, Value,
+};
 use verifiable_storage_postgres::{
-    Filter, Order, PgPool, Query, QueryExecutor, ScalarSubquery, Stored, Value,
+    Filter, Order, PgPool, Query, QueryExecutor, ScalarSubquery, Stored,
 };
 
 /// Maps KEL state to HSM key handles. Updated only on establishment events (icp, rot).
@@ -152,6 +155,7 @@ impl KeyEventRepository {
             .eq("prefix", prefix)
             .gte_scalar_subquery("serial", subquery)
             .order_by("serial", Order::Asc)
+            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 2);
         let mut events: Vec<KeyEvent> = self.pool.fetch(query).await?;
@@ -192,6 +196,76 @@ impl KeyEventRepository {
 
         Ok((result, has_more))
     }
+
+    /// Compute the effective SAID for a prefix by finding tip events (events with no successor).
+    pub async fn compute_prefix_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "said")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .filter(Filter::NotExists(CorrelatedSubquery::new(
+                Self::TABLE_NAME,
+                "_cs",
+                Self::TABLE_NAME,
+                vec![("previous".to_string(), "said".to_string())],
+                vec![Filter::Eq(
+                    "_cs.prefix".to_string(),
+                    Value::String(prefix.to_string()),
+                )],
+            )))
+            .order(Order::Asc);
+
+        let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
+
+        match tip_saids.len() {
+            0 => Ok(None),
+            1 => Ok(Some(tip_saids.into_iter().next().unwrap_or_default())),
+            _ => {
+                let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
+                Ok(Some(kels::hash_tip_saids(&refs)))
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl KelServer for KeyEventRepository {
+    async fn load_page(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.get_signed_history(prefix, limit, offset)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn load_page_since(
+        &self,
+        prefix: &str,
+        since_said: &str,
+        limit: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.get_signed_history_since(prefix, since_said, limit)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        self.compute_prefix_effective_said(prefix)
+            .await
+            .map_err(KelsError::from)
+    }
+
+    async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, KelsError> {
+        let event: Option<KeyEvent> = self.get_by_said(said).await.map_err(KelsError::from)?;
+        Ok(event.map(|e| e.prefix))
+    }
 }
 
 /// Transaction with advisory lock on a KEL prefix.
@@ -212,6 +286,7 @@ impl LockedKelTransaction {
         let query = Query::<KeyEvent>::for_table(KeyEventRepository::TABLE_NAME)
             .eq("prefix", &self.prefix)
             .order_by("serial", Order::Asc)
+            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 1)
             .offset(offset);

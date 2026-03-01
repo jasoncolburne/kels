@@ -292,12 +292,19 @@ GET /api/peers
 
 Returns the peer set from the Raft state machine.
 
-### Registry KELs
+### Member Key Events
 ```
-GET /api/registry-kels
+GET /api/member-kels
 ```
 
 Returns KELs for all federation members (for cross-registry verification).
+
+### Member Key Events (per-prefix)
+```
+GET /api/member-kels/:prefix?limit=N&since=SAID
+```
+
+Returns a specific member's KEL with pagination support.
 
 ### Admin API (localhost only)
 

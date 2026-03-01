@@ -11,17 +11,15 @@ use dashmap::DashMap;
 use futures_util::future::join_all;
 use kels::{
     BatchKelsRequest, BatchSubmitResponse, BranchTip, ErrorCode, ErrorResponse, KelMergeResult,
-    KelVerifier, KelsAuditRecord, KelsError, MAX_BATCH_PREFIXES, MAX_CACHED_KEL_EVENTS,
-    MAX_EVENTS_PER_KEL_QUERY, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    PrefixListResponse, ServerKelCache, SignedKeyEvent, SignedKeyEventPage, Verification,
+    KelVerifier, KelsAuditRecord, KelsError, KeyEventsQuery, MAX_BATCH_PREFIXES,
+    MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_QUERY, MAX_EVENTS_PER_KEL_RESPONSE,
+    MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache, SignedKeyEvent,
+    SignedKeyEventPage, Verification,
 };
-use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
-
-use verifiable_storage::ChainedRepository;
 
 use crate::repository::KelsRepository;
 
@@ -377,7 +375,9 @@ pub(crate) async fn submit_events(
         && first_previous.as_deref() == Some(ctx.branch_tips()[0].tip.event.said.as_str())
         && !ctx.is_contested();
 
-    let (result, diverged_at) = if is_normal_append {
+    // tip_said: for non-divergent results, the last inserted event's SAID.
+    // Avoids the expensive compute_prefix_effective_said query (~99% of submits).
+    let (result, diverged_at, tip_said) = if is_normal_append {
         // ==================== Normal Append (~99% of submissions) ====================
         if ctx.is_decommissioned() {
             return Err(ApiError::unauthorized(
@@ -397,11 +397,12 @@ pub(crate) async fn submit_events(
             .verify_page(&events)
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
+        let tip = events.last().map(|e| e.event.said.clone());
         for event in &events {
             tx.insert_signed_event(event).await?;
         }
 
-        (KelMergeResult::Accepted, None)
+        (KelMergeResult::Accepted, None, tip)
     } else if ctx.is_empty() && first_previous.is_none() {
         // ==================== New KEL (inception) ====================
         let mut verifier = KelVerifier::new(&prefix);
@@ -409,11 +410,12 @@ pub(crate) async fn submit_events(
             .verify_page(&events)
             .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
 
+        let tip = events.last().map(|e| e.event.said.clone());
         for event in &events {
             tx.insert_signed_event(event).await?;
         }
 
-        (KelMergeResult::Accepted, None)
+        (KelMergeResult::Accepted, None, tip)
     } else {
         // ==================== Full Path (divergence/recovery/overlap, rare) ====================
         // Bounded DB operations using the verified Verification. No full KEL in memory.
@@ -463,14 +465,17 @@ pub(crate) async fn submit_events(
             verifier
                 .verify_page(&new_events)
                 .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
+            let tip = new_events.last().map(|e| e.event.said.clone());
             for event in &new_events {
                 tx.insert_signed_event(event).await?;
             }
-            (KelMergeResult::Accepted, None)
+            (KelMergeResult::Accepted, None, tip)
         } else if ctx.is_divergent() {
-            handle_divergent_submission(&mut tx, &ctx, &new_events, &prefix).await?
+            let (r, d) = handle_divergent_submission(&mut tx, &ctx, &new_events, &prefix).await?;
+            (r, d, None)
         } else {
-            handle_overlap_submission(&mut tx, &ctx, &new_events, &prefix).await?
+            let (r, d) = handle_overlap_submission(&mut tx, &ctx, &new_events, &prefix).await?;
+            (r, d, None)
         }
     };
 
@@ -522,25 +527,31 @@ pub(crate) async fn submit_events(
             }
         }
 
-        // Publish effective SAID (not last event SAID) so gossip nodes
-        // can compare it with their own effective SAID for this prefix.
-        match state
-            .repo
-            .key_events
-            .compute_prefix_effective_said(&prefix)
-            .await
-        {
-            Ok(Some(ref said)) => {
-                if let Err(e) = state.kel_cache.publish_update(&prefix, said).await {
-                    warn!("Failed to publish cache update: {}", e);
+        // Publish effective SAID so gossip nodes can compare it with their
+        // own effective SAID for this prefix.
+        // For non-divergent results we already know the tip — skip the expensive
+        // compute_prefix_effective_said DB query. For divergence/recovery/contest,
+        // fall back to computing from tip events.
+        let effective_said = if let Some(said) = tip_said {
+            Some(said)
+        } else {
+            match state
+                .repo
+                .key_events
+                .compute_prefix_effective_said(&prefix)
+                .await
+            {
+                Ok(said) => said,
+                Err(e) => {
+                    warn!("Failed to compute effective SAID for {}: {}", prefix, e);
+                    None
                 }
             }
-            Ok(None) => {
-                warn!("No effective SAID found for prefix {} after commit", prefix);
-            }
-            Err(e) => {
-                warn!("Failed to compute effective SAID for {}: {}", prefix, e);
-            }
+        };
+        if let Some(ref said) = effective_said
+            && let Err(e) = state.kel_cache.publish_update(&prefix, said).await
+        {
+            warn!("Failed to publish cache update: {}", e);
         }
     }
 
@@ -1113,61 +1124,26 @@ async fn handle_overlap_submission(
     Ok((KelMergeResult::Diverged, Some(branch_serial + 1)))
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct GetKelParams {
-    pub since: Option<String>,
-    pub limit: Option<usize>,
-}
-
 pub(crate) async fn get_kel(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-    Query(params): Query<GetKelParams>,
+    Query(params): Query<KeyEventsQuery>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = params
         .limit
         .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
         .clamp(1, MAX_EVENTS_PER_KEL_RESPONSE) as u64;
 
-    // Delta fetch path
-    if let Some(ref since_said) = params.since {
-        let since_event = match state.repo.key_events.get_by_said(since_said).await? {
-            Some(e) => e,
-            None => {
-                // SAID not found as a real event — check if it's a composite effective
-                // SAID for a divergent KEL. If the effective SAID matches, the caller
-                // is already in sync; return empty.
-                let effective = state
-                    .repo
-                    .key_events
-                    .compute_prefix_effective_said(&prefix)
-                    .await?;
-                if effective.as_deref() == Some(since_said.as_str()) {
-                    return Ok(Json(SignedKeyEventPage {
-                        events: vec![],
-                        has_more: false,
-                    }));
-                }
-                return Err(ApiError::not_found(format!(
-                    "Since SAID {} not found",
-                    since_said
-                )));
-            }
-        };
-
-        if since_event.prefix != prefix {
-            return Err(ApiError::bad_request(
-                "Since SAID does not belong to this prefix",
-            ));
-        }
-
-        let (events, has_more) = state
-            .repo
-            .key_events
-            .get_signed_history_since(&prefix, since_said, limit)
-            .await?;
-
-        return Ok(Json(SignedKeyEventPage { events, has_more }));
+    // Delta fetch path — canonical since-resolution
+    if params.since.is_some() {
+        let page = kels::serve_kel_page(
+            &state.repo.key_events,
+            &prefix,
+            params.since.as_deref(),
+            limit,
+        )
+        .await?;
+        return Ok(Json(page));
     }
 
     // Full fetch path — try cache for default limit
@@ -1190,26 +1166,17 @@ pub(crate) async fn get_kel(
         }
     }
 
-    // Cache miss or non-default limit — query database
-    let (events, has_more) = state
-        .repo
-        .key_events
-        .get_signed_history(&prefix, limit, 0)
-        .await?;
-
-    if events.is_empty() {
-        return Err(ApiError::not_found(format!(
-            "No KEL found for prefix {}",
-            prefix
-        )));
-    }
+    // Cache miss or non-default limit — canonical full fetch
+    let page = kels::serve_kel_page(&state.repo.key_events, &prefix, None, limit).await?;
 
     // Store in cache (skips if too large per cache logic)
-    if !has_more && let Err(e) = state.kel_cache.store(&prefix, &events).await {
+    if !page.has_more
+        && let Err(e) = state.kel_cache.store(&prefix, &page.events).await
+    {
         warn!("Failed to cache KEL: {}", e);
     }
 
-    Ok(Json(SignedKeyEventPage { events, has_more }))
+    Ok(Json(page))
 }
 
 /// Dedicated audit endpoint — returns only audit records for a prefix.
@@ -1447,59 +1414,29 @@ pub(crate) async fn get_kels_batch(
                             .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
                         Ok((prefix, bytes))
                     }
-                    // Delta fetch path
+                    // Delta fetch path — canonical since-resolution with fallback
                     Some(since_said) => {
-                        // Look up the since event
-                        let since_event = match state
-                            .repo
-                            .key_events
-                            .get_by_said(&since_said)
-                            .await?
+                        let page = match kels::serve_kel_page(
+                            &state.repo.key_events,
+                            &prefix,
+                            Some(&since_said),
+                            limit,
+                        )
+                        .await
                         {
-                            Some(e) => e,
-                            None => {
-                                // SAID not found — check if it's a composite effective SAID
-                                let effective = state
-                                    .repo
-                                    .key_events
-                                    .compute_prefix_effective_said(&prefix)
-                                    .await?;
-                                if effective.as_deref() == Some(since_said.as_str()) {
-                                    let bytes = br#"{"events":[],"hasMore":false}"#.to_vec();
-                                    return Ok((prefix, bytes));
-                                }
-                                // Fall back to full fetch (SAID archived by recovery)
+                            Ok(page) => page,
+                            Err(KelsError::KeyNotFound(_)) => {
                                 warn!(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix
                                 );
-                                let (events, has_more) = state
-                                    .repo
-                                    .key_events
-                                    .get_signed_history(&prefix, limit, 0)
-                                    .await?;
-                                let bytes =
-                                    serde_json::to_vec(&SignedKeyEventPage { events, has_more })
-                                        .unwrap_or_else(|_| {
-                                            br#"{"events":[],"hasMore":false}"#.to_vec()
-                                        });
-                                return Ok((prefix, bytes));
+                                kels::serve_kel_page(&state.repo.key_events, &prefix, None, limit)
+                                    .await?
                             }
+                            Err(e) => return Err(e.into()),
                         };
 
-                        if since_event.prefix != prefix {
-                            return Err(ApiError::bad_request(
-                                "Since SAID does not belong to this prefix",
-                            ));
-                        }
-
-                        let (events, has_more) = state
-                            .repo
-                            .key_events
-                            .get_signed_history_since(&prefix, &since_said, limit)
-                            .await?;
-
-                        let bytes = serde_json::to_vec(&SignedKeyEventPage { events, has_more })
+                        let bytes = serde_json::to_vec(&page)
                             .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
                         Ok((prefix, bytes))
                     }
@@ -1563,20 +1500,20 @@ fn build_page_bytes(event_array_bytes: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    // ==================== GetKelParams Tests ====================
+    // ==================== KeyEventsQuery Tests ====================
 
     #[test]
-    fn test_get_kel_params_defaults() {
+    fn test_key_events_query_defaults() {
         let json = "{}";
-        let params: GetKelParams = serde_json::from_str(json).unwrap();
+        let params: KeyEventsQuery = serde_json::from_str(json).unwrap();
         assert!(params.since.is_none());
         assert!(params.limit.is_none());
     }
 
     #[test]
-    fn test_get_kel_params_with_values() {
+    fn test_key_events_query_with_values() {
         let json = r#"{"since": "someSAID", "limit": 100}"#;
-        let params: GetKelParams = serde_json::from_str(json).unwrap();
+        let params: KeyEventsQuery = serde_json::from_str(json).unwrap();
         assert_eq!(params.since.as_deref(), Some("someSAID"));
         assert_eq!(params.limit, Some(100));
     }

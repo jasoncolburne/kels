@@ -15,11 +15,11 @@ use axum::{
 };
 use dashmap::DashMap;
 use kels::{
-    AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest, ErrorCode,
-    ErrorResponse, NodeRegistration, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
-    RegisterNodeRequest, RemovalHistory, SignedKeyEventPage, SignedRequest, StatusUpdateRequest,
-    Vote,
+    AdditionHistory, AdminRequest, BatchKelsRequest, CompletedProposalsResponse, DeregisterRequest,
+    ErrorCode, ErrorResponse, KeyEventsQuery, NodeRegistration, Peer, PeerAdditionProposal,
+    PeerHistory, PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
+    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedKeyEventPage,
+    SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
@@ -186,34 +186,16 @@ async fn verify_and_authorize<T: serde::Serialize>(
 
     // Verify signature against peer's current public key from their KEL
     // Consuming: verify peer's KEL (paginated) to extract trusted public key
-    let kels_client = kels::KelsClient::new(&peer.kels_url);
-    let mut verifier = kels::KelVerifier::new(&peer.peer_prefix);
-    let mut since: Option<String> = None;
-    loop {
-        let page = kels_client
-            .fetch_key_events(
-                &peer.peer_prefix,
-                since.as_deref(),
-                kels::MAX_EVENTS_PER_KEL_QUERY,
-            )
-            .await
-            .map_err(|_| {
-                ApiError::forbidden("Could not fetch peer KEL for signature verification")
-            })?;
-        if page.events.is_empty() {
-            break;
-        }
-        verifier
-            .verify_page(&page.events)
-            .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
-        since = page.events.last().map(|e| e.event.said.clone());
-        if !page.has_more {
-            break;
-        }
-    }
-    let ctx = verifier
-        .into_verification()
-        .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?;
+    let source = kels::HttpKelSource::new(&peer.kels_url, "/api/kels/kel/{prefix}");
+    let ctx = kels::verify_key_events(
+        &peer.peer_prefix,
+        &source,
+        kels::KelVerifier::new(&peer.peer_prefix),
+        kels::MAX_EVENTS_PER_KEL_QUERY,
+        kels::max_verification_pages(),
+    )
+    .await
+    .map_err(|e| ApiError::unauthorized(format!("Peer KEL verification failed: {}", e)))?;
 
     signed_request
         .verify_signature_with_ctx(&ctx)
@@ -698,27 +680,16 @@ async fn verify_admin_request<T: Serialize>(
     }
 
     // Consuming: verify identity KEL (paginated) for admin signature check
-    let mut verifier = kels::KelVerifier::new(&our_prefix);
-    let mut since: Option<String> = None;
-    loop {
-        let page = identity_client
-            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_QUERY)
-            .await
-            .map_err(|e| ApiError::internal_error(format!("Identity KEL error: {}", e)))?;
-        if page.events.is_empty() {
-            break;
-        }
-        verifier
-            .verify_page(&page.events)
-            .map_err(|e| ApiError::internal_error(format!("Identity KEL invalid: {}", e)))?;
-        since = page.events.last().map(|e| e.event.said.clone());
-        if !page.has_more {
-            break;
-        }
-    }
-    let ctx = verifier
-        .into_verification()
-        .map_err(|e| ApiError::unauthorized(format!("Verification failed: {}", e)))?;
+    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/identity/kel");
+    let ctx = kels::verify_key_events(
+        &our_prefix,
+        &source,
+        kels::KelVerifier::new(&our_prefix),
+        kels::MAX_EVENTS_PER_KEL_QUERY,
+        kels::max_verification_pages(),
+    )
+    .await
+    .map_err(|e| ApiError::unauthorized(format!("Identity KEL verification failed: {}", e)))?;
 
     signed_request
         .verify_signature_with_ctx(&ctx)
@@ -1401,49 +1372,98 @@ pub async fn list_peers_federated(
 }
 
 /// Public endpoint for clients to verify peer records are anchored in the registry's KEL.
-pub async fn get_registry_kel(
+pub async fn get_registry_key_events(
     State(state): State<Arc<RegistryKelState>>,
+    Query(query): Query<KeyEventsQuery>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .min(kels::MAX_EVENTS_PER_KEL_RESPONSE);
+
     let page = state
         .identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .get_key_events(query.since.as_deref(), limit)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to fetch KEL: {}", e)))?;
 
     Ok(Json(page))
 }
 
-/// Public endpoint to get all cached federation member KELs.
-/// Used for high availability - clients can fetch all KELs from any registry.
-pub async fn get_registry_kels(
+/// Public endpoint to get a specific federation member's KEL with pagination.
+pub async fn get_member_key_events(
     State(state): State<Arc<FederationState>>,
+    Path(prefix): Path<String>,
+    Query(query): Query<KeyEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let repo = state
+        .node
+        .state_machine()
+        .member_kel_repo()
+        .ok_or_else(|| ApiError::internal_error("Member KEL repo not configured"))?;
+    let limit = query
+        .limit
+        .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .min(kels::MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+
+    let page = kels::serve_kel_page(repo, &prefix, query.since.as_deref(), limit)
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to serve member KEL: {}", e)))?;
+
+    Ok(Json(page))
+}
+
+/// Batch fetch federation member KELs with optional delta sync.
+///
+/// Accepts a `BatchKelsRequest` with a map of prefix → optional since SAID.
+/// If the prefixes map is empty, returns all trusted prefixes (first page each).
+/// Used for high availability — clients can fetch all KELs from any registry.
+pub async fn get_all_member_key_events(
+    State(state): State<Arc<FederationState>>,
+    Json(request): Json<BatchKelsRequest>,
 ) -> Result<Json<HashMap<String, SignedKeyEventPage>>, ApiError> {
+    let limit = kels::MAX_EVENTS_PER_KEL_RESPONSE as u64;
+    let own_prefix = state
+        .identity_client
+        .get_prefix()
+        .await
+        .map_err(|e| ApiError::internal_error(format!("Failed to get own prefix: {}", e)))?;
+
+    // If no prefixes specified, default to all trusted prefixes with no since
+    let prefixes: HashMap<String, Option<String>> = if request.prefixes.is_empty() {
+        kels::trusted_prefixes()
+            .iter()
+            .map(|p| (p.to_string(), None))
+            .collect()
+    } else {
+        request.prefixes
+    };
+
     let mut result: HashMap<String, SignedKeyEventPage> = HashMap::new();
 
-    // Read KELs for all trusted prefixes from the DB. This includes current
-    // members and removed registries whose KELs are still stored locally
-    // (needed for vote verification after federation shrink).
-    for prefix in kels::trusted_prefixes() {
-        if let Ok(page) = state
-            .node
-            .state_machine()
-            .read_member_kel_page(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-            .await
-            && !page.events.is_empty()
-        {
-            result.insert(prefix.to_string(), page);
+    for (prefix, since) in &prefixes {
+        if !kels::trusted_prefixes().contains(&prefix.as_str()) {
+            continue;
         }
-    }
 
-    // Add our own fresh KEL (not cached, always current)
-    let own_page = state
-        .identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
-
-    if let Some(first) = own_page.events.first() {
-        result.insert(first.event.prefix.clone(), own_page);
+        if *prefix == own_prefix {
+            // Own KEL: fetch from identity service (always fresh)
+            let page = state
+                .identity_client
+                .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+                .await
+                .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
+            if !page.events.is_empty() {
+                result.insert(prefix.clone(), page);
+            }
+        } else if let Some(repo) = state.node.state_machine().member_kel_repo() {
+            // Other member KELs: fetch from local Raft-replicated store
+            if let Ok(page) = kels::serve_kel_page(repo, prefix, since.as_deref(), limit).await
+                && !page.events.is_empty()
+            {
+                result.insert(prefix.clone(), page);
+            }
+        }
     }
 
     Ok(Json(result))

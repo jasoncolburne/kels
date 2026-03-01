@@ -15,7 +15,7 @@ Events are linked by their `previous` SAID field. Generation is computed dynamic
 
 ## Verification Algorithm
 
-`KelVerifier` processes events in a single forward pass, verifying structure and cryptography simultaneously. Events must arrive in `serial ASC, said ASC` order with complete generations.
+`KelVerifier` processes events in a single forward pass, verifying structure and cryptography simultaneously. Events must arrive in `serial ASC, kind sort_priority ASC, said ASC` order with complete generations.
 
 ### Per-Event Checks
 

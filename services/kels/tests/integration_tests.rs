@@ -10,8 +10,8 @@ use cesr::{Digest, Matter};
 use chrono::Utc;
 use ctor::dtor;
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage,
-    SoftwareKeyProvider,
+    BatchKelsRequest, BatchSubmitResponse, KeyEventBuilder, MAX_EVENTS_PER_SUBMISSION,
+    SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider,
 };
 use reqwest::Client;
 use std::net::TcpListener;
@@ -216,7 +216,7 @@ impl SharedHarness {
 
     fn client(&self) -> Client {
         Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap()
     }
@@ -951,7 +951,7 @@ async fn build_large_kel(count: usize) -> (String, Vec<SignedKeyEvent>) {
 
 /// Helper to submit events in chunks of up to 500 (staying under the 512 limit).
 async fn submit_chunked(harness: &SharedHarness, events: &[SignedKeyEvent]) {
-    for chunk in events.chunks(500) {
+    for chunk in events.chunks(MAX_EVENTS_PER_SUBMISSION) {
         let response = harness
             .client()
             .post(harness.url("/api/kels/events"))

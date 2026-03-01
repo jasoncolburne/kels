@@ -31,7 +31,7 @@ pub fn create_router(
 
     // Registry KEL route
     let kel_router = Router::new()
-        .route("/api/registry-kel", get(handlers::get_registry_kel))
+        .route("/api/registry-kel", get(handlers::get_registry_key_events))
         .with_state(registry_kel_state);
 
     // Federation mode routes (node management + peer management + admin)
@@ -47,7 +47,14 @@ pub fn create_router(
         // Peer discovery
         let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
-            .route("/api/registry-kels", get(handlers::get_registry_kels));
+            .route(
+                "/api/member-kels",
+                post(handlers::get_all_member_key_events),
+            )
+            .route(
+                "/api/member-kels/:prefix",
+                get(handlers::get_member_key_events),
+            );
 
         // Federation protocol
         let federation_router = Router::new()

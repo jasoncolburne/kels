@@ -105,7 +105,7 @@ These endpoints have no authentication and return potentially sensitive informat
 |----------|------|---------------|
 | `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
 | `GET /api/registry-kel` | Exposes full KEL history | KELs are public by design — verifiability requires availability |
-| `GET /api/registry-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
+| `GET /api/member-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
 | `GET /api/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
 | `GET /api/federation/proposals` | Exposes completed proposals and votes | Required for independent verification by gossip nodes |
 | `POST /api/kels/events` | Accepts event submissions from anyone | Events are cryptographically validated (signatures checked against KEL) |

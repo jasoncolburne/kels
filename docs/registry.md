@@ -130,7 +130,8 @@ Peer discovery:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/peers` | Get peer allowlist (from Raft) |
-| `GET` | `/api/registry-kels` | Get KELs for all federation members |
+| `GET` | `/api/member-kels` | Get KELs for all federation members |
+| `GET` | `/api/member-kels/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
 
 Federation protocol:
 

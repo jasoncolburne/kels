@@ -78,7 +78,7 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
-| GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service) |
+| GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service); `?limit=N&since=SAID` |
 
 ### Federation Mode
 
@@ -97,7 +97,8 @@ All standalone endpoints plus:
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (from Raft state machine) |
-| GET | `/api/registry-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
+| GET | `/api/member-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
+| GET | `/api/member-kels/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
 
 #### Federation Protocol
 

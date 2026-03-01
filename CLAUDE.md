@@ -189,13 +189,16 @@ Events are stored in PostgreSQL via the `verifiable-storage` framework:
 - `Chained` trait provides `derive_prefix`, `derive_said`, `increment`, `verify_prefix`, `verify_said`
 - `SelfAddressed` trait provides content-addressable storage via SAID
 - Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock. Implements `PageLoader` for advisory-locked paginated reads during verify-then-write operations.
-- `KelVerifier` — streaming forward-walking chain verifier for incremental verification without full KEL load. Supports multi-branch divergent KELs via generation-based processing. Produces `Verification` tokens (proof-of-verification) via `into_verification()`. Used by submit handler, `sync_and_verify()`, and all consuming paths.
+- `KelVerifier` — streaming forward-walking chain verifier for incremental verification without full KEL load. Supports multi-branch divergent KELs via generation-based processing. Produces `Verification` tokens (proof-of-verification) via `into_verification()`. Used by submit handler, `transfer_key_events()`, and all consuming paths. Enforces invariants: max 2 events per generation, max 1 event per generation after divergence.
 - `Verification` — proof-of-verification token. Cannot be constructed directly — only via `KelVerifier::into_verification()`. Provides access to verified KEL state (branch tips, divergence, decommission, anchor checking results). Functions that consume KEL data accept `&Verification` to prove the KEL was verified.
 - `completed_verification(loader, prefix, page_size, max_pages, anchors)` — guard function that pages through a `PageLoader` with `KelVerifier`, returning a trusted `Verification` token. `max_pages` prevents resource exhaustion.
-- `PagedKelSource` / `PagedKelSink` / `sync_and_verify()` — generic streaming pattern for verified KEL transfer between stores.
+- `PagedKelSource` / `PagedKelSink` — traits for paginated KEL streaming over HTTP or local stores.
+- `transfer_key_events()` — divergence-aware streaming KEL transfer with structural divergence detection (always on) and optional cryptographic verification. Convenience wrappers: `verify_key_events()`, `collect_key_events()`, `forward_key_events()`, `resolve_key_events()`.
+- `partition_for_submission()` — partitions in-memory events for divergence-aware submission ordering. Returns `(primary, deferred, recovery)`.
+- `KelServer` / `serve_kel_page()` — canonical since-resolution and pagination for serving KEL pages. `KelServer` trait abstracts the storage backend.
 - Pre-serialized JSON cache in Redis for KELs ≤ 512 events; larger KELs are not cached
 - Redis pub/sub for cache invalidation across instances
-- All KEL queries use `ORDER BY serial ASC, said ASC` for deterministic pagination across divergent events
+- All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events. The CASE expression uses `EventKind::sort_priority_mapping()` to ensure state-determining events (recovery, contest) sort after normal events at the same serial.
 - `MAX_EVENTS_PER_KEL_QUERY` (512) — page size for database queries. `MAX_EVENTS_PER_KEL_RESPONSE` derives from this.
 - Local KEL stores: gossip service stores registry KELs in PostgreSQL for anchoring verification; registry service persists member KELs alongside Raft state
 - Patterns:

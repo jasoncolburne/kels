@@ -317,7 +317,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Discovering registry prefix from KEL...");
     info!("urls: {:?}", federation_registry_urls);
     let registry_contexts = registry_client
-        .fetch_verified_registry_kels(true)
+        .fetch_verified_member_key_events(true)
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
 

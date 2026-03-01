@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS registry_key_events (
 
 CREATE INDEX IF NOT EXISTS idx_registry_key_events_prefix ON registry_key_events(prefix);
 CREATE INDEX IF NOT EXISTS idx_registry_key_events_prefix_serial ON registry_key_events(prefix, serial);
+CREATE INDEX IF NOT EXISTS idx_registry_key_events_prefix_previous ON registry_key_events(prefix, previous);
 
 CREATE TABLE IF NOT EXISTS registry_key_event_signatures (
     said CHAR(44) PRIMARY KEY,

@@ -42,6 +42,7 @@ pub mod client;
 pub mod crypto;
 pub mod error;
 pub mod repository;
+pub mod serving;
 pub mod store;
 pub mod types;
 
@@ -65,6 +66,7 @@ pub use client::{
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
 pub use repository::SignedEventRepository;
+pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
@@ -79,9 +81,10 @@ pub use types::{
     hash_tip_saids, validate_timestamp,
 };
 pub use types::{
-    BranchTip, KelVerifier, PageLoader, PagedKelSink, PagedKelSource, StorePageLoader,
-    Verification, completed_verification, compute_rotation_hash, sync_and_verify,
-    truncate_incomplete_generation,
+    BranchTip, CollectSink, HttpKelSink, HttpKelSource, KelVerifier, NoOpSink, PageLoader,
+    PagedKelSink, PagedKelSource, StorePageLoader, Verification, collect_key_events,
+    completed_verification, compute_rotation_hash, forward_key_events, partition_for_submission,
+    resolve_key_events, sync_and_verify, truncate_incomplete_generation, verify_key_events,
 };
 
 /// Maximum number of events allowed in a single submit_events request.
