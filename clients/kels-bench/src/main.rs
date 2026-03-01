@@ -14,7 +14,10 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{KelsClient, KeyEventBuilder, SoftwareKeyProvider, MAX_EVENTS_PER_KEL_RESPONSE};
+use kels::{
+    HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider,
+    DEFAULT_MAX_VERIFICATION_PAGES, MAX_EVENTS_PER_KEL_RESPONSE,
+};
 use verifiable_storage::compute_said;
 
 fn test_said(name: &str) -> String {
@@ -237,19 +240,20 @@ async fn run_worker(
     benchmark_type: BenchmarkType,
 ) {
     let client = KelsClient::new(&url);
+    let source = HttpKelSource::new(&url, "/api/kels/kel/{prefix}");
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
         let result: Result<u64, _> = match &benchmark_type {
             BenchmarkType::Health => client.health().await.map(|_| 0),
-            BenchmarkType::GetKel { prefix } => client
-                .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
-                .await
-                .map(|page| {
-                    serde_json::to_string(&page.events)
-                        .map(|s| s.len() as u64)
-                        .unwrap_or(0)
-                }),
+            BenchmarkType::GetKel { prefix } => kels::benchmark_key_events(
+                prefix,
+                &source,
+                MAX_EVENTS_PER_KEL_RESPONSE,
+                DEFAULT_MAX_VERIFICATION_PAGES,
+            )
+            .await
+            .map(|_| 0),
             BenchmarkType::GetKels { prefixes } => {
                 let prefixes_map: HashMap<String, Option<String>> =
                     prefixes.iter().map(|p| (p.clone(), None)).collect();
@@ -340,11 +344,16 @@ async fn main() -> Result<()> {
 
     let (singular_kels, batch_kels) = if args.skip_setup {
         if let Some(prefix) = &args.prefix {
-            let page = match client
-                .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
-                .await
+            let source = HttpKelSource::new(&args.url, "/api/kels/kel/{prefix}");
+            let event_count = match kels::resolve_key_events(
+                prefix,
+                &source,
+                MAX_EVENTS_PER_KEL_RESPONSE,
+                DEFAULT_MAX_VERIFICATION_PAGES,
+            )
+            .await
             {
-                Ok(p) => p,
+                Ok(events) => events.len(),
                 Err(e) => {
                     eprintln!("Couldn't fetch kel: {}", e);
                     std::process::exit(1);
@@ -354,7 +363,7 @@ async fn main() -> Result<()> {
             println!("{}", "Skipping setup, using provided prefix...".yellow());
             (
                 vec![TestKelConfig {
-                    event_count: page.events.len(),
+                    event_count,
                     prefix: Some(prefix.clone()),
                 }],
                 vec![],

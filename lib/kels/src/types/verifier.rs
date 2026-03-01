@@ -1151,6 +1151,16 @@ pub async fn resolve_key_events(
     Ok(sink.into_events().await)
 }
 
+/// Benchmark: pages through source, discards events (no verification, no collection).
+pub async fn benchmark_key_events(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(), KelsError> {
+    transfer_key_events(prefix, source, &NoOpSink, None, page_size, max_pages).await
+}
+
 // ==================== Partition for Submission ====================
 
 /// Partition in-memory events for divergence-aware submission.
