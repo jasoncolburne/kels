@@ -2,165 +2,143 @@
 
 Automated audit of `kels-52_paginate-kels-requests` branch changes vs `main`. Scope: `git diff main` across all files.
 
+Last reviewed: 2026-03-01
+
 ## Summary
 
-| Area | High | Medium | Low |
-|------|------|--------|-----|
-| `lib/kels` (core library) | 2 | 6 | 4 |
-| Services (`kels`, `identity`, `registry`, `gossip`) | 5 | 3 | 2 |
-| Clients (`kels-cli`, `kels-ffi`) | 2 | 0 | 2 |
-| Docs | 0 | 1 | 0 |
+| Area | Open | Resolved |
+|------|------|----------|
+| `lib/kels` (core library) | 5 | 7 |
+| Services (`kels`, `identity`, `registry`, `gossip`) | 2 | 3 |
+| Clients (`kels-cli`, `kels-ffi`) | 2 | 2 |
+| Docs | 0 | 1 |
 
 ---
 
 ## High Priority
 
-### 1. Silent skip on missing public key in `from_branch_tip`/`resume`
+### ~~1. Silent skip on missing public key in `from_branch_tip`/`resume`~~ RESOLVED
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+Extracted into `branch_state_from_tip()` which returns `KelsError::InvalidKel` on missing public key. Both `from_branch_tip()` and `resume()` call this, failing secure.
 
-Both `KelVerifier::from_branch_tip()` and `KelVerifier::resume()` silently skip branches where `establishment_tip.event.public_key` is `None`. This produces a verifier with empty branches but a non-zero `last_verified_serial`, causing confusing "expected serial 0" errors on subsequent `verify_page()` calls. Should error per fail-secure.
+### ~~2. Dead anchor-checking code in `verify_inception`~~ RESOLVED
 
-### 2. Dead anchor-checking code in `verify_inception`
+The `event.is_interaction()` check has been removed from `verify_inception()`.
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+### ~~3. CLI `cmd_get` ignores `has_more`~~ RESOLVED
 
-`verify_inception()` contains an `event.is_interaction()` anchor check that can never be true — inception events are never interactions. The equivalent logic already exists in `verify_generation()`.
+`cmd_get` now loops through all pages, accumulating events while `has_more` is true.
 
-### 3. CLI `cmd_get` ignores `has_more`
+### ~~4. FFI `kels_status` silent verification failure~~ RESOLVED
 
-**Affected file**: `clients/kels-cli/src/main.rs`
+Now sets `result.status = KelsStatus::Error` with an error message instead of returning "unknown".
 
-`cmd_get` fetches one page from the server and discards the `has_more` flag, silently truncating KELs larger than 512 events.
+### ~~5. `build_page_bytes` `has_more` always false~~ RESOLVED
 
-### 4. FFI `kels_status` silent verification failure
+Not a bug — `build_page_bytes` is only called for cached full KELs (≤ 512 events). `has_more` is legitimately always false. Single call site, correct by design.
 
-**Affected file**: `lib/kels-ffi/src/lib.rs`
+### ~~6. No-op `.gte("serial", 0u64)` filter~~ RESOLVED
 
-`kels_status` returns "unknown" status when verification fails instead of propagating the error to callers.
+Removed. `LockedKelTransaction::load()` now uses offset/limit pagination without the no-op filter.
 
-### 5. `build_page_bytes` `has_more` always false
+### ~~7. `ensure_own_kel_synced` single-page limitation~~ RESOLVED
 
-**Affected file**: `services/kels/src/handlers.rs`
-
-The `has_more` parameter to `build_page_bytes` is always `false` at all call sites — dead parameter.
-
-### 6. No-op `.gte("serial", 0u64)` filter
-
-**Affected file**: `services/identity/src/handlers.rs`
-
-`LockedKelTransaction::load()` includes `.gte("serial", 0u64)` which matches all rows. No-op filter.
-
-### 7. `ensure_own_kel_synced` single-page limitation
-
-**Affected file**: `services/kels-registry/src/federation/mod.rs`
-
-Fetches only one page (512 events) from the identity service. Long-lived registries with many rotations could exceed this.
+Now implements multi-page loop with `has_more` check.
 
 ---
 
 ## Medium Priority
 
-### 8. Obfuscated emptiness check
+### 8. Obfuscated emptiness check — OPEN
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+**File**: `lib/kels/src/types/verifier.rs:348`
 
 `!new_branches.values().any(|_| true)` should be `new_branches.is_empty()`.
 
-### 9. Operator precedence ambiguity in `completed_verification`
+### 9. Operator precedence ambiguity in `completed_verification` — OPEN
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+**File**: `lib/kels/src/types/verifier.rs:677`
 
-`if !has_more || truncated > 0 && advanced == 0` relies on `&&` binding tighter than `||`. Should add explicit parentheses.
+`if !has_more || truncated > 0 && advanced == 0` — add explicit parentheses around the `&&` clause.
 
-### 10. `establishment_kinds()` filter is tautologically true
+### 10. `establishment_kinds()` tautological filter — OPEN
 
-**Affected file**: `lib/kels/src/types/events.rs`
+**File**: `lib/kels/src/types/events.rs`
 
-The array omits `Ixn`, then filters by `is_establishment()` (which is `!Ixn`). Filter always passes. Include `Ixn` so the filter actually filters.
+Array omits `Ixn`, then filters by `is_establishment()`. Filter always passes. Either include `Ixn` (so the filter does something) or remove the filter.
 
-### 11. `truncate_incomplete_generation` limitation undocumented
+### 11. `truncate_incomplete_generation` limitation undocumented — OPEN
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+**File**: `lib/kels/src/types/verifier.rs`
 
-Cannot detect incomplete generations at the linear-to-divergent transition (both serials have count 1). The verifier handles this correctly by deferring branch detection, but the limitation should be documented.
+Cannot detect incomplete generations at the linear-to-divergent transition (both serials have count 1). The verifier handles this via held-back events in `transfer_key_events`, but the limitation of `truncate_incomplete_generation` itself should be documented.
 
-### 12. `sync_and_verify` missing truncation / `PagedKelSource` contract undocumented
+### 12. `PagedKelSource` contract undocumented / `sync_and_verify` lacks held-back protection — OPEN
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+**File**: `lib/kels/src/types/verifier.rs`
 
-`sync_and_verify` doesn't call `truncate_incomplete_generation()`. This is correct if `PagedKelSource` guarantees complete generations, but that contract is not documented.
+`transfer_key_events` solves page-boundary divergent pair splitting via held-back events. But the older `sync_and_verify` (still present, line 708) lacks this protection. Also, `PagedKelSource` trait doesn't document its contract (ordering, complete generations, `has_more` semantics).
 
-### 13. `verify_anchor` re-verifies full KEL on every call
+### 13. `verify_anchor` re-verifies full KEL on every call — OPEN
 
-**Affected file**: `lib/kels/src/client/registry.rs`
+**File**: `lib/kels/src/client/registry.rs`
 
-Clones all cached events and runs full `KelVerifier` from scratch on each anchor check. Performance concern for frequent anchor verification.
+Clones all cached events and runs full `KelVerifier` from scratch each call. Should cache the `Verification` and only recompute when events change or when different anchors need checking.
 
-### 14. Duplicated "eagerly sync KEL to Raft" blocks
+### 14. Duplicated "eagerly sync KEL to Raft" calls — OPEN (low)
 
-**Affected file**: `services/kels-registry/src/handlers.rs`
+**File**: `services/kels-registry/src/handlers.rs`
 
-`admin_vote_proposal` duplicates the sync-to-Raft pattern that `ensure_own_kel_synced` encapsulates.
+Three handlers call `ensure_own_kel_synced(&state).await` before their main logic. The function itself is extracted (not duplicated), but the pattern could be middleware. Low priority — calling a function three times is not true duplication.
 
-### 15. `SubmitKeyEvents` state machine has two code paths with different semantics
+### ~~15. `SubmitKeyEvents` state machine has two code paths~~ RESOLVED
 
-**Affected file**: `services/kels-registry/src/federation/state_machine.rs`
+Dead in-memory code path removed. The `apply()` match arm now logs an error and rejects if reached (meaning `member_kel_repo` was not configured — a misconfiguration). Production always uses the DB-backed `apply_submit_key_events` path.
 
-`SubmitKeyEvents` handler has two code paths (first submission vs subsequent) with subtly different verification and storage semantics.
+### ~~16. Wrong env var in docs~~ RESOLVED
 
-### 16. Wrong env var in docs
-
-**Affected file**: `docs/endpoints.md`
-
-References `KELS_MAX_PAGES_PER_KEL` — should be `KELS_MAX_VERIFICATION_PAGES`.
+`KELS_MAX_PAGES_PER_KEL` is correct. The audit originally suggested `KELS_MAX_VERIFICATION_PAGES` but the code confirms `KELS_MAX_PAGES_PER_KEL`.
 
 ---
 
 ## Low Priority
 
-### 17. `MemoryStore` duplicated across test modules
+### ~~17. `MemoryStore` duplicated across test modules~~ RESOLVED
 
-**Affected files**: `lib/kels/src/store/mod.rs`, `lib/kels/src/types/verifier.rs`
+Now a single implementation in `lib/kels/src/store/mod.rs`.
 
-Two separate test `MemoryStore` implementations with identical pagination logic.
+### 18. `create_test_events` duplicated — OPEN
 
-### 18. `create_test_events` duplicated
+**Files**: `lib/kels/src/store/mod.rs`, `lib/kels/src/store/file.rs`
 
-**Affected files**: `lib/kels/src/store/mod.rs`, `lib/kels/src/store/file.rs`
+Identical test helper in two modules. Could consolidate.
 
-Identical test helper in two modules.
+### ~~19. Branch reconstruction duplicated in `from_branch_tip` and `resume`~~ RESOLVED
 
-### 19. Branch reconstruction duplicated in `from_branch_tip` and `resume`
+Extracted into shared `branch_state_from_tip()` helper.
 
-**Affected file**: `lib/kels/src/types/verifier.rs`
+### ~~20. Poisoned lock handling inconsistent between test MemoryStores~~ RESOLVED
 
-Same `BranchState` construction from `BranchTip` pattern in both methods. Could extract a shared helper.
+Single `MemoryStore` remaining — consistency guaranteed.
 
-### 20. Poisoned lock handling inconsistent between test MemoryStores
+### 21. Duplicated verify+status display pattern in CLI — OPEN
 
-**Affected files**: `lib/kels/src/store/mod.rs` (swallows), `lib/kels/src/types/verifier.rs` (panics)
+**File**: `clients/kels-cli/src/main.rs`
 
-### 21. Duplicated verify+status display pattern in CLI
+`cmd_get()` has two blocks (audit vs non-audit) with identical status display logic. Extract a helper.
 
-**Affected file**: `clients/kels-cli/src/main.rs`
+### 22. Duplicated pagination loop in CLI — OPEN
 
-Multiple commands repeat the same verify-then-display-status sequence.
+**File**: `clients/kels-cli/src/main.rs`
 
-### 22. Duplicated pagination loop in CLI
+Three near-identical pagination loops (`cmd_get`, `cmd_dev_dump_kel`, `cmd_adversary_inject`).
 
-**Affected file**: `clients/kels-cli/src/main.rs`
+### 23. Duplicated paginated KEL verification loop in services — PARTIALLY RESOLVED
 
-Same page-fetching loop pattern repeated across commands.
+Main instances replaced with `verify_key_events()` / `forward_key_events()` wrappers. One inline `verify_page()` call remains in `handlers.rs:528` that doesn't use the wrapper.
 
-### 23. Duplicated paginated KEL verification loop in services
+### 24. Duplicated signed-event assembly pattern — OPEN
 
-**Affected files**: `services/kels-registry/src/handlers.rs` (2 instances), `services/kels-gossip/src/hsm_signer.rs`
+**File**: `services/kels/src/repository.rs`
 
-Three instances of the same paginated-verification-via-`KelVerifier` loop.
-
-### 24. Duplicated signed-event assembly pattern
-
-**Affected file**: `services/kels/src/repository.rs`
-
-4+ instances of the same row-to-`SignedKeyEvent` assembly pattern.
+5 instances of the same fetch-signatures-then-zip-with-events pattern. Extract an `assemble_signed_events()` helper.

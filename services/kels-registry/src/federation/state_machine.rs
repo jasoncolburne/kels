@@ -570,75 +570,15 @@ impl StateMachineData {
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
-            FederationRequest::SubmitKeyEvents(events) => {
-                if events.is_empty() {
-                    return FederationResponse::KeyEventsRejected("Empty events list".to_string());
-                }
-
-                let prefix = events[0].event.prefix.clone();
-
-                // Reject mixed prefixes
-                if events.iter().any(|e| e.event.prefix != prefix) {
-                    return FederationResponse::KeyEventsRejected(
-                        "Mixed prefixes in events".to_string(),
-                    );
-                }
-
-                // Verify the complete submitted event chain from inception.
-                // Callers (e.g. sync_kel_to_leader) may send the full KEL including
-                // already-known events — we verify everything and deduplicate by SAID.
-                let mut verifier = kels::KelVerifier::new(&prefix);
-
-                match verifier.verify_page(&events) {
-                    Ok(()) => {
-                        let ctx = match verifier.into_verification() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                return FederationResponse::KeyEventsRejected(format!(
-                                    "Verification finalization failed: {}",
-                                    e
-                                ));
-                            }
-                        };
-
-                        // Member KELs should never diverge
-                        if ctx.is_divergent() {
-                            tracing::error!(
-                                "SECURITY: member KEL divergence detected for {}",
-                                prefix
-                            );
-                            return FederationResponse::KeyEventsRejected(
-                                "Member KEL divergence detected".to_string(),
-                            );
-                        }
-
-                        // Count genuinely new events by SAID comparison with existing tip
-                        let new_count = if let Some(existing) = self.member_contexts.get(&prefix) {
-                            let tip_said = existing
-                                .branch_tips()
-                                .first()
-                                .map(|bt| bt.tip.event.said.as_str());
-                            match tip_said {
-                                Some(said) => {
-                                    match events.iter().position(|e| e.event.said == said) {
-                                        Some(pos) => events.len() - pos - 1,
-                                        None => events.len(),
-                                    }
-                                }
-                                None => events.len(),
-                            }
-                        } else {
-                            events.len()
-                        };
-
-                        self.member_contexts.insert(prefix.clone(), ctx);
-                        FederationResponse::KeyEventsAccepted { prefix, new_count }
-                    }
-                    Err(e) => FederationResponse::KeyEventsRejected(format!(
-                        "KEL verification failed: {}",
-                        e
-                    )),
-                }
+            FederationRequest::SubmitKeyEvents(_) => {
+                // DB-backed path handles this in the apply loop (apply_submit_key_events).
+                // Reaching here means member_kel_repo is not configured.
+                tracing::error!(
+                    "MISCONFIGURATION: SubmitKeyEvents reached in-memory apply — member_kel_repo is None"
+                );
+                FederationResponse::KeyEventsRejected(
+                    "Member KEL repository not configured".to_string(),
+                )
             }
             FederationRequest::VotePeer { proposal_id, vote } => {
                 let voter = vote.voter.clone();
