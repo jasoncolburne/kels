@@ -279,6 +279,7 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
         KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
+        KelsError::HsmKeyNotFound(_) => KelsStatus::Error,
         KelsError::NotIncepted => KelsStatus::NotIncepted,
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
@@ -1462,7 +1463,7 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
     // Load KEL from store, truncate, and save
     ctx.runtime.block_on(async {
         // Load current KEL
-        let (events, _has_more) = match ctx.store.load(&prefix, i64::MAX as u64, 0).await {
+        let (events, _has_more) = match ctx.store.load(&prefix, kels::LOAD_ALL, 0).await {
             Ok(result) => result,
             Err(e) => {
                 set_last_error(&format!("Failed to load KEL: {}", e));

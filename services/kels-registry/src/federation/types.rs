@@ -4,11 +4,7 @@
 
 use std::fmt;
 
-use std::collections::HashMap;
-
-use kels::{
-    Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Verification, Vote,
-};
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -68,8 +64,9 @@ pub enum FederationRequest {
         vote: Vote,
     },
 
-    /// Submit key events for a member's KEL.
-    SubmitKeyEvents(Vec<SignedKeyEvent>),
+    /// Notify federation that a member's KEL has new events.
+    /// Other nodes should fetch and verify independently.
+    SyncMemberKel { prefix: String },
 }
 
 impl fmt::Display for FederationRequest {
@@ -114,17 +111,8 @@ impl fmt::Display for FederationRequest {
                     proposal_id, vote.voter, vote.approve
                 )
             }
-            FederationRequest::SubmitKeyEvents(events) => {
-                let prefix = events
-                    .first()
-                    .map(|e| e.event.prefix.as_str())
-                    .unwrap_or("empty");
-                write!(
-                    f,
-                    "SubmitKeyEvents(prefix={}, count={})",
-                    prefix,
-                    events.len()
-                )
+            FederationRequest::SyncMemberKel { prefix } => {
+                write!(f, "SyncMemberKel(prefix={})", prefix)
             }
         }
     }
@@ -187,10 +175,8 @@ pub enum FederationResponse {
     HasVotes(String),
     /// Internal error
     InternalError(String),
-    /// Key events accepted into Raft state.
-    KeyEventsAccepted { prefix: String, new_count: usize },
-    /// Key events rejected.
-    KeyEventsRejected(String),
+    /// Member KEL sync trigger acknowledged.
+    MemberKelSynced { prefix: String },
 }
 
 impl fmt::Display for FederationResponse {
@@ -248,15 +234,8 @@ impl fmt::Display for FederationResponse {
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
             FederationResponse::InternalError(msg) => write!(f, "InternalError({})", msg),
-            FederationResponse::KeyEventsAccepted { prefix, new_count } => {
-                write!(
-                    f,
-                    "KeyEventsAccepted(prefix={}, count={})",
-                    prefix, new_count
-                )
-            }
-            FederationResponse::KeyEventsRejected(msg) => {
-                write!(f, "KeyEventsRejected({})", msg)
+            FederationResponse::MemberKelSynced { prefix } => {
+                write!(f, "MemberKelSynced(prefix={})", prefix)
             }
         }
     }
@@ -294,9 +273,6 @@ pub struct MemberSnapshot {
     /// Votes stored by SAID.
     #[serde(default)]
     pub votes: Vec<Vote>,
-    /// Federation member verified contexts (replicated via Raft).
-    #[serde(default)]
-    pub member_contexts: HashMap<String, Verification>,
 }
 
 #[cfg(test)]
@@ -494,7 +470,6 @@ mod tests {
             pending_removal_proposals: vec![],
             completed_removal_proposals: vec![],
             votes: vec![],
-            member_contexts: HashMap::new(),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();

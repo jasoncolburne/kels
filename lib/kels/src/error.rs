@@ -133,6 +133,9 @@ pub enum KelsError {
     #[error("Hardware error: {0}")]
     HardwareError(String),
 
+    #[error("HSM key not found: {0}")]
+    HsmKeyNotFound(String),
+
     #[error("No ready nodes available in registry")]
     NoReadyNodes,
 

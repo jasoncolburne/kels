@@ -1,17 +1,18 @@
 //! PostgreSQL Repository for KELS
 
+use std::collections::{HashMap, HashSet};
+
 use async_trait::async_trait;
+use verifiable_storage::{
+    ChainedRepository, ColumnQuery, CorrelatedSubquery, ScalarSubquery, StorageError, Value,
+};
+use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
+
 use kels::{
     EventKind, EventSignature, KelServer, KelsAuditRecord, KelsError, KeyEvent, PrefixListResponse,
     PrefixState, SignedKeyEvent,
 };
 use libkels_derive::SignedEvents;
-use std::collections::{HashMap, HashSet};
-use verifiable_storage::{
-    ChainedRepository, ColumnQuery, CorrelatedSubquery, ScalarSubquery, SelfAddressed,
-    StorageError, TransactionExecutor, Value,
-};
-use verifiable_storage_postgres::{Delete, Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
 /// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
 fn zip_events_with_signatures(
@@ -34,7 +35,10 @@ fn zip_events_with_signatures(
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
-#[signed_events(signatures_table = "kels_key_event_signatures")]
+#[signed_events(
+    signatures_table = "kels_key_event_signatures",
+    audit_table = "kels_audit_records"
+)]
 pub struct KeyEventRepository {
     pub pool: PgPool,
 }
@@ -245,19 +249,6 @@ impl KeyEventRepository {
         }
         Ok(None)
     }
-
-    /// Begin transaction with advisory lock on prefix. Serializes all operations on this prefix.
-    pub async fn begin_locked_transaction(
-        &self,
-        prefix: &str,
-    ) -> Result<KelTransaction, StorageError> {
-        let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix).await?;
-        Ok(KelTransaction {
-            tx,
-            prefix: prefix.to_string(),
-        })
-    }
 }
 
 #[async_trait]
@@ -293,221 +284,6 @@ impl KelServer for KeyEventRepository {
     async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, KelsError> {
         let event: Option<KeyEvent> = self.get_by_said(said).await.map_err(KelsError::from)?;
         Ok(event.map(|e| e.prefix))
-    }
-}
-
-/// Transaction with advisory lock. Lock held until commit/rollback/drop.
-pub struct KelTransaction {
-    tx: <PgPool as QueryExecutor>::Transaction,
-    prefix: String,
-}
-
-impl KelTransaction {
-    const EVENTS_TABLE: &'static str = KeyEventRepository::TABLE_NAME;
-    const SIGNATURES_TABLE: &'static str = KeyEventRepository::SIGNATURES_TABLE_NAME;
-    const AUDIT_TABLE: &'static str = AuditRecordRepository::TABLE_NAME;
-
-    /// Fetch signatures for a single event and return as `SignedKeyEvent`.
-    async fn assemble_signed_event(
-        &mut self,
-        event: KeyEvent,
-    ) -> Result<SignedKeyEvent, StorageError> {
-        let query = Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE)
-            .eq("event_said", &event.said);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_map = HashMap::from([(event.said.clone(), signatures)]);
-        zip_events_with_signatures(vec![event], &sig_map).map(|mut v| v.remove(0))
-    }
-
-    /// Fetch signatures for a batch of events and return as `Vec<SignedKeyEvent>`.
-    async fn assemble_signed_events(
-        &mut self,
-        events: Vec<KeyEvent>,
-    ) -> Result<Vec<SignedKeyEvent>, StorageError> {
-        if events.is_empty() {
-            return Ok(vec![]);
-        }
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let query =
-            Query::<EventSignature>::for_table(Self::SIGNATURES_TABLE).r#in("event_said", saids);
-        let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
-        for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
-        }
-        zip_events_with_signatures(events, &sig_map)
-    }
-
-    /// Get a paginated page of signed events for this prefix starting from `since_serial`.
-    ///
-    /// Returns `(events, has_more)` using the limit+1 pop pattern.
-    /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
-    pub async fn get_signed_history_since(
-        &mut self,
-        since_serial: u64,
-        limit: u64,
-    ) -> Result<(Vec<SignedKeyEvent>, bool), StorageError> {
-        // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
-        let clamped_limit = limit.min(i64::MAX as u64 - 1);
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .gte("serial", since_serial)
-            .order_by("serial", Order::Asc)
-            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
-            .order_by("said", Order::Asc)
-            .limit(clamped_limit + 1);
-        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let has_more = events.len() > clamped_limit as usize;
-        if has_more {
-            events.pop();
-        }
-
-        if events.is_empty() {
-            return Ok((vec![], false));
-        }
-
-        let result = self.assemble_signed_events(events).await?;
-        Ok((result, has_more))
-    }
-
-    /// Check which of the given SAIDs already exist in the database.
-    /// Returns the subset that exist. Bounded by the input size.
-    pub async fn existing_saids(
-        &mut self,
-        saids: &[String],
-    ) -> Result<HashSet<String>, StorageError> {
-        if saids.is_empty() {
-            return Ok(HashSet::new());
-        }
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .r#in("said", saids.to_vec());
-        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-        Ok(events.into_iter().map(|e| e.said).collect())
-    }
-
-    pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, StorageError> {
-        if saids.is_empty() {
-            return Ok(0);
-        }
-        let delete = Delete::<KeyEvent>::for_table(Self::EVENTS_TABLE).r#in("said", saids);
-        self.tx.delete(delete).await
-    }
-
-    pub async fn insert_signed_event(
-        &mut self,
-        signed_event: &SignedKeyEvent,
-    ) -> Result<(), StorageError> {
-        self.tx
-            .insert_with_table(&signed_event.event, Self::EVENTS_TABLE)
-            .await?;
-        for sig in signed_event.event_signatures() {
-            let mut event_sig: EventSignature = sig;
-            event_sig.derive_said()?;
-            self.tx
-                .insert_with_table(&event_sig, Self::SIGNATURES_TABLE)
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn insert_audit_record(
-        &mut self,
-        record: &KelsAuditRecord,
-    ) -> Result<(), StorageError> {
-        self.tx.insert_with_table(record, Self::AUDIT_TABLE).await?;
-        Ok(())
-    }
-
-    /// Get a single signed event by SAID.
-    pub async fn get_event_by_said(
-        &mut self,
-        said: &str,
-    ) -> Result<Option<SignedKeyEvent>, StorageError> {
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .eq("said", said)
-            .limit(1);
-        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let Some(event) = events.into_iter().next() else {
-            return Ok(None);
-        };
-
-        Ok(Some(self.assemble_signed_event(event).await?))
-    }
-
-    /// Get the last establishment event at or before a given serial for this prefix.
-    /// Used to reconstruct crypto state at a branch point for divergence verification.
-    pub async fn get_establishment_at_serial(
-        &mut self,
-        serial: u64,
-    ) -> Result<Option<SignedKeyEvent>, StorageError> {
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .lte("serial", serial)
-            .r#in("kind", EventKind::establishment_kinds())
-            .order_by("serial", Order::Desc)
-            .limit(1);
-        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let Some(event) = events.into_iter().next() else {
-            return Ok(None);
-        };
-
-        Ok(Some(self.assemble_signed_event(event).await?))
-    }
-
-    /// Load a page of signed events by offset (for PageLoader impl).
-    pub async fn load(
-        &mut self,
-        limit: u64,
-        offset: u64,
-    ) -> Result<(Vec<SignedKeyEvent>, bool), StorageError> {
-        let clamped_limit = limit.min(i64::MAX as u64 - 1);
-        let query = Query::<KeyEvent>::for_table(Self::EVENTS_TABLE)
-            .eq("prefix", &self.prefix)
-            .order_by("serial", Order::Asc)
-            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
-            .order_by("said", Order::Asc)
-            .limit(clamped_limit + 1)
-            .offset(offset);
-        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let has_more = events.len() > clamped_limit as usize;
-        if has_more {
-            events.pop();
-        }
-
-        if events.is_empty() {
-            return Ok((vec![], false));
-        }
-
-        let result = self.assemble_signed_events(events).await?;
-        Ok((result, has_more))
-    }
-
-    pub async fn commit(self) -> Result<(), StorageError> {
-        self.tx.commit().await
-    }
-    pub async fn rollback(self) -> Result<(), StorageError> {
-        self.tx.rollback().await
-    }
-}
-
-#[async_trait]
-impl kels::PageLoader for KelTransaction {
-    async fn load_page(
-        &mut self,
-        _prefix: &str,
-        limit: u64,
-        offset: u64,
-    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
-        self.load(limit, offset)
-            .await
-            .map_err(|e| kels::KelsError::StorageError(e.to_string()))
     }
 }
 

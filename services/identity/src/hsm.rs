@@ -339,7 +339,7 @@ impl KeyProvider for HsmKeyProvider {
 
         let key_handles = self.key_handles.read().await;
         let index = key_handles.len() - 2;
-        let handle = key_handles.get(index).ok_or(KelsError::EventNotFound(
+        let handle = key_handles.get(index).ok_or(KelsError::HsmKeyNotFound(
             "Current key not found".to_string(),
         ))?;
         self.hsm.get_public_key(handle).await
@@ -613,7 +613,7 @@ mod tests {
             let keys = self.keys.lock().await;
             let qb64 = keys
                 .get(handle.as_str())
-                .ok_or_else(|| KelsError::EventNotFound(handle.as_str().to_string()))?;
+                .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
             PublicKey::from_qb64(qb64).map_err(|e| KelsError::CryptoError(e.to_string()))
         }
 
@@ -621,7 +621,7 @@ mod tests {
             // Verify key exists
             let keys = self.keys.lock().await;
             if !keys.contains_key(handle.as_str()) {
-                return Err(KelsError::EventNotFound(handle.as_str().to_string()));
+                return Err(KelsError::HsmKeyNotFound(handle.as_str().to_string()));
             }
 
             // Return a mock signature (valid CESR format)
@@ -640,7 +640,7 @@ mod tests {
             let seeds = self.seeds.lock().await;
             let seed = seeds
                 .get(handle.as_str())
-                .ok_or_else(|| KelsError::EventNotFound(handle.as_str().to_string()))?;
+                .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
 
             let secret_key =
                 SecretKey::from_slice(seed).map_err(|e| KelsError::CryptoError(e.to_string()))?;

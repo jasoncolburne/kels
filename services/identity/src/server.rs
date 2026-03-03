@@ -40,6 +40,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
     let kels_url = std::env::var("KELS_URL").ok().filter(|u| !u.is_empty());
+    let registry_url = std::env::var("REGISTRY_URL").ok().filter(|u| !u.is_empty());
+    let http_client = reqwest::Client::new();
 
     info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)
@@ -173,6 +175,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         builder: RwLock::new(builder),
         kel_repo,
         kels_url,
+        registry_url,
+        http_client,
     });
 
     let rotation_state = state.clone();
@@ -285,12 +289,19 @@ async fn check_and_rotate(
         }
     };
 
+    // Release advisory lock — perform_rotation acquires its own via save_with_merge
+    tx.commit().await?;
+
     if should_rotate {
         info!("Triggering scheduled rotation");
-        perform_rotation(state, RotateMode::Scheduled).await?;
 
-        // Release advisory lock after write completes
-        tx.commit().await?;
+        // Sign notification before rotation (key changes, so must sign first)
+        let signed_notification = {
+            let builder = state.builder.read().await;
+            handlers::prepare_signed_notification(&builder).await
+        };
+
+        perform_rotation(state, RotateMode::Scheduled).await?;
 
         // Submit updated KEL to local KELS service if configured
         if let Some(kels_url) = state.kels_url.as_ref() {
@@ -314,11 +325,11 @@ async fn check_and_rotate(
             }
         }
 
+        // Best-effort notification to local registry
+        handlers::send_kel_updated_notification(state, signed_notification).await;
+
         return Ok(true);
     }
-
-    // No rotation needed — release advisory lock
-    tx.commit().await?;
 
     Ok(false)
 }

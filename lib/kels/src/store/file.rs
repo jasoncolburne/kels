@@ -157,7 +157,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (events, has_more) = store.load("nonexistent", i64::MAX as u64, 0).await.unwrap();
+        let (events, has_more) = store.load("nonexistent", crate::LOAD_ALL, 0).await.unwrap();
         assert!(events.is_empty());
         assert!(!has_more);
     }
@@ -172,7 +172,7 @@ mod tests {
 
         store.save(&prefix, &events).await.unwrap();
 
-        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert_eq!(loaded.len(), event_count);
     }
 
@@ -227,7 +227,7 @@ mod tests {
         let path = temp.path().join("bad.kel.json");
         std::fs::write(&path, "not valid json").unwrap();
 
-        let result = store.load("bad", i64::MAX as u64, 0).await;
+        let result = store.load("bad", crate::LOAD_ALL, 0).await;
         assert!(result.is_err());
     }
 
@@ -243,16 +243,16 @@ mod tests {
         store.save(&prefix2, &events2).await.unwrap();
 
         // Both should be loadable independently
-        let (loaded1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
-        let (loaded2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
+        let (loaded1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();
+        let (loaded2, _) = store.load(&prefix2, crate::LOAD_ALL, 0).await.unwrap();
 
         assert!(!loaded1.is_empty());
         assert!(!loaded2.is_empty());
 
         // Delete one shouldn't affect the other
         store.delete(&prefix1).await.unwrap();
-        let (e1, _) = store.load(&prefix1, i64::MAX as u64, 0).await.unwrap();
-        let (e2, _) = store.load(&prefix2, i64::MAX as u64, 0).await.unwrap();
+        let (e1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();
+        let (e2, _) = store.load(&prefix2, crate::LOAD_ALL, 0).await.unwrap();
         assert!(e1.is_empty());
         assert!(!e2.is_empty());
     }
@@ -271,7 +271,7 @@ mod tests {
         store.cache(&prefix, &events).await.unwrap();
 
         // KEL should NOT be saved
-        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert!(loaded.is_empty());
     }
 
@@ -289,7 +289,7 @@ mod tests {
         store.cache(&prefix, &events).await.unwrap();
 
         // KEL should be saved
-        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert!(!loaded.is_empty());
     }
 }

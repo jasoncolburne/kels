@@ -227,13 +227,15 @@ After approval, the peer is deactivated and moved from active to inactive in the
 - Recipients verify signatures against the sender's KEL
 - Messages from prefixes not in `TRUSTED_REGISTRY_MEMBERS` are rejected
 
-### Member KEL Replication
+### Member KEL Sync
 
-- Member KELs are replicated via Raft consensus (not ephemeral HTTP caches)
-- Each member submits its own KEL to Raft via a periodic sync loop if required (every 30s)
-- KELs survive registry restarts since they are part of the Raft-replicated state and snapshots
-- Verification of anchored data uses the Raft-replicated KELs as the single source of truth
-- See [Registry Removal](registry-removal.md) for decommission procedures
+- Each member independently fetches its own KEL from the identity service and stores it locally
+- A periodic sync loop (every 30s) uses `forward_key_events` to fetch, verify, and store member KELs
+- Raft propagates lightweight sync triggers (`SyncMemberKel { prefix }`) so other members know when to refresh
+- KELs survive registry restarts since they are stored in the local PostgreSQL database
+- Recovery propagates naturally: identity recovers → sync loop picks up → each member verifies independently
+- See [Registry Removal](design/registry-removal.md) for decommission procedures
+- See [Recovery Workflow](design/recovery-workflow.md) for the recovery architecture
 
 ## Disaster Recovery
 
@@ -268,7 +270,7 @@ The approval threshold is stored on each proposal at creation time. Verification
 - **Leader handler** (exact match): At proposal submission time, the leader rejects proposals where `threshold != approval_threshold()`. This prevents a proposer from submitting a low threshold in a large federation.
 - **Raft `apply()`** (floor check): During log replay and replication, followers enforce only a minimum threshold floor (`compute_approval_threshold(0)`, currently 3). The exact-match check is deliberately not repeated here because the config may have changed since the entry was committed — a federation that grew from 3 to 10 members would incorrectly reject legitimate historical proposals from when the threshold was 3.
 
-This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](federation-state-machine.md#threshold-verification) for details.
+This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](design/federation-state-machine.md#threshold-verification) for details.
 
 ### Split-Brain Protection
 
@@ -292,12 +294,12 @@ GET /api/peers
 
 Returns the peer set from the Raft state machine.
 
-### Member Key Events
+### Member Key Events (batch)
 ```
-GET /api/member-kels
+POST /api/member-kels
 ```
 
-Returns KELs for all federation members (for cross-registry verification).
+Batch fetch KELs for federation members. Body: `BatchKelsRequest { prefixes }` — a map of prefix → optional since SAID. Defaults to all trusted members if empty.
 
 ### Member Key Events (per-prefix)
 ```

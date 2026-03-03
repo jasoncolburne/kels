@@ -10,178 +10,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use futures::stream::StreamExt;
-use kels::{
-    Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, SignedKeyEvent, Verification, Vote,
-};
-use verifiable_storage::StorageError;
-
-/// Handle SubmitKeyEvents with DB-backed verification.
-///
-/// 1. Verify existing DB events (streamed)
-/// 2. Integrity check: compare DB Verification SAID with Raft copy
-/// 3. Filter submitted events to genuinely new ones (by SAID)
-/// 4. Resume verifier, verify new events
-/// 5. Persist new events to DB
-/// 6. Update Raft member_contexts with final Verification
-async fn apply_submit_key_events(
-    events: &[SignedKeyEvent],
-    repo: &crate::raft_store::MemberKelRepository,
-    sm: &mut StateMachineData,
-) -> FederationResponse {
-    if events.is_empty() {
-        return FederationResponse::KeyEventsRejected("Empty events list".to_string());
-    }
-
-    let prefix = events[0].event.prefix.clone();
-
-    if events.iter().any(|e| e.event.prefix != prefix) {
-        return FederationResponse::KeyEventsRejected("Mixed prefixes in events".to_string());
-    }
-
-    // Step 1: Verify existing DB state
-    let store = kels::RepositoryKelStore::new(Arc::new(
-        crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
-    ));
-    let db_result = kels::completed_verification(
-        &mut kels::StorePageLoader::new(&store),
-        &prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
-        iter::empty::<String>(),
-    )
-    .await;
-
-    // Step 2: Integrity check — if DB has events, SAID must match Raft
-    let db_verification = match db_result {
-        Ok(verification) if !verification.is_empty() => {
-            if let Some(raft_verification) = sm.member_contexts.get(&prefix)
-                && verification.said() != raft_verification.said()
-            {
-                tracing::error!(
-                    prefix = %prefix,
-                    db_said = %verification.said(),
-                    raft_said = %raft_verification.said(),
-                    "SECURITY: DB/Raft Verification SAID mismatch"
-                );
-                return FederationResponse::KeyEventsRejected(
-                    "DB/Raft state mismatch detected".to_string(),
-                );
-            }
-            Some(verification)
-        }
-        Ok(_) => None, // DB empty for this prefix
-        Err(e) => {
-            if sm.member_contexts.contains_key(&prefix) {
-                // DB has events (Raft knows about them) but verification failed
-                tracing::error!(
-                    prefix = %prefix,
-                    error = %e,
-                    "SECURITY: DB verification failed but Raft has context"
-                );
-                return FederationResponse::KeyEventsRejected(format!(
-                    "DB verification failed: {}",
-                    e
-                ));
-            }
-            None // No DB events, no Raft context — fresh prefix
-        }
-    };
-
-    // Step 3: Filter submitted events to genuinely new ones (by SAID).
-    // Only one branch tip exists here — divergent member KELs are rejected in step 2.
-    let new_start = if let Some(ref ctx) = db_verification {
-        let tip_said = ctx
-            .branch_tips()
-            .first()
-            .map(|bt| bt.tip.event.said.as_str());
-        if let Some(said) = tip_said {
-            match events.iter().position(|e| e.event.said == said) {
-                Some(pos) => pos + 1,
-                None => 0, // tip not found in submitted — verify all from scratch
-            }
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-    let new_events = &events[new_start..];
-
-    if new_events.is_empty() {
-        // DB already has all submitted events (e.g. Raft log replay after restart).
-        // Still update member_contexts so the prefix is visible via get_all_member_key_events.
-        if let Some(ctx) = db_verification {
-            sm.member_contexts.insert(prefix.clone(), ctx);
-        }
-        return FederationResponse::KeyEventsAccepted {
-            prefix,
-            new_count: 0,
-        };
-    }
-
-    // Step 4: Resume verifier from DB state and verify new events
-    let mut verifier = if let Some(ref ctx) = db_verification {
-        match kels::KelVerifier::resume(&prefix, ctx) {
-            Ok(v) => v,
-            Err(e) => {
-                return FederationResponse::KeyEventsRejected(format!(
-                    "Failed to resume verifier: {}",
-                    e
-                ));
-            }
-        }
-    } else {
-        kels::KelVerifier::new(&prefix)
-    };
-
-    if let Err(e) = verifier.verify_page(new_events) {
-        return FederationResponse::KeyEventsRejected(format!("KEL verification failed: {}", e));
-    }
-
-    let ctx = match verifier.into_verification() {
-        Ok(c) => c,
-        Err(e) => {
-            return FederationResponse::KeyEventsRejected(format!(
-                "Verification finalization failed: {}",
-                e
-            ));
-        }
-    };
-
-    if ctx.is_divergent() {
-        tracing::error!("SECURITY: member KEL divergence detected for {}", prefix);
-        return FederationResponse::KeyEventsRejected("Member KEL divergence detected".to_string());
-    }
-
-    // Step 5: Persist new events to DB
-    let batch: Vec<_> = new_events
-        .iter()
-        .map(|e| (e.event.clone(), e.event_signatures()))
-        .collect();
-    if let Err(e) = repo.create_batch_with_signatures(batch).await {
-        match e {
-            StorageError::DuplicateRecord(_) => {
-                tracing::debug!(
-                    "Member KEL DB persist (duplicate, expected on replay): {}",
-                    e
-                );
-            }
-            _ => {
-                tracing::error!(
-                    "Member KEL DB persist failed for {}: {} — events may be missing on restart",
-                    prefix,
-                    e
-                );
-            }
-        }
-    }
-
-    // Step 6: Update Raft state
-    let new_count = new_events.len();
-    sm.member_contexts.insert(prefix.clone(), ctx);
-
-    FederationResponse::KeyEventsAccepted { prefix, new_count }
-}
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
 
 /// Verify a SAID is anchored in a member's KEL stored in the MemberKelRepository.
 /// Consuming: paginated read + verification + inline anchor check.
@@ -245,25 +74,12 @@ pub struct StateMachineData {
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID
     pub votes: HashMap<String, Vote>,
-    /// Federation member verified contexts (replicated via Raft consensus).
-    /// Events are stored in MemberKelRepository (DB); only contexts are in memory.
-    pub member_contexts: HashMap<String, Verification>,
 }
 
 impl StateMachineData {
     /// Create a new state machine.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Get a member's verified context by prefix.
-    pub fn member_context(&self, prefix: &str) -> Option<&Verification> {
-        self.member_contexts.get(prefix)
-    }
-
-    /// Get all member contexts.
-    pub fn all_member_contexts(&self) -> &HashMap<String, Verification> {
-        &self.member_contexts
     }
 
     /// Get active peers.
@@ -587,15 +403,9 @@ impl StateMachineData {
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
-            FederationRequest::SubmitKeyEvents(_) => {
-                // DB-backed path handles this in the apply loop (apply_submit_key_events).
-                // Reaching here means member_kel_repo is not configured.
-                tracing::error!(
-                    "MISCONFIGURATION: SubmitKeyEvents reached in-memory apply — member_kel_repo is None"
-                );
-                FederationResponse::KeyEventsRejected(
-                    "Member KEL repository not configured".to_string(),
-                )
+            FederationRequest::SyncMemberKel { prefix } => {
+                info!("Member KEL sync trigger for prefix={}", prefix);
+                FederationResponse::MemberKelSynced { prefix }
             }
             FederationRequest::VotePeer { proposal_id, vote } => {
                 let voter = vote.voter.clone();
@@ -778,7 +588,6 @@ impl StateMachineData {
             pending_removal_proposals: self.pending_removal_proposals.values().cloned().collect(),
             completed_removal_proposals: self.completed_removal_proposals.clone(),
             votes: self.votes.values().cloned().collect(),
-            member_contexts: self.member_contexts.clone(),
         }
     }
 
@@ -831,9 +640,8 @@ impl StateMachineData {
             .into_iter()
             .map(|v| (v.said.clone(), v))
             .collect();
-        self.member_contexts = snapshot.member_contexts;
         info!(
-            "Restored {} active peers, {} inactive peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes, {} member contexts from snapshot",
+            "Restored {} active peers, {} inactive peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes from snapshot",
             self.active_peers.len(),
             self.inactive_peers.len(),
             self.pending_addition_proposals.len(),
@@ -841,7 +649,6 @@ impl StateMachineData {
             self.pending_removal_proposals.len(),
             self.completed_removal_proposals.len(),
             self.votes.len(),
-            self.member_contexts.len()
         );
     }
 }
@@ -854,6 +661,8 @@ pub struct StateMachineStore {
     config: FederationConfig,
     /// Optional PostgreSQL-backed member KEL store for durable persistence
     member_kel_repo: Option<crate::raft_store::MemberKelRepository>,
+    /// Identity service URL for fetching own KEL
+    identity_url: Option<String>,
 }
 
 impl StateMachineStore {
@@ -863,12 +672,19 @@ impl StateMachineStore {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
             config,
             member_kel_repo: None,
+            identity_url: None,
         }
     }
 
     /// Set the member KEL repository for durable persistence.
     pub fn with_member_kel_repo(mut self, repo: crate::raft_store::MemberKelRepository) -> Self {
         self.member_kel_repo = Some(repo);
+        self
+    }
+
+    /// Set the identity service URL for fetching own KEL.
+    pub fn with_identity_url(mut self, url: String) -> Self {
+        self.identity_url = Some(url);
         self
     }
 
@@ -1289,19 +1105,18 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify SubmitKeyEvents is from a trusted member
-                    if let FederationRequest::SubmitKeyEvents(ref events) = request
-                        && let Some(first) = events.first()
-                        && !self.config.is_trusted_prefix(&first.event.prefix)
+                    // Verify SyncMemberKel is from a trusted member
+                    if let FederationRequest::SyncMemberKel { ref prefix } = request
+                        && !self.config.is_trusted_prefix(prefix)
                     {
                         warn!(
-                            prefix = %first.event.prefix,
-                            "SubmitKeyEvents from non-member prefix - rejecting"
+                            prefix = %prefix,
+                            "SyncMemberKel from non-member prefix - rejecting"
                         );
                         if let Some(r) = responder {
-                            r.send(FederationResponse::KeyEventsRejected(format!(
+                            r.send(FederationResponse::InternalError(format!(
                                 "Not a trusted member: {}",
-                                first.event.prefix
+                                prefix
                             )));
                         }
                         continue;
@@ -1382,23 +1197,60 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Handle SubmitKeyEvents with DB-backed verification:
-                    // 1. Verify existing DB events
-                    // 2. Integrity check against Raft
-                    // 3. Filter + verify new events
-                    // 4. Persist new events to DB
-                    // 5. Update Raft member_contexts
-                    if let FederationRequest::SubmitKeyEvents(ref events) = request
+                    let response = sm.apply(request.clone());
+
+                    // After SyncMemberKel apply, actually fetch the KEL
+                    if let FederationRequest::SyncMemberKel { ref prefix } = request
                         && let Some(ref repo) = self.member_kel_repo
                     {
-                        let response = apply_submit_key_events(events, repo, &mut sm).await;
-                        if let Some(r) = responder {
-                            r.send(response);
+                        let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
+                            crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
+                        ));
+
+                        let result = if prefix == &self.config.self_prefix {
+                            // Own prefix: fetch from identity service
+                            if let Some(ref identity_url) = self.identity_url {
+                                let source =
+                                    kels::HttpKelSource::new(identity_url, "/api/identity/kel");
+                                kels::forward_key_events(
+                                    prefix,
+                                    &source,
+                                    &sink,
+                                    kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                                    kels::max_verification_pages(),
+                                )
+                                .await
+                            } else {
+                                Ok(())
+                            }
+                        } else if let Some(member) = self.config.member_by_prefix(prefix) {
+                            // Remote prefix: fetch from their registry
+                            let source = kels::HttpKelSource::new(
+                                &member.url,
+                                &format!("/api/member-kels/{}", prefix),
+                            );
+                            kels::forward_key_events(
+                                prefix,
+                                &source,
+                                &sink,
+                                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                                kels::max_verification_pages(),
+                            )
+                            .await
+                        } else {
+                            Ok(())
+                        };
+
+                        if let Err(e) = result {
+                            warn!(
+                                prefix = %prefix,
+                                error = %e,
+                                "Failed to sync member KEL"
+                            );
                         }
-                        continue;
                     }
 
-                    sm.apply(request.clone())
+                    response
                 }
                 EntryPayload::Membership(membership) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), membership);
@@ -1479,34 +1331,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             );
         }
         core_snapshot.pending_removal_proposals = valid_removal_proposals;
-
-        // Validate member contexts from snapshot (basic sanity: non-empty prefix, non-divergent)
-        let original_ctx_count = core_snapshot.member_contexts.len();
-        core_snapshot.member_contexts.retain(|prefix, ctx| {
-            if ctx.prefix() != prefix {
-                warn!(
-                    prefix = %prefix,
-                    ctx_prefix = %ctx.prefix(),
-                    "Member context prefix mismatch during snapshot restore - skipping"
-                );
-                return false;
-            }
-            if ctx.is_divergent() {
-                warn!(
-                    prefix = %prefix,
-                    "Member context is divergent during snapshot restore - skipping"
-                );
-                return false;
-            }
-            true
-        });
-        let removed_ctx_count = original_ctx_count - core_snapshot.member_contexts.len();
-        if removed_ctx_count > 0 {
-            warn!(
-                removed = removed_ctx_count,
-                "Removed invalid member contexts during snapshot restore"
-            );
-        }
 
         let mut sm = self.inner.lock().await;
         sm.restore(core_snapshot, meta);

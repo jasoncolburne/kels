@@ -9,6 +9,7 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// - `create_with_signatures(item, signatures)` for storing events with signatures
 /// - `get_signatures_by_saids(saids)` for batch signature retrieval
 /// - `get_signed_history(prefix, limit, offset)` for getting paginated signed events
+/// - `save_with_merge(prefix, events)` for full merge with verification and divergence handling
 ///
 /// Also generates `SignedEventRepository` trait implementation.
 ///
@@ -17,13 +18,14 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// ## Attributes
 ///
 /// - `signatures_table`: The signatures table name (required)
+/// - `audit_table`: Optional audit table name for archiving adversary events during recovery
 ///
 /// ## Example
 ///
 /// ```text
 /// #[derive(Stored, SignedEvents)]
 /// #[stored(item_type = KeyEvent, table = "kels_key_events")]
-/// #[signed_events(signatures_table = "kels_key_event_signatures")]
+/// #[signed_events(signatures_table = "kels_key_event_signatures", audit_table = "kels_audit_records")]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
 /// }
@@ -41,6 +43,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         .expect("No #[signed_events(...)] attribute found");
 
     let mut signatures_table: Option<String> = None;
+    let mut audit_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -50,6 +53,12 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     signatures_table = Some(s.value());
                 }
+            } else if meta.path.is_ident("audit_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    audit_table = Some(s.value());
+                }
             }
             Ok(())
         })
@@ -57,6 +66,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let signatures_table =
         signatures_table.expect("Missing signatures_table in #[signed_events(...)]");
+
+    let audit_table_expr = match &audit_table {
+        Some(table) => quote! { Some(#table) },
+        None => quote! { None },
+    };
 
     // Generate the methods
     let methods = quote! {
@@ -226,6 +240,42 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 Ok(())
             }
+
+            /// Save signed events with full merge (verification, divergence detection, recovery).
+            /// Uses an advisory lock on the prefix to serialize operations.
+            pub async fn save_with_merge(
+                &self,
+                prefix: &str,
+                events: &[kels::SignedKeyEvent],
+            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
+                if events.is_empty() {
+                    return Ok(kels::MergeOutcome::empty());
+                }
+
+                let mut tx = self.pool.begin_transaction().await?;
+                tx.acquire_advisory_lock(prefix).await?;
+
+                let mut merge_tx = kels::MergeTransaction::new(
+                    tx,
+                    prefix.to_string(),
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    #audit_table_expr,
+                );
+
+                match merge_tx.merge_events(events).await {
+                    Ok(outcome) => {
+                        merge_tx.commit().await?;
+                        Ok(outcome)
+                    }
+                    Err(e) => {
+                        let _ = merge_tx.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
         }
     };
 
@@ -269,6 +319,14 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 #repo_name::create_batch_with_signatures(self, events)
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+            }
+
+            async fn save_with_merge(
+                &self,
+                prefix: &str,
+                events: &[kels::SignedKeyEvent],
+            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                #repo_name::save_with_merge(self, prefix, events).await
             }
         }
     };

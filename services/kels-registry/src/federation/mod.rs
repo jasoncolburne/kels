@@ -36,12 +36,12 @@ pub use types::{
 };
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 use tracing::info;
 
-use kels::{Peer, SignedKeyEvent};
+use kels::Peer;
 use openraft::Raft;
 
 use crate::repository::RegistryRepository;
@@ -51,7 +51,7 @@ use crate::repository::RegistryRepository;
 /// Each registry runs a FederationNode that:
 /// - Participates in Raft consensus with other registries
 /// - Replicates peer set changes
-/// - Stores member KELs in Raft-replicated state
+/// - Triggers member KEL sync across federation
 pub struct FederationNode {
     /// The Raft consensus instance
     raft: Raft<TypeConfig>,
@@ -83,7 +83,8 @@ impl FederationNode {
             node_id,
         );
         let state_machine = StateMachineStore::new(config.clone())
-            .with_member_kel_repo(repository.member_kels.clone());
+            .with_member_kel_repo(repository.member_kels.clone())
+            .with_identity_url(identity_client.base_url().to_string());
 
         // Create network layer (with signing capability)
         let network = FederationNetwork::new(config.clone(), identity_client);
@@ -605,16 +606,18 @@ impl FederationNode {
         }
     }
 
-    /// Submit key events to Raft for a member's KEL.
+    /// Notify the federation that a member's KEL has new events.
     ///
     /// On the leader, writes directly to Raft. On followers, forwards via HTTP
-    /// to the leader's `/api/federation/key-events` endpoint.
-    pub async fn submit_key_events(
+    /// to the leader's `/api/federation/sync-member-kel` endpoint.
+    pub async fn sync_member_kel(
         &self,
-        events: Vec<SignedKeyEvent>,
+        prefix: String,
     ) -> Result<FederationResponse, FederationError> {
         if self.is_leader().await {
-            let request = FederationRequest::SubmitKeyEvents(events);
+            let request = FederationRequest::SyncMemberKel {
+                prefix: prefix.clone(),
+            };
             let result = self
                 .raft
                 .client_write(request)
@@ -630,7 +633,7 @@ impl FederationNode {
             .ok_or_else(|| FederationError::RaftError("No leader known".to_string()))?;
 
         let url = format!(
-            "{}/api/federation/key-events",
+            "{}/api/federation/sync-member-kel",
             leader_url.trim_end_matches('/')
         );
         let client = reqwest::Client::builder()
@@ -640,47 +643,21 @@ impl FederationNode {
 
         let resp = client
             .post(&url)
-            .json(&events)
+            .json(&serde_json::json!({ "prefix": prefix }))
             .send()
             .await
             .map_err(|e| FederationError::NetworkError(e.to_string()))?;
 
         if resp.status().is_success() {
-            let body: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-            let prefix = body["prefix"].as_str().unwrap_or("").to_string();
-            let new_count = body["new_count"].as_u64().unwrap_or(0) as usize;
-            Ok(FederationResponse::KeyEventsAccepted { prefix, new_count })
+            Ok(FederationResponse::MemberKelSynced { prefix })
         } else {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             let error = body["error"]
                 .as_str()
                 .unwrap_or("unknown error")
                 .to_string();
-            Ok(FederationResponse::KeyEventsRejected(error))
+            Err(FederationError::RaftError(error))
         }
-    }
-
-    /// Get a member's verified context from Raft-replicated state.
-    pub async fn get_member_context(&self, prefix: &str) -> Option<kels::Verification> {
-        self.state_machine
-            .inner()
-            .lock()
-            .await
-            .member_context(prefix)
-            .cloned()
-    }
-
-    /// Get all member contexts from Raft-replicated state.
-    pub async fn get_all_member_contexts(&self) -> HashMap<String, kels::Verification> {
-        self.state_machine
-            .inner()
-            .lock()
-            .await
-            .all_member_contexts()
-            .clone()
     }
 }
 

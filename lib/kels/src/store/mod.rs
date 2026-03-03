@@ -137,7 +137,7 @@ mod tests {
 
         store.cache(&prefix, &events).await.unwrap();
 
-        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert!(!loaded.is_empty());
     }
 
@@ -153,7 +153,7 @@ mod tests {
         store.cache(&prefix, &events).await.unwrap();
 
         // KEL should NOT be saved
-        let (loaded, _) = store.load(&prefix, i64::MAX as u64, 0).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert!(loaded.is_empty());
     }
 

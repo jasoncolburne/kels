@@ -41,6 +41,7 @@ pub mod builder;
 pub mod client;
 pub mod crypto;
 pub mod error;
+pub mod merge;
 pub mod repository;
 pub mod serving;
 pub mod store;
@@ -69,20 +70,21 @@ pub use client::{
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
+pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::SignedEventRepository;
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
     CachedKel, CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent,
-    KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer,
-    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, PrefixListResponse,
-    PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotes,
-    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
-    RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent,
-    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids,
-    validate_timestamp,
+    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelUpdatedNotification,
+    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType,
+    Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
+    PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus,
+    ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord,
+    RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
+    hash_tip_saids, validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
@@ -127,3 +129,8 @@ pub fn max_verification_pages() -> usize {
 /// Maximum number of events returned in a single KEL response page.
 /// KELs larger than this are not cached server-side.
 pub const MAX_EVENTS_PER_KEL_RESPONSE: usize = MAX_EVENTS_PER_KEL_QUERY;
+
+/// Sentinel limit for loading an entire KEL without pagination.
+/// Only appropriate for client-side local stores (CLI, FFI) and tests —
+/// never use on server-side code paths.
+pub const LOAD_ALL: u64 = i64::MAX as u64;

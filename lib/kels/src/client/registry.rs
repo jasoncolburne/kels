@@ -415,23 +415,19 @@ impl KelsRegistryClient {
         Ok(map)
     }
 
-    /// Fetch registry key events (paginated).
-    ///
-    /// This is an unauthenticated endpoint - nodes use this to verify
-    /// that peer records are anchored in the registry's KEL.
-    pub async fn fetch_registry_key_events(
-        &self,
-        since: Option<&str>,
-        limit: usize,
-    ) -> Result<crate::SignedKeyEventPage, KelsError> {
-        let mut url = format!("{}/api/registry-kel?limit={}", self.base_url, limit);
-        if let Some(since) = since {
-            url.push_str(&format!("&since={}", since));
-        }
+    /// Fetch the registry's own prefix from federation status.
+    pub async fn fetch_registry_prefix(&self) -> Result<String, KelsError> {
+        let url = format!("{}/api/federation/status", self.base_url);
         let response = self.client.get(&url).send().await?;
 
         if response.status().is_success() {
-            Ok(response.json().await?)
+            let status: serde_json::Value = response.json().await?;
+            status["self_prefix"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| {
+                    KelsError::RegistryFailure("Missing self_prefix in federation status".into())
+                })
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -577,16 +573,7 @@ impl MultiRegistryClient {
             Some((prefix, ..)) => Ok(prefix.clone()),
             None => {
                 let client = self.create_client(url);
-                let page = client
-                    .fetch_registry_key_events(None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
-                    .await?;
-                match page.events.first() {
-                    Some(e) => Ok(e.event.prefix.clone()),
-                    None => Err(KelsError::RegistryFailure(format!(
-                        "Prefix not found for url {}",
-                        url
-                    ))),
-                }
+                client.fetch_registry_prefix().await
             }
         }
     }
@@ -1347,8 +1334,6 @@ impl MultiRegistryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::KeyEventBuilder;
-    use crate::crypto::SoftwareKeyProvider;
     use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
@@ -1685,55 +1670,6 @@ mod tests {
 
         let client = KelsRegistryClient::new(&mock_server.uri());
         let result = client.fetch_peers().await;
-
-        assert!(matches!(result, Err(KelsError::ServerError(..))));
-    }
-
-    // ==================== Registry KEL Tests ====================
-
-    #[tokio::test]
-    async fn test_fetch_registry_key_events_success() {
-        let mock_server = MockServer::start().await;
-
-        // Create a valid page for response
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let page = crate::SignedKeyEventPage {
-            events: vec![icp],
-            has_more: false,
-        };
-
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&page))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client
-            .fetch_registry_key_events(None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_fetch_registry_key_events_server_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/registry-kel"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Error",
-                "code": "internal_error"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsRegistryClient::new(&mock_server.uri());
-        let result = client
-            .fetch_registry_key_events(None, crate::MAX_EVENTS_PER_KEL_RESPONSE)
-            .await;
 
         assert!(matches!(result, Err(KelsError::ServerError(..))));
     }

@@ -40,7 +40,6 @@ pub struct StateMachineData {
     pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     pub votes: HashMap<String, Vote>,
-    pub member_contexts: HashMap<String, Verification>,
 }
 ```
 
@@ -48,11 +47,9 @@ pub struct StateMachineData {
 
 Active and inactive peers are stored in separate HashMaps, both keyed by `peer_prefix`. Active peers are the trusted peer set. Inactive peers are deactivated peers preserved for audit trail — when a peer is removed, it moves from `active_peers` to `inactive_peers` rather than being deleted.
 
-### Member Contexts
+### Member KELs
 
-The `member_contexts` HashMap stores Raft-replicated verified state (`Verification` tokens) for each federation member, keyed by prefix. Members submit their own key events via `SubmitKeyEvents` (forwarded to the leader if submitted on a follower). On `apply()`, events are verified against the existing state using `KelVerifier` — first submission uses `KelVerifier::new()`, subsequent submissions use `KelVerifier::resume()`. Member events are persisted to `MemberKelRepository` and `Verification` tokens are updated in memory. Included in snapshots and survive restarts.
-
-A background sync loop on every node fetches the local identity KEL every 30 seconds and submits any new events to Raft. The admin CLI also eagerly submits events after each `anchor()` call.
+Member KELs are stored locally in `MemberKelRepository` (PostgreSQL), **not** in Raft state. Each node independently fetches and verifies its own KEL from the identity service using `forward_key_events` (HttpKelSource → RepositoryKelStore). Raft propagates lightweight sync triggers (`SyncMemberKel { prefix }`) so other members know when to refresh. This decoupled design supports natural recovery propagation — if identity recovers from divergence, the sync loop picks it up without Raft needing to "rewind" any state. See [recovery-workflow.md](recovery-workflow.md).
 
 ### Proposals and Votes
 
@@ -74,7 +71,7 @@ Votes are stored separately in a `votes` HashMap keyed by SAID, not embedded in 
 | `SubmitAdditionProposal` | Create or withdraw a proposal for a new peer | Any member |
 | `SubmitRemovalProposal` | Create or withdraw a proposal to remove a peer | Any member |
 | `VotePeer` | Vote on a pending proposal (addition or removal) | Any member |
-| `SubmitKeyEvents` | Submit member KEL events to Raft state | Any member (forwarded to leader) |
+| `SyncMemberKel` | Notify Raft that a member KEL needs syncing (prefix only) | Any member (forwarded to leader) |
 
 ## Synchronous Apply (Pure State Machine)
 
@@ -89,7 +86,7 @@ The `StateMachineData::apply()` method is a pure, synchronous function that upda
     - Additions: returns the approved proposal — the leader handler then creates the peer, anchors it, and submits `AddPeer`
     - Removals: returns the approved proposal — the leader handler then deactivates the peer, anchors it, and submits `RemovePeer`
     - Both: moves proposal to completed.
-- **SubmitKeyEvents**: Verifies and stores events for the given prefix. Uses `KelVerifier::new()` for the first submission and `KelVerifier::resume()` for subsequent submissions. Events are persisted to `MemberKelRepository`, and the in-memory `Verification` token is updated
+- **SyncMemberKel**: Records that a member KEL has been updated (trivial — just logs and returns `MemberKelSynced`). No verification or DB writes in apply; each member independently fetches and verifies KELs from the source
 
 ## Asynchronous Apply (Verification Layer)
 
@@ -131,13 +128,9 @@ Before applying a proposal:
 1. **Threshold floor**: Verify the proposal's `threshold` field meets the minimum floor (`compute_approval_threshold(0)`) — see [Threshold Verification](#threshold-verification). The exact-match check against current config happens in the leader's HTTP handler, not here.
 2. **Proposal anchoring**: Verify the proposal's SAID is anchored in the proposer's KEL
 
-### SubmitKeyEvents Verification
+### SyncMemberKel
 
-Before applying key events:
-
-1. **Member check**: Verify the event prefix belongs to a federation member (`config.is_member(prefix)`)
-2. **KEL verification**: Verify events using `KelVerifier` (first submission: `KelVerifier::new()`, subsequent: `KelVerifier::resume()`). Divergence is rejected. Events stored in `MemberKelRepository`, `Verification` token updated
-3. **Security events**: Log divergence/contest/protected at error level as critical security events (indicates compromised registry signing key)
+Trivial apply: verifies the prefix belongs to a federation member (`config.is_member(prefix)`) and returns `MemberKelSynced`. No KEL verification or DB writes in apply — each member independently fetches and verifies KELs via the sync loop.
 
 ### Approved Proposal Side Effects
 
@@ -188,14 +181,14 @@ The peer set flows to multiple consumers:
 
 The state machine supports snapshotting for efficient Raft log compaction:
 
-- **Snapshot**: Serializes `active_peers`, `inactive_peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, `votes`, and `member_contexts` to JSON
-- **Restore**: Deserializes and verifies all proposal chains before accepting. Proposals with invalid chains are dropped during restore. Member events are re-verified with `completed_verification()` from `MemberKelRepository` before restoring `Verification` tokens.
+- **Snapshot**: Serializes `active_peers`, `inactive_peers`, `pending_addition_proposals`, `completed_addition_proposals`, `pending_removal_proposals`, `completed_removal_proposals`, and `votes` to JSON
+- **Restore**: Deserializes and verifies all proposal chains before accepting. Proposals with invalid chains are dropped during restore.
 
 ## KEL Sync Loop
 
-Every node runs a background KEL sync loop (`sync.rs`) that fetches its own identity KEL every 30 seconds and submits any new events to Raft via `SubmitKeyEvents`. This ensures that key rotations and other identity events performed outside of Raft are replicated to all federation members. The admin CLI also eagerly submits events after each `anchor()` call, so the sync loop serves as a fallback to catch anything missed.
+Every node runs a background KEL sync loop (`sync.rs`) that fetches its own identity KEL every 30 seconds using `forward_key_events` (HttpKelSource → RepositoryKelStore). If new events are detected (effective SAID changes), a `SyncMemberKel` trigger is submitted to Raft so other members know to refresh. Handlers also call `sync_member_kel` eagerly before operations that need anchoring verification (syncing the relevant member's KEL, not just the leader's own).
 
-Flow: Local identity KEL -> sync loop (every 30s) -> If required, SubmitKeyEvents -> Raft -> all members
+Flow: Identity service → sync loop (every 30s) → local MemberKelRepository → if new events, SyncMemberKel → Raft → other members refresh
 
 ## Approval Threshold
 

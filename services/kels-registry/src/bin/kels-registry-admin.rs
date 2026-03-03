@@ -273,30 +273,43 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
     None
 }
 
-/// Submit own KEL to the leader so anchoring can be verified.
+/// Sync our own registry's MemberKelRepository from identity, then notify the leader.
 ///
-/// After anchoring a SAID in the local identity KEL, the new event must reach
-/// Raft before the leader can verify it. Submits all events; merge() deduplicates.
-async fn sync_kel_to_leader(ctx: &AdminContext, leader_url: &str) -> anyhow::Result<()> {
-    let page = ctx
-        .identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-        .context("Failed to get own KEL")?;
-    let events = page.events;
-    if events.is_empty() {
-        return Ok(());
+/// After anchoring a SAID in the identity KEL, the local registry's
+/// MemberKelRepository must be updated before the leader (or any remote
+/// registry) can fetch the new events via `/api/member-kels/:prefix`.
+/// Without this, the leader fetches stale data and anchoring verification fails.
+async fn sync_own_then_notify_leader(ctx: &AdminContext, leader_url: &str) -> anyhow::Result<()> {
+    // First: sync our own registry's MemberKelRepository from identity.
+    // sync-member-kel with our own prefix triggers identity service fetch.
+    notify_sync_member_kel(ctx, &ctx.registry_url).await?;
+
+    // Then: notify the leader so Raft propagates the trigger to all members.
+    // Skip if we are the leader (already synced above).
+    if leader_url != ctx.registry_url {
+        notify_sync_member_kel(ctx, leader_url).await?;
     }
 
+    Ok(())
+}
+
+/// Notify a registry that a member KEL needs syncing.
+///
+/// Posts to `/api/federation/sync-member-kel` on the target registry.
+/// When the target is our own registry, this syncs MemberKelRepository
+/// from the local identity service. When the target is the leader,
+/// this triggers Raft to propagate the sync to all members.
+async fn notify_sync_member_kel(ctx: &AdminContext, target_url: &str) -> anyhow::Result<()> {
     let url = format!(
-        "{}/api/federation/key-events",
-        leader_url.trim_end_matches('/')
+        "{}/api/federation/sync-member-kel",
+        target_url.trim_end_matches('/')
     );
-    let resp = ctx.http_client.post(&url).json(&events).send().await?;
+    let body = serde_json::json!({ "prefix": ctx.self_prefix });
+    let resp = ctx.http_client.post(&url).json(&body).send().await?;
     if !resp.status().is_success() {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         let error = body["error"].as_str().unwrap_or("unknown error");
-        return Err(anyhow!("Failed to sync KEL to leader: {}", error));
+        return Err(anyhow!("Failed to notify sync: {}", error));
     }
     Ok(())
 }
@@ -343,8 +356,10 @@ async fn propose_peer(
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Sync our own registry's MemberKelRepository from identity first,
+    // then notify the leader. The leader fetches from our /api/member-kels/:prefix
+    // which serves from MemberKelRepository — so it must be up-to-date.
+    sync_own_then_notify_leader(ctx, &target_url).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -418,8 +433,8 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Sync our own MemberKelRepository first, then notify leader
+    sync_own_then_notify_leader(ctx, &target_url).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -480,8 +495,8 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Sync our own MemberKelRepository first, then notify leader
+    sync_own_then_notify_leader(ctx, &target_url).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -708,7 +723,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
-            sync_kel_to_leader(ctx, &target_url).await?;
+            sync_own_then_notify_leader(ctx, &target_url).await?;
 
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/addition-proposals", target_url);
@@ -769,7 +784,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
-            sync_kel_to_leader(ctx, &target_url).await?;
+            sync_own_then_notify_leader(ctx, &target_url).await?;
 
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/removal-proposals", target_url);

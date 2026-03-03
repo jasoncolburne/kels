@@ -1,8 +1,6 @@
 //! KELS REST API Handlers
 
 use std::{
-    collections::HashSet,
-    iter, slice,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -17,13 +15,12 @@ use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use futures_util::future::join_all;
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, BranchTip, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, KelMergeResult, KelVerifier, KelsAuditRecord, KelsError, KeyEventsQuery,
-    MAX_BATCH_PREFIXES, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_QUERY,
-    MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache,
-    SignedKeyEvent, SignedKeyEventPage, Verification,
+    BatchKelsRequest, BatchSubmitResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
+    KelMergeResult, KelsAuditRecord, KelsError, KeyEventsQuery, MAX_BATCH_PREFIXES,
+    MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
+    PrefixListResponse, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
 };
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::repository::KelsRepository;
 
@@ -321,7 +318,7 @@ pub(crate) async fn submit_events(
         }
     }
 
-    // Validate all signatures upfront
+    // Validate signatures upfront (fast rejection before acquiring advisory lock)
     for signed_event in &events {
         if signed_event.signatures.is_empty() {
             return Err(ApiError::bad_request("Event missing signature"));
@@ -330,7 +327,6 @@ pub(crate) async fn submit_events(
             Signature::from_qb64(&sig.signature)
                 .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
         }
-        // Validate dual signature requirement
         if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
             return Err(ApiError::bad_request(
                 "Dual signatures required for recovery event",
@@ -338,177 +334,44 @@ pub(crate) async fn submit_events(
         }
     }
 
-    // Begin transaction with advisory lock - serializes all operations on this prefix
-    let mut tx = state
+    // Full merge: verification, divergence detection, recovery, contest, adversary archival.
+    // Advisory lock + transaction managed internally by save_with_merge.
+    let outcome = state
         .repo
         .key_events
-        .begin_locked_transaction(&prefix)
-        .await?;
-
-    // Re-verify the entire KEL on every submission. We cannot cache Verification tokens
-    // because the DB cannot be trusted (verification invariant). Trusting a cached token
-    // would mean trusting the DB to attest its own integrity — a tampered DB with a stale
-    // token could cause us to accept invalid events.
-    // TODO: optimize verification with batch signature verification and eager/parallel page loading
-    let ctx = kels::completed_verification(
-        &mut tx,
-        &prefix,
-        MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
-        iter::empty(),
-    )
-    .await
-    .map_err(|e| ApiError::internal_error(format!("KEL verification failed: {}", e)))?;
-
-    debug!(
-        "submit_events: prefix={}, submitted={} events, branches={}, contested={}, diverged_at={:?}",
-        prefix,
-        events.len(),
-        ctx.branch_tips().len(),
-        ctx.is_contested(),
-        ctx.diverged_at_serial(),
-    );
-
-    // Validate event structure before processing
-    for signed_event in &events {
-        signed_event
-            .event
-            .validate_structure()
-            .map_err(|e| ApiError::bad_request(format!("Invalid event structure: {}", e)))?;
-    }
-
-    // Route based on verified context
-    let first_previous = events[0].event.previous.clone();
-    let is_normal_append = ctx.branch_tips().len() == 1
-        && first_previous.as_deref() == Some(ctx.branch_tips()[0].tip.event.said.as_str())
-        && !ctx.is_contested();
-
-    // tip_said: for non-divergent results, the last inserted event's SAID.
-    // Avoids the expensive compute_prefix_effective_said query (~99% of submits).
-    let (result, diverged_at, tip_said) = if is_normal_append {
-        // ==================== Normal Append (~99% of submissions) ====================
-        if ctx.is_decommissioned() {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: KEL is decommissioned".to_string(),
-            ));
-        }
-        if events[0].event.is_contest() {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: Contest requires divergence".to_string(),
-            ));
-        }
-
-        // Resume verification from the verified context
-        let mut verifier = KelVerifier::resume(&prefix, &ctx)
-            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-        verifier
-            .verify_page(&events)
-            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-
-        let tip = events.last().map(|e| e.event.said.clone());
-        for event in &events {
-            tx.insert_signed_event(event).await?;
-        }
-
-        (KelMergeResult::Accepted, None, tip)
-    } else if ctx.is_empty() && first_previous.is_none() {
-        // ==================== New KEL (inception) ====================
-        let mut verifier = KelVerifier::new(&prefix);
-        verifier
-            .verify_page(&events)
-            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-
-        let tip = events.last().map(|e| e.event.said.clone());
-        for event in &events {
-            tx.insert_signed_event(event).await?;
-        }
-
-        (KelMergeResult::Accepted, None, tip)
-    } else {
-        // ==================== Full Path (divergence/recovery/overlap, rare) ====================
-        // Bounded DB operations using the verified Verification. No full KEL in memory.
-        // Advisory lock held throughout (TOCTOU-safe).
-
-        // Contested KELs reject all submissions
-        if ctx.is_contested() {
-            return Err(ApiError::unauthorized(
-                "KEL is already contested".to_string(),
-            ));
-        }
-
-        // Filter duplicates (bounded by submission batch size)
-        let submitted_saids: Vec<String> = events.iter().map(|e| e.event.said.clone()).collect();
-        let existing = tx.existing_saids(&submitted_saids).await?;
-        let new_events: Vec<SignedKeyEvent> = events
-            .iter()
-            .filter(|e| !existing.contains(&e.event.said))
-            .cloned()
-            .collect();
-
-        if new_events.is_empty() {
-            tx.commit().await?;
-            return Ok(Json(BatchSubmitResponse {
-                diverged_at: ctx.diverged_at_serial(),
-                applied: true,
-            }));
-        }
-
-        // Re-route after dedup based on first non-duplicate event
-        let new_first_previous = new_events[0].event.previous.as_deref();
-
-        if new_first_previous.is_none() {
-            // Inception overlap with different inception — reject
-            return Err(ApiError::unauthorized(
-                "Inception event SAID mismatch".to_string(),
-            ));
-        }
-
-        // Check if dedup turned this into a normal append
-        if !ctx.is_divergent()
-            && ctx.branch_tips().len() == 1
-            && new_first_previous == Some(ctx.branch_tips()[0].tip.event.said.as_str())
-        {
-            let mut verifier = KelVerifier::resume(&prefix, &ctx)
-                .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-            verifier
-                .verify_page(&new_events)
-                .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-            let tip = new_events.last().map(|e| e.event.said.clone());
-            for event in &new_events {
-                tx.insert_signed_event(event).await?;
+        .save_with_merge(&prefix, &events)
+        .await
+        .map_err(|e| match e {
+            KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
+            KelsError::InvalidKeyEvent(msg) => ApiError::bad_request(msg),
+            KelsError::InvalidSignature(msg) => ApiError::bad_request(msg),
+            KelsError::KelDecommissioned => {
+                ApiError::unauthorized("KEL is decommissioned".to_string())
             }
-            (KelMergeResult::Accepted, None, tip)
-        } else if ctx.is_divergent() {
-            let (r, d) = handle_divergent_submission(&mut tx, &ctx, &new_events, &prefix).await?;
-            (r, d, None)
-        } else {
-            let (r, d) = handle_overlap_submission(&mut tx, &ctx, &new_events, &prefix).await?;
-            (r, d, None)
-        }
-    };
+            KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
+            KelsError::ContestRequired => ApiError::contest_required(
+                "Contest required: recovery key revealed. Use contest to freeze the KEL.",
+            ),
+            _ => ApiError::internal_error(e.to_string()),
+        })?;
 
-    // Handle merge result
-    let applied = match result {
+    let applied = match outcome.result {
         KelMergeResult::Accepted
         | KelMergeResult::Recovered
         | KelMergeResult::Contested
         | KelMergeResult::Diverged => true,
         KelMergeResult::RecoverRequired => false,
         KelMergeResult::ContestRequired => {
+            // merge_events returns Err(ContestRequired) which is caught above,
+            // so this branch is unreachable in practice
             return Err(ApiError::contest_required(
                 "Contest required: recovery key revealed. Use contest to freeze the KEL.",
             ));
         }
     };
 
-    // Commit the transaction - this releases the advisory lock
-    tx.commit().await?;
-
     // Update cache outside transaction
     if applied {
-        // Rebuild cache from DB with post-commit data (bounded to cache limit).
-        // This overwrites any stale cache that a concurrent GET may have populated
-        // from a pre-commit DB snapshot during the commit window.
         match state
             .repo
             .key_events
@@ -520,11 +383,8 @@ pub(crate) async fn submit_events(
                     if let Err(e) = state.kel_cache.store(&prefix, &events).await {
                         warn!("Failed to cache KEL: {}", e);
                     }
-                } else {
-                    // Too large to cache — just invalidate
-                    if let Err(e) = state.kel_cache.invalidate(&prefix).await {
-                        warn!("Failed to invalidate cache: {}", e);
-                    }
+                } else if let Err(e) = state.kel_cache.invalidate(&prefix).await {
+                    warn!("Failed to invalidate cache: {}", e);
                 }
             }
             Err(e) => {
@@ -535,12 +395,7 @@ pub(crate) async fn submit_events(
             }
         }
 
-        // Publish effective SAID so gossip nodes can compare it with their
-        // own effective SAID for this prefix.
-        // For non-divergent results we already know the tip — skip the expensive
-        // compute_prefix_effective_said DB query. For divergence/recovery/contest,
-        // fall back to computing from tip events.
-        let effective_said = if let Some(said) = tip_said {
+        let effective_said = if let Some(said) = outcome.tip_said {
             Some(said)
         } else {
             match state
@@ -564,607 +419,9 @@ pub(crate) async fn submit_events(
     }
 
     Ok(Json(BatchSubmitResponse {
-        diverged_at,
+        diverged_at: outcome.diverged_at,
         applied,
     }))
-}
-
-// ==================== Full merge path helpers ====================
-
-/// Check if any event from `diverged_at` serial onward reveals the recovery key.
-/// Paginated scan — never loads full KEL. Fails secure if max_pages exceeded.
-async fn recovery_revealed_in_divergent_events(
-    tx: &mut crate::repository::KelTransaction,
-    diverged_at: u64,
-) -> Result<bool, ApiError> {
-    let max_pages = kels::max_verification_pages();
-    let mut from_serial = diverged_at;
-    for _ in 0..max_pages {
-        let (page, has_more) = tx
-            .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        if page.is_empty() {
-            return Ok(false);
-        }
-        if page.iter().any(|e| e.event.reveals_recovery_key()) {
-            return Ok(true);
-        }
-        if let Some(last) = page.last() {
-            from_serial = last.event.serial + 1;
-        }
-        if !has_more {
-            return Ok(false);
-        }
-    }
-    // Fail secure: treat as recovery revealed (most restrictive outcome)
-    Err(ApiError::internal_error(
-        "Scan exceeded max_pages limit — cannot determine recovery state".to_string(),
-    ))
-}
-
-/// Walk backward from `start_said` collecting event SAIDs until reaching
-/// an event with serial < `stop_serial`. Each step is a single bounded query.
-/// Returns the set of owner event SAIDs in the divergent region.
-async fn trace_chain_backward_to_serial(
-    tx: &mut crate::repository::KelTransaction,
-    start_said: &str,
-    stop_serial: u64,
-) -> Result<HashSet<String>, ApiError> {
-    let mut saids = HashSet::new();
-    let mut current_said = Some(start_said.to_string());
-
-    while let Some(said) = current_said {
-        let event = tx
-            .get_event_by_said(&said)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        let Some(event) = event else {
-            break;
-        };
-        if event.event.serial < stop_serial {
-            break;
-        }
-        saids.insert(said);
-        current_said = event.event.previous.clone();
-    }
-
-    Ok(saids)
-}
-
-/// Scan divergent events from `diverged_at` serial onward.
-/// Returns (adversary_events, adversary_revealed_recovery).
-/// Adversary events are those NOT in `owner_saids`.
-/// Fails secure if max_pages exceeded.
-async fn scan_divergent_events(
-    tx: &mut crate::repository::KelTransaction,
-    diverged_at: u64,
-    owner_saids: &HashSet<String>,
-) -> Result<(Vec<SignedKeyEvent>, bool), ApiError> {
-    let max_pages = kels::max_verification_pages();
-    let mut adversary = Vec::new();
-    let mut revealed = false;
-    let mut from_serial = diverged_at;
-    for _ in 0..max_pages {
-        let (page, has_more) = tx
-            .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        if page.is_empty() {
-            return Ok((adversary, revealed));
-        }
-        for event in &page {
-            if !owner_saids.contains(&event.event.said) {
-                if event.event.reveals_recovery_key() {
-                    revealed = true;
-                }
-                adversary.push(event.clone());
-            }
-        }
-        if let Some(last) = page.last() {
-            from_serial = last.event.serial + 1;
-        }
-        if !has_more {
-            return Ok((adversary, revealed));
-        }
-    }
-    Err(ApiError::internal_error(
-        "Scan exceeded max_pages limit — cannot scan divergent events".to_string(),
-    ))
-}
-
-/// Walk backward from `start_said` following `previous` pointers until finding
-/// an establishment event. Returns the establishment event on the same branch.
-async fn trace_establishment_backward(
-    tx: &mut crate::repository::KelTransaction,
-    start_said: &str,
-) -> Result<SignedKeyEvent, ApiError> {
-    let mut current_said = Some(start_said.to_string());
-
-    while let Some(said) = current_said {
-        let event = tx
-            .get_event_by_said(&said)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?
-            .ok_or_else(|| {
-                ApiError::internal_error(format!(
-                    "Broken chain: event {} not found during establishment trace",
-                    said,
-                ))
-            })?;
-        if event.event.is_establishment() {
-            return Ok(event);
-        }
-        current_said = event.event.previous.clone();
-    }
-
-    Err(ApiError::internal_error(
-        "No establishment event found on branch".to_string(),
-    ))
-}
-
-/// Verify a sub-chain from serial 0 up to (but not including) `stop_serial`.
-/// Uses paginated reads under the advisory lock. Returns the `KelVerifier` state
-/// after processing events before `stop_serial` — divergence in the sub-chain is
-/// expected and allowed. Fails secure if max_pages exceeded.
-async fn verify_chain_before_serial(
-    tx: &mut crate::repository::KelTransaction,
-    prefix: &str,
-    stop_serial: u64,
-) -> Result<KelVerifier, ApiError> {
-    let max_pages = kels::max_verification_pages();
-    let mut verifier = KelVerifier::new(prefix);
-    let mut from_serial: u64 = 0;
-    let page_size = MAX_EVENTS_PER_KEL_QUERY as u64;
-
-    for _ in 0..max_pages {
-        let (page, has_more) = tx
-            .get_signed_history_since(from_serial, page_size)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        if page.is_empty() {
-            return Ok(verifier);
-        }
-
-        // Only include events before stop_serial
-        let filtered: Vec<&SignedKeyEvent> = page
-            .iter()
-            .filter(|e| e.event.serial < stop_serial)
-            .collect();
-        if filtered.is_empty() {
-            return Ok(verifier);
-        }
-
-        // Build a contiguous slice for verify_page by collecting clones
-        let to_verify: Vec<SignedKeyEvent> = filtered.into_iter().cloned().collect();
-        verifier
-            .verify_page(&to_verify)
-            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-
-        // If any event in this page was at or past stop_serial, we're done
-        if page.last().is_some_and(|e| e.event.serial >= stop_serial) {
-            return Ok(verifier);
-        }
-        if let Some(last) = page.last() {
-            from_serial = last.event.serial + 1;
-        }
-        if !has_more {
-            return Ok(verifier);
-        }
-    }
-
-    Err(ApiError::internal_error(
-        "Scan exceeded max_pages limit — cannot verify sub-chain".to_string(),
-    ))
-}
-
-/// Check if any non-contest event at or after `from_serial` reveals the recovery key.
-/// Fails secure if max_pages exceeded.
-async fn non_contest_recovery_revealed_since(
-    tx: &mut crate::repository::KelTransaction,
-    from_serial: u64,
-) -> Result<bool, ApiError> {
-    let max_pages = kels::max_verification_pages();
-    let mut serial = from_serial;
-    for _ in 0..max_pages {
-        let (page, has_more) = tx
-            .get_signed_history_since(serial, MAX_EVENTS_PER_KEL_QUERY as u64)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        if page.is_empty() {
-            return Ok(false);
-        }
-        if page
-            .iter()
-            .any(|e| e.event.reveals_recovery_key() && !e.event.is_contest())
-        {
-            return Ok(true);
-        }
-        if let Some(last) = page.last() {
-            serial = last.event.serial + 1;
-        }
-        if !has_more {
-            return Ok(false);
-        }
-    }
-    // Fail secure: treat as recovery revealed (most restrictive outcome)
-    Err(ApiError::internal_error(
-        "Scan exceeded max_pages limit — cannot determine recovery state".to_string(),
-    ))
-}
-
-/// Handle submission to an already-divergent KEL.
-/// Returns (merge_result, diverged_at).
-async fn handle_divergent_submission(
-    tx: &mut crate::repository::KelTransaction,
-    ctx: &Verification,
-    new_events: &[SignedKeyEvent],
-    prefix: &str,
-) -> Result<(KelMergeResult, Option<u64>), ApiError> {
-    let Some(diverged_at) = ctx.diverged_at_serial() else {
-        return Err(ApiError::internal_error(
-            "Divergent KEL missing diverged_at_serial".to_string(),
-        ));
-    };
-
-    let first = &new_events[0];
-
-    // === Contest ===
-    if first.event.is_contest() {
-        if new_events.len() > 1 {
-            return Err(ApiError::unauthorized(
-                "Cannot append events after contest".to_string(),
-            ));
-        }
-
-        // 1. Ensure not already contested (checked by caller, but be safe)
-        if ctx.is_contested() {
-            return Err(ApiError::unauthorized(
-                "KEL is already contested".to_string(),
-            ));
-        }
-
-        // 2. Ensure a non-contest recovery-revealing event exists at or after cnt.serial
-        let cnt_serial = first.event.serial;
-        if !non_contest_recovery_revealed_since(tx, cnt_serial).await? {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: KEL is frozen — no recovery key revealed".to_string(),
-            ));
-        }
-
-        // 3. Verify the full chain
-        let full_ctx = kels::completed_verification(
-            tx,
-            prefix,
-            MAX_EVENTS_PER_KEL_QUERY as u64,
-            kels::max_verification_pages(),
-            iter::empty::<String>(),
-        )
-        .await
-        .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-
-        // 4. Confirm cnt.previous is in the KEL at cnt.serial - 1
-        let contest_previous =
-            first.event.previous.as_deref().ok_or_else(|| {
-                ApiError::unauthorized("Contest has no previous pointer".to_string())
-            })?;
-        let anchor_event = tx
-            .get_event_by_said(contest_previous)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?
-            .ok_or_else(|| {
-                ApiError::unauthorized("Contest does not extend a known event".to_string())
-            })?;
-        if anchor_event.event.serial != cnt_serial - 1 {
-            return Err(ApiError::unauthorized(
-                "Contest previous event is not at the expected serial".to_string(),
-            ));
-        }
-
-        // 5. Verify the contest event against the verified chain
-        let mut verifier = KelVerifier::resume(prefix, &full_ctx)
-            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-        verifier
-            .verify_page(slice::from_ref(first))
-            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-
-        tx.insert_signed_event(first).await?;
-        return Ok((KelMergeResult::Contested, Some(diverged_at)));
-    }
-
-    // === Recovery (rec event anywhere in batch) ===
-    if let Some(rec_idx) = new_events.iter().position(|e| e.event.is_recover()) {
-        let pre_rec = &new_events[..rec_idx];
-        let post_rec = &new_events[rec_idx..]; // includes rec itself
-        let rec_event = &new_events[rec_idx];
-
-        // Determine the first serial of submitted events
-        let first_serial = new_events[0].event.serial;
-
-        // 1. Scan from first_serial (not diverged_at) because the pre-divergence
-        //    sub-chain is verified separately in step 2. If any event at or after the
-        //    submission's starting serial reveals the recovery key, the adversary has
-        //    demonstrated recovery-key knowledge and recovery is unsafe — contest instead.
-        if recovery_revealed_in_divergent_events(tx, first_serial).await? {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: Contest required — recovery key revealed at or after submission serial".to_string(),
-            ));
-        }
-
-        // 2. Verify the sub-chain before the first submitted serial (divergence is allowed).
-        //    This ensures the DB hasn't been tampered with.
-        verify_chain_before_serial(tx, prefix, first_serial).await?;
-
-        // 3. Find the event the submitted events chain from and verify them.
-        //    The owner's chain-from event may not be at a branch tip (e.g., the owner
-        //    chains from below the divergence point). Look it up in the DB — we just
-        //    verified the sub-chain so this is trusted.
-        let first_event = if pre_rec.is_empty() {
-            rec_event
-        } else {
-            &pre_rec[0]
-        };
-        let first_previous =
-            first_event.event.previous.as_deref().ok_or_else(|| {
-                ApiError::unauthorized("Event has no previous pointer".to_string())
-            })?;
-
-        let anchor_event = tx
-            .get_event_by_said(first_previous)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?
-            .ok_or_else(|| {
-                ApiError::unauthorized("Recovery does not extend a known event".to_string())
-            })?;
-        // The anchor must be in the trusted pre-divergence chain (verified in step 2).
-        // Reject if it's at or after first_serial — an attacker could craft a recovery
-        // that chains from a newly-submitted event, bypassing adversary-event checks.
-        if anchor_event.event.serial >= first_serial {
-            return Err(ApiError::unauthorized(
-                "Recovery chain-from event is not before first submitted serial".to_string(),
-            ));
-        }
-
-        // Walk backward from the anchor to find the establishment event on the
-        // owner's branch (not just any establishment at that serial — the adversary
-        // may have rotated at the same serial on a different branch).
-        let establishment = trace_establishment_backward(tx, &anchor_event.event.said).await?;
-        let anchor_tip = BranchTip {
-            tip: anchor_event,
-            establishment_tip: establishment,
-        };
-
-        let mut event_verifier = KelVerifier::from_branch_tip(prefix, &anchor_tip)
-            .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-        event_verifier
-            .verify_page(new_events)
-            .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-
-        // Insert pre-rec events
-        for event in pre_rec {
-            tx.insert_signed_event(event).await?;
-        }
-
-        // 4. Walk backward from rec.previous to collect owner branch SAIDs
-        let rec_previous =
-            rec_event.event.previous.as_deref().ok_or_else(|| {
-                ApiError::unauthorized("Recovery event has no previous".to_string())
-            })?;
-        let owner_saids = trace_chain_backward_to_serial(tx, rec_previous, diverged_at).await?;
-
-        // 5. Archive adversary events (everything from diverged_at onward NOT on owner's chain)
-        let (adversary_events, adversary_revealed) =
-            scan_divergent_events(tx, diverged_at, &owner_saids).await?;
-
-        // Double-check: adversary should not have revealed recovery (step 1 checked >= rec_serial,
-        // but adversary events could be at earlier serials in the divergent region)
-        if adversary_revealed {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: Contest required — adversary revealed recovery key".to_string(),
-            ));
-        }
-
-        if !adversary_events.is_empty() {
-            let audit_record =
-                KelsAuditRecord::for_recovery(prefix.to_string(), &adversary_events)?;
-            tx.insert_audit_record(&audit_record).await?;
-            let saids: Vec<String> = adversary_events
-                .iter()
-                .map(|e| e.event.said.clone())
-                .collect();
-            tx.delete_events_by_said(saids).await?;
-        }
-
-        // 6. Insert rec + post-rec events
-        for event in post_rec {
-            tx.insert_signed_event(event).await?;
-        }
-
-        return Ok((KelMergeResult::Recovered, None));
-    }
-
-    // Neither contest nor recovery — frozen KEL rejects non-recovery submissions
-    Ok((KelMergeResult::RecoverRequired, Some(diverged_at)))
-}
-
-/// Handle submission that overlaps with or creates new divergence in a non-divergent KEL.
-/// Returns (merge_result, diverged_at).
-async fn handle_overlap_submission(
-    tx: &mut crate::repository::KelTransaction,
-    ctx: &Verification,
-    new_events: &[SignedKeyEvent],
-    prefix: &str,
-) -> Result<(KelMergeResult, Option<u64>), ApiError> {
-    // Sanity: caller should only route here for non-divergent, non-contested KELs
-    if ctx.is_divergent() || ctx.is_contested() {
-        return Err(ApiError::internal_error(
-            "handle_overlap_submission called with divergent or contested KEL".to_string(),
-        ));
-    }
-
-    let first_previous = new_events[0]
-        .event
-        .previous
-        .as_deref()
-        .ok_or_else(|| ApiError::unauthorized("Inception event SAID mismatch".to_string()))?;
-
-    // Verify the branch point exists in the DB
-    let branch_point = tx
-        .get_event_by_said(first_previous)
-        .await
-        .map_err(|e| ApiError::internal_error(e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("Events not contiguous".to_string()))?;
-
-    let branch_serial = branch_point.event.serial;
-
-    // No early decommissioned check here — the walk below detects recovery-key
-    // revelation (dec/rec/ror/cnt) and returns ContestRequired or allows contest through.
-    // The fast path (line 382) handles legitimate decommission for normal appends.
-
-    // Get establishment state at the branch point for verification
-    let establishment = tx
-        .get_establishment_at_serial(branch_serial)
-        .await
-        .map_err(|e| ApiError::internal_error(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::internal_error("No establishment event found at branch point".to_string())
-        })?;
-
-    let branch_tip = BranchTip {
-        tip: branch_point,
-        establishment_tip: establishment,
-    };
-
-    // Verify submitted events against the branch point state
-    let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip)
-        .map_err(|e| ApiError::unauthorized(format!("KEL verification failed: {}", e)))?;
-    verifier
-        .verify_page(new_events)
-        .map_err(|e| ApiError::unauthorized(format!("KEL merge failed: {}", e)))?;
-
-    // Collect old divergent events (existing events from branch_serial+1 onward)
-    let max_pages = kels::max_verification_pages();
-    let mut old_divergent_events = Vec::new();
-    let mut from_serial = branch_serial + 1;
-    let mut exhausted = false;
-    for _ in 0..max_pages {
-        let (page, has_more) = tx
-            .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
-            .await
-            .map_err(|e| ApiError::internal_error(e.to_string()))?;
-        if page.is_empty() {
-            exhausted = true;
-            break;
-        }
-        if let Some(last) = page.last() {
-            from_serial = last.event.serial + 1;
-        }
-        old_divergent_events.extend(page);
-        if !has_more {
-            exhausted = true;
-            break;
-        }
-    }
-    if !exhausted {
-        return Err(ApiError::internal_error(
-            "Scan exceeded max_pages limit — cannot collect divergent events".to_string(),
-        ));
-    }
-
-    // Check if old divergent events reveal recovery key
-    let old_reveals_recovery = old_divergent_events
-        .iter()
-        .any(|e| e.event.reveals_recovery_key());
-
-    if old_reveals_recovery {
-        // Old branch (potential adversary) revealed recovery key
-        let divergent_event = new_events
-            .iter()
-            .find(|e| e.event.previous.as_deref() == Some(first_previous))
-            .ok_or_else(|| ApiError::unauthorized("Cannot find divergent event".to_string()))?;
-
-        if divergent_event.event.is_contest() {
-            if new_events.len() > 1 {
-                return Err(ApiError::unauthorized(
-                    "Cannot append events after contest".to_string(),
-                ));
-            }
-            tx.insert_signed_event(divergent_event).await?;
-            return Ok((KelMergeResult::Contested, Some(branch_serial + 1)));
-        } else {
-            return Ok((KelMergeResult::ContestRequired, None));
-        }
-    }
-
-    // Check for recovery in submitted events
-    if let Some(rec_idx) = new_events.iter().position(|e| e.event.is_recover()) {
-        let pre_rec = &new_events[..rec_idx];
-        let post_rec = &new_events[rec_idx..];
-        let rec_event = &new_events[rec_idx];
-
-        // Insert pre-rec events (extend the new branch before recovery)
-        for event in pre_rec {
-            tx.insert_signed_event(event).await?;
-        }
-
-        // Trace owner chain backward from rec.previous
-        let rec_previous =
-            rec_event.event.previous.as_deref().ok_or_else(|| {
-                ApiError::unauthorized("Recovery event has no previous".to_string())
-            })?;
-        let owner_saids =
-            trace_chain_backward_to_serial(tx, rec_previous, branch_serial + 1).await?;
-
-        // Check if adversary (old branch) revealed recovery
-        // (already checked above — old_reveals_recovery was false)
-        // But re-check with owner context for correctness
-        let adversary_revealed = old_divergent_events
-            .iter()
-            .any(|e| e.event.reveals_recovery_key() && !owner_saids.contains(&e.event.said));
-
-        if adversary_revealed {
-            return Err(ApiError::unauthorized(
-                "KEL merge failed: Contest required — adversary revealed recovery key".to_string(),
-            ));
-        }
-
-        // Archive adversary events (old divergent events not on owner chain)
-        let adversary_events: Vec<SignedKeyEvent> = old_divergent_events
-            .into_iter()
-            .filter(|e| !owner_saids.contains(&e.event.said))
-            .collect();
-
-        if !adversary_events.is_empty() {
-            let audit_record =
-                KelsAuditRecord::for_recovery(prefix.to_string(), &adversary_events)?;
-            tx.insert_audit_record(&audit_record).await?;
-            let saids: Vec<String> = adversary_events
-                .iter()
-                .map(|e| e.event.said.clone())
-                .collect();
-            tx.delete_events_by_said(saids).await?;
-        }
-
-        // Insert rec + post-rec events
-        for event in post_rec {
-            tx.insert_signed_event(event).await?;
-        }
-
-        return Ok((KelMergeResult::Recovered, None));
-    }
-
-    // No recovery event in the batch — insert only the single forking event to
-    // establish divergence and freeze the KEL. Subsequent adversary events in the
-    // batch are intentionally dropped: storing more would extend the adversary's
-    // branch without benefit. The owner can now submit rec or cnt to resolve.
-    let divergent_event = new_events
-        .iter()
-        .find(|e| e.event.previous.as_deref() == Some(first_previous))
-        .ok_or_else(|| ApiError::unauthorized("Cannot find divergent event".to_string()))?;
-
-    tx.insert_signed_event(divergent_event).await?;
-
-    Ok((KelMergeResult::Diverged, Some(branch_serial + 1)))
 }
 
 pub(crate) async fn get_kel(
@@ -1318,9 +575,9 @@ pub(crate) async fn list_prefixes(
         let ctx = kels::completed_verification(
             &mut loader,
             &signed_request.peer_prefix,
-            MAX_EVENTS_PER_KEL_QUERY as u64,
+            kels::MAX_EVENTS_PER_KEL_QUERY as u64,
             kels::max_verification_pages(),
-            iter::empty(),
+            std::iter::empty::<String>(),
         )
         .await
         .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;

@@ -78,7 +78,6 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
-| GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service); `?limit=N&since=SAID` |
 
 ### Federation Mode
 
@@ -97,8 +96,9 @@ All standalone endpoints plus:
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (from Raft state machine) |
-| GET | `/api/member-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
+| POST | `/api/member-kels` | None | Batch fetch federation member KELs; body: `BatchKelsRequest { prefixes }` (defaults to all members if empty) |
 | GET | `/api/member-kels/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
+| POST | `/api/identity-kel-updated` | **Signed notification** | Identity KEL update notification (rate-limited, nonce-deduplicated); triggers member KEL sync |
 
 #### Federation Protocol
 
@@ -107,7 +107,7 @@ All standalone endpoints plus:
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
-| POST | `/api/federation/key-events` | **Federation member** | Submit member KEL events to Raft (verifies prefix is trusted member) |
+| POST | `/api/federation/sync-member-kel` | **Federation member** | Notify Raft that a member KEL needs syncing (prefix only, no events) |
 
 #### Admin API
 
@@ -125,6 +125,7 @@ All standalone endpoints plus:
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
 - Withdrawals: POST a v1 `PeerAdditionProposal` with `withdrawn_at` set; only allowed before any votes are cast
+- Identity KEL update notification: `SignedRequest<KelUpdatedNotification>` — per-IP rate limited (2/s burst 10), 30s timestamp window, nonce deduplicated. Triggers `SyncMemberKel` via Raft so other federation members refresh their local copy
 
 ## KELS Gossip Service
 

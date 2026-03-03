@@ -382,16 +382,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     };
 
     // Persist verified registry KELs to local store for anchoring checks
-    for (_prefix, events) in registry_client.cached_events() {
-        for event in events {
-            let sigs = event.event_signatures();
-            if let Err(e) = gossip_repo
-                .registry_kels
-                .create_with_signatures(event.event.clone(), sigs)
-                .await
-            {
-                // Duplicate SAIDs are expected on restart — not an error
-                debug!("Registry KEL event persist (may be duplicate): {}", e);
+    {
+        let registry_kel_store =
+            kels::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
+        for (prefix, events) in registry_client.cached_events() {
+            if let Err(e) = kels::KelStore::save(&registry_kel_store, prefix, events).await {
+                warn!(prefix = %prefix, error = %e, "Failed to persist registry KEL");
             }
         }
     }

@@ -148,7 +148,7 @@ struct SignedRequest<T> {
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/peers` | Get peer allowlist |
-| `GET` | `/api/registry-kel` | Get registry's KEL |
+| `GET` | `/api/member-kels/:prefix` | Get a federation member's KEL |
 | `GET` | `/health` | Health check |
 
 ## Verification Flow

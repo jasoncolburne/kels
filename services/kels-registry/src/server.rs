@@ -16,23 +16,17 @@ use kels::IdentityClient;
 
 use crate::{
     federation::{FederationConfig, FederationNode},
-    handlers::{self, AppState, FederationState, RegistryKelState},
+    handlers::{self, AppState, FederationState},
     repository::RegistryRepository,
     store::RegistryStore,
 };
 
 pub fn create_router(
     state: Arc<AppState>,
-    registry_kel_state: Arc<RegistryKelState>,
     federation_state: Option<Arc<FederationState>>,
 ) -> Router {
     // Base router with health endpoint
     let base_router = Router::new().route("/health", get(handlers::health));
-
-    // Registry KEL route
-    let kel_router = Router::new()
-        .route("/api/registry-kel", get(handlers::get_registry_key_events))
-        .with_state(registry_kel_state);
 
     // Federation mode routes (node management + peer management + admin)
     let federation_router = if let Some(fed_state) = federation_state {
@@ -44,7 +38,7 @@ pub fn create_router(
             .route("/api/nodes/status", post(handlers::update_status))
             .with_state(state);
 
-        // Peer discovery
+        // Peer discovery and identity KEL update notification
         let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
             .route(
@@ -54,6 +48,10 @@ pub fn create_router(
             .route(
                 "/api/member-kels/:prefix",
                 get(handlers::get_member_key_events),
+            )
+            .route(
+                "/api/identity-kel-updated",
+                post(handlers::identity_kel_updated),
             );
 
         // Federation protocol
@@ -65,8 +63,8 @@ pub fn create_router(
                 get(handlers::list_completed_proposals),
             )
             .route(
-                "/api/federation/key-events",
-                post(handlers::federation_submit_key_events),
+                "/api/federation/sync-member-kel",
+                post(handlers::federation_sync_member_kel),
             );
 
         // Admin API (localhost only) for proposal and peer management
@@ -95,13 +93,12 @@ pub fn create_router(
 
         fed_router.merge(node_router)
     } else {
-        // Standalone mode: health + registry KEL only
+        // Standalone mode: health only
         Router::new()
     };
 
     // Merge all routers
     base_router
-        .merge(kel_router)
         .merge(federation_router)
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
 }
@@ -144,11 +141,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .await
         .map_err(|e| format!("Failed to get registry prefix from identity service: {}", e))?;
     info!("Registry prefix from identity service: {}", prefix);
-
-    let registry_kel_state = Arc::new(RegistryKelState {
-        identity_client: identity_client.clone(),
-        prefix,
-    });
 
     // Initialize federation if configured
     let (federation_node, federation_state) = match FederationConfig::from_env() {
@@ -207,10 +199,12 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                     {
                         let sync_node = node.clone();
                         let sync_identity = identity_client.clone();
+                        let sync_member_kel_repo = repo.member_kels.clone();
                         tokio::spawn(async move {
                             crate::federation::sync::run_kel_sync_loop(
                                 sync_node,
                                 sync_identity,
+                                sync_member_kel_repo,
                                 std::time::Duration::from_secs(30),
                             )
                             .await;
@@ -222,6 +216,9 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         Some(Arc::new(FederationState {
                             node,
                             identity_client: identity_client.clone(),
+                            member_kel_repo: repo.member_kels.clone(),
+                            kel_update_nonce_cache: dashmap::DashMap::new(),
+                            kel_update_rate_limits: dashmap::DashMap::new(),
                         })),
                     )
                 }
@@ -247,8 +244,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         ip_rate_limits: dashmap::DashMap::new(),
     });
 
-    let app = create_router(state, registry_kel_state, federation_state)
-        .into_make_service_with_connect_info::<SocketAddr>();
+    let app =
+        create_router(state, federation_state).into_make_service_with_connect_info::<SocketAddr>();
 
     info!(
         "KELS Registry service listening on {}",

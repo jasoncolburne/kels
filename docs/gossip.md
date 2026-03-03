@@ -146,7 +146,7 @@ Gossip nodes use persistent HSM-backed identities:
 - Unauthorized peers are rejected during the gossip handshake
 - The handshake uses a three-DH pattern: ephemeral-ephemeral (forward secrecy), static-ephemeral via HSM (our static key × their ephemeral), and ephemeral-static locally (our ephemeral × their static key). Session keys are derived from all three shared secrets via BLAKE3 key derivation. The static private key never leaves the HSM.
 - Each peer's handshake signature is verified against their KEL public key via the verified allowlist
-- See [Secure Registration](secure-registration.md) for details on the peer allowlist
+- See [Secure Registration](design/secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback
 

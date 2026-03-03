@@ -16,12 +16,13 @@ use axum::{
 use dashmap::DashMap;
 use kels::{
     AdditionHistory, AdminRequest, BatchKelsRequest, CompletedProposalsResponse, DeregisterRequest,
-    ErrorCode, ErrorResponse, KeyEventsQuery, NodeRegistration, Peer, PeerAdditionProposal,
-    PeerHistory, PeerRemovalProposal, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
-    ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory, SignedKeyEventPage,
-    SignedRequest, StatusUpdateRequest, Vote,
+    ErrorCode, ErrorResponse, KelUpdatedNotification, KeyEventsQuery, NodeRegistration, Peer,
+    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, Proposal,
+    ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory,
+    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use verifiable_storage::SelfAddressed;
 
 use kels::IdentityClient;
@@ -358,69 +359,61 @@ pub async fn update_status(
 
 // ==================== Peer Handlers ====================
 
-// ==================== Registry KEL Handlers ====================
-
-pub struct RegistryKelState {
-    pub identity_client: Arc<IdentityClient>,
-    pub prefix: String,
-}
-
 // ==================== Federation Handlers ====================
 
 /// State for federation endpoints.
 pub struct FederationState {
     pub node: Arc<FederationNode>,
     pub identity_client: Arc<IdentityClient>,
+    pub member_kel_repo: crate::raft_store::MemberKelRepository,
+    /// Nonce deduplication for identity KEL update notifications (in-memory, single instance).
+    pub kel_update_nonce_cache: DashMap<String, Instant>,
+    /// Per-IP rate limiting for identity KEL update notifications.
+    pub kel_update_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
 }
 
-/// Eagerly sync own KEL to Raft if there are new events.
+/// Eagerly sync a member's KEL to local MemberKelRepository.
 ///
-/// The admin CLI anchors SAIDs in the identity KEL, then submits requests
-/// that need anchoring verification against Raft state. Without this sync,
-/// the 30-second background loop may not have picked up the new anchor yet.
-async fn ensure_own_kel_synced(state: &FederationState) {
+/// For own prefix: fetches from identity service (authoritative source).
+/// For remote prefix: fetches from that member's registry.
+/// Times out after 5 seconds to avoid blocking handlers indefinitely.
+async fn sync_member_kel(state: &FederationState, member_prefix: &str) {
+    let prefix = member_prefix.to_string();
     let fut = async {
-        // Determine what Raft already has — use the tip SAID as the delta cursor
-        let first_page = match state
-            .identity_client
-            .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
+            crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
+        ));
+
+        let own_prefix = state.identity_client.get_prefix().await.ok();
+
+        let result = if own_prefix.as_deref() == Some(&prefix) {
+            let source =
+                kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
+            kels::forward_key_events(
+                &prefix,
+                &source,
+                &sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+            )
             .await
-        {
-            Ok(p) => p,
-            Err(_) => return,
+        } else if let Some(member) = state.node.config().member_by_prefix(&prefix) {
+            let source =
+                kels::HttpKelSource::new(&member.url, &format!("/api/member-kels/{}", prefix));
+            kels::forward_key_events(
+                &prefix,
+                &source,
+                &sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+            )
+            .await
+        } else {
+            return;
         };
 
-        let prefix = match first_page.events.first() {
-            Some(e) => e.event.prefix.clone(),
-            None => return,
-        };
-
-        let raft_effective_said = state
-            .node
-            .get_member_context(&prefix)
-            .await
-            .and_then(|ctx| ctx.effective_tail_said());
-
-        // Delta fetch from Raft's effective SAID (or full fetch if Raft has nothing)
-        let mut since = raft_effective_said;
-        loop {
-            let page = match state
-                .identity_client
-                .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
-                .await
-            {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-            if page.events.is_empty() {
-                break;
-            }
-            let has_more = page.has_more;
-            since = page.events.last().map(|e| e.event.said.clone());
-            let _ = state.node.submit_key_events(page.events).await;
-            if !has_more {
-                break;
-            }
+        if let Err(e) = result {
+            warn!(prefix = %prefix, error = %e, "Failed to sync member KEL");
         }
     };
 
@@ -428,25 +421,126 @@ async fn ensure_own_kel_synced(state: &FederationState) {
         .await
         .is_err()
     {
-        tracing::warn!("Timed out syncing own KEL to Raft (no quorum?)");
+        warn!(prefix = %prefix, "Timed out syncing member KEL");
     }
 }
 
-/// Accept key events from any federation member and submit to Raft.
+/// Rate limit constants for identity KEL update notifications.
+/// Conservative: only the local identity service should call this endpoint.
+const KEL_UPDATE_RATE_REFILL_PER_SECOND: u32 = 2;
+const KEL_UPDATE_RATE_BURST: u32 = 10;
+
+/// Nonce window for identity KEL update notifications (seconds).
+const KEL_UPDATE_NONCE_WINDOW_SECS: u64 = 30;
+
+/// Check per-IP rate limit for KEL update notifications.
+fn check_kel_update_rate_limit(
+    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((KEL_UPDATE_RATE_BURST, now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * KEL_UPDATE_RATE_REFILL_PER_SECOND as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(KEL_UPDATE_RATE_BURST);
+        entry.1 = now;
+    }
+    if entry.0 == 0 {
+        return Err(ApiError::rate_limited("Too many KEL update requests"));
+    }
+    entry.0 -= 1;
+    Ok(())
+}
+
+/// Handle notification from the local identity service that its KEL was updated.
 ///
-/// No signature auth needed — the events are self-verifying (signed key events)
-/// and apply() checks the prefix is a trusted member. This endpoint allows
-/// followers to forward their KEL events to the leader for Raft consensus.
-pub async fn federation_submit_key_events(
+/// Verifies the signed notification against the local identity KEL, then
+/// eagerly syncs the member KEL so it's fresh for subsequent operations.
+pub async fn identity_kel_updated(
     State(state): State<Arc<FederationState>>,
-    Json(events): Json<Vec<kels::SignedKeyEvent>>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if events.is_empty() {
-        return Err(ApiError::bad_request("No events provided"));
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(signed_request): Json<SignedRequest<KelUpdatedNotification>>,
+) -> Result<StatusCode, ApiError> {
+    // 1. Rate limit
+    check_kel_update_rate_limit(&state.kel_update_rate_limits, addr.ip())?;
+
+    // 2. Timestamp validation
+    if !kels::validate_timestamp(signed_request.payload.timestamp, 30) {
+        return Err(ApiError::bad_request("Request timestamp expired"));
     }
 
-    // Verify prefix is a trusted member before forwarding to Raft
-    let prefix = &events[0].event.prefix;
+    // 3. Nonce deduplication: evict expired entries, then reject duplicates
+    {
+        let now = Instant::now();
+        state.kel_update_nonce_cache.retain(|_, seen| {
+            now.duration_since(*seen) < Duration::from_secs(KEL_UPDATE_NONCE_WINDOW_SECS)
+        });
+        if state
+            .kel_update_nonce_cache
+            .insert(signed_request.payload.nonce.clone(), now)
+            .is_some()
+        {
+            return Err(ApiError::bad_request("Duplicate nonce"));
+        }
+    }
+
+    // 4. Verify prefix matches our own identity
+    if signed_request.payload.prefix != state.node.config().self_prefix {
+        return Err(ApiError::forbidden(
+            "Notification prefix does not match this registry's identity",
+        ));
+    }
+
+    // 5. Verify signature against our cached identity KEL
+    let store = kels::RepositoryKelStore::new(std::sync::Arc::new(
+        crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
+    ));
+    let ctx = kels::completed_verification(
+        &mut kels::StorePageLoader::new(&store),
+        &signed_request.payload.prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await
+    .map_err(|e| ApiError::internal_error(format!("Failed to verify identity KEL: {}", e)))?;
+
+    // Fail secure: if MemberKelRepository is empty, return 503
+    if ctx.is_empty() {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Identity KEL not yet cached".to_string(),
+                code: ErrorCode::InternalError,
+            }),
+        ));
+    }
+
+    signed_request
+        .verify_signature_with_ctx(&ctx)
+        .map_err(|e| {
+            ApiError::unauthorized(format!("KEL update signature verification failed: {}", e))
+        })?;
+
+    // 6. Sync the member KEL from identity service
+    sync_member_kel(&state, &signed_request.payload.prefix).await;
+
+    Ok(StatusCode::OK)
+}
+
+/// Accept a sync-member-kel trigger and actually fetch the KEL.
+///
+/// Fetches the member's KEL to local storage, then notifies Raft so other
+/// members can do the same.
+pub async fn federation_sync_member_kel(
+    State(state): State<Arc<FederationState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let prefix = body["prefix"]
+        .as_str()
+        .ok_or_else(|| ApiError::bad_request("Missing prefix"))?;
+
     if !state.node.config().is_member(prefix) {
         return Err(ApiError::forbidden(format!(
             "Not a trusted member: {}",
@@ -454,17 +548,15 @@ pub async fn federation_submit_key_events(
         )));
     }
 
-    match state.node.submit_key_events(events).await {
-        Ok(FederationResponse::KeyEventsAccepted { prefix, new_count }) => {
-            Ok(Json(serde_json::json!({
-                "status": "accepted",
-                "prefix": prefix,
-                "new_count": new_count
-            })))
-        }
-        Ok(FederationResponse::KeyEventsRejected(reason)) => {
-            Err(ApiError::bad_request(format!("Rejected: {}", reason)))
-        }
+    // Actually fetch the KEL
+    sync_member_kel(&state, prefix).await;
+
+    // Notify Raft so other members also sync
+    match state.node.sync_member_kel(prefix.to_string()).await {
+        Ok(FederationResponse::MemberKelSynced { prefix }) => Ok(Json(serde_json::json!({
+            "status": "synced",
+            "prefix": prefix
+        }))),
         Ok(_) => Err(ApiError::internal_error("Unexpected response")),
         Err(e) => Err(ApiError::internal_error(e.to_string())),
     }
@@ -488,17 +580,24 @@ pub async fn federation_rpc(
         )));
     }
 
-    // Consuming: get verified context for sender's KEL to extract trusted public key for RPC auth.
-    // Try Raft state first (already-verified context), fall back to HTTP fetch during bootstrap
-    // (chicken-and-egg: KELs are replicated via Raft, but Raft RPCs need KELs to auth)
-    let ctx = match state
-        .node
-        .get_member_context(&signed_rpc.sender_prefix)
-        .await
-    {
-        Some(ctx) => ctx,
-        None => {
-            // HTTP fetch during bootstrap
+    // Consuming: verify sender's KEL to extract trusted public key for RPC auth.
+    // Try local MemberKelRepository first, fall back to HTTP during bootstrap.
+    let store = kels::RepositoryKelStore::new(std::sync::Arc::new(
+        crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
+    ));
+    let local_result = kels::completed_verification(
+        &mut kels::StorePageLoader::new(&store),
+        &signed_rpc.sender_prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await;
+
+    let ctx = match local_result {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            // HTTP fetch during bootstrap (local DB may not have this member's KEL yet)
             let member = state
                 .node
                 .config()
@@ -506,7 +605,10 @@ pub async fn federation_rpc(
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
-            let source = kels::HttpKelSource::new(&member.url, "/api/registry-kel");
+            let source = kels::HttpKelSource::new(
+                &member.url,
+                &format!("/api/member-kels/{}", signed_rpc.sender_prefix),
+            );
             kels::verify_key_events(
                 &signed_rpc.sender_prefix,
                 &source,
@@ -794,7 +896,7 @@ pub async fn admin_submit_addition_proposal(
         .map_err(|e| ApiError::bad_request(format!("Proposal chain verification failed: {}", e)))?;
 
     // 4. Verify each record's SAID is anchored in proposer's KEL
-    ensure_own_kel_synced(&state).await;
+    sync_member_kel(&state, &proposal.proposer).await;
     for record in &history.records {
         state
             .node
@@ -910,7 +1012,7 @@ pub async fn admin_submit_removal_proposal(
     })?;
 
     // 4. Verify each record's SAID is anchored in proposer's KEL
-    ensure_own_kel_synced(&state).await;
+    sync_member_kel(&state, &proposal.proposer).await;
     for record in &history.records {
         state
             .node
@@ -1070,7 +1172,7 @@ pub async fn admin_vote_proposal(
     }
 
     // 5. Verify vote SAID is anchored in voter's KEL
-    ensure_own_kel_synced(&state).await;
+    sync_member_kel(&state, &vote.voter).await;
     state
         .node
         .verify_anchoring(&vote.said, &vote.voter)
@@ -1144,30 +1246,10 @@ pub async fn admin_vote_proposal(
                                 ))
                             })?;
 
-                        // Eagerly submit own KEL to Raft after anchoring
-                        // (best-effort, background sync catches misses)
-                        if let Ok(own_page) = state
-                            .identity_client
-                            .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-                            .await
-                            && let Some(first) = own_page.events.first()
-                        {
-                            let prefix = &first.event.prefix;
-                            let raft_count = state
-                                .node
-                                .get_member_context(prefix)
-                                .await
-                                .map(|ctx| ctx.event_count())
-                                .unwrap_or(0);
-                            if own_page.events.len() > raft_count {
-                                let events = own_page.events[raft_count..].to_vec();
-                                if let Err(e) = state.node.submit_key_events(events).await {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Failed to eagerly submit own KEL to Raft after anchor"
-                                    );
-                                }
-                            }
+                        // Sync own KEL after anchoring, then notify Raft so all members get it
+                        sync_member_kel(&state, &self_prefix).await;
+                        if let Err(e) = state.node.sync_member_kel(self_prefix.clone()).await {
+                            warn!(error = %e, "Failed to notify Raft of member KEL sync after peer addition anchoring");
                         }
 
                         state.node.add_peer(peer.clone()).await.map_err(|e| {
@@ -1249,29 +1331,10 @@ pub async fn admin_vote_proposal(
                             ))
                         })?;
 
-                    // Eagerly submit own KEL to Raft after anchoring
-                    if let Ok(own_page) = state
-                        .identity_client
-                        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
-                        .await
-                        && let Some(first) = own_page.events.first()
-                    {
-                        let prefix = &first.event.prefix;
-                        let raft_count = state
-                            .node
-                            .get_member_context(prefix)
-                            .await
-                            .map(|ctx| ctx.event_count())
-                            .unwrap_or(0);
-                        if own_page.events.len() > raft_count {
-                            let events = own_page.events[raft_count..].to_vec();
-                            if let Err(e) = state.node.submit_key_events(events).await {
-                                tracing::warn!(
-                                    error = %e,
-                                    "Failed to eagerly submit own KEL to Raft after removal anchor"
-                                );
-                            }
-                        }
+                    // Sync own KEL after anchoring, then notify Raft so all members get it
+                    sync_member_kel(&state, &self_prefix).await;
+                    if let Err(e) = state.node.sync_member_kel(self_prefix.clone()).await {
+                        warn!(error = %e, "Failed to notify Raft of member KEL sync after peer removal anchoring");
                     }
 
                     state.node.remove_peer(deactivated).await.map_err(|e| {
@@ -1349,44 +1412,25 @@ pub async fn list_peers_federated(
     Ok(Json(PeersResponse { peers: histories }))
 }
 
-/// Public endpoint for clients to verify peer records are anchored in the registry's KEL.
-pub async fn get_registry_key_events(
-    State(state): State<Arc<RegistryKelState>>,
-    Query(query): Query<KeyEventsQuery>,
-) -> Result<Json<SignedKeyEventPage>, ApiError> {
-    let limit = query
-        .limit
-        .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .min(kels::MAX_EVENTS_PER_KEL_RESPONSE);
-
-    let page = state
-        .identity_client
-        .get_key_events(query.since.as_deref(), limit)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to fetch KEL: {}", e)))?;
-
-    Ok(Json(page))
-}
-
 /// Public endpoint to get a specific federation member's KEL with pagination.
 pub async fn get_member_key_events(
     State(state): State<Arc<FederationState>>,
     Path(prefix): Path<String>,
     Query(query): Query<KeyEventsQuery>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
-    let repo = state
-        .node
-        .state_machine()
-        .member_kel_repo()
-        .ok_or_else(|| ApiError::internal_error("Member KEL repo not configured"))?;
     let limit = query
         .limit
         .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .min(kels::MAX_EVENTS_PER_KEL_RESPONSE) as u64;
 
-    let page = kels::serve_kel_page(repo, &prefix, query.since.as_deref(), limit)
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to serve member KEL: {}", e)))?;
+    let page = kels::serve_kel_page(
+        &state.member_kel_repo,
+        &prefix,
+        query.since.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(|e| ApiError::internal_error(format!("Failed to serve member KEL: {}", e)))?;
 
     Ok(Json(page))
 }
@@ -1401,11 +1445,6 @@ pub async fn get_all_member_key_events(
     Json(request): Json<BatchKelsRequest>,
 ) -> Result<Json<HashMap<String, SignedKeyEventPage>>, ApiError> {
     let limit = kels::MAX_EVENTS_PER_KEL_RESPONSE as u64;
-    let own_prefix = state
-        .identity_client
-        .get_prefix()
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to get own prefix: {}", e)))?;
 
     // If no prefixes specified, default to all trusted prefixes with no since
     let prefixes: HashMap<String, Option<String>> = if request.prefixes.is_empty() {
@@ -1424,23 +1463,12 @@ pub async fn get_all_member_key_events(
             continue;
         }
 
-        if *prefix == own_prefix {
-            // Own KEL: fetch from identity service (always fresh)
-            let page = state
-                .identity_client
-                .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
-                .await
-                .map_err(|e| ApiError::internal_error(format!("Failed to fetch own KEL: {}", e)))?;
-            if !page.events.is_empty() {
-                result.insert(prefix.clone(), page);
-            }
-        } else if let Some(repo) = state.node.state_machine().member_kel_repo() {
-            // Other member KELs: fetch from local Raft-replicated store
-            if let Ok(page) = kels::serve_kel_page(repo, prefix, since.as_deref(), limit).await
-                && !page.events.is_empty()
-            {
-                result.insert(prefix.clone(), page);
-            }
+        // All member KELs (including own) are now in MemberKelRepository
+        if let Ok(page) =
+            kels::serve_kel_page(&state.member_kel_repo, prefix, since.as_deref(), limit).await
+            && !page.events.is_empty()
+        {
+            result.insert(prefix.clone(), page);
         }
     }
 

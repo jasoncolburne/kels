@@ -53,7 +53,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     ) -> Result<Self, KelsError> {
         let events = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
-                let (events, _) = store.load(p, i64::MAX as u64, 0).await?;
+                let (events, _) = store.load(p, crate::LOAD_ALL, 0).await?;
                 events
             }
             _ => Vec::new(),
@@ -147,7 +147,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
             return Ok(());
         };
-        let (events, _) = store.load(&prefix, i64::MAX as u64, 0).await?;
+        let (events, _) = store.load(&prefix, crate::LOAD_ALL, 0).await?;
         if !events.is_empty() {
             self.confirmed_cursor = events.len();
             self.events = events;

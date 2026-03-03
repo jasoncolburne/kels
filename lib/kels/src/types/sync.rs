@@ -21,6 +21,19 @@ pub fn hash_tip_saids(saids: &[&str]) -> String {
     Digest::blake3_256(concatenated.as_bytes()).qb64()
 }
 
+/// Notification from identity service that its KEL has been updated.
+///
+/// Sent immediately after anchoring or rotation so the local registry's
+/// `MemberKelRepository` is refreshed before any admin CLI proceeds.
+/// The prefix is inside the signed payload so it can't be spoofed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KelUpdatedNotification {
+    pub prefix: String,
+    pub timestamp: i64,
+    pub nonce: String,
+}
+
 /// Request payload for authenticated prefix listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

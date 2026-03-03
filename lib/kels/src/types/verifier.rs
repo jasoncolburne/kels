@@ -678,7 +678,7 @@ impl PagedKelSource for StoreKelSource<'_> {
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         if let Some(said) = since {
             // Scan to find the offset of the `since` SAID
-            let (all, _) = self.0.load(prefix, u64::MAX, 0).await?;
+            let (all, _) = self.0.load(prefix, crate::LOAD_ALL, 0).await?;
             let offset = all
                 .iter()
                 .position(|e| e.event.said == said)
