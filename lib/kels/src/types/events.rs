@@ -728,6 +728,9 @@ pub struct BatchKelsRequest {
     pub prefixes: HashMap<String, Option<String>>,
 }
 
+/// NOTE: `build_page_bytes` in `services/kels/src/handlers.rs` manually constructs
+/// this struct's JSON from cached bytes to avoid a serde round-trip. If you add or
+/// rename fields here, update `build_page_bytes` to match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedKeyEventPage {

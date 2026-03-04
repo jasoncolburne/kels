@@ -200,6 +200,115 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 Ok((signed_events, has_more))
             }
 
+            /// Get signed events after a given SAID (delta fetch — the since event itself is not returned).
+            ///
+            /// Uses a scalar subquery to find the serial of the since event, then fetches
+            /// events with `serial >= that serial`, filtering out the since event itself.
+            /// Returns `(events, has_more)` using the limit+2 pop pattern.
+            /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
+            pub async fn get_signed_history_since(
+                &self,
+                prefix: &str,
+                since_said: &str,
+                limit: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+                use verifiable_storage_postgres::QueryExecutor;
+
+                let subquery = verifiable_storage::ScalarSubquery::new(
+                    Self::TABLE_NAME,
+                    "serial",
+                    vec![verifiable_storage::Filter::Eq(
+                        "said".to_string(),
+                        verifiable_storage::Value::String(since_said.to_string()),
+                    )],
+                );
+
+                // Fetch limit + 2: one extra for the since event we'll filter out, one extra for has_more detection
+                // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
+                let clamped_limit = limit.min(i64::MAX as u64 - 2);
+                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .gte_scalar_subquery("serial", subquery)
+                    .order_by("serial", verifiable_storage_postgres::Order::Asc)
+                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
+                    .order_by("said", verifiable_storage_postgres::Order::Asc)
+                    .limit(clamped_limit + 2);
+                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+
+                // Filter out the since event itself (we want events *after* it,
+                // but we need >= its serial to include divergent events at the same serial)
+                events.retain(|e| e.said != since_said);
+
+                let has_more = events.len() > clamped_limit as usize;
+                if has_more {
+                    events.truncate(limit as usize);
+                }
+
+                if events.is_empty() {
+                    return Ok((vec![], false));
+                }
+
+                let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+                let signatures = self.get_signatures_by_saids(&saids).await?;
+
+                let mut signed_events = Vec::with_capacity(events.len());
+                for event in events {
+                    let sigs = signatures.get(&event.said).ok_or_else(|| {
+                        verifiable_storage::StorageError::StorageError(format!(
+                            "No signatures found for event {}",
+                            event.said
+                        ))
+                    })?;
+                    let sig_pairs: Vec<(String, String)> = sigs
+                        .iter()
+                        .map(|s| (s.public_key.clone(), s.signature.clone()))
+                        .collect();
+                    signed_events.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
+                }
+
+                Ok((signed_events, has_more))
+            }
+
+            /// Compute the effective SAID for a prefix by finding tip events (events with no successor).
+            ///
+            /// Uses a NOT EXISTS subquery to find tips directly in SQL rather than loading
+            /// all events into memory. Returns the tip SAID for non-divergent KELs, or a
+            /// deterministic hash of sorted tip SAIDs for divergent KELs.
+            pub async fn compute_prefix_effective_said(
+                &self,
+                prefix: &str,
+            ) -> Result<Option<String>, verifiable_storage::StorageError> {
+                use verifiable_storage_postgres::QueryExecutor;
+
+                let query = verifiable_storage::ColumnQuery::new(Self::TABLE_NAME, "said")
+                    .filter(verifiable_storage::Filter::Eq(
+                        "prefix".to_string(),
+                        verifiable_storage::Value::String(prefix.to_string()),
+                    ))
+                    .filter(verifiable_storage::Filter::NotExists(verifiable_storage::CorrelatedSubquery::new(
+                        Self::TABLE_NAME,
+                        "_cs",
+                        Self::TABLE_NAME,
+                        vec![("previous".to_string(), "said".to_string())],
+                        vec![verifiable_storage::Filter::Eq(
+                            "_cs.prefix".to_string(),
+                            verifiable_storage::Value::String(prefix.to_string()),
+                        )],
+                    )))
+                    .order(verifiable_storage_postgres::Order::Asc);
+
+                let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
+
+                match tip_saids.len() {
+                    0 => Ok(None),
+                    1 => Ok(Some(tip_saids.into_iter().next().unwrap_or_default())),
+                    _ => {
+                        let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
+                        Ok(Some(kels::hash_tip_saids(&refs)))
+                    }
+                }
+            }
+
             /// Store multiple items with their signatures in a single transaction.
             /// Ensures atomicity when saving multiple events (e.g., recovery + rotation).
             pub async fn create_batch_with_signatures(
@@ -331,9 +440,49 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         }
     };
 
+    let kel_server_impl = quote! {
+        #[async_trait::async_trait]
+        impl kels::KelServer for #repo_name {
+            async fn load_page(
+                &self,
+                prefix: &str,
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                self.get_signed_history(prefix, limit, offset)
+                    .await
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn load_page_since(
+                &self,
+                prefix: &str,
+                since_said: &str,
+                limit: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                self.get_signed_history_since(prefix, since_said, limit)
+                    .await
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels::KelsError> {
+                self.compute_prefix_effective_said(prefix)
+                    .await
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels::KelsError> {
+                use verifiable_storage::ChainedRepository;
+                let event: Option<kels::KeyEvent> = self.get_by_said(said).await.map_err(kels::KelsError::from)?;
+                Ok(event.map(|e| e.prefix))
+            }
+        }
+    };
+
     let expanded = quote! {
         #methods
         #trait_impl
+        #kel_server_impl
     };
 
     TokenStream::from(expanded)
