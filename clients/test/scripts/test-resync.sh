@@ -250,6 +250,7 @@ if [ "$MODE" = "verify" ]; then
     echo "Polling up to ${RESYNC_WAIT}s for anti-entropy to resolve stale entries..."
 
     RESYNC_RESOLVED=false
+    EVENTS_ARRIVED=false
     for i in $(seq 1 "$RESYNC_WAIT"); do
         NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
         STALE_SIZE=$(stale_count)
@@ -258,12 +259,9 @@ if [ "$MODE" = "verify" ]; then
             RESYNC_RESOLVED=true
             break
         fi
-        # If the stale hash was drained but events didn't arrive, the fetch
-        # failed after drain (e.g. DNS not yet fully repaired). Re-seed so
-        # the next anti-entropy cycle retries instead of waiting for Phase 2
-        # random sampling which is non-deterministic.
-        if [ "$STALE_SIZE" = "0" ] && [ "$NODE_A_COUNT" != "3" ]; then
-            stale_add "$PREFIX" "reseeded" > /dev/null
+        if [ "$NODE_A_COUNT" = "3" ] && [ "$EVENTS_ARRIVED" = "false" ]; then
+            echo "  Events arrived after ${i}s, waiting for stale hash to drain..."
+            EVENTS_ARRIVED=true
         fi
         sleep 1
     done

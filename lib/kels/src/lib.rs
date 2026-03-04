@@ -48,8 +48,7 @@ pub mod store;
 pub mod types;
 
 use std::env;
-
-use tracing::warn;
+use std::sync::LazyLock;
 
 #[cfg(feature = "redis")]
 pub use cache::{
@@ -77,14 +76,14 @@ pub use store::{FileKelStore, KelStore, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
     CachedKel, CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelUpdatedNotification,
-    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType,
-    Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
-    PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus,
-    ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord,
-    RaftLogEntry, RaftState, RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes,
-    SignedKeyEvent, SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce,
-    hash_tip_saids, validate_timestamp,
+    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent,
+    KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer,
+    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, PrefixListResponse,
+    PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotes,
+    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
+    RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent,
+    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids,
+    validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
@@ -109,13 +108,12 @@ pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
 /// At 512 events per page, 512 pages = ~262K events before failing secure.
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
 
-/// Read the max verification pages from env, falling back to the default.
-pub fn max_verification_pages() -> usize {
+static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
     match env::var("KELS_MAX_VERIFICATION_PAGES") {
         Ok(s) => match s.parse() {
             Ok(v) => v,
             Err(_) => {
-                warn!(
+                eprintln!(
                     "KELS_MAX_VERIFICATION_PAGES is set but not a valid usize: {:?}, using default {}",
                     s, DEFAULT_MAX_VERIFICATION_PAGES
                 );
@@ -124,6 +122,11 @@ pub fn max_verification_pages() -> usize {
         },
         Err(_) => DEFAULT_MAX_VERIFICATION_PAGES,
     }
+});
+
+/// Read the max verification pages, cached from env on first access.
+pub fn max_verification_pages() -> usize {
+    *MAX_VERIFICATION_PAGES
 }
 
 /// Maximum number of events returned in a single KEL response page.

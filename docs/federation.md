@@ -229,11 +229,11 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ### Member KEL Sync
 
-- Each member independently fetches its own KEL from the identity service and stores it locally
-- A periodic sync loop (every 30s) uses `forward_key_events` to fetch, verify, and store member KELs
-- Raft propagates lightweight sync triggers (`SyncMemberKel { prefix }`) so other members know when to refresh
+- Identity and completion handlers push KEL events directly to `POST /api/member-kels/events` using `KelsClient`
+- The submit endpoint fans out to all federation peers synchronously (best-effort, with 5s timeout)
+- A periodic anti-entropy loop (every 30s) syncs own KEL from identity, then compares effective SAIDs with each peer and pushes deltas
 - KELs survive registry restarts since they are stored in the local PostgreSQL database
-- Recovery propagates naturally: identity recovers → sync loop picks up → each member verifies independently
+- Recovery propagates naturally: identity recovers → push/AE loop picks up → each member verifies independently via `save_with_merge`
 - See [Registry Removal](design/registry-removal.md) for decommission procedures
 - See [Recovery Workflow](design/recovery-workflow.md) for the recovery architecture
 

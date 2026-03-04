@@ -63,10 +63,6 @@ pub enum FederationRequest {
         /// The signed vote.
         vote: Vote,
     },
-
-    /// Notify federation that a member's KEL has new events.
-    /// Other nodes should fetch and verify independently.
-    SyncMemberKel { prefix: String },
 }
 
 impl fmt::Display for FederationRequest {
@@ -110,9 +106,6 @@ impl fmt::Display for FederationRequest {
                     "VotePeer({}, voter={}, approve={})",
                     proposal_id, vote.voter, vote.approve
                 )
-            }
-            FederationRequest::SyncMemberKel { prefix } => {
-                write!(f, "SyncMemberKel(prefix={})", prefix)
             }
         }
     }
@@ -175,8 +168,6 @@ pub enum FederationResponse {
     HasVotes(String),
     /// Internal error
     InternalError(String),
-    /// Member KEL sync trigger acknowledged.
-    MemberKelSynced { prefix: String },
 }
 
 impl fmt::Display for FederationResponse {
@@ -234,9 +225,6 @@ impl fmt::Display for FederationResponse {
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
             FederationResponse::InternalError(msg) => write!(f, "InternalError({})", msg),
-            FederationResponse::MemberKelSynced { prefix } => {
-                write!(f, "MemberKelSynced(prefix={})", prefix)
-            }
         }
     }
 }

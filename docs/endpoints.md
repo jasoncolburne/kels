@@ -97,8 +97,9 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (from Raft state machine) |
 | POST | `/api/member-kels` | None | Batch fetch federation member KELs; body: `BatchKelsRequest { prefixes }` (defaults to all members if empty) |
-| GET | `/api/member-kels/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
-| POST | `/api/identity-kel-updated` | **Signed notification** | Identity KEL update notification (rate-limited, nonce-deduplicated); triggers member KEL sync |
+| POST | `/api/member-kels/events` | **Trusted prefix** | Submit member key events (push model); `?propagate=false` to skip fan-out; rate-limited per prefix and IP |
+| GET | `/api/member-kels/kel/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
+| GET | `/api/member-kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 
 #### Federation Protocol
 
@@ -107,7 +108,6 @@ All standalone endpoints plus:
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
-| POST | `/api/federation/sync-member-kel` | **Federation member** | Notify Raft that a member KEL needs syncing (prefix only, no events) |
 
 #### Admin API
 
@@ -125,7 +125,7 @@ All standalone endpoints plus:
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
 - Withdrawals: POST a v1 `PeerAdditionProposal` with `withdrawn_at` set; only allowed before any votes are cast
-- Identity KEL update notification: `SignedRequest<KelUpdatedNotification>` — per-IP rate limited (2/s burst 10), 30s timestamp window, nonce deduplicated. Triggers `SyncMemberKel` via Raft so other federation members refresh their local copy
+- Member KEL submit: events are pushed directly via `POST /api/member-kels/events`. Identity service and completion handlers push with `propagate=true` (default), which fans out to all peers. Fan-out calls and AE pushes use `propagate=false` to prevent loops. Per-prefix and per-IP rate limited.
 
 ## KELS Gossip Service
 

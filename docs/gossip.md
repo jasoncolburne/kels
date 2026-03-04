@@ -218,10 +218,9 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 **Phase 1 — Targeted repair of known-stale prefixes:**
 - Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → source_node_prefix` entries
 - For each entry, fetches the KEL from the source peer and submits locally
-- Failures are not re-queued (Phase 2 rediscovers if still needed)
-- If any stale entries were processed, Phase 2 is skipped (spread work across cycles)
+- Failures are re-queued for the next cycle (batch fetch failures and individual submit failures both re-record the stale entry)
 
-**Phase 2 — Random sampling (only when no stale entries):**
+**Phase 2 — Random sampling (runs every cycle):**
 - Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
 - Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs this is a deterministic Blake3 hash of sorted tip SAIDs
 - If digests match, done for this cycle

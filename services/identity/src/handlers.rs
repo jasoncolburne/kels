@@ -10,11 +10,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use cesr::Matter;
 use kels::{
-    KelUpdatedNotification, KelsError, KeyEventBuilder, KeyEventsQuery, KeyProvider,
-    MAX_EVENTS_PER_KEL_QUERY, MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage, SignedRequest,
-    generate_nonce,
+    KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,76 +174,30 @@ pub async fn get_key_events(
     Ok(Json(page))
 }
 
-/// Prepare a signed KEL-updated notification using the builder's current key.
+/// Push all KEL events to the local registry's member KEL endpoint.
 ///
-/// Caller must hold a lock on the builder. Returns `None` if the builder has no prefix
-/// or if signing fails.
-pub(crate) async fn prepare_signed_notification(
-    builder: &KeyEventBuilder<HsmKeyProvider>,
-) -> Option<SignedRequest<KelUpdatedNotification>> {
-    let prefix = builder.prefix()?.to_string();
-    let key_provider = builder.key_provider();
-
-    let notification = KelUpdatedNotification {
-        prefix: prefix.clone(),
-        timestamp: chrono::Utc::now().timestamp(),
-        nonce: generate_nonce(),
+/// Best-effort: logs warning on failure, doesn't block the caller.
+pub(crate) async fn push_kel_to_registry(state: &AppState) {
+    let registry_url = match state.registry_url.as_ref() {
+        Some(url) => url,
+        None => return,
     };
 
-    let payload_json = match serde_json::to_vec(&notification) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("Failed to serialize KEL update notification: {}", e);
-            return None;
-        }
-    };
+    let builder = state.builder.read().await;
+    let events = builder.events().to_vec();
+    drop(builder);
 
-    let signature = match key_provider.sign(&payload_json).await {
-        Ok(sig) => sig.qb64(),
-        Err(e) => {
-            tracing::warn!("Failed to sign KEL update notification: {}", e);
-            return None;
-        }
-    };
+    if events.is_empty() {
+        return;
+    }
 
-    Some(SignedRequest {
-        payload: notification,
-        peer_prefix: prefix,
-        signature,
-    })
-}
-
-/// Send a best-effort KEL-updated notification to the local registry.
-pub(crate) async fn send_kel_updated_notification(
-    state: &AppState,
-    signed: Option<SignedRequest<KelUpdatedNotification>>,
-) {
-    let (registry_url, signed) = match (state.registry_url.as_ref(), signed) {
-        (Some(url), Some(s)) => (url, s),
-        _ => return,
-    };
-
-    let url = format!("{}/api/identity-kel-updated", registry_url);
-    let result = state
-        .http_client
-        .post(&url)
-        .json(&signed)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await;
-
-    match result {
-        Ok(resp) if resp.status().is_success() => {
-            tracing::debug!("Registry acknowledged KEL update notification");
-        }
-        Ok(resp) => {
-            tracing::warn!(
-                "Registry rejected KEL update notification: {}",
-                resp.status()
-            );
+    let client = kels::KelsClient::with_path_prefix(registry_url, "/api/member-kels");
+    match client.submit_events(&events).await {
+        Ok(_) => {
+            tracing::debug!("Pushed KEL events to registry");
         }
         Err(e) => {
-            tracing::warn!("Failed to send KEL update notification to registry: {}", e);
+            tracing::warn!("Failed to push KEL events to registry: {}", e);
         }
     }
 }
@@ -263,15 +215,12 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
-    // Sign notification before KEL modification (key unchanged for ixn, but keeps pattern uniform)
-    let signed_notification = prepare_signed_notification(&builder).await;
-
     let ixn = builder
         .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
-    // Release write lock before sending notification
+    // Release write lock before pushing
     drop(builder);
 
     tracing::info!(
@@ -280,8 +229,8 @@ pub async fn anchor(
         ixn.event.said,
     );
 
-    // Best-effort notification to local registry
-    send_kel_updated_notification(&state, signed_notification).await;
+    // Best-effort push to local registry
+    push_kel_to_registry(&state).await;
 
     Ok(Json(AnchorResponse {
         event_said: ixn.event.said,
@@ -397,18 +346,12 @@ pub async fn rotate(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
 
-    // Sign notification before rotation (key changes during rotation, so must sign first)
-    let signed_notification = {
-        let builder = state.builder.read().await;
-        prepare_signed_notification(&builder).await
-    };
-
     let response = crate::server::perform_rotation(&state, signed.payload.mode)
         .await
         .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
 
-    // Best-effort notification to local registry
-    send_kel_updated_notification(&state, signed_notification).await;
+    // Best-effort push to local registry (after rotation, not before — we're pushing events)
+    push_kel_to_registry(&state).await;
 
     Ok(Json(response))
 }

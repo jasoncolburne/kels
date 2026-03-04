@@ -277,7 +277,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             pub async fn compute_prefix_effective_said(
                 &self,
                 prefix: &str,
-            ) -> Result<Option<String>, verifiable_storage::StorageError> {
+            ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
                 let query = verifiable_storage::ColumnQuery::new(Self::TABLE_NAME, "said")
@@ -301,10 +301,10 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 match tip_saids.len() {
                     0 => Ok(None),
-                    1 => Ok(Some(tip_saids.into_iter().next().unwrap_or_default())),
+                    1 => Ok(Some((tip_saids.into_iter().next().unwrap_or_default(), false))),
                     _ => {
                         let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
-                        Ok(Some(kels::hash_tip_saids(&refs)))
+                        Ok(Some((kels::hash_tip_saids(&refs), true)))
                     }
                 }
             }
@@ -468,6 +468,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels::KelsError> {
                 self.compute_prefix_effective_said(prefix)
                     .await
+                    .map(|opt| opt.map(|(said, _)| said))
                     .map_err(kels::KelsError::from)
             }
 

@@ -404,7 +404,8 @@ pub(crate) async fn submit_events(
                 .compute_prefix_effective_said(&prefix)
                 .await
             {
-                Ok(said) => said,
+                Ok(Some((said, _))) => Some(said),
+                Ok(None) => None,
                 Err(e) => {
                     warn!("Failed to compute effective SAID for {}: {}", prefix, e);
                     None
@@ -520,7 +521,7 @@ pub(crate) async fn get_effective_said(
         .await?;
 
     match effective {
-        Some(said) => Ok(Json(EffectiveSaidResponse { said })),
+        Some((said, divergent)) => Ok(Json(EffectiveSaidResponse { said, divergent })),
         None => Err(ApiError::not_found(format!("Prefix {} not found", prefix))),
     }
 }
@@ -729,8 +730,21 @@ pub(crate) async fn get_kels_batch(
                                     "Since SAID {} not found for {}, falling back to full fetch",
                                     since_said, prefix
                                 );
-                                kels::serve_kel_page(&state.repo.key_events, &prefix, None, limit)
-                                    .await?
+                                match kels::serve_kel_page(
+                                    &state.repo.key_events,
+                                    &prefix,
+                                    None,
+                                    limit,
+                                )
+                                .await
+                                {
+                                    Ok(page) => page,
+                                    Err(KelsError::EventNotFound(_)) => SignedKeyEventPage {
+                                        events: vec![],
+                                        has_more: false,
+                                    },
+                                    Err(e) => return Err(e.into()),
+                                }
                             }
                             Err(e) => return Err(e.into()),
                         };
@@ -747,10 +761,15 @@ pub(crate) async fn get_kels_batch(
     // Wait for all parallel fetches
     let results: Vec<Result<(String, Vec<u8>), ApiError>> = join_all(futures).await;
 
-    // Collect results, propagating first error if any
+    // Collect successful results, skipping failed prefixes
     let mut serialized_entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(results.len());
     for result in results {
-        serialized_entries.push(result?);
+        match result {
+            Ok(entry) => serialized_entries.push(entry),
+            Err(ApiError(status, Json(ref err))) => {
+                warn!("Batch fetch skipping prefix: {} ({})", err.error, status);
+            }
+        }
     }
 
     // Build JSON response by concatenating pre-serialized byte arrays.

@@ -542,7 +542,10 @@ impl SyncHandler {
         }
 
         // Resolving: fetch from KELS and compute effective tail SAID
-        let effective = self.fetch_local_effective_said(prefix).await?;
+        let effective = self
+            .fetch_local_effective_said(prefix)
+            .await?
+            .map(|(said, _)| said);
         if let Some(ref said) = effective {
             self.local_saids.insert(prefix.to_string(), said.clone());
         }
@@ -551,14 +554,17 @@ impl SyncHandler {
 
     /// Re-fetch effective tail SAID from local KELS and update cache.
     async fn refresh_local_effective_said(&mut self, prefix: &str) {
-        if let Ok(Some(effective)) = self.fetch_local_effective_said(prefix).await {
+        if let Ok(Some((effective, _))) = self.fetch_local_effective_said(prefix).await {
             self.local_saids.insert(prefix.to_string(), effective);
         }
     }
 
-    /// Resolving: fetch effective tail SAID from local KELS service.
+    /// Resolving: fetch effective tail SAID and divergence flag from local KELS service.
     /// A wrong answer just triggers an unnecessary sync (which itself verifies).
-    async fn fetch_local_effective_said(&self, prefix: &str) -> Result<Option<String>, SyncError> {
+    async fn fetch_local_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<(String, bool)>, SyncError> {
         self.kels_client
             .fetch_effective_said(prefix)
             .await
@@ -914,7 +920,9 @@ pub async fn run_anti_entropy_loop(
             );
 
             // Group stale prefixes by peer URL with local since SAIDs
-            let mut peer_groups: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+            // Tuple: (kel_prefix, local_said, source_node_prefix)
+            let mut peer_groups: HashMap<String, Vec<(String, Option<String>, String)>> =
+                HashMap::new();
             for (kel_prefix, source_node_prefix) in &stale_entries {
                 let kels_url = peers
                     .iter()
@@ -929,11 +937,13 @@ pub async fn run_anti_entropy_loop(
                     .fetch_effective_said(kel_prefix)
                     .await
                     .ok()
-                    .flatten();
-                peer_groups
-                    .entry(kels_url)
-                    .or_default()
-                    .push((kel_prefix.clone(), local_said));
+                    .flatten()
+                    .map(|(said, _)| said);
+                peer_groups.entry(kels_url).or_default().push((
+                    kel_prefix.clone(),
+                    local_said,
+                    source_node_prefix.clone(),
+                ));
             }
 
             // Batch fetch from each peer and process results
@@ -941,21 +951,22 @@ pub async fn run_anti_entropy_loop(
                 let remote_client = KelsClient::new(kels_url);
                 let request: HashMap<String, Option<String>> = prefix_group
                     .iter()
-                    .map(|(p, s)| (p.clone(), s.clone()))
+                    .map(|(p, s, _)| (p.clone(), s.clone()))
                     .collect();
 
                 let events_map = match remote_client.fetch_kels(&request).await {
                     Ok(map) => map,
                     Err(e) => {
                         warn!("Anti-entropy: batch fetch failed from {}: {}", kels_url, e);
-                        for (prefix, _) in prefix_group {
-                            warn!("Anti-entropy: failed to repair stale prefix {}", prefix);
+                        for (prefix, _, source) in prefix_group {
+                            warn!("Anti-entropy: re-queuing stale prefix {}", prefix);
+                            record_stale_prefix(redis.as_ref(), prefix, source).await;
                         }
                         continue;
                     }
                 };
 
-                for (kel_prefix, _since) in prefix_group {
+                for (kel_prefix, _since, source_node_prefix) in prefix_group {
                     let result = match events_map.get(kel_prefix) {
                         Some(page) if !page.events.is_empty() => {
                             let count = page.events.len();
@@ -983,16 +994,14 @@ pub async fn run_anti_entropy_loop(
                             warn!("Anti-entropy: KEL contested for {}", kel_prefix);
                         }
                         RepairResult::Failed => {
-                            // Don't re-add — Phase 2 will rediscover if still needed.
-                            // Re-adding causes a hot retry loop when the source peer
-                            // is unreachable.
-                            warn!("Anti-entropy: failed to repair stale prefix {}", kel_prefix);
+                            warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
+                            record_stale_prefix(redis.as_ref(), kel_prefix, source_node_prefix)
+                                .await;
                         }
                         RepairResult::NoOp => {}
                     }
                 }
             }
-            continue; // skip Phase 2 when we had stale entries
         }
 
         // Phase 2: Random sampling
@@ -1046,25 +1055,29 @@ pub async fn run_anti_entropy_loop(
             if has_seen_said(redis.as_ref(), &state.prefix, &state.said).await {
                 continue;
             }
-            // Resolving: fetch local effective SAID for delta comparison
-            let local_said = local_client
+            // Resolving: fetch local effective SAID and divergence flag for delta comparison
+            let (local_said, local_divergent) = match local_client
                 .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
-                .flatten();
-            to_fetch.push((state, local_said));
+                .flatten()
+            {
+                Some((said, divergent)) => (Some(said), Some(divergent)),
+                None => (None, None),
+            };
+            to_fetch.push((state, local_said, local_divergent));
         }
 
         // Batch fetch from remote and process results
         if !to_fetch.is_empty() {
             let request: HashMap<String, Option<String>> = to_fetch
                 .iter()
-                .map(|(state, local_said)| (state.prefix.clone(), local_said.clone()))
+                .map(|(state, local_said, _)| (state.prefix.clone(), local_said.clone()))
                 .collect();
 
             let events_map = remote_client.fetch_kels(&request).await.unwrap_or_default();
 
-            for (state, local_said) in &to_fetch {
+            for (state, _local_said, local_divergent) in &to_fetch {
                 let result = match events_map.get(&state.prefix) {
                     Some(page) if !page.events.is_empty() => {
                         let count = page.events.len();
@@ -1092,10 +1105,10 @@ pub async fn run_anti_entropy_loop(
                     }
                     RepairResult::Failed => {
                         // Resolving: check if local KEL is already divergent (three-way).
-                        // Use the local effective SAID we already fetched — if it exists
-                        // and differs from the remote, record seen to stop retrying.
-                        if local_said.is_some() {
-                            // We had local state but merge still failed — likely three-way
+                        // Only suppress retries when we know the local KEL is divergent,
+                        // indicating a three-way divergence scenario.
+                        if local_divergent == &Some(true) {
+                            // Local KEL is divergent and merge failed — likely three-way
                             // divergence (nodes hold different adversary branch pairs). Record
                             // the remote's SAID as seen to stop retrying. This is a resolving
                             // heuristic: a wrong guess either causes an unnecessary retry or
@@ -1126,7 +1139,8 @@ pub async fn run_anti_entropy_loop(
                 .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
-                .flatten();
+                .flatten()
+                .map(|(said, _)| said);
 
             match sync_prefix(
                 &local_client,

@@ -13,13 +13,14 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use dashmap::DashMap;
 use kels::{
     AdditionHistory, AdminRequest, BatchKelsRequest, CompletedProposalsResponse, DeregisterRequest,
-    ErrorCode, ErrorResponse, KelUpdatedNotification, KeyEventsQuery, NodeRegistration, Peer,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, KeyEventsQuery, NodeRegistration, Peer,
     PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, Proposal,
     ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory,
-    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -366,200 +367,86 @@ pub struct FederationState {
     pub node: Arc<FederationNode>,
     pub identity_client: Arc<IdentityClient>,
     pub member_kel_repo: crate::raft_store::MemberKelRepository,
-    /// Nonce deduplication for identity KEL update notifications (in-memory, single instance).
-    pub kel_update_nonce_cache: DashMap<String, Instant>,
-    /// Per-IP rate limiting for identity KEL update notifications.
-    pub kel_update_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
+    /// Per-IP rate limiting for member KEL submit endpoint.
+    pub member_kel_ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
+    /// Per-prefix rate limiting for member KEL submit endpoint.
+    pub member_kel_prefix_rate_limits: DashMap<String, (u32, Instant)>,
 }
 
-/// Eagerly sync a member's KEL to local MemberKelRepository.
+/// Push own KEL events to all federation members via KelsClient.
 ///
-/// For own prefix: fetches from identity service (authoritative source).
-/// For remote prefix: fetches from that member's registry.
-/// Times out after 5 seconds to avoid blocking handlers indefinitely.
-async fn sync_member_kel(state: &FederationState, member_prefix: &str) {
-    let prefix = member_prefix.to_string();
-    let fut = async {
-        let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
-            crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
-        ));
+/// Best-effort: logs warnings on failure. AE loop handles any gaps.
+async fn push_own_kel_to_members(state: &FederationState) {
+    let self_prefix = state.node.config().self_prefix.clone();
 
-        let own_prefix = state.identity_client.get_prefix().await.ok();
+    // Fetch own events from identity service (source of truth)
+    let source = kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
+    let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
+        crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
+    ));
 
-        let result = if own_prefix.as_deref() == Some(&prefix) {
-            let source =
-                kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
-            kels::forward_key_events(
-                &prefix,
-                &source,
-                &sink,
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
-            )
-            .await
-        } else if let Some(member) = state.node.config().member_by_prefix(&prefix) {
-            let source =
-                kels::HttpKelSource::new(&member.url, &format!("/api/member-kels/{}", prefix));
-            kels::forward_key_events(
-                &prefix,
-                &source,
-                &sink,
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
-            )
-            .await
-        } else {
+    // First, sync own KEL from identity to local MemberKelRepository
+    if let Err(e) = kels::forward_key_events(
+        &self_prefix,
+        &source,
+        &sink,
+        kels::MAX_EVENTS_PER_KEL_RESPONSE,
+        kels::max_verification_pages(),
+    )
+    .await
+    {
+        warn!(error = %e, "Failed to sync own KEL from identity before pushing to members");
+        return;
+    }
+
+    // Fetch events from local repo to push
+    let events = match state
+        .member_kel_repo
+        .get_signed_history(&self_prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
+        .await
+    {
+        Ok((events, _)) => events,
+        Err(e) => {
+            warn!(error = %e, "Failed to get own KEL events for push");
             return;
-        };
-
-        if let Err(e) = result {
-            warn!(prefix = %prefix, error = %e, "Failed to sync member KEL");
         }
     };
 
-    if tokio::time::timeout(Duration::from_secs(5), fut)
-        .await
-        .is_err()
-    {
-        warn!(prefix = %prefix, "Timed out syncing member KEL");
-    }
-}
-
-/// Rate limit constants for identity KEL update notifications.
-/// Conservative: only the local identity service should call this endpoint.
-const KEL_UPDATE_RATE_REFILL_PER_SECOND: u32 = 2;
-const KEL_UPDATE_RATE_BURST: u32 = 10;
-
-/// Nonce window for identity KEL update notifications (seconds).
-const KEL_UPDATE_NONCE_WINDOW_SECS: u64 = 30;
-
-/// Check per-IP rate limit for KEL update notifications.
-fn check_kel_update_rate_limit(
-    limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
-    ip: std::net::IpAddr,
-) -> Result<(), ApiError> {
-    let now = Instant::now();
-    let mut entry = limits.entry(ip).or_insert((KEL_UPDATE_RATE_BURST, now));
-    let elapsed = now.duration_since(entry.1);
-    let refill = (elapsed.as_secs_f64() * KEL_UPDATE_RATE_REFILL_PER_SECOND as f64) as u32;
-    if refill > 0 {
-        entry.0 = (entry.0 + refill).min(KEL_UPDATE_RATE_BURST);
-        entry.1 = now;
-    }
-    if entry.0 == 0 {
-        return Err(ApiError::rate_limited("Too many KEL update requests"));
-    }
-    entry.0 -= 1;
-    Ok(())
-}
-
-/// Handle notification from the local identity service that its KEL was updated.
-///
-/// Verifies the signed notification against the local identity KEL, then
-/// eagerly syncs the member KEL so it's fresh for subsequent operations.
-pub async fn identity_kel_updated(
-    State(state): State<Arc<FederationState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(signed_request): Json<SignedRequest<KelUpdatedNotification>>,
-) -> Result<StatusCode, ApiError> {
-    // 1. Rate limit
-    check_kel_update_rate_limit(&state.kel_update_rate_limits, addr.ip())?;
-
-    // 2. Timestamp validation
-    if !kels::validate_timestamp(signed_request.payload.timestamp, 30) {
-        return Err(ApiError::bad_request("Request timestamp expired"));
+    if events.is_empty() {
+        return;
     }
 
-    // 3. Nonce deduplication: evict expired entries, then reject duplicates
-    {
-        let now = Instant::now();
-        state.kel_update_nonce_cache.retain(|_, seen| {
-            now.duration_since(*seen) < Duration::from_secs(KEL_UPDATE_NONCE_WINDOW_SECS)
-        });
-        if state
-            .kel_update_nonce_cache
-            .insert(signed_request.payload.nonce.clone(), now)
-            .is_some()
-        {
-            return Err(ApiError::bad_request("Duplicate nonce"));
-        }
-    }
+    // Push to each member in parallel
+    let config = state.node.config();
+    let futures: Vec<_> = config
+        .members
+        .iter()
+        .filter(|m| m.prefix != self_prefix)
+        .map(|member| {
+            let events = events.clone();
+            let url = member.url.clone();
+            let prefix = member.prefix.clone();
+            async move {
+                let client = kels::KelsClient::with_path_prefix(&url, "/api/member-kels");
+                match tokio::time::timeout(
+                    Duration::from_secs(5),
+                    client.submit_events_no_propagate(&events),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(member = %prefix, error = %e, "Failed to push KEL to member");
+                    }
+                    Err(_) => {
+                        warn!(member = %prefix, "Timed out pushing KEL to member");
+                    }
+                }
+            }
+        })
+        .collect();
 
-    // 4. Verify prefix matches our own identity
-    if signed_request.payload.prefix != state.node.config().self_prefix {
-        return Err(ApiError::forbidden(
-            "Notification prefix does not match this registry's identity",
-        ));
-    }
-
-    // 5. Verify signature against our cached identity KEL
-    let store = kels::RepositoryKelStore::new(std::sync::Arc::new(
-        crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
-    ));
-    let ctx = kels::completed_verification(
-        &mut kels::StorePageLoader::new(&store),
-        &signed_request.payload.prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
-        std::iter::empty::<String>(),
-    )
-    .await
-    .map_err(|e| ApiError::internal_error(format!("Failed to verify identity KEL: {}", e)))?;
-
-    // Fail secure: if MemberKelRepository is empty, return 503
-    if ctx.is_empty() {
-        return Err(ApiError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Identity KEL not yet cached".to_string(),
-                code: ErrorCode::InternalError,
-            }),
-        ));
-    }
-
-    signed_request
-        .verify_signature_with_ctx(&ctx)
-        .map_err(|e| {
-            ApiError::unauthorized(format!("KEL update signature verification failed: {}", e))
-        })?;
-
-    // 6. Sync the member KEL from identity service
-    sync_member_kel(&state, &signed_request.payload.prefix).await;
-
-    Ok(StatusCode::OK)
-}
-
-/// Accept a sync-member-kel trigger and actually fetch the KEL.
-///
-/// Fetches the member's KEL to local storage, then notifies Raft so other
-/// members can do the same.
-pub async fn federation_sync_member_kel(
-    State(state): State<Arc<FederationState>>,
-    Json(body): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let prefix = body["prefix"]
-        .as_str()
-        .ok_or_else(|| ApiError::bad_request("Missing prefix"))?;
-
-    if !state.node.config().is_member(prefix) {
-        return Err(ApiError::forbidden(format!(
-            "Not a trusted member: {}",
-            prefix
-        )));
-    }
-
-    // Actually fetch the KEL
-    sync_member_kel(&state, prefix).await;
-
-    // Notify Raft so other members also sync
-    match state.node.sync_member_kel(prefix.to_string()).await {
-        Ok(FederationResponse::MemberKelSynced { prefix }) => Ok(Json(serde_json::json!({
-            "status": "synced",
-            "prefix": prefix
-        }))),
-        Ok(_) => Err(ApiError::internal_error("Unexpected response")),
-        Err(e) => Err(ApiError::internal_error(e.to_string())),
-    }
+    futures::future::join_all(futures).await;
 }
 
 /// Handle incoming Raft RPC from federation members.
@@ -607,7 +494,7 @@ pub async fn federation_rpc(
                 })?;
             let source = kels::HttpKelSource::new(
                 &member.url,
-                &format!("/api/member-kels/{}", signed_rpc.sender_prefix),
+                &format!("/api/member-kels/kel/{}", signed_rpc.sender_prefix),
             );
             kels::verify_key_events(
                 &signed_rpc.sender_prefix,
@@ -896,7 +783,6 @@ pub async fn admin_submit_addition_proposal(
         .map_err(|e| ApiError::bad_request(format!("Proposal chain verification failed: {}", e)))?;
 
     // 4. Verify each record's SAID is anchored in proposer's KEL
-    sync_member_kel(&state, &proposal.proposer).await;
     for record in &history.records {
         state
             .node
@@ -1012,7 +898,6 @@ pub async fn admin_submit_removal_proposal(
     })?;
 
     // 4. Verify each record's SAID is anchored in proposer's KEL
-    sync_member_kel(&state, &proposal.proposer).await;
     for record in &history.records {
         state
             .node
@@ -1172,7 +1057,6 @@ pub async fn admin_vote_proposal(
     }
 
     // 5. Verify vote SAID is anchored in voter's KEL
-    sync_member_kel(&state, &vote.voter).await;
     state
         .node
         .verify_anchoring(&vote.said, &vote.voter)
@@ -1246,11 +1130,8 @@ pub async fn admin_vote_proposal(
                                 ))
                             })?;
 
-                        // Sync own KEL after anchoring, then notify Raft so all members get it
-                        sync_member_kel(&state, &self_prefix).await;
-                        if let Err(e) = state.node.sync_member_kel(self_prefix.clone()).await {
-                            warn!(error = %e, "Failed to notify Raft of member KEL sync after peer addition anchoring");
-                        }
+                        // Push own KEL to all members after anchoring
+                        push_own_kel_to_members(&state).await;
 
                         state.node.add_peer(peer.clone()).await.map_err(|e| {
                             ApiError::internal_error(format!("Failed to add peer via Raft: {}", e))
@@ -1331,11 +1212,8 @@ pub async fn admin_vote_proposal(
                             ))
                         })?;
 
-                    // Sync own KEL after anchoring, then notify Raft so all members get it
-                    sync_member_kel(&state, &self_prefix).await;
-                    if let Err(e) = state.node.sync_member_kel(self_prefix.clone()).await {
-                        warn!(error = %e, "Failed to notify Raft of member KEL sync after peer removal anchoring");
-                    }
+                    // Push own KEL to all members after anchoring
+                    push_own_kel_to_members(&state).await;
 
                     state.node.remove_peer(deactivated).await.map_err(|e| {
                         ApiError::internal_error(format!("Failed to remove peer via Raft: {}", e))
@@ -1410,6 +1288,188 @@ pub async fn list_peers_federated(
         .collect();
 
     Ok(Json(PeersResponse { peers: histories }))
+}
+
+/// Query parameters for the member KEL submit endpoint.
+#[derive(Debug, Deserialize)]
+pub struct PropagateQuery {
+    #[serde(default = "default_propagate")]
+    pub propagate: bool,
+}
+
+fn default_propagate() -> bool {
+    true
+}
+
+/// Per-prefix rate limit constants for member KEL submissions.
+const MAX_MEMBER_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 60;
+
+/// Submit member key events (push model).
+///
+/// Accepts signed key events for a federation member's KEL. If `propagate` is true
+/// (default), fans out to all federation members. Receiving members see `propagate=false`
+/// and store without further fan-out.
+///
+/// Follows the KELS submit handler pattern: signature pre-validation, save_with_merge,
+/// per-prefix and per-IP rate limiting.
+pub async fn submit_member_key_events(
+    State(state): State<Arc<FederationState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Query(query): Query<PropagateQuery>,
+    Json(events): Json<Vec<SignedKeyEvent>>,
+) -> Result<Json<kels::BatchSubmitResponse>, ApiError> {
+    if events.is_empty() {
+        return Ok(Json(kels::BatchSubmitResponse {
+            diverged_at: None,
+            applied: true,
+        }));
+    }
+
+    // Extract prefix from first event, validate all events share the same prefix
+    let prefix = events[0].event.prefix.clone();
+    for event in &events {
+        if event.event.prefix != prefix {
+            return Err(ApiError::bad_request(
+                "All events must share the same prefix",
+            ));
+        }
+    }
+
+    // Check trusted prefix
+    if !state.node.config().is_trusted_prefix(&prefix) {
+        return Err(ApiError::forbidden(format!(
+            "Not a trusted member prefix: {}",
+            prefix
+        )));
+    }
+
+    // Per-IP rate limiting
+    check_ip_rate_limit(&state.member_kel_ip_rate_limits, addr.ip())?;
+
+    // Per-prefix rate limiting
+    {
+        let now = Instant::now();
+        let mut entry = state
+            .member_kel_prefix_rate_limits
+            .entry(prefix.clone())
+            .or_insert((0, now));
+        if now.duration_since(entry.1) >= Duration::from_secs(60) {
+            entry.0 = 1;
+            entry.1 = now;
+        } else {
+            entry.0 += 1;
+            if entry.0 > MAX_MEMBER_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+                return Err(ApiError::rate_limited(
+                    "Too many submissions for this prefix",
+                ));
+            }
+        }
+    }
+
+    // Signature pre-validation (fast rejection before expensive merge)
+    for signed_event in &events {
+        if signed_event.signatures.is_empty() {
+            return Err(ApiError::bad_request("Event missing signature"));
+        }
+        for sig in &signed_event.signatures {
+            cesr::Signature::from_qb64(&sig.signature)
+                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
+        }
+        if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
+            return Err(ApiError::bad_request(
+                "Dual signatures required for recovery event",
+            ));
+        }
+    }
+
+    // Full merge: verification, divergence detection, recovery.
+    let outcome = state
+        .member_kel_repo
+        .save_with_merge(&prefix, &events)
+        .await
+        .map_err(|e| match e {
+            kels::KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
+            kels::KelsError::InvalidKeyEvent(msg) => ApiError::bad_request(msg),
+            kels::KelsError::InvalidSignature(msg) => ApiError::bad_request(msg),
+            kels::KelsError::KelDecommissioned => {
+                ApiError::unauthorized("KEL is decommissioned".to_string())
+            }
+            kels::KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
+            _ => ApiError::internal_error(e.to_string()),
+        })?;
+
+    let applied = matches!(
+        outcome.result,
+        kels::KelMergeResult::Accepted
+            | kels::KelMergeResult::Recovered
+            | kels::KelMergeResult::Contested
+            | kels::KelMergeResult::Diverged
+    );
+
+    // Fan out to members if propagate is true and events were applied
+    if query.propagate && applied {
+        let config = state.node.config();
+        let self_prefix = config.self_prefix.clone();
+        let futures: Vec<_> = config
+            .members
+            .iter()
+            .filter(|m| m.prefix != self_prefix)
+            .map(|member| {
+                let events = events.clone();
+                let url = member.url.clone();
+                let member_prefix = member.prefix.clone();
+                async move {
+                    let client = kels::KelsClient::with_path_prefix(&url, "/api/member-kels");
+                    match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        client.submit_events_no_propagate(&events),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            warn!(member = %member_prefix, error = %e, "Failed to fan out member KEL events");
+                        }
+                        Err(_) => {
+                            warn!(member = %member_prefix, "Timed out fanning out member KEL events");
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        futures::future::join_all(futures).await;
+    }
+
+    Ok(Json(kels::BatchSubmitResponse {
+        diverged_at: outcome.diverged_at,
+        applied,
+    }))
+}
+
+/// Get the effective SAID for a member's KEL prefix.
+///
+/// **RESOLVING ONLY — NOT VERIFIED.** Used for sync comparison.
+/// A wrong value triggers an unnecessary sync, not a security hole.
+pub async fn get_member_effective_said(
+    State(state): State<Arc<FederationState>>,
+    Path(prefix): Path<String>,
+) -> Result<Json<EffectiveSaidResponse>, ApiError> {
+    match state
+        .member_kel_repo
+        .compute_prefix_effective_said(&prefix)
+        .await
+    {
+        Ok(Some((said, divergent))) => Ok(Json(EffectiveSaidResponse { said, divergent })),
+        Ok(None) => Err(ApiError::not_found(format!(
+            "No KEL found for prefix: {}",
+            prefix
+        ))),
+        Err(e) => Err(ApiError::internal_error(format!(
+            "Failed to compute effective SAID: {}",
+            e
+        ))),
+    }
 }
 
 /// Public endpoint to get a specific federation member's KEL with pagination.

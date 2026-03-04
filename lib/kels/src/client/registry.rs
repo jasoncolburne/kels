@@ -442,7 +442,7 @@ impl KelsRegistryClient {
         limit: usize,
     ) -> Result<crate::SignedKeyEventPage, KelsError> {
         let mut url = format!(
-            "{}/api/member-kels/{}?limit={}",
+            "{}/api/member-kels/kel/{}?limit={}",
             self.base_url, prefix, limit
         );
         if let Some(since) = since {

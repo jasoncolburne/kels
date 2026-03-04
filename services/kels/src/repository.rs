@@ -87,7 +87,8 @@ impl KeyEventRepository {
         // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
             if self.is_divergent(&state.prefix).await?
-                && let Some(effective) = self.compute_prefix_effective_said(&state.prefix).await?
+                && let Some((effective, _)) =
+                    self.compute_prefix_effective_said(&state.prefix).await?
             {
                 state.said = effective;
             }

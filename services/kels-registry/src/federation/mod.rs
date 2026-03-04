@@ -605,60 +605,6 @@ impl FederationNode {
                 .collect(),
         }
     }
-
-    /// Notify the federation that a member's KEL has new events.
-    ///
-    /// On the leader, writes directly to Raft. On followers, forwards via HTTP
-    /// to the leader's `/api/federation/sync-member-kel` endpoint.
-    pub async fn sync_member_kel(
-        &self,
-        prefix: String,
-    ) -> Result<FederationResponse, FederationError> {
-        if self.is_leader().await {
-            let request = FederationRequest::SyncMemberKel {
-                prefix: prefix.clone(),
-            };
-            let result = self
-                .raft
-                .client_write(request)
-                .await
-                .map_err(|e| FederationError::RaftError(e.to_string()))?;
-            return Ok(result.response().clone());
-        }
-
-        // Forward to leader via HTTP
-        let leader_url = self
-            .leader_url()
-            .await
-            .ok_or_else(|| FederationError::RaftError("No leader known".to_string()))?;
-
-        let url = format!(
-            "{}/api/federation/sync-member-kel",
-            leader_url.trim_end_matches('/')
-        );
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-        let resp = client
-            .post(&url)
-            .json(&serde_json::json!({ "prefix": prefix }))
-            .send()
-            .await
-            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-        if resp.status().is_success() {
-            Ok(FederationResponse::MemberKelSynced { prefix })
-        } else {
-            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            let error = body["error"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
-            Err(FederationError::RaftError(error))
-        }
-    }
 }
 
 /// Federation status information.

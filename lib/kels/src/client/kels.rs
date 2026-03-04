@@ -21,17 +21,24 @@ use crate::{
 #[derive(Clone)]
 pub struct KelsClient {
     base_url: String,
+    path_prefix: String,
     client: reqwest::Client,
 }
 
 impl KelsClient {
     pub fn new(base_url: &str) -> Self {
+        Self::with_path_prefix(base_url, "/api/kels")
+    }
+
+    /// Create a client with a custom path prefix (e.g., "/api/member-kels").
+    pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
+            path_prefix: path_prefix.to_string(),
             client,
         }
     }
@@ -44,6 +51,7 @@ impl KelsClient {
             .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
+            path_prefix: "/api/kels".to_string(),
             client,
         }
     }
@@ -101,12 +109,28 @@ impl KelsClient {
         &self,
         events: &[SignedKeyEvent],
     ) -> Result<BatchSubmitResponse, KelsError> {
-        let resp = self
-            .client
-            .post(format!("{}/api/kels/events", self.base_url))
-            .json(events)
-            .send()
-            .await?;
+        self.submit_events_inner(events, true).await
+    }
+
+    /// Submit events without triggering fan-out propagation on the receiver.
+    pub async fn submit_events_no_propagate(
+        &self,
+        events: &[SignedKeyEvent],
+    ) -> Result<BatchSubmitResponse, KelsError> {
+        self.submit_events_inner(events, false).await
+    }
+
+    async fn submit_events_inner(
+        &self,
+        events: &[SignedKeyEvent],
+        propagate: bool,
+    ) -> Result<BatchSubmitResponse, KelsError> {
+        let mut url = format!("{}{}/events", self.base_url, self.path_prefix);
+        if !propagate {
+            url.push_str("?propagate=false");
+        }
+
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
@@ -135,7 +159,10 @@ impl KelsClient {
         since: Option<&str>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
-        let mut url = format!("{}/api/kels/kel/{}?limit={}", self.base_url, prefix, limit);
+        let mut url = format!(
+            "{}{}/kel/{}?limit={}",
+            self.base_url, self.path_prefix, prefix, limit
+        );
         if let Some(since_said) = since {
             url.push_str(&format!("&since={}", since_said));
         }
@@ -207,19 +234,27 @@ impl KelsClient {
     /// **RESOLVING ONLY — NOT VERIFIED.** Use only for sync comparison.
     /// A wrong value triggers an unnecessary sync, not a security hole.
     /// Returns `None` if the prefix doesn't exist.
-    pub async fn fetch_effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+    pub async fn fetch_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<(String, bool)>, KelsError> {
         let resp = self
             .client
             .get(format!(
-                "{}/api/kels/kel/{}/effective-said",
-                self.base_url, prefix
+                "{}{}/kel/{}/effective-said",
+                self.base_url, self.path_prefix, prefix
             ))
             .send()
             .await?;
 
         if resp.status().is_success() {
             let body: serde_json::Value = resp.json().await?;
-            Ok(body.get("said").and_then(|s| s.as_str()).map(String::from))
+            let said = body.get("said").and_then(|s| s.as_str()).map(String::from);
+            let divergent = body
+                .get("divergent")
+                .and_then(|d| d.as_bool())
+                .unwrap_or(false);
+            Ok(said.map(|s| (s, divergent)))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)
         } else {
@@ -232,7 +267,10 @@ impl KelsClient {
     pub async fn fetch_kel_audit(&self, prefix: &str) -> Result<Vec<KelsAuditRecord>, KelsError> {
         let resp = self
             .client
-            .get(format!("{}/api/kels/kel/{}/audit", self.base_url, prefix))
+            .get(format!(
+                "{}{}/kel/{}/audit",
+                self.base_url, self.path_prefix, prefix
+            ))
             .send()
             .await?;
 
@@ -262,7 +300,7 @@ impl KelsClient {
         let signed = crate::sign_request(signer, &request).await?;
         let resp = self
             .client
-            .post(format!("{}/api/kels/prefixes", self.base_url))
+            .post(format!("{}{}/prefixes", self.base_url, self.path_prefix))
             .json(&signed)
             .send()
             .await?;
@@ -279,7 +317,10 @@ impl KelsClient {
     pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
         let resp = self
             .client
-            .get(format!("{}/api/kels/events/{}/exists", self.base_url, said))
+            .get(format!(
+                "{}{}/events/{}/exists",
+                self.base_url, self.path_prefix, said
+            ))
             .send()
             .await?;
 
@@ -310,7 +351,7 @@ impl KelsClient {
 
             let resp = self
                 .client
-                .post(format!("{}/api/kels/kels", self.base_url))
+                .post(format!("{}{}/kels", self.base_url, self.path_prefix))
                 .json(&request)
                 .send()
                 .await?;
@@ -356,6 +397,13 @@ mod tests {
     fn test_client_with_timeout() {
         let client = KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60));
         assert_eq!(client.base_url(), "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_client_with_path_prefix() {
+        let client = KelsClient::with_path_prefix("http://registry:8080", "/api/member-kels");
+        assert_eq!(client.base_url(), "http://registry:8080");
+        assert_eq!(client.path_prefix, "/api/member-kels");
     }
 
     // ==================== HTTP Client Tests with Mock Server ====================

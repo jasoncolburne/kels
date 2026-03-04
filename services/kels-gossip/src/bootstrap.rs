@@ -451,7 +451,7 @@ impl BootstrapSync {
             .fetch_effective_said(&remote_state.prefix)
             .await
         {
-            Ok(Some(local_effective)) => {
+            Ok(Some((local_effective, _))) => {
                 if local_effective == remote_state.said {
                     None // In sync
                 } else {

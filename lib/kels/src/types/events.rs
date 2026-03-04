@@ -686,6 +686,7 @@ pub struct BatchSubmitResponse {
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveSaidResponse {
     pub said: String,
+    pub divergent: bool,
 }
 
 /// Audit record for tracking archived events during recovery/contest

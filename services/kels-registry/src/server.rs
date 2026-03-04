@@ -38,7 +38,7 @@ pub fn create_router(
             .route("/api/nodes/status", post(handlers::update_status))
             .with_state(state);
 
-        // Peer discovery and identity KEL update notification
+        // Peer discovery and member KEL endpoints
         let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
             .route(
@@ -46,12 +46,16 @@ pub fn create_router(
                 post(handlers::get_all_member_key_events),
             )
             .route(
-                "/api/member-kels/:prefix",
+                "/api/member-kels/events",
+                post(handlers::submit_member_key_events),
+            )
+            .route(
+                "/api/member-kels/kel/:prefix",
                 get(handlers::get_member_key_events),
             )
             .route(
-                "/api/identity-kel-updated",
-                post(handlers::identity_kel_updated),
+                "/api/member-kels/kel/:prefix/effective-said",
+                get(handlers::get_member_effective_said),
             );
 
         // Federation protocol
@@ -61,10 +65,6 @@ pub fn create_router(
             .route(
                 "/api/federation/proposals",
                 get(handlers::list_completed_proposals),
-            )
-            .route(
-                "/api/federation/sync-member-kel",
-                post(handlers::federation_sync_member_kel),
             );
 
         // Admin API (localhost only) for proposal and peer management
@@ -195,13 +195,13 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         });
                     }
 
-                    // Spawn KEL sync loop (runs on every node)
+                    // Spawn member KEL sync loop (runs on every node)
                     {
                         let sync_node = node.clone();
                         let sync_identity = identity_client.clone();
                         let sync_member_kel_repo = repo.member_kels.clone();
                         tokio::spawn(async move {
-                            crate::federation::sync::run_kel_sync_loop(
+                            crate::federation::sync::run_member_kel_sync_loop(
                                 sync_node,
                                 sync_identity,
                                 sync_member_kel_repo,
@@ -217,8 +217,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                             node,
                             identity_client: identity_client.clone(),
                             member_kel_repo: repo.member_kels.clone(),
-                            kel_update_nonce_cache: dashmap::DashMap::new(),
-                            kel_update_rate_limits: dashmap::DashMap::new(),
+                            member_kel_ip_rate_limits: dashmap::DashMap::new(),
+                            member_kel_prefix_rate_limits: dashmap::DashMap::new(),
                         })),
                     )
                 }

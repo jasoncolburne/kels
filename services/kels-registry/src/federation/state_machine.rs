@@ -403,10 +403,6 @@ impl StateMachineData {
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
-            FederationRequest::SyncMemberKel { prefix } => {
-                info!("Member KEL sync trigger for prefix={}", prefix);
-                FederationResponse::MemberKelSynced { prefix }
-            }
             FederationRequest::VotePeer { proposal_id, vote } => {
                 let voter = vote.voter.clone();
                 let approve = vote.approve;
@@ -1105,23 +1101,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    // Verify SyncMemberKel is from a trusted member
-                    if let FederationRequest::SyncMemberKel { ref prefix } = request
-                        && !self.config.is_trusted_prefix(prefix)
-                    {
-                        warn!(
-                            prefix = %prefix,
-                            "SyncMemberKel from non-member prefix - rejecting"
-                        );
-                        if let Some(r) = responder {
-                            r.send(FederationResponse::InternalError(format!(
-                                "Not a trusted member: {}",
-                                prefix
-                            )));
-                        }
-                        continue;
-                    }
-
                     // Verify addition proposal threshold floor and anchoring
                     if let FederationRequest::SubmitAdditionProposal(ref prop) = request {
                         // Exact-match against current config is in the leader handler;
@@ -1197,60 +1176,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
                     }
 
-                    let response = sm.apply(request.clone());
-
-                    // After SyncMemberKel apply, actually fetch the KEL
-                    if let FederationRequest::SyncMemberKel { ref prefix } = request
-                        && let Some(ref repo) = self.member_kel_repo
-                    {
-                        let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
-                            crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
-                        ));
-
-                        let result = if prefix == &self.config.self_prefix {
-                            // Own prefix: fetch from identity service
-                            if let Some(ref identity_url) = self.identity_url {
-                                let source =
-                                    kels::HttpKelSource::new(identity_url, "/api/identity/kel");
-                                kels::forward_key_events(
-                                    prefix,
-                                    &source,
-                                    &sink,
-                                    kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                                    kels::max_verification_pages(),
-                                )
-                                .await
-                            } else {
-                                Ok(())
-                            }
-                        } else if let Some(member) = self.config.member_by_prefix(prefix) {
-                            // Remote prefix: fetch from their registry
-                            let source = kels::HttpKelSource::new(
-                                &member.url,
-                                &format!("/api/member-kels/{}", prefix),
-                            );
-                            kels::forward_key_events(
-                                prefix,
-                                &source,
-                                &sink,
-                                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                                kels::max_verification_pages(),
-                            )
-                            .await
-                        } else {
-                            Ok(())
-                        };
-
-                        if let Err(e) = result {
-                            warn!(
-                                prefix = %prefix,
-                                error = %e,
-                                "Failed to sync member KEL"
-                            );
-                        }
-                    }
-
-                    response
+                    sm.apply(request.clone())
                 }
                 EntryPayload::Membership(membership) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), membership);

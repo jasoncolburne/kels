@@ -295,12 +295,6 @@ async fn check_and_rotate(
     if should_rotate {
         info!("Triggering scheduled rotation");
 
-        // Sign notification before rotation (key changes, so must sign first)
-        let signed_notification = {
-            let builder = state.builder.read().await;
-            handlers::prepare_signed_notification(&builder).await
-        };
-
         perform_rotation(state, RotateMode::Scheduled).await?;
 
         // Submit updated KEL to local KELS service if configured
@@ -325,8 +319,8 @@ async fn check_and_rotate(
             }
         }
 
-        // Best-effort notification to local registry
-        handlers::send_kel_updated_notification(state, signed_notification).await;
+        // Best-effort push to local registry (after rotation, not before)
+        handlers::push_kel_to_registry(state).await;
 
         return Ok(true);
     }
