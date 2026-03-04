@@ -258,6 +258,13 @@ if [ "$MODE" = "verify" ]; then
             RESYNC_RESOLVED=true
             break
         fi
+        # If the stale hash was drained but events didn't arrive, the fetch
+        # failed after drain (e.g. DNS not yet fully repaired). Re-seed so
+        # the next anti-entropy cycle retries instead of waiting for Phase 2
+        # random sampling which is non-deterministic.
+        if [ "$STALE_SIZE" = "0" ] && [ "$NODE_A_COUNT" != "3" ]; then
+            stale_add "$PREFIX" "reseeded" > /dev/null
+        fi
         sleep 1
     done
 

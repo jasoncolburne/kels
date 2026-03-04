@@ -13,6 +13,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     slice,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -32,8 +33,8 @@ pub fn compute_rotation_hash(public_key: &str) -> String {
 /// Per-branch cryptographic state tracked during verification.
 #[derive(Clone)]
 struct BranchState {
-    tip: SignedKeyEvent,
-    establishment_tip: SignedKeyEvent,
+    tip: Arc<SignedKeyEvent>,
+    establishment_tip: Arc<SignedKeyEvent>,
     current_public_key: String,
     pending_rotation_hash: Option<String>,
     pending_recovery_hash: Option<String>,
@@ -52,8 +53,8 @@ fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsE
     Ok((
         tip.tip.event.said.clone(),
         BranchState {
-            tip: tip.tip.clone(),
-            establishment_tip: tip.establishment_tip.clone(),
+            tip: Arc::new(tip.tip.clone()),
+            establishment_tip: Arc::new(tip.establishment_tip.clone()),
             current_public_key: pk.clone(),
             pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
             pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
@@ -214,8 +215,8 @@ impl KelVerifier {
             .branches
             .into_values()
             .map(|bs| BranchTip {
-                tip: bs.tip,
-                establishment_tip: bs.establishment_tip,
+                tip: Arc::unwrap_or_clone(bs.tip),
+                establishment_tip: Arc::unwrap_or_clone(bs.establishment_tip),
             })
             .collect();
 
@@ -396,11 +397,12 @@ impl KelVerifier {
         Self::verify_signatures(signed_event, &public_key)?;
 
         // Initialize branch
+        let arc_event = Arc::new(signed_event.clone());
         self.branches.insert(
             event.said.clone(),
             BranchState {
-                tip: signed_event.clone(),
-                establishment_tip: signed_event.clone(),
+                tip: Arc::clone(&arc_event),
+                establishment_tip: arc_event,
                 current_public_key: qb64.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
@@ -460,9 +462,10 @@ impl KelVerifier {
             let public_key = PublicKey::from_qb64(qb64)?;
             Self::verify_signatures(signed_event, &public_key)?;
 
+            let arc_event = Arc::new(signed_event.clone());
             Ok(BranchState {
-                tip: signed_event.clone(),
-                establishment_tip: signed_event.clone(),
+                tip: Arc::clone(&arc_event),
+                establishment_tip: arc_event,
                 current_public_key: qb64.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
@@ -473,8 +476,8 @@ impl KelVerifier {
             Self::verify_signatures(signed_event, &public_key)?;
 
             Ok(BranchState {
-                tip: signed_event.clone(),
-                establishment_tip: branch.establishment_tip.clone(),
+                tip: Arc::new(signed_event.clone()),
+                establishment_tip: Arc::clone(&branch.establishment_tip),
                 current_public_key: branch.current_public_key.clone(),
                 pending_rotation_hash: branch.pending_rotation_hash.clone(),
                 pending_recovery_hash: branch.pending_recovery_hash.clone(),
