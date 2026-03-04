@@ -349,24 +349,15 @@ impl KelVerifier {
             new_branches.insert(event.event.said.clone(), new_state);
         }
 
-        // For branches not extended by any event in this generation,
-        // this is an error — all branches must advance together
-        // (events are ordered serial ASC, so if a branch has no event
-        // at this serial, it means its tip is stale)
-        //
-        // Actually, in a divergent KEL stored as serial ASC, kind sort_priority ASC, said ASC,
-        // branches that were NOT extended simply don't have events at this
-        // serial. That only happens if one branch is shorter. Keep those
-        // branches as-is.
+        // In a divergent KEL, one branch may be shorter than the other.
+        // Keep un-extended branches as-is (they have no event at this serial).
         for (said, state) in &self.branches {
-            if new_branches.is_empty()
-                || events
-                    .iter()
-                    .any(|e| e.event.previous.as_deref() == Some(said.as_str()))
+            if events
+                .iter()
+                .any(|e| e.event.previous.as_deref() == Some(said.as_str()))
             {
                 continue;
             }
-            // Branch not extended — keep it
             new_branches.insert(said.clone(), state.clone());
         }
 
