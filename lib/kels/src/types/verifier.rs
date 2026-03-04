@@ -849,7 +849,7 @@ impl PagedKelSink for NoOpSink {
 ///
 /// **WARNING:** This entity collects events in an unbounded loop, use with care.
 pub(crate) struct CollectSink {
-    events: tokio::sync::RwLock<Vec<SignedKeyEvent>>,
+    events: tokio::sync::Mutex<Vec<SignedKeyEvent>>,
 }
 
 impl Default for CollectSink {
@@ -861,7 +861,7 @@ impl Default for CollectSink {
 impl CollectSink {
     pub fn new() -> Self {
         Self {
-            events: tokio::sync::RwLock::new(Vec::new()),
+            events: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -873,7 +873,7 @@ impl CollectSink {
 #[async_trait]
 impl PagedKelSink for CollectSink {
     async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        self.events.write().await.extend_from_slice(events);
+        self.events.lock().await.extend_from_slice(events);
         Ok(())
     }
 }
