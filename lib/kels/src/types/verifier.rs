@@ -955,8 +955,15 @@ async fn transfer_key_events(
     mut verifier: Option<&mut KelVerifier>,
     page_size: usize,
     max_pages: usize,
+    since: Option<&str>,
 ) -> Result<(), KelsError> {
-    let mut since: Option<String> = None;
+    if verifier.is_some() && since.is_some() {
+        return Err(KelsError::InvalidKel(
+            "Cannot use since with verification — verifier must see the full chain".to_string(),
+        ));
+    }
+
+    let mut since: Option<String> = since.map(String::from);
     let mut deferred: Option<SignedKeyEvent> = None;
     // Hold back the last event when has_more is true. If the next page's
     // first event has the same serial, we've found a divergent pair. If not,
@@ -1138,6 +1145,7 @@ pub async fn verify_key_events(
         Some(&mut verifier),
         page_size,
         max_pages,
+        None,
     )
     .await?;
     verifier.into_verification()
@@ -1162,6 +1170,7 @@ pub async fn collect_key_events(
         Some(&mut verifier),
         page_size,
         max_pages,
+        None,
     )
     .await?;
     let ctx = verifier.into_verification()?;
@@ -1169,17 +1178,22 @@ pub async fn collect_key_events(
 }
 
 /// Forward without verification: pages through source, sends to sink.
+///
+/// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 pub async fn forward_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
     sink: &(dyn PagedKelSink + Sync),
     page_size: usize,
     max_pages: usize,
+    since: Option<&str>,
 ) -> Result<(), KelsError> {
-    transfer_key_events(prefix, source, sink, None, page_size, max_pages).await
+    transfer_key_events(prefix, source, sink, None, page_size, max_pages, since).await
 }
 
 /// Resolve: pages through source, collects events (no verification).
+///
+/// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 ///
 /// **WARNING:** This is an unbounded call, and should be used with care.
 pub async fn resolve_key_events(
@@ -1187,110 +1201,24 @@ pub async fn resolve_key_events(
     source: &(dyn PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
+    since: Option<&str>,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let sink = CollectSink::new();
-    transfer_key_events(prefix, source, &sink, None, page_size, max_pages).await?;
+    transfer_key_events(prefix, source, &sink, None, page_size, max_pages, since).await?;
     Ok(sink.into_events().await)
 }
 
 /// Benchmark: pages through source, discards events (no verification, no collection).
+///
+/// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 pub async fn benchmark_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
+    since: Option<&str>,
 ) -> Result<(), KelsError> {
-    transfer_key_events(prefix, source, &NoOpSink, None, page_size, max_pages).await
-}
-
-// ==================== Partition for Submission ====================
-
-/// Partition in-memory events for divergence-aware submission.
-///
-/// Returns `(primary, deferred, recovery)`:
-/// - `primary`: pre-divergence events + continuing branch events
-/// - `deferred`: the single shorter-branch event (if not recovery-revealing)
-/// - `recovery`: the single shorter-branch event (if recovery-revealing)
-///
-/// Events must be sorted `serial ASC, kind sort_priority ASC, said ASC`.
-///
-/// ## Why the shorter branch is always exactly 1 event
-///
-/// 1. `handle_overlap_submission` inserts only the first divergent event (1 event).
-/// 2. Once divergent, `handle_divergent_submission` only accepts `rec` or `cnt` —
-///    all others return `RecoverRequired`.
-/// 3. Recovery archives/deletes adversary events — doesn't extend the shorter branch.
-/// 4. Contest can't extend the shorter branch: when the adversary revealed recovery,
-///    `handle_overlap_submission` forces the divergent event to BE the contest
-///    (`ContestRequired` otherwise). The contest IS the single divergent event.
-pub fn partition_for_submission(
-    events: Vec<SignedKeyEvent>,
-) -> (
-    Vec<SignedKeyEvent>,
-    Vec<SignedKeyEvent>,
-    Vec<SignedKeyEvent>,
-) {
-    if events.is_empty() {
-        return (vec![], vec![], vec![]);
-    }
-
-    // Find divergence point: first duplicate serial
-    let mut divergence_idx: Option<usize> = None;
-    for i in 1..events.len() {
-        if events[i].event.serial == events[i - 1].event.serial {
-            divergence_idx = Some(i - 1);
-            break;
-        }
-    }
-
-    let Some(div_idx) = divergence_idx else {
-        return (events, vec![], vec![]);
-    };
-
-    let ev_a = &events[div_idx];
-    let ev_b = &events[div_idx + 1];
-    let after_pair = &events[div_idx + 2..];
-
-    // Identify shorter branch: the event NOT referenced by any later event's `previous`
-    let continuing_is_a = after_pair
-        .iter()
-        .any(|e| e.event.previous.as_deref() == Some(ev_a.event.said.as_str()));
-
-    let (_continuing_idx, deferred_idx) = if continuing_is_a {
-        (div_idx, div_idx + 1)
-    } else if after_pair
-        .iter()
-        .any(|e| e.event.previous.as_deref() == Some(ev_b.event.said.as_str()))
-    {
-        (div_idx + 1, div_idx)
-    } else {
-        // Both are terminal (neither is referenced by a later event). Defer the
-        // recovery-revealing event so it's submitted after divergence is established;
-        // submitting it first would trigger ContestRequired prematurely.
-        if ev_b.event.reveals_recovery_key() {
-            (div_idx, div_idx + 1)
-        } else {
-            (div_idx + 1, div_idx)
-        }
-    };
-
-    let deferred_event = events[deferred_idx].clone();
-
-    // Build primary: pre-divergence + continuing event + post-divergence
-    let mut primary = Vec::with_capacity(events.len() - 1);
-    for (i, event) in events.into_iter().enumerate() {
-        if i == deferred_idx {
-            continue;
-        }
-        primary.push(event);
-    }
-
-    // Classify deferred event: recovery bucket if it reveals recovery key
-    if deferred_event.event.reveals_recovery_key() {
-        (primary, vec![], vec![deferred_event])
-    } else {
-        (primary, vec![deferred_event], vec![])
-    }
+    transfer_key_events(prefix, source, &NoOpSink, None, page_size, max_pages, since).await
 }
 
 #[cfg(test)]
@@ -3318,7 +3246,7 @@ mod tests {
         builder.interact(&anchor("a1")).await.unwrap();
 
         let source = MemoryKelSource::new(builder.events().to_vec());
-        let events = resolve_key_events(&prefix, &source, 100, 100)
+        let events = resolve_key_events(&prefix, &source, 100, 100, None)
             .await
             .unwrap();
 
@@ -3334,7 +3262,7 @@ mod tests {
 
         let source = MemoryKelSource::new(builder.events().to_vec());
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 100, 100)
+        forward_key_events(&prefix, &source, &sink, 100, 100, None)
             .await
             .unwrap();
 
@@ -3369,7 +3297,7 @@ mod tests {
 
         let source = MemoryKelSource::new(all_events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 100, 100)
+        forward_key_events(&prefix, &source, &sink, 100, 100, None)
             .await
             .unwrap();
 
@@ -3406,7 +3334,7 @@ mod tests {
         // Page 1: icp(0), o1(1), first_of_serial_2 — divergence at end of page
         let source = MemoryKelSource::new(all_events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 3, 100)
+        forward_key_events(&prefix, &source, &sink, 3, 100, None)
             .await
             .unwrap();
 
@@ -3434,7 +3362,7 @@ mod tests {
 
         // resolve_key_events uses no verifier
         let source = MemoryKelSource::new(all_events);
-        let events = resolve_key_events(&prefix, &source, 100, 100)
+        let events = resolve_key_events(&prefix, &source, 100, 100, None)
             .await
             .unwrap();
 
@@ -3455,89 +3383,11 @@ mod tests {
 
         // Only allow 2 pages of 3 events — should get 6 events, not all 11
         let source = MemoryKelSource::new(builder.events().to_vec());
-        let events = resolve_key_events(&prefix, &source, 3, 2).await.unwrap();
+        let events = resolve_key_events(&prefix, &source, 3, 2, None)
+            .await
+            .unwrap();
 
         assert_eq!(events.len(), 6);
-    }
-
-    // ==================== partition_for_submission tests ====================
-
-    #[tokio::test]
-    async fn test_partition_for_submission_no_divergence() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.interact(&anchor("a1")).await.unwrap();
-        builder.interact(&anchor("a2")).await.unwrap();
-
-        let events = builder.events().to_vec();
-        let (primary, deferred, recovery) = partition_for_submission(events.clone());
-
-        assert_eq!(primary.len(), 3);
-        assert!(deferred.is_empty());
-        assert!(recovery.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_partition_for_submission_with_divergence() {
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        owner.incept().await.unwrap();
-        owner.interact(&anchor("o1")).await.unwrap();
-
-        let mut adversary = owner.clone();
-        let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
-
-        owner.interact(&anchor("o2")).await.unwrap();
-        owner.interact(&anchor("o3")).await.unwrap();
-
-        let mut all_events = owner.events().to_vec();
-        all_events.push(a1.clone());
-        sort_events(&mut all_events);
-
-        let (primary, deferred, recovery) = partition_for_submission(all_events);
-
-        // Primary: icp + o1 + continuing_event + o3 + o4
-        // Deferred: adversary event (doesn't reveal recovery key)
-        assert!(!primary.is_empty());
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].event.said, a1.event.said);
-        assert!(recovery.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_partition_for_submission_with_recovery() {
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        owner.incept().await.unwrap();
-        owner.interact(&anchor("o1")).await.unwrap();
-
-        // Clone before divergence point
-        let mut adversary = owner.clone();
-
-        // Owner continues normally
-        owner.interact(&anchor("o2")).await.unwrap();
-
-        // Adversary creates a recovery event (reveals recovery key)
-        let rec = adversary.recover(false).await.unwrap();
-        assert!(rec.event.reveals_recovery_key());
-
-        let mut all_events = owner.events().to_vec();
-        all_events.push(rec.clone());
-        sort_events(&mut all_events);
-
-        let (primary, deferred, recovery_bucket) = partition_for_submission(all_events);
-
-        // Recovery-revealing event goes in recovery bucket, not deferred
-        assert!(!primary.is_empty());
-        assert!(deferred.is_empty());
-        assert_eq!(recovery_bucket.len(), 1);
-        assert_eq!(recovery_bucket[0].event.said, rec.event.said);
-    }
-
-    #[tokio::test]
-    async fn test_partition_for_submission_empty() {
-        let (primary, deferred, recovery) = partition_for_submission(vec![]);
-        assert!(primary.is_empty());
-        assert!(deferred.is_empty());
-        assert!(recovery.is_empty());
     }
 
     #[tokio::test]

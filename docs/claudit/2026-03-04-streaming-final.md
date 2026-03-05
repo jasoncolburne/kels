@@ -7,8 +7,8 @@ Automated audit of `kels-52_paginate-kels-requests` branch changes vs `main`. Sc
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High | 0 | 2 |
-| Medium | 5 | 3 |
-| Low | 4 | 2 |
+| Medium | 0 | 8 |
+| Low | 0 | 6 |
 
 ---
 
@@ -52,27 +52,33 @@ Automated audit of `kels-52_paginate-kels-requests` branch changes vs `main`. Sc
 
 **Resolution:** The result collection loop now logs a warning and skips failed prefixes instead of propagating the first error via `?`. Additionally, the delta path's full-fetch fallback catches `EventNotFound` for non-existent prefixes and returns an empty page rather than propagating the error. Successful prefixes are always returned regardless of failures in other entries.
 
-### 5. `fetch_events_delta` only fetches one page
+### ~~5. `fetch_events_delta` only fetches one page~~ — RESOLVED
 
-**File:** `services/kels-gossip/src/sync.rs:776-799`
+**File:** `services/kels-gossip/src/sync.rs`
 
-This function calls `fetch_key_events` (single page) rather than a paginated loop. For KELs with more than 512 events, the delta fetch returns only the first page. Used in the anti-entropy push path (`sync_prefix`). Since anti-entropy runs periodically and this is a resolving operation, incomplete data triggers another round of sync — not a correctness issue, but inefficient for large KELs.
+~~This function calls `fetch_key_events` (single page) rather than a paginated loop. For KELs with more than 512 events, the delta fetch returns only the first page. Used in the anti-entropy push path (`sync_prefix`). Since anti-entropy runs periodically and this is a resolving operation, incomplete data triggers another round of sync — not a correctness issue, but inefficient for large KELs.~~
 
-### 6. `cmd_dev_truncate` ignores `_has_more` flag — silent single-page limit
+**Resolution:** `fetch_events_delta` and the manual `sync_prefix` fetch+submit flow were replaced with `forward_key_events`, which handles full pagination streaming. The gossip handler, anti-entropy `sync_prefix`, registry `push_own_kel_to_members`, and federation `push_to_stale_members` all use the `forward_key_events` infrastructure now. `partition_for_submission` was also removed as `transfer_key_events` handles divergence-aware ordering inline.
+
+### ~~6. `cmd_dev_truncate` ignores `_has_more` flag — silent single-page limit~~ — RESOLVED
 
 **File:** `clients/kels-cli/src/main.rs:797-799`
 
-The `_has_more` return value is explicitly discarded. If a local KEL has more than 512 events, `cmd_dev_truncate` only sees the first 512. If the user requests truncation to 600 events, the function would report "KEL already has 512 events, nothing to truncate" — which is wrong.
+~~The `_has_more` return value is explicitly discarded. If a local KEL has more than 512 events, `cmd_dev_truncate` only sees the first 512. If the user requests truncation to 600 events, the function would report "KEL already has 512 events, nothing to truncate" — which is wrong.~~
 
-This is dev-tools only. Either paginate to load all events, or document the 512-event limitation for truncation.
+~~This is dev-tools only. Either paginate to load all events, or document the 512-event limitation for truncation.~~
 
-### 7. `get_signed_history_since` limit+2 arithmetic is correct but fragile
+**Resolution:** Replaced single-page `kel_store.load()` with `resolve_key_events` via `StoreKelSource`, which handles full pagination bounded by `max_verification_pages()`.
+
+### ~~7. `get_signed_history_since` limit+2 arithmetic is correct but fragile~~ — RESOLVED
 
 **File:** `lib/kels-derive/src/lib.rs:226-245`
 
-The method fetches `limit + 2` events (one for the since event to be retained then filtered, one for has_more detection). The arithmetic works because at most one event is filtered out by `retain` and at most one extra is the has_more sentinel. The edge case where the since SAID is not found (scalar subquery returns NULL, `serial >= NULL` evaluates to false) correctly returns an empty result.
+~~The method fetches `limit + 2` events (one for the since event to be retained then filtered, one for has_more detection). The arithmetic works because at most one event is filtered out by `retain` and at most one extra is the has_more sentinel. The edge case where the since SAID is not found (scalar subquery returns NULL, `serial >= NULL` evaluates to false) correctly returns an empty result.~~
 
-No bug, but the two-event slack reasoning should be documented inline more thoroughly.
+~~No bug, but the two-event slack reasoning should be documented inline more thoroughly.~~
+
+**Resolution:** Added thorough inline comment explaining both sentinel events: +1 for the since event (needed by `>= serial` to catch divergent events at the same serial, then filtered by `retain()`), +1 for has_more detection.
 
 ### ~~8. `SyncMemberKel` Raft entry is a trigger — no data consistency guarantee~~ — RESOLVED
 
@@ -82,29 +88,35 @@ No bug, but the two-event slack reasoning should be documented inline more thoro
 
 **Resolution:** `SyncMemberKel` was removed entirely from the Raft `FederationRequest` enum, `FederationResponse` enum, and all handling code. Member KEL data is now pushed directly via `KelsClient` to each peer's `POST /api/member-kels/events` endpoint with fan-out. An anti-entropy sync loop (`run_member_kel_sync_loop`) periodically compares effective SAIDs with each peer and pushes deltas to fill gaps. The fail-secure behavior is preserved — anchoring verification still fails if KEL data is not yet available.
 
-### 9. Snapshot restore no longer validates member KELs
+### ~~9. Snapshot restore no longer validates member KELs~~ — RESOLVED
 
 **File:** `services/kels-registry/src/federation/state_machine.rs`
 
-The old code verified all member KELs during snapshot restore and removed invalid ones. The new code removes member KELs from snapshots entirely (they're in PostgreSQL now). There's no equivalent validation of PostgreSQL-backed member KELs on startup. Member KELs in PostgreSQL are verified on each read via `completed_verification` in `verify_member_anchoring_from_repo`, so invalid data can't be *consumed* unsafely, but corrupt data would cause verification failures until re-synced.
+~~The old code verified all member KELs during snapshot restore and removed invalid ones. The new code removes member KELs from snapshots entirely (they're in PostgreSQL now). There's no equivalent validation of PostgreSQL-backed member KELs on startup. Member KELs in PostgreSQL are verified on each read via `completed_verification` in `verify_member_anchoring_from_repo`, so invalid data can't be *consumed* unsafely, but corrupt data would cause verification failures until re-synced.~~
 
-### 10. `merge_events` re-verifies entire KEL on every submission
+**Resolution:** Not an issue. Decoupling member KELs from Raft snapshots was intentional — the verification invariant handles this by design. Every consume path runs `completed_verification`, so corrupt data can't be used unsafely. Transient verification failures self-heal via the anti-entropy sync loop (`run_member_kel_sync_loop`).
+
+### ~~10. `merge_events` re-verifies entire KEL on every submission~~ — RESOLVED
 
 **File:** `lib/kels/src/merge.rs:340-350`
 
-Every call to `merge_events` runs `completed_verification` over the entire existing KEL. For large KELs (e.g., 100K events), this involves reading and cryptographically verifying all existing events before processing the new submission. This is the correct application of the verification invariant ("We cannot cache Verification tokens because the DB cannot be trusted") and is bounded by `max_verification_pages * MAX_EVENTS_PER_KEL_QUERY` (default 262K events). Documented design trade-off, not a bug.
+~~Every call to `merge_events` runs `completed_verification` over the entire existing KEL. For large KELs (e.g., 100K events), this involves reading and cryptographically verifying all existing events before processing the new submission. This is the correct application of the verification invariant ("We cannot cache Verification tokens because the DB cannot be trusted") and is bounded by `max_verification_pages * MAX_EVENTS_PER_KEL_QUERY` (default 262K events). Documented design trade-off, not a bug.~~
+
+**Resolution:** By design. The DB cannot be trusted, so `Verification` tokens cannot be cached — every consuming operation must re-verify. Bounded by `max_verification_pages * MAX_EVENTS_PER_KEL_QUERY` (default 262K events).
 
 ---
 
 ## Low Priority
 
-### 11. `fetch_all_events` shell function has no max-page guard
+### ~~11. `fetch_all_events` shell function has no max-page guard~~ — RESOLVED
 
 **File:** `clients/test/scripts/lib/test-common.sh:113-146`
 
-The `fetch_all_events` function loops indefinitely with `while true` and no iteration limit. If a server returns `hasMore: true` with no progress (e.g., buggy response where the last SAID doesn't advance), this function loops forever. The Rust-side functions all have `max_pages` guards for this reason.
+~~The `fetch_all_events` function loops indefinitely with `while true` and no iteration limit. If a server returns `hasMore: true` with no progress (e.g., buggy response where the last SAID doesn't advance), this function loops forever. The Rust-side functions all have `max_pages` guards for this reason.~~
 
-In practice, test scripts run against known-good servers with finite KELs, but this diverges from the bounded pagination principle.
+~~In practice, test scripts run against known-good servers with finite KELs, but this diverges from the bounded pagination principle.~~
+
+**Resolution:** Documented inline that no max-page guard is needed — test scripts run against known-good servers with finite KELs.
 
 ### ~~12. `federation_sync_member_kel` accepts raw JSON body~~ — RESOLVED
 
@@ -114,17 +126,21 @@ In practice, test scripts run against known-good servers with finite KELs, but t
 
 **Resolution:** The `federation_sync_member_kel` endpoint was removed entirely as part of the push model migration. The replacement `submit_member_key_events` handler accepts `Json<Vec<SignedKeyEvent>>` — a properly typed request body.
 
-### 13. Identity admin tool paginated KEL fetch has no page bound
+### ~~13. Identity admin tool paginated KEL fetch has no page bound~~ — RESOLVED
 
 **File:** `services/kels-registry/src/bin/kels-registry-admin.rs`
 
-The loop fetching pages in `show_identity_status` has no `max_pages` bound — it continues until `!page.has_more`. A malicious or buggy identity service could keep returning `has_more: true` forever. Low concern since this is an admin CLI tool, not a production service path, and the identity service is trusted (same deployment).
+~~The loop fetching pages in `show_identity_status` has no `max_pages` bound — it continues until `!page.has_more`. A malicious or buggy identity service could keep returning `has_more: true` forever. Low concern since this is an admin CLI tool, not a production service path, and the identity service is trusted (same deployment).~~
 
-### 14. `ContestRequired` match arm is unreachable in submit handler
+**Resolution:** Added a `--max-pages` clap parameter (defaults to `max_verification_pages()`) and changed the `loop` to `for _ in 0..max_pages`.
+
+### ~~14. `ContestRequired` match arm is unreachable in submit handler~~ — RESOLVED
 
 **File:** `services/kels/src/handlers.rs`
 
-The `KelMergeResult::ContestRequired` match arm is defensive dead code — `save_with_merge` returns `Err(KelsError::ContestRequired)` which is caught by the `.map_err()` block above before reaching the match. Not a bug; the current approach (returning the same error) is safe as defense-in-depth.
+~~The `KelMergeResult::ContestRequired` match arm is defensive dead code — `save_with_merge` returns `Err(KelsError::ContestRequired)` which is caught by the `.map_err()` block above before reaching the match. Not a bug; the current approach (returning the same error) is safe as defense-in-depth.~~
+
+**Resolution:** Replaced the dead match arm with `unreachable!()` and added comments on both the error handling path (explaining it makes the match arm unreachable) and the match arm itself.
 
 ### ~~15. Import style inconsistency in `sync.rs`~~ — RESOLVED
 
@@ -134,11 +150,13 @@ The `KelMergeResult::ContestRequired` match arm is defensive dead code — `save
 
 **Resolution:** `sync.rs` was completely rewritten for the push model. The new file uses properly nested imports.
 
-### 16. Bench tool Makefile parameters increased without rationale
+### ~~16. Bench tool Makefile parameters increased without rationale~~ — RESOLVED
 
 **File:** `Makefile:157`
 
-Concurrency increased from 40 to 60, duration from 3s to 5s. Likely justified by the additional benchmark sizes (1, 8, 32, 64, 128, 256, 512 events vs. previous 1, 8, 32, 128), but no comment explains the motivation.
+~~Concurrency increased from 40 to 60, duration from 3s to 5s. Likely justified by the additional benchmark sizes (1, 8, 32, 64, 128, 256, 512 events vs. previous 1, 8, 32, 128), but no comment explains the motivation.~~
+
+**Resolution:** Added inline comment explaining the parameters saturate the primary developer's laptop.
 
 ---
 

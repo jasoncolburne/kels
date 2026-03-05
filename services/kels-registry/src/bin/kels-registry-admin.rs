@@ -114,6 +114,9 @@ enum IdentityAction {
         /// Output as JSON
         #[arg(short, long)]
         json: bool,
+        /// Maximum number of pages to fetch
+        #[arg(long, default_value_t = kels::max_verification_pages())]
+        max_pages: usize,
     },
 }
 
@@ -1009,7 +1012,11 @@ async fn show_federation_status(ctx: &AdminContext, json: bool) -> anyhow::Resul
     Ok(())
 }
 
-async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<()> {
+async fn show_identity_status(
+    ctx: &AdminContext,
+    json: bool,
+    max_pages: usize,
+) -> anyhow::Result<()> {
     let prefix = ctx
         .identity_client
         .get_prefix()
@@ -1017,7 +1024,7 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         .context("Failed to get identity prefix")?;
     let mut all_events = Vec::new();
     let mut since: Option<String> = None;
-    loop {
+    for _ in 0..max_pages {
         let page = ctx
             .identity_client
             .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
@@ -1113,8 +1120,8 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Identity { action } => match action {
-            IdentityAction::Status { json } => {
-                show_identity_status(&ctx, json).await?;
+            IdentityAction::Status { json, max_pages } => {
+                show_identity_status(&ctx, json, max_pages).await?;
             }
         },
         Commands::Federation { action } => match action {

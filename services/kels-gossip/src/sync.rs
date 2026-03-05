@@ -3,11 +3,8 @@
 //! Handles:
 //! - Subscribing to Redis for local KEL updates
 //! - Broadcasting announcements to gossip network
-//! - Processing incoming announcements and fetching missing KELs via HTTP
+//! - Processing incoming announcements via `forward_key_events` (streaming, divergence-aware)
 //! - Delta-based sync (fetch only events after local state) with full-fetch fallback
-//! - Recovery-aware audit fetch: when delta fails due to recovery, fetches archived
-//!   adversary events and submits them in stages so merge() resolves divergence correctly
-//! - Event partitioning: separates adversary and recovery branches for proper merge ordering
 
 use std::{
     collections::HashMap,
@@ -18,10 +15,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::StreamExt;
-use kels::{
-    KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION, RegistrySigner,
-    SignedKeyEvent,
-};
+use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, RegistrySigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -211,8 +205,9 @@ impl SyncHandler {
 
     /// Handle an announcement from a peer.
     ///
-    /// Tries the origin peer first (the node that stored the event), then
-    /// falls back to other peers in the allowlist.
+    /// Uses `forward_key_events` to stream events page-at-a-time from a remote
+    /// peer to local KELS. Delta fetch when possible, full fetch on fallback.
+    /// Tries the origin peer first, then falls back to other peers.
     async fn handle_announcement(
         &mut self,
         announcement: KelAnnouncement,
@@ -259,8 +254,8 @@ impl SyncHandler {
             }
         }
 
-        let mut fetched_events = None;
         let max_pages = kels::max_verification_pages();
+        let local_sink = self.kels_client.as_kel_sink();
 
         for (peer_prefix, kels_url) in &peers {
             // Per-peer rate limiting
@@ -285,246 +280,45 @@ impl SyncHandler {
                 }
             }
 
-            let remote_client = KelsClient::new(kels_url);
+            let remote_source = KelsClient::new(kels_url).as_kel_source();
 
-            // Fetch events via HTTP — delta when possible, full otherwise
-            let events = if let Some(ref effective_said) = local_effective_said {
-                // Delta fetch: only events after our local state
-                match remote_client
-                    .fetch_all_key_events(
-                        prefix,
-                        Some(effective_said),
-                        MAX_EVENTS_PER_KEL_RESPONSE,
-                        max_pages,
-                    )
-                    .await
-                {
-                    Ok(events) => events,
-                    Err(KelsError::EventNotFound(_)) => {
-                        // Since SAID was removed by recovery/contest on remote.
-                        // Fetch events and audit records separately.
-                        info!(
-                            "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
-                            prefix
-                        );
-                        let events_result = remote_client
-                            .fetch_all_key_events(
-                                prefix,
-                                None,
-                                MAX_EVENTS_PER_KEL_RESPONSE,
-                                max_pages,
-                            )
-                            .await;
-                        let audit_result = remote_client.fetch_kel_audit(prefix).await;
-
-                        match (events_result, audit_result) {
-                            (Ok(clean_chain), Ok(audit_records)) => {
-                                let archived_events = audit_records
-                                    .last()
-                                    .and_then(|record| match record.as_signed_key_events() {
-                                        Ok(events) if !events.is_empty() => {
-                                            info!(
-                                                "Got {} archived adversary events for {}",
-                                                events.len(),
-                                                prefix
-                                            );
-                                            Some(events)
-                                        }
-                                        Ok(_) => None,
-                                        Err(e) => {
-                                            warn!("Failed to deserialize audit events: {}", e);
-                                            None
-                                        }
-                                    })
-                                    .unwrap_or_default();
-
-                                if archived_events.is_empty() {
-                                    // No audit data — fall through to normal submission
-                                    clean_chain
-                                } else {
-                                    // Recovery with archived events: multi-step submission
-                                    let tip_said = clean_chain.last().map(|e| e.event.said.clone());
-
-                                    // Mark recently stored BEFORE submission
-                                    if let Some(ref said) = tip_said {
-                                        let key = format!("{}:{}", prefix, said);
-                                        self.recently_stored
-                                            .write()
-                                            .await
-                                            .insert(key, Instant::now());
-                                    }
-
-                                    // Step 1: Submit archived adversary events
-                                    let _ = self.submit_events_to_kels(&archived_events).await;
-
-                                    // Step 2+3: Split clean chain before the event preceding the
-                                    // first recovery-revealing event. This bundles the owner's
-                                    // event at the divergence serial with rec, so nodes that have
-                                    // only adversary events at that serial can insert the owner
-                                    // event as part of recovery.
-                                    let applied = if let Some(idx) = clean_chain
-                                        .iter()
-                                        .position(|e| e.event.reveals_recovery_key())
-                                        && idx > 1
-                                    {
-                                        let _ = self
-                                            .submit_events_to_kels(&clean_chain[..idx - 1])
-                                            .await;
-                                        let recovery_applied = self
-                                            .submit_events_to_kels(&clean_chain[idx - 1..])
-                                            .await?;
-                                        if !recovery_applied {
-                                            self.submit_events_to_kels(&clean_chain).await?
-                                        } else {
-                                            recovery_applied
-                                        }
-                                    } else {
-                                        self.submit_events_to_kels(&clean_chain).await?
-                                    };
-
-                                    if applied {
-                                        self.refresh_local_effective_said(prefix).await;
-                                    }
-                                    return Ok(());
-                                }
-                            }
-                            (Err(KelsError::EventNotFound(_)), _)
-                            | (_, Err(KelsError::EventNotFound(_))) => {
-                                warn!("KEL not found on remote for {}", prefix);
-                                continue;
-                            }
-                            (Err(e), _) | (_, Err(e)) => {
-                                warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
-                            kels_url, prefix, e
-                        );
-                        match remote_client
-                            .fetch_all_key_events(
-                                prefix,
-                                None,
-                                MAX_EVENTS_PER_KEL_RESPONSE,
-                                max_pages,
-                            )
-                            .await
-                        {
-                            Ok(events) => events,
-                            Err(KelsError::EventNotFound(_)) => {
-                                warn!("KEL not found on remote for {}", prefix);
-                                continue;
-                            }
-                            Err(e) => {
-                                warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                                continue;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // No local state — fetch full KEL
-                match remote_client
-                    .fetch_all_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE, max_pages)
-                    .await
-                {
-                    Ok(events) => events,
-                    Err(KelsError::EventNotFound(_)) => {
-                        warn!("KEL not found on remote for {}", prefix);
-                        continue;
-                    }
-                    Err(e) => {
-                        warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                        continue;
-                    }
-                }
-            };
-
-            if events.is_empty() {
-                continue;
-            }
-
-            info!(
-                "Fetched {} events for prefix {} from {}",
-                events.len(),
-                prefix,
-                kels_url
-            );
-
-            fetched_events = Some((events, kels_url.clone()));
-            break;
-        }
-
-        let Some((events, kels_url)) = fetched_events else {
-            // No peer had the events — record as stale for anti-entropy repair
-            self.record_stale(prefix, &announcement.origin).await;
-            return Ok(());
-        };
-
-        // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
-        let said = events.last().map(|e| e.event.said.clone());
-        if let Some(ref said) = said {
-            let key = format!("{}:{}", prefix, said);
+            // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+            let key = format!("{}:{}", prefix, remote_effective_said);
             self.recently_stored
                 .write()
                 .await
                 .insert(key, Instant::now());
-        }
 
-        // Partition events for divergence-aware submission: primary chain first,
-        // deferred fork event second, recovery events last.
-        let has_recovery = events.iter().any(|e| e.event.is_recover());
-        let (primary, deferred, recovery) = kels::partition_for_submission(events);
+            // Forward events: delta with fallback to full fetch.
+            // transfer_key_events handles divergence-aware ordering (streaming).
+            let result = forward_with_fallback(
+                prefix,
+                &remote_source,
+                &local_sink,
+                local_effective_said.as_deref(),
+                max_pages,
+            )
+            .await;
 
-        // Submit primary chain in chunks
-        for chunk in primary.chunks(MAX_EVENTS_PER_SUBMISSION) {
-            self.submit_events_to_kels(chunk).await?;
-        }
-
-        // Submit deferred fork events (causes divergence/freeze)
-        if !deferred.is_empty() {
-            let _ = self.submit_events_to_kels(&deferred).await;
-        }
-
-        // Submit recovery events if present (resolves divergence)
-        let initially_applied = if !recovery.is_empty() {
-            self.submit_events_to_kels(&recovery).await?
-        } else {
-            true
-        };
-
-        // If recovery events were rejected, retry with the full remote KEL
-        let applied = if !initially_applied && has_recovery {
-            info!(
-                "Recovery not applied for {} — retrying with full KEL from {}",
-                prefix, kels_url
-            );
-            let remote_client = KelsClient::new(&kels_url);
-            match remote_client
-                .fetch_all_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE, max_pages)
-                .await
-            {
-                Ok(events) => {
-                    // Serving/forwarding: submit to local KELS which verifies on ingest
-                    self.submit_events_to_kels(&events).await.unwrap_or(false)
+            match result {
+                Ok(()) => {
+                    info!("Forwarded events for prefix {} from {}", prefix, kels_url);
+                    self.refresh_local_effective_said(prefix).await;
+                    return Ok(());
+                }
+                Err(KelsError::EventNotFound(_)) => {
+                    warn!("KEL not found on remote {} for {}", kels_url, prefix);
+                    continue;
                 }
                 Err(e) => {
-                    warn!("Failed to fetch full KEL for retry: {}", e);
-                    self.record_stale(prefix, &announcement.origin).await;
-                    false
+                    warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
+                    continue;
                 }
             }
-        } else {
-            initially_applied
-        };
-
-        if applied {
-            self.refresh_local_effective_said(prefix).await;
         }
 
+        // No peer had the events — record as stale for anti-entropy repair
+        self.record_stale(prefix, &announcement.origin).await;
         Ok(())
     }
 
@@ -570,33 +364,6 @@ impl SyncHandler {
             .await
             .map_err(SyncError::Kels)
     }
-
-    // partition_events, partition_for_seeding, and submit_events_seeding replaced
-    // by kels::partition_for_submission in libkels.
-
-    /// Submit events to local KELS using the client library.
-    /// Returns true if events were applied (new events stored).
-    async fn submit_events_to_kels(&self, events: &[SignedKeyEvent]) -> Result<bool, SyncError> {
-        match self.kels_client.submit_events(events).await {
-            Ok(result) => {
-                if result.applied {
-                    info!("Events applied by local KELS");
-                    Ok(true)
-                } else {
-                    warn!(
-                        "Events not applied by local KELS: diverged_at={:?}",
-                        result.diverged_at
-                    );
-                    Ok(false)
-                }
-            }
-            Err(KelsError::ContestedKel(msg)) => {
-                warn!("KEL is contested: {}", msg);
-                Ok(false)
-            }
-            Err(e) => Err(SyncError::Kels(e)),
-        }
-    }
 }
 
 /// Run the sync event handler.
@@ -630,6 +397,51 @@ pub async fn run_sync_handler(
 
     warn!("Event receiver closed");
     Ok(())
+}
+
+/// Forward events from a remote source to a local sink with delta-with-fallback.
+///
+/// Tries delta fetch first (using `since`), falls back to full fetch on
+/// `EventNotFound` (remote may have recovered, removing the since SAID).
+async fn forward_with_fallback(
+    prefix: &str,
+    source: &kels::HttpKelSource,
+    sink: &kels::HttpKelSink,
+    since: Option<&str>,
+    max_pages: usize,
+) -> Result<(), KelsError> {
+    if let Some(since_said) = since {
+        match kels::forward_key_events(
+            prefix,
+            source,
+            sink,
+            MAX_EVENTS_PER_KEL_RESPONSE,
+            max_pages,
+            Some(since_said),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(KelsError::EventNotFound(_)) => {
+                info!(
+                    "Since SAID not found on remote for {} (likely recovery). Falling back to full fetch.",
+                    prefix
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Full fetch (no since cursor)
+    kels::forward_key_events(
+        prefix,
+        source,
+        sink,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_pages,
+        None,
+    )
+    .await
 }
 
 /// Record a stale prefix for anti-entropy repair.
@@ -777,37 +589,10 @@ async fn clear_seen_saids(redis: &redis::aio::ConnectionManager, kel_prefix: &st
     debug!("Cleared seen SAIDs for prefix {}", kel_prefix);
 }
 
-/// Fetch events from `source`, using delta fetch with full-fetch fallback.
-/// Returns `None` on failure (caller should handle).
-async fn fetch_events_delta(
-    source: &KelsClient,
-    prefix: &str,
-    since: Option<&str>,
-) -> Option<Vec<SignedKeyEvent>> {
-    if let Some(since_effective_said) = since
-        && let Ok(page) = source
-            .fetch_key_events(
-                prefix,
-                Some(since_effective_said),
-                MAX_EVENTS_PER_KEL_RESPONSE,
-            )
-            .await
-    {
-        return Some(page.events);
-    }
-    match source
-        .fetch_key_events(prefix, None, MAX_EVENTS_PER_KEL_RESPONSE)
-        .await
-    {
-        Ok(page) => Some(page.events),
-        Err(_) => None,
-    }
-}
-
 /// Result of submitting fetched events to a KELS node.
 enum RepairResult {
     /// Events applied successfully.
-    Repaired(usize),
+    Repaired,
     /// Submission revealed divergence — prefix should be tracked as divergent.
     Diverged,
     /// KEL is contested — no further action possible.
@@ -818,24 +603,27 @@ enum RepairResult {
     NoOp,
 }
 
-/// Fetch events from `source` (delta with fallback) and submit to `dest`.
+/// Forward events from `source` to `dest` using delta-with-fallback streaming.
 async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
     prefix: &str,
     since: Option<&str>,
 ) -> RepairResult {
-    let events = match fetch_events_delta(source, prefix, since).await {
-        Some(events) if !events.is_empty() => events,
-        Some(_) => return RepairResult::NoOp,
-        None => return RepairResult::Failed,
-    };
+    let remote_source = source.as_kel_source();
+    let local_sink = dest.as_kel_sink();
 
-    let count = events.len();
-    match dest.submit_events(&events).await {
-        Ok(result) if result.applied => RepairResult::Repaired(count),
-        Ok(result) if result.diverged_at.is_some() => RepairResult::Diverged,
-        Ok(_) => RepairResult::NoOp,
+    match forward_with_fallback(
+        prefix,
+        &remote_source,
+        &local_sink,
+        since,
+        kels::max_verification_pages(),
+    )
+    .await
+    {
+        Ok(()) => RepairResult::Repaired,
+        Err(KelsError::EventNotFound(_)) => RepairResult::NoOp,
         Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
         Err(_) => RepairResult::Failed,
     }
@@ -969,9 +757,8 @@ pub async fn run_anti_entropy_loop(
                 for (kel_prefix, _since, source_node_prefix) in prefix_group {
                     let result = match events_map.get(kel_prefix) {
                         Some(page) if !page.events.is_empty() => {
-                            let count = page.events.len();
                             match local_client.submit_events(&page.events).await {
-                                Ok(r) if r.applied => RepairResult::Repaired(count),
+                                Ok(r) if r.applied => RepairResult::Repaired,
                                 Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
                                 Ok(_) => RepairResult::NoOp,
                                 Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
@@ -982,8 +769,8 @@ pub async fn run_anti_entropy_loop(
                     };
 
                     match result {
-                        RepairResult::Repaired(n) => {
-                            info!("Anti-entropy: repaired {} ({} events)", kel_prefix, n);
+                        RepairResult::Repaired => {
+                            info!("Anti-entropy: repaired {}", kel_prefix);
                             clear_seen_saids(redis.as_ref(), kel_prefix).await;
                         }
                         RepairResult::Diverged => {
@@ -1080,9 +867,8 @@ pub async fn run_anti_entropy_loop(
             for (state, _local_said, local_divergent) in &to_fetch {
                 let result = match events_map.get(&state.prefix) {
                     Some(page) if !page.events.is_empty() => {
-                        let count = page.events.len();
                         match local_client.submit_events(&page.events).await {
-                            Ok(r) if r.applied => RepairResult::Repaired(count),
+                            Ok(r) if r.applied => RepairResult::Repaired,
                             Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
                             Ok(_) => RepairResult::NoOp,
                             Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
@@ -1093,11 +879,8 @@ pub async fn run_anti_entropy_loop(
                 };
 
                 match result {
-                    RepairResult::Repaired(n) => {
-                        info!(
-                            "Anti-entropy: repaired {} from remote ({n} events)",
-                            state.prefix
-                        );
+                    RepairResult::Repaired => {
+                        info!("Anti-entropy: repaired {} from remote", state.prefix);
                         clear_seen_saids(redis.as_ref(), &state.prefix).await;
                     }
                     RepairResult::Diverged => {
@@ -1150,11 +933,8 @@ pub async fn run_anti_entropy_loop(
             )
             .await
             {
-                RepairResult::Repaired(n) => {
-                    info!(
-                        "Anti-entropy: pushed {} to remote ({n} events)",
-                        state.prefix
-                    );
+                RepairResult::Repaired => {
+                    info!("Anti-entropy: pushed {} to remote", state.prefix);
                 }
                 RepairResult::Diverged => {
                     if let Some(&remote_said) = remote_map.get(state.prefix.as_str()) {

@@ -373,25 +373,27 @@ pub struct FederationState {
     pub member_kel_prefix_rate_limits: DashMap<String, (u32, Instant)>,
 }
 
-/// Push own KEL events to all federation members via KelsClient.
+/// Push own KEL events to all federation members via forward_key_events.
 ///
 /// Best-effort: logs warnings on failure. AE loop handles any gaps.
 async fn push_own_kel_to_members(state: &FederationState) {
     let self_prefix = state.node.config().self_prefix.clone();
 
     // Fetch own events from identity service (source of truth)
-    let source = kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
-    let sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
+    let identity_source =
+        kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
+    let local_sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
 
     // First, sync own KEL from identity to local MemberKelRepository
     if let Err(e) = kels::forward_key_events(
         &self_prefix,
-        &source,
-        &sink,
+        &identity_source,
+        &local_sink,
         kels::MAX_EVENTS_PER_KEL_RESPONSE,
         kels::max_verification_pages(),
+        None,
     )
     .await
     {
@@ -399,47 +401,44 @@ async fn push_own_kel_to_members(state: &FederationState) {
         return;
     }
 
-    // Fetch events from local repo to push
-    let events = match state
-        .member_kel_repo
-        .get_signed_history(&self_prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-        .await
-    {
-        Ok((events, _)) => events,
-        Err(e) => {
-            warn!(error = %e, "Failed to get own KEL events for push");
-            return;
-        }
-    };
-
-    if events.is_empty() {
-        return;
-    }
-
-    // Push to each member in parallel
+    // Push to each member in parallel using forward_key_events.
+    // Each member gets its own source+sink pair — the source reads from local
+    // repo (cheap: just DB queries), the sink submits via HTTP.
     let config = state.node.config();
     let futures: Vec<_> = config
         .members
         .iter()
         .filter(|m| m.prefix != self_prefix)
         .map(|member| {
-            let events = events.clone();
-            let url = member.url.clone();
-            let prefix = member.prefix.clone();
+            let self_prefix = self_prefix.clone();
+            let member_prefix = member.prefix.clone();
+            let pool = state.member_kel_repo.pool.clone();
+            let member_url = member.url.clone();
             async move {
-                let client = kels::KelsClient::with_path_prefix(&url, "/api/member-kels");
+                let repo_store = kels::RepositoryKelStore::new(std::sync::Arc::new(
+                    crate::raft_store::MemberKelRepository::new(pool),
+                ));
+                let repo_source = kels::StoreKelSource::new(&repo_store);
+                let member_sink = kels::HttpKelSink::new(&member_url, "/api/member-kels/events");
                 match tokio::time::timeout(
                     Duration::from_secs(5),
-                    client.submit_events_no_propagate(&events),
+                    kels::forward_key_events(
+                        &self_prefix,
+                        &repo_source,
+                        &member_sink,
+                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                        kels::max_verification_pages(),
+                        None,
+                    ),
                 )
                 .await
                 {
-                    Ok(Ok(_)) => {}
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        warn!(member = %prefix, error = %e, "Failed to push KEL to member");
+                        warn!(member = %member_prefix, error = %e, "Failed to push KEL to member");
                     }
                     Err(_) => {
-                        warn!(member = %prefix, "Timed out pushing KEL to member");
+                        warn!(member = %member_prefix, "Timed out pushing KEL to member");
                     }
                 }
             }

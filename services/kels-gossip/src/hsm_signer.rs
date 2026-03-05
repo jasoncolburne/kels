@@ -279,6 +279,7 @@ impl KelsPeerVerifier {
             &sink,
             kels::MAX_EVENTS_PER_KEL_QUERY,
             kels::max_verification_pages(),
+            None,
         )
         .await;
 

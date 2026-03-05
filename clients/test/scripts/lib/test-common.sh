@@ -110,6 +110,7 @@ kel_exists_on_node() {
 
 # Fetch all events for a prefix, paginating through all pages.
 # Outputs a JSON array of all signed events.
+# No max-page guard — test scripts run against known-good servers with finite KELs.
 fetch_all_events() {
     local url="$1"
     local prefix="$2"

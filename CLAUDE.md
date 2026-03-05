@@ -121,6 +121,30 @@ When events are submitted, the KEL merge produces one of:
 - **kels-bench** — Benchmarking tool.
 - **kels-client** — Swift client (iOS/macOS).
 
+### Event Transfer Helpers
+
+All multi-page event transfers use the `transfer_key_events` infrastructure in `lib/kels/src/types/verifier.rs`. Never use single-page `fetch_key_events` in loops or accumulate unbounded events in memory — use these helpers instead.
+
+**Traits:**
+- **`PagedKelSource`** — paginated event source (e.g., HTTP endpoint, local DB).
+- **`PagedKelSink`** — paginated event destination.
+
+**Implementations:**
+- **`HttpKelSource`** / **`HttpKelSink`** — HTTP-based source/sink. Create from `KelsClient` via `as_kel_source()` / `as_kel_sink()`.
+- **`StoreKelSource`** — wraps a `KelStore` (local DB) as a `PagedKelSource`.
+- **`RepositoryKelStore`** — wraps a repository as a `PagedKelSink` for DB writes.
+
+**Transfer functions** (all page-at-a-time, divergence-aware, memory-bounded):
+- **`transfer_key_events`** — Core (private). Pages through source, optionally verifies via `KelVerifier`, sends to sink. Handles divergence-aware ordering across page boundaries (held-back events, deferred fork identification, composite SAID cursors).
+- **`forward_key_events`** — Forward without verification. Use for serving/forwarding between services. Supports `since` for delta fetch.
+- **`verify_key_events`** — Verify only (discards events). Returns `Verification` token. Use for consuming (security decisions) when you don't need the events.
+- **`completed_verification`** — Verify only (offset-based `PageLoader`). Returns `Verification` token. Alternative to `verify_key_events` for DB-backed sources.
+- **`benchmark_key_events`** — Pages through source, discards events. For performance testing. Supports `since`.
+
+**Collecting functions** (accumulate into memory — only use in true clients like CLI, never in services):
+- **`collect_key_events`** — Verify + collect. Returns `(Verification, Vec<SignedKeyEvent>)`.
+- **`resolve_key_events`** — Collect without verification. Bounded by `max_pages` but accumulates all events. Supports `since`.
+
 ### Verification Invariant
 
 The DB cannot be trusted. All operations on KEL data fall into three categories:

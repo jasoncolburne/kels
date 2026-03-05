@@ -349,6 +349,8 @@ pub(crate) async fn submit_events(
                 ApiError::unauthorized("KEL is decommissioned".to_string())
             }
             KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
+            // This catches ContestRequired before it reaches the match on
+            // outcome.result below, making KelMergeResult::ContestRequired unreachable.
             KelsError::ContestRequired => ApiError::contest_required(
                 "Contest required: recovery key revealed. Use contest to freeze the KEL.",
             ),
@@ -361,13 +363,9 @@ pub(crate) async fn submit_events(
         | KelMergeResult::Contested
         | KelMergeResult::Diverged => true,
         KelMergeResult::RecoverRequired => false,
-        KelMergeResult::ContestRequired => {
-            // merge_events returns Err(ContestRequired) which is caught above,
-            // so this branch is unreachable in practice
-            return Err(ApiError::contest_required(
-                "Contest required: recovery key revealed. Use contest to freeze the KEL.",
-            ));
-        }
+        // ContestRequired is returned as Err(KelsError::ContestRequired) by
+        // save_with_merge, caught by the .map_err() above — never reaches here.
+        KelMergeResult::ContestRequired => unreachable!(),
     };
 
     // Update cache outside transaction

@@ -89,6 +89,7 @@ async fn sync_own_kel(
         &sink,
         kels::MAX_EVENTS_PER_KEL_RESPONSE,
         kels::max_verification_pages(),
+        None,
     )
     .await?;
 
@@ -96,6 +97,9 @@ async fn sync_own_kel(
 }
 
 /// Compare own effective SAID with each member's view and push deltas.
+///
+/// Uses `forward_key_events` with a repo-backed source and per-member HTTP sink.
+/// Delta fetch (via `since` parameter) with automatic full-fetch fallback.
 async fn push_to_stale_members(
     node: &FederationNode,
     identity_client: &IdentityClient,
@@ -112,6 +116,11 @@ async fn push_to_stale_members(
         Some((said, _)) => said,
         None => return Ok(()), // Nothing to push
     };
+
+    let repo_store = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+        member_kel_repo.pool.clone(),
+    )));
+    let repo_source = kels::StoreKelSource::new(&repo_store);
 
     for member in &config.members {
         if member.prefix == config.self_prefix {
@@ -133,63 +142,54 @@ async fn push_to_stale_members(
             continue; // Member is up to date
         }
 
-        // Try delta fetch first (events after member's known tip)
-        let events = if let Some(ref member_said) = member_said {
-            match member_kel_repo
-                .get_signed_history_since(
-                    &own_prefix,
-                    member_said,
-                    kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-                )
-                .await
+        let member_sink = kels::HttpKelSink::new(&member.url, "/api/member-kels/events");
+
+        // Delta fetch with fallback: try since=member_said, fall back to full
+        let since = member_said.as_deref();
+        let result = if since.is_some() {
+            match kels::forward_key_events(
+                &own_prefix,
+                &repo_source,
+                &member_sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+                since,
+            )
+            .await
             {
-                Ok((events, _)) if !events.is_empty() => events,
-                _ => {
-                    // Member SAID not found locally (e.g., composite divergent SAID), fall back to full fetch
-                    match member_kel_repo
-                        .get_signed_history(&own_prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-                        .await
-                    {
-                        Ok((events, _)) => events,
-                        Err(e) => {
-                            warn!(member = %member.prefix, error = %e, "Failed to get own KEL for push");
-                            continue;
-                        }
-                    }
+                Ok(()) => Ok(()),
+                Err(kels::KelsError::EventNotFound(_)) => {
+                    // Member SAID not found locally (e.g., composite divergent SAID)
+                    kels::forward_key_events(
+                        &own_prefix,
+                        &repo_source,
+                        &member_sink,
+                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                        kels::max_verification_pages(),
+                        None,
+                    )
+                    .await
                 }
+                Err(e) => Err(e),
             }
         } else {
-            // Member has no data at all, send everything
-            match member_kel_repo
-                .get_signed_history(&own_prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-                .await
-            {
-                Ok((events, _)) => events,
-                Err(e) => {
-                    warn!(member = %member.prefix, error = %e, "Failed to get own KEL for push");
-                    continue;
-                }
-            }
+            kels::forward_key_events(
+                &own_prefix,
+                &repo_source,
+                &member_sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+                None,
+            )
+            .await
         };
 
-        if events.is_empty() {
-            continue;
-        }
-
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            client.submit_events_no_propagate(&events),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {
-                debug!(member = %member.prefix, events = events.len(), "Pushed KEL delta to member");
+        match result {
+            Ok(()) => {
+                debug!(member = %member.prefix, "Pushed KEL delta to member");
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 warn!(member = %member.prefix, error = %e, "Failed to push KEL to member");
-            }
-            Err(_) => {
-                warn!(member = %member.prefix, "Timed out pushing KEL to member");
             }
         }
     }

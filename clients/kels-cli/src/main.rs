@@ -793,10 +793,17 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     );
 
     let kel_store = create_kel_store(cli, prefix)?;
+    let source = kels::StoreKelSource::new(&kel_store);
 
-    let (mut events, _has_more) = kel_store
-        .load(prefix, kels::MAX_EVENTS_PER_KEL_QUERY as u64, 0)
-        .await?;
+    let mut events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -828,6 +835,7 @@ async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
         &source,
         MAX_EVENTS_PER_KEL_RESPONSE,
         max_verification_pages(),
+        None,
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;
@@ -859,6 +867,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
         &source,
         MAX_EVENTS_PER_KEL_RESPONSE,
         max_verification_pages(),
+        None,
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;

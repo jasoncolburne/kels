@@ -223,7 +223,14 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     )],
                 );
 
-                // Fetch limit + 2: one extra for the since event we'll filter out, one extra for has_more detection
+                // Fetch limit + 2 to account for two sentinel events:
+                //   +1: the since event itself — included by `>= serial` but filtered
+                //       out by `retain()` below (we need `>=` not `>` to catch divergent
+                //       events at the same serial as the since event)
+                //   +1: the has_more sentinel — if we get more than `limit` events after
+                //       filtering, there are additional pages
+                // After `retain()` removes at most 1 event (the since event), we check
+                // `events.len() > limit` to detect has_more, then truncate to `limit`.
                 // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
                 let clamped_limit = limit.min(i64::MAX as u64 - 2);
                 let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)

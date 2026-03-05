@@ -171,6 +171,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
                 &source,
                 crate::MAX_EVENTS_PER_KEL_QUERY,
                 crate::max_verification_pages(),
+                None,
             )
             .await?;
 

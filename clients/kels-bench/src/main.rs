@@ -182,6 +182,7 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
         &source,
         MAX_EVENTS_PER_KEL_RESPONSE,
         DEFAULT_MAX_VERIFICATION_PAGES,
+        None,
     )
     .await?;
     let kel_bytes = serde_json::to_string(&events)
@@ -279,6 +280,7 @@ async fn run_worker(
                 &source,
                 MAX_EVENTS_PER_KEL_RESPONSE,
                 DEFAULT_MAX_VERIFICATION_PAGES,
+                None,
             )
             .await
             .map(|_| *kel_bytes),

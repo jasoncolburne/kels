@@ -60,6 +60,19 @@ impl KelsClient {
         &self.base_url
     }
 
+    /// Create an `HttpKelSource` for this client's KEL endpoint.
+    pub fn as_kel_source(&self) -> crate::HttpKelSource {
+        crate::HttpKelSource::new(
+            &self.base_url,
+            &format!("{}/kel/{{prefix}}", self.path_prefix),
+        )
+    }
+
+    /// Create an `HttpKelSink` for this client's events endpoint.
+    pub fn as_kel_sink(&self) -> crate::HttpKelSink {
+        crate::HttpKelSink::new(&self.base_url, &format!("{}/events", self.path_prefix))
+    }
+
     pub async fn health(&self) -> Result<String, KelsError> {
         let resp = self
             .client
