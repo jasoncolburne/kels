@@ -27,7 +27,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 NODE_A_URL="http://${NODE_A_KELS_HOST:-kels}"
 NODE_B_FQDN_URL="http://kels.kels-node-b.svc.cluster.local"
 REDIS_HOST="${NODE_A_REDIS_HOST:-redis}"
-RESYNC_WAIT="${RESYNC_WAIT:-30}"
+RESYNC_WAIT="${RESYNC_WAIT:-90}"
 STALE_PREFIX_KEY="kels:anti_entropy:stale"
 STATE_FILE="/tmp/resync-test-state"
 

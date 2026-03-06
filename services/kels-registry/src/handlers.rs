@@ -205,21 +205,21 @@ async fn verify_and_authorize<T: serde::Serialize>(
 
     // Verify the backing proposal was properly approved
     if let Some(node) = state.federation_node.as_ref() {
-        let threshold = node.approval_threshold();
-        let prefixes = node.config().member_prefixes();
-        let member_prefixes: std::collections::HashSet<&str> =
-            prefixes.iter().map(|s| s.as_str()).collect();
+        let trusted = kels::trusted_prefixes();
 
         // Find an approved, non-withdrawn addition proposal for this peer
         let proposals = node.completed_addition_proposals_with_votes().await;
         let pwv = proposals
             .iter()
             .find(|pw| {
+                let Some(last) = pw.history.records.last() else {
+                    return false;
+                };
                 pw.history
                     .inception()
                     .is_some_and(|p| p.peer_prefix == peer.peer_prefix)
                     && !pw.history.is_withdrawn()
-                    && pw.status(threshold) == kels::ProposalStatus::Approved
+                    && pw.status(last.threshold) == kels::ProposalStatus::Approved
             })
             .ok_or_else(|| {
                 ApiError::forbidden(format!(
@@ -227,6 +227,12 @@ async fn verify_and_authorize<T: serde::Serialize>(
                     peer.peer_prefix
                 ))
             })?;
+
+        let proposal_threshold = pwv
+            .history
+            .inception()
+            .map(|p| p.threshold)
+            .unwrap_or(usize::MAX);
 
         // Structural verification: chain, votes, references, withdrawal invariant
         pwv.verify().map_err(|e| {
@@ -241,9 +247,9 @@ async fn verify_and_authorize<T: serde::Serialize>(
             .proposer()
             .ok_or_else(|| ApiError::internal_error("Approved proposal has no proposer"))?;
 
-        if !member_prefixes.contains(proposer) {
+        if !trusted.contains(proposer) {
             return Err(ApiError::forbidden(format!(
-                "Proposer {} is not a federation member",
+                "Proposer {} is not a trusted registry",
                 proposer
             )));
         }
@@ -257,7 +263,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
         // Verify vote anchoring: each approval vote in voter's KEL
         let mut verified_voters = std::collections::HashSet::new();
         for vote in &pwv.votes {
-            if !vote.approve || !member_prefixes.contains(vote.voter.as_str()) {
+            if !vote.approve || !trusted.contains(vote.voter.as_str()) {
                 continue;
             }
 
@@ -266,12 +272,12 @@ async fn verify_and_authorize<T: serde::Serialize>(
             }
         }
 
-        if verified_voters.len() < threshold {
+        if verified_voters.len() < proposal_threshold {
             return Err(ApiError::forbidden(format!(
                 "Insufficient verified votes for peer {} ({}/{})",
                 peer.peer_prefix,
                 verified_voters.len(),
-                threshold
+                proposal_threshold
             )));
         }
     }
@@ -609,19 +615,20 @@ pub async fn list_completed_proposals(
         .map(|p| p.peer_prefix)
         .collect();
 
-    let threshold = state.node.approval_threshold();
-
     let additions = state
         .node
         .completed_addition_proposals_with_votes()
         .await
         .into_iter()
         .filter(|awv| {
+            let Some(last) = awv.history.records.last() else {
+                return false;
+            };
             awv.history
                 .inception()
                 .is_some_and(|p| active_peer_prefixes.contains(&p.peer_prefix))
                 && !awv.history.is_withdrawn()
-                && awv.status(threshold) == ProposalStatus::Approved
+                && awv.status(last.threshold) == ProposalStatus::Approved
         })
         .collect();
 
@@ -629,7 +636,7 @@ pub async fn list_completed_proposals(
         additions,
         removals: vec![],
         member_prefixes: state.node.member_prefixes(),
-        approval_threshold: threshold,
+        approval_threshold: state.node.approval_threshold(),
     }))
 }
 

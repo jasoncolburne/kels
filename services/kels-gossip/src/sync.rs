@@ -310,6 +310,10 @@ impl SyncHandler {
                     warn!("KEL not found on remote {} for {}", kels_url, prefix);
                     continue;
                 }
+                Err(KelsError::ContestedKel(_)) => {
+                    debug!("KEL {} is already contested locally, skipping sync", prefix);
+                    return Ok(());
+                }
                 Err(e) => {
                     warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
                     continue;
