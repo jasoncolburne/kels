@@ -10,7 +10,6 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use kels::MultiRegistryClient;
 use thiserror::Error;
 use verifiable_storage::Chained;
 
@@ -28,7 +27,7 @@ pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
 /// This performs cryptographic verification:
-/// 1. Fetches the registry's KEL and verifies its integrity
+/// 1. Fetches peers from any available registry (with failover)
 /// 2. Checks that the registry prefix matches the expected trust anchor
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
 /// 4. For peers: verifies an approved proposal exists with sufficient votes,
@@ -36,7 +35,8 @@ pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
 ///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
-    registry_client: &mut MultiRegistryClient,
+    registry_urls: &[String],
+    registry_kel_store: &(dyn kels::KelStore + Sync),
     allowlist: &SharedAllowlist,
     exclude_node_id: Option<&str>,
 ) -> Result<usize, AllowlistRefreshError> {
@@ -44,17 +44,26 @@ pub async fn refresh_allowlist(
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
     drop(original_peers);
 
-    // Fetch peers from all registries (all peers are equal)
+    let trusted = kels::trusted_prefixes();
+
+    // Fetch peers from any available registry
     let t0 = std::time::Instant::now();
-    debug!("Fetching peers from all registries");
-    let response = registry_client
-        .fetch_all_verified_peers()
+    debug!("Fetching peers from registries");
+    let (response, _) =
+        kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
+            c.fetch_peers().await
+        })
         .await
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
-    debug!("fetch_all_verified_peers completed in {:?}", t0.elapsed());
+    debug!("fetch_peers completed in {:?}", t0.elapsed());
 
     // Fetch completed proposals for peer vote verification
-    let proposals_response = registry_client.fetch_completed_proposals().await.ok();
+    let proposals_response =
+        kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
+            c.fetch_completed_proposals().await
+        })
+        .await
+        .ok();
     debug!(
         "fetch_completed_proposals completed in {:?} (total {:?})",
         t0.elapsed(),
@@ -79,7 +88,7 @@ pub async fn refresh_allowlist(
             }
 
             // Verify peer record anchoring in authorizing registry KEL
-            match registry_client.verify_peer_anchoring(latest).await {
+            match kels::verify_peer_anchoring(registry_kel_store, latest, registry_urls).await {
                 Ok(true) => {}
                 Ok(false) => {
                     warn!(
@@ -103,9 +112,14 @@ pub async fn refresh_allowlist(
 
             // Verify the proposal has sufficient verified votes
             let tv = std::time::Instant::now();
-            if !registry_client
-                .verify_peer_votes(&latest.peer_prefix, &proposals_response)
-                .await
+            if !kels::verify_peer_votes(
+                registry_kel_store,
+                &latest.peer_prefix,
+                &proposals_response,
+                &trusted,
+                registry_urls,
+            )
+            .await
             {
                 warn!(
                     peer_prefix = %latest.peer_prefix,
@@ -161,7 +175,8 @@ pub async fn refresh_allowlist(
 /// Periodically fetches the peer list from the registry and updates the allowlist.
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
-    registry_client: &mut MultiRegistryClient,
+    registry_urls: &[String],
+    registry_kel_store: &(dyn kels::KelStore + Sync),
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
     node_id: &str,
@@ -172,7 +187,8 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(registry_client, &allowlist, Some(node_id)).await {
+        match refresh_allowlist(registry_urls, registry_kel_store, &allowlist, Some(node_id)).await
+        {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
             }

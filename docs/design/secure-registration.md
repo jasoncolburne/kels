@@ -206,10 +206,14 @@ kels-gossip signs requests using `IdentityRegistrySigner`:
 ```rust
 // In kels-gossip startup
 let registry_signer = IdentityRegistrySigner::new(identity_url, &peer_prefix);
-let registry_client = MultiRegistryClient::with_signer(registry_urls, Arc::new(registry_signer));
+let registry_client = KelsRegistryClient::with_signer(registry_url, Arc::new(registry_signer));
 
 // Registration is now automatically signed
-registry_client.register(node_id, kels_url, ...).await?;
+// with_failover shuffles registry URLs and tries each in turn
+with_failover(&registry_urls, |url| async {
+    let client = KelsRegistryClient::with_signer(url, signer.clone());
+    client.register(node_id, kels_url, ...).await
+}).await?;
 ```
 
 The public key is not included in the request. During verification, the registry looks up the peer by `peer_prefix`, fetches their KEL, and extracts the public key to verify the signature.

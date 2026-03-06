@@ -1,7 +1,6 @@
 //! kels-bench - KELS Load Testing Tool
 
 use std::{
-    collections::HashMap,
     process,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -217,10 +216,7 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
     Ok(prefix)
 }
 
-async fn setup_new_kels(
-    client: &KelsClient,
-    url: &str,
-) -> Result<(Vec<TestKelConfig>, Vec<TestKelConfig>)> {
+async fn setup_new_kels(client: &KelsClient, url: &str) -> Result<Vec<TestKelConfig>> {
     println!("{}", "Setting up test KELs...".green().bold());
 
     let lengths = [1, 8, 32, 64, 128, 256, 512];
@@ -233,33 +229,20 @@ async fn setup_new_kels(
         singular_kels.push(config);
     }
 
-    println!("  Creating 5 x 8-event KELs for batch testing...");
-    let mut batch_kels = Vec::new();
-    for i in 0..5 {
-        let prefix = create_test_kel(client, 8).await?;
-        println!("    KEL {}: {}", i + 1, prefix);
-        let config = measure_kel(url, &prefix).await?;
-        batch_kels.push(config);
-    }
-
     println!("{}", "Setup complete!".green());
-    Ok((singular_kels, batch_kels))
+    Ok(singular_kels)
 }
 
-async fn setup_existing_kels(
-    url: &str,
-    prefix: &str,
-) -> Result<(Vec<TestKelConfig>, Vec<TestKelConfig>)> {
+async fn setup_existing_kels(url: &str, prefix: &str) -> Result<Vec<TestKelConfig>> {
     println!("{}", "Skipping setup, using provided prefix...".yellow());
     let config = measure_kel(url, prefix).await?;
-    Ok((vec![config], vec![]))
+    Ok(vec![config])
 }
 
 #[derive(Clone)]
 enum BenchmarkType {
     Health,
     GetKel { prefix: String, kel_bytes: u64 },
-    GetKels { prefixes: Vec<String> },
 }
 
 async fn run_worker(
@@ -284,16 +267,6 @@ async fn run_worker(
             )
             .await
             .map(|_| *kel_bytes),
-            BenchmarkType::GetKels { prefixes } => {
-                let prefixes_map: HashMap<String, Option<String>> =
-                    prefixes.iter().map(|p| (p.clone(), None)).collect();
-                client.fetch_kels(&prefixes_map).await.map(|kels| {
-                    kels.values()
-                        .filter_map(|page| serde_json::to_string(&page.events).ok())
-                        .map(|s| s.len() as u64)
-                        .sum()
-                })
-            }
         };
 
         let latency_us = start.elapsed().as_micros() as u64;
@@ -359,11 +332,7 @@ async fn run_benchmark(
     Ok(())
 }
 
-async fn run_benchmarks(
-    args: &Args,
-    singular_kels: &[TestKelConfig],
-    batch_kels: &[TestKelConfig],
-) -> Result<()> {
+async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<()> {
     let stats = Arc::new(Stats::new(args.throughput_only));
 
     run_benchmark(
@@ -389,19 +358,6 @@ async fn run_benchmarks(
         stats.reset().await;
     }
 
-    if !batch_kels.is_empty() {
-        let prefixes: Vec<String> = batch_kels.iter().map(|c| c.prefix.clone()).collect();
-        if !prefixes.is_empty() {
-            run_benchmark(
-                args,
-                stats.clone(),
-                BenchmarkType::GetKels { prefixes },
-                &format!("get_kels (batch of {} KELs)", batch_kels.len()),
-            )
-            .await?;
-        }
-    }
-
     Ok(())
 }
 
@@ -418,7 +374,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let (singular_kels, batch_kels) = if args.skip_setup {
+    let singular_kels = if args.skip_setup {
         let prefix = args
             .prefix
             .as_deref()
@@ -428,7 +384,7 @@ async fn main() -> Result<()> {
         setup_new_kels(&client, &args.url).await?
     };
 
-    run_benchmarks(&args, &singular_kels, &batch_kels).await?;
+    run_benchmarks(&args, &singular_kels).await?;
 
     println!();
     println!("{}", "All benchmarks complete!".green().bold());

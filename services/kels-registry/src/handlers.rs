@@ -1,7 +1,7 @@
 //! KELS Registry REST API Handlers
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -16,7 +16,7 @@ use axum::{
 use cesr::Matter;
 use dashmap::DashMap;
 use kels::{
-    AdditionHistory, AdminRequest, BatchKelsRequest, CompletedProposalsResponse, DeregisterRequest,
+    AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest,
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KeyEventsQuery, NodeRegistration, Peer,
     PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, Proposal,
     ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory,
@@ -1492,46 +1492,6 @@ pub async fn get_member_key_events(
     .map_err(|e| ApiError::internal_error(format!("Failed to serve member KEL: {}", e)))?;
 
     Ok(Json(page))
-}
-
-/// Batch fetch federation member KELs with optional delta sync.
-///
-/// Accepts a `BatchKelsRequest` with a map of prefix → optional since SAID.
-/// If the prefixes map is empty, returns all trusted prefixes (first page each).
-/// Used for high availability — clients can fetch all KELs from any registry.
-pub async fn get_all_member_key_events(
-    State(state): State<Arc<FederationState>>,
-    Json(request): Json<BatchKelsRequest>,
-) -> Result<Json<HashMap<String, SignedKeyEventPage>>, ApiError> {
-    let limit = kels::MAX_EVENTS_PER_KEL_RESPONSE as u64;
-
-    // If no prefixes specified, default to all trusted prefixes with no since
-    let prefixes: HashMap<String, Option<String>> = if request.prefixes.is_empty() {
-        kels::trusted_prefixes()
-            .iter()
-            .map(|p| (p.to_string(), None))
-            .collect()
-    } else {
-        request.prefixes
-    };
-
-    let mut result: HashMap<String, SignedKeyEventPage> = HashMap::new();
-
-    for (prefix, since) in &prefixes {
-        if !kels::trusted_prefixes().contains(&prefix.as_str()) {
-            continue;
-        }
-
-        // All member KELs (including own) are now in MemberKelRepository
-        if let Ok(page) =
-            kels::serve_kel_page(&state.member_kel_repo, prefix, since.as_deref(), limit).await
-            && !page.events.is_empty()
-        {
-            result.insert(prefix.clone(), page);
-        }
-    }
-
-    Ok(Json(result))
 }
 
 #[cfg(test)]

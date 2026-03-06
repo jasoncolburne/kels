@@ -64,26 +64,26 @@ pub use hardware::HardwareKeyProvider;
 
 pub use builder::KeyEventBuilder;
 pub use client::{
-    IdentityClient, KelsClient, KelsRegistryClient, MultiRegistryClient, RegistrySigner,
-    SignResult, sign_request, trusted_prefixes,
+    IdentityClient, KelsClient, KelsRegistryClient, RegistrySigner, SignResult,
+    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::SignedEventRepository;
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
-pub use store::{FileKelStore, KelStore, RepositoryKelStore};
+pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
-    AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
-    CachedKel, CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent,
-    KeyEventSignature, NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer,
-    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, PrefixListResponse,
-    PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotes,
-    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
-    RaftVote, RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent,
-    SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids,
-    validate_timestamp,
+    AdditionHistory, AdditionWithVotes, AdminRequest, BatchSubmitResponse, CachedKel,
+    CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode, ErrorResponse,
+    EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature,
+    NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
+    ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
+    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids, validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
@@ -95,10 +95,6 @@ pub use types::{
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.
 pub const MAX_EVENTS_PER_SUBMISSION: usize = 512;
-
-/// Maximum number of prefixes allowed in a single batch fetch request.
-/// Shared between the server handler and client chunking logic.
-pub const MAX_BATCH_PREFIXES: usize = 64;
 
 /// Maximum number of events fetched in a single KEL database query or HTTP page.
 pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;

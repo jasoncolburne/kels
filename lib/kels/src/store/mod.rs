@@ -57,6 +57,18 @@ pub trait KelStore: Send + Sync {
     }
 }
 
+/// Adapter that wraps any `&dyn KelStore` as a `PagedKelSink`.
+///
+/// Delegates `store_page()` to `KelStore::save()`.
+pub struct KelStoreSink<'a>(pub &'a (dyn KelStore + Sync));
+
+#[async_trait]
+impl crate::types::PagedKelSink for KelStoreSink<'_> {
+    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.0.save(prefix, events).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::RwLock};

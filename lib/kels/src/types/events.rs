@@ -2,7 +2,7 @@
 
 use std::{
     cmp::{Eq, PartialEq},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt,
     hash::{Hash, Hasher},
     str::FromStr,
@@ -132,6 +132,15 @@ impl EventKind {
         Self::ALL
             .iter()
             .filter(|k| k.is_establishment())
+            .map(|k| k.as_str().to_string())
+            .collect()
+    }
+
+    /// Returns the DB string representations of kinds that reveal the recovery key.
+    pub fn recovery_revealing_kinds() -> Vec<String> {
+        Self::ALL
+            .iter()
+            .filter(|k| k.reveals_recovery_key())
             .map(|k| k.as_str().to_string())
             .collect()
     }
@@ -721,12 +730,6 @@ impl KelsAuditRecord {
     pub fn as_signed_key_events(&self) -> Result<Vec<SignedKeyEvent>, serde_json::Error> {
         serde_json::from_str(&self.data_json)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BatchKelsRequest {
-    pub prefixes: HashMap<String, Option<String>>,
 }
 
 /// NOTE: `build_page_bytes` in `services/kels/src/handlers.rs` manually constructs

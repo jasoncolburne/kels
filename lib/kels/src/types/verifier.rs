@@ -3168,6 +3168,33 @@ mod tests {
         }
     }
 
+    impl MemoryKelSource {
+        /// Compute effective SAID the same way the real serving layer does:
+        /// find branch tips (events whose SAID is not referenced as `previous`
+        /// by any other event), then single tip → its SAID, multiple → composite.
+        fn effective_said(&self) -> Option<String> {
+            if self.events.is_empty() {
+                return None;
+            }
+            let referenced: std::collections::HashSet<&str> = self
+                .events
+                .iter()
+                .filter_map(|e| e.event.previous.as_deref())
+                .collect();
+            let tips: Vec<&str> = self
+                .events
+                .iter()
+                .filter(|e| !referenced.contains(e.event.said.as_str()))
+                .map(|e| e.event.said.as_str())
+                .collect();
+            match tips.len() {
+                0 => None,
+                1 => Some(tips[0].to_string()),
+                _ => Some(crate::hash_tip_saids(&tips)),
+            }
+        }
+    }
+
     #[async_trait]
     impl PagedKelSource for MemoryKelSource {
         async fn fetch_page(
@@ -3177,12 +3204,16 @@ mod tests {
             limit: usize,
         ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
             let start = match since {
-                Some(said) => self
-                    .events
-                    .iter()
-                    .position(|e| e.event.said == said)
-                    .map(|i| i + 1)
-                    .unwrap_or(self.events.len()),
+                Some(said) => {
+                    if let Some(i) = self.events.iter().position(|e| e.event.said == said) {
+                        i + 1
+                    } else if self.effective_said().as_deref() == Some(said) {
+                        // Composite SAID matches effective — caller is in sync
+                        return Ok((vec![], false));
+                    } else {
+                        return Err(crate::error::KelsError::EventNotFound(said.to_string()));
+                    }
+                }
                 None => 0,
             };
             if start >= self.events.len() {

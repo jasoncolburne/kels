@@ -26,8 +26,7 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
-    MultiRegistryClient, NodeStatus,
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider, NodeStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1698,7 +1697,8 @@ pub unsafe extern "C" fn kels_discover_nodes(
         return;
     }
 
-    let Some(ref expected_prefix) = from_c_string(registry_prefix) else {
+    // registry_prefix is accepted for API compatibility but no longer used
+    if from_c_string(registry_prefix).is_none() {
         result.status = KelsStatus::Error;
         result.error = to_c_string("Invalid registry prefix");
         return;
@@ -1712,10 +1712,13 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let discover_result = runtime.block_on(async {
-        let mut registry = MultiRegistryClient::new(urls);
+        // Use a temp directory for the store during node discovery
+        let store_dir = std::env::temp_dir().join("kels-ffi-discovery");
+        let store = FileKelStore::new(&store_dir)?;
 
-        // Discover nodes with proper status checking and latency testing
-        let nodes = registry.nodes_sorted_by_latency(expected_prefix).await?;
+        let nodes =
+            kels::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(10), &store)
+                .await?;
 
         // Filter to verified nodes and convert to JSON format
         let node_infos: Vec<NodeInfoJson> = nodes
@@ -1845,11 +1848,8 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     };
 
     let fetch_result = runtime.block_on(async {
-        let mut registry = MultiRegistryClient::new(vec![url.clone()]);
-        registry.fetch_verified_member_key_events(true).await?;
-        let prefix = registry.prefix_for_url(&url).await?;
-
-        Ok(prefix)
+        let client = kels::KelsRegistryClient::new(&url);
+        client.fetch_registry_prefix().await
     });
 
     match fetch_result {

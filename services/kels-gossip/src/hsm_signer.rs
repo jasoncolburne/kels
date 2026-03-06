@@ -140,6 +140,7 @@ pub struct KelsPeerVerifier {
     kels_url: String,
     federation_registry_urls: Vec<String>,
     node_id: String,
+    registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
 }
 
 impl KelsPeerVerifier {
@@ -148,12 +149,14 @@ impl KelsPeerVerifier {
         kels_url: &str,
         federation_registry_urls: Vec<String>,
         node_id: String,
+        registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
     ) -> Self {
         Self {
             allowlist,
             kels_url: kels_url.to_string(),
             federation_registry_urls,
             node_id,
+            registry_kel_store,
         }
     }
 
@@ -165,10 +168,13 @@ impl KelsPeerVerifier {
 
     /// Refresh the allowlist from the registry, then check again.
     async fn is_in_allowlist_refreshed(&self, prefix: &str) -> Result<bool, GossipError> {
-        let mut client = kels::MultiRegistryClient::new(self.federation_registry_urls.clone());
-        if let Err(e) =
-            crate::allowlist::refresh_allowlist(&mut client, &self.allowlist, Some(&self.node_id))
-                .await
+        if let Err(e) = crate::allowlist::refresh_allowlist(
+            &self.federation_registry_urls,
+            self.registry_kel_store.as_ref(),
+            &self.allowlist,
+            Some(&self.node_id),
+        )
+        .await
         {
             tracing::warn!("Allowlist refresh during handshake failed: {}", e);
         }
@@ -465,8 +471,15 @@ mod tests {
         let sig_bytes = sig.to_bytes();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let verifier =
-            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
+        let store: Arc<dyn kels::KelStore> =
+            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let verifier = KelsPeerVerifier::new(
+            allowlist,
+            "http://localhost:8080",
+            vec![],
+            String::new(),
+            store,
+        );
 
         let result = verifier.verify_signature(data, &sig_bytes, public_key);
         assert!(result.is_ok());
@@ -489,8 +502,15 @@ mod tests {
         let bad_sig = vec![1u8; 64];
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let verifier =
-            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
+        let store: Arc<dyn kels::KelStore> =
+            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let verifier = KelsPeerVerifier::new(
+            allowlist,
+            "http://localhost:8080",
+            vec![],
+            String::new(),
+            store,
+        );
 
         let result = verifier.verify_signature(b"test data", &bad_sig, public_key);
         assert!(result.is_err());

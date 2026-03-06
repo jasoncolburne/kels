@@ -25,8 +25,16 @@ ACTIVE_REGISTRY_NAMES=(a c d)
 
 DECOMMISSIONED_URL="http://kels-registry.kels-registry-b.kels"
 
-NODE_A_URL="http://kels.kels-node-a.kels"
-NODE_B_URL="http://kels.kels-node-b.kels"
+NODE_URLS=(
+    "http://kels.kels-node-a.kels"
+    "http://kels.kels-node-b.kels"
+    "http://kels.kels-node-c.kels"
+    "http://kels.kels-node-d.kels"
+    "http://kels.kels-node-e.kels"
+    "http://kels.kels-node-f.kels"
+)
+NODE_NAMES=(a b c d e f)
+NODE_A_URL="${NODE_URLS[0]}"
 
 init_temp_dir
 
@@ -110,29 +118,21 @@ echo
 # Scenario 5: Gossip still works
 # ========================================
 echo -e "${CYAN}=== Scenario 5: Gossip Propagation ===${NC}"
-echo "Creating KEL on node-a, verifying propagation to node-b..."
+echo "Creating KEL on node-a, verifying propagation to all nodes..."
 echo
 
 # Wait for nodes to be ready
-wait_for_health "$NODE_A_URL" "$NODE_A_URL" || true
-wait_for_health "$NODE_B_URL" "$NODE_B_URL" || true
+for url in "${NODE_URLS[@]}"; do
+    wait_for_health "$url" "$url" || true
+done
 
 PREFIX=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX"
 
 run_test "KEL exists on node-a" curl -sf "$NODE_A_URL/api/kels/kel/$PREFIX"
 
-# Wait for propagation
-CONVERGED=false
-for attempt in {1..30}; do
-    if curl -sf "$NODE_B_URL/api/kels/kel/$PREFIX" > /dev/null 2>&1; then
-        CONVERGED=true
-        break
-    fi
-    sleep 1
-done
-
-run_test "KEL propagated to node-b after shrink" [ "$CONVERGED" = "true" ]
+run_test "KEL propagated to all nodes after shrink" \
+    wait_for_propagation "$PREFIX" 30 "${NODE_URLS[@]}"
 
 echo
 

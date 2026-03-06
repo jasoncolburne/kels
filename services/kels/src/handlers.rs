@@ -13,12 +13,10 @@ use axum::{
 };
 use cesr::{Matter, Signature};
 use dashmap::DashMap;
-use futures_util::future::join_all;
 use kels::{
-    BatchKelsRequest, BatchSubmitResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
-    KelMergeResult, KelsAuditRecord, KelsError, KeyEventsQuery, MAX_BATCH_PREFIXES,
-    MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    PrefixListResponse, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    BatchSubmitResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult,
+    KelsAuditRecord, KelsError, KeyEventsQuery, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE,
+    MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache, SignedKeyEvent,
 };
 use tracing::warn;
 
@@ -630,11 +628,13 @@ async fn refresh_verified_peers(
         return Ok(());
     }
 
-    let mut registry = kels::MultiRegistryClient::new(registry_urls.to_vec());
-    let peers_response = registry
-        .fetch_all_verified_peers()
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to fetch peers: {}", e)))?;
+    let (peers_response, _) = kels::with_failover(
+        registry_urls,
+        std::time::Duration::from_secs(10),
+        |c| async move { c.fetch_peers().await },
+    )
+    .await
+    .map_err(|e| ApiError::internal_error(format!("Failed to fetch peers: {}", e)))?;
 
     let mut conn = redis_conn.clone();
     for history in &peers_response.peers {
@@ -654,151 +654,6 @@ async fn refresh_verified_peers(
     }
 
     Ok(())
-}
-
-// ==================== Batch Handlers ====================
-
-/// Batch fetch KELs. Returns map of prefix -> SignedKeyEventPage.
-/// Supports delta fetching: if a since SAID is provided for a prefix,
-/// only events after that SAID are returned.
-/// Each prefix is limited to MAX_EVENTS_PER_KEL_RESPONSE events; `has_more` indicates truncation.
-pub(crate) async fn get_kels_batch(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<BatchKelsRequest>,
-) -> Result<Response, ApiError> {
-    if request.prefixes.len() > MAX_BATCH_PREFIXES {
-        return Err(ApiError::bad_request(format!(
-            "Batch request exceeds maximum of {} prefixes",
-            MAX_BATCH_PREFIXES
-        )));
-    }
-
-    let limit = MAX_EVENTS_PER_KEL_RESPONSE as u64;
-
-    // Fetch all KELs in parallel
-    let futures: Vec<_> = request
-        .prefixes
-        .into_iter()
-        .map(|(prefix, since)| {
-            let state = Arc::clone(&state);
-
-            async move {
-                match since {
-                    // Full fetch path
-                    None => {
-                        // Fast path: return cached bytes directly (cached KELs ≤ limit)
-                        if let Ok(Some(bytes)) = state.kel_cache.get_full_serialized(&prefix).await
-                        {
-                            let page_bytes = build_page_bytes(&bytes);
-                            return Ok((prefix, page_bytes));
-                        }
-
-                        // Cache miss - fetch from DB
-                        let (events, has_more) = state
-                            .repo
-                            .key_events
-                            .get_signed_history(&prefix, limit, 0)
-                            .await?;
-
-                        // Store in cache (skips if too large)
-                        if !events.is_empty()
-                            && !has_more
-                            && let Err(e) = state.kel_cache.store(&prefix, &events).await
-                        {
-                            warn!("Failed to cache KEL for {}: {}", prefix, e);
-                        }
-
-                        let bytes = serde_json::to_vec(&SignedKeyEventPage { events, has_more })
-                            .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
-                        Ok((prefix, bytes))
-                    }
-                    // Delta fetch path — canonical since-resolution with fallback
-                    Some(since_said) => {
-                        let page = match kels::serve_kel_page(
-                            &state.repo.key_events,
-                            &prefix,
-                            Some(&since_said),
-                            limit,
-                        )
-                        .await
-                        {
-                            Ok(page) => page,
-                            Err(KelsError::EventNotFound(_)) => {
-                                warn!(
-                                    "Since SAID {} not found for {}, falling back to full fetch",
-                                    since_said, prefix
-                                );
-                                match kels::serve_kel_page(
-                                    &state.repo.key_events,
-                                    &prefix,
-                                    None,
-                                    limit,
-                                )
-                                .await
-                                {
-                                    Ok(page) => page,
-                                    Err(KelsError::EventNotFound(_)) => SignedKeyEventPage {
-                                        events: vec![],
-                                        has_more: false,
-                                    },
-                                    Err(e) => return Err(e.into()),
-                                }
-                            }
-                            Err(e) => return Err(e.into()),
-                        };
-
-                        let bytes = serde_json::to_vec(&page)
-                            .unwrap_or_else(|_| br#"{"events":[],"hasMore":false}"#.to_vec());
-                        Ok((prefix, bytes))
-                    }
-                }
-            }
-        })
-        .collect();
-
-    // Wait for all parallel fetches
-    let results: Vec<Result<(String, Vec<u8>), ApiError>> = join_all(futures).await;
-
-    // Collect successful results, skipping failed prefixes
-    let mut serialized_entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(results.len());
-    for result in results {
-        match result {
-            Ok(entry) => serialized_entries.push(entry),
-            Err(ApiError(status, Json(ref err))) => {
-                warn!("Batch fetch skipping prefix: {} ({})", err.error, status);
-            }
-        }
-    }
-
-    // Build JSON response by concatenating pre-serialized byte arrays.
-    // Format: {"prefix1":{"events":[...],"hasMore":false},"prefix2":...}
-    let mut response_bytes = Vec::with_capacity(
-        serialized_entries
-            .iter()
-            .map(|(p, b)| p.len() + b.len() + 5)
-            .sum::<usize>()
-            + 2,
-    );
-    response_bytes.push(b'{');
-
-    for (i, (prefix, page_bytes)) in serialized_entries.iter().enumerate() {
-        if i > 0 {
-            response_bytes.push(b',');
-        }
-        response_bytes.push(b'"');
-        response_bytes.extend_from_slice(prefix.as_bytes());
-        response_bytes.extend_from_slice(b"\":");
-        response_bytes.extend_from_slice(page_bytes);
-    }
-
-    response_bytes.push(b'}');
-
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        response_bytes,
-    )
-        .into_response())
 }
 
 /// Wrap cached event bytes (a JSON array) into a SignedKeyEventPage JSON object.
@@ -893,11 +748,6 @@ mod tests {
     // ==================== Constants Tests ====================
 
     #[test]
-    fn test_max_batch_prefixes_constant() {
-        assert_eq!(MAX_BATCH_PREFIXES, 64);
-    }
-
-    #[test]
     fn test_max_events_per_submission_constant() {
         assert_eq!(MAX_EVENTS_PER_SUBMISSION, 512);
     }
@@ -937,26 +787,5 @@ mod tests {
         let limit: usize = 500;
         let clamped = limit.clamp(1, 1000);
         assert_eq!(clamped, 500);
-    }
-
-    // ==================== BatchKelsRequest Deserialization ====================
-
-    #[test]
-    fn test_batch_kels_request_deserialization() {
-        let json = r#"{"prefixes": {"prefix1": null, "prefix2": "someSAID", "prefix3": null}}"#;
-        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.prefixes.len(), 3);
-        assert_eq!(request.prefixes.get("prefix1"), Some(&None));
-        assert_eq!(
-            request.prefixes.get("prefix2"),
-            Some(&Some("someSAID".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_batch_kels_request_empty_prefixes() {
-        let json = r#"{"prefixes": {}}"#;
-        let request: BatchKelsRequest = serde_json::from_str(json).unwrap();
-        assert!(request.prefixes.is_empty());
     }
 }

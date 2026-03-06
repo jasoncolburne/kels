@@ -29,20 +29,8 @@ wait_for_propagation() {
     sleep "$GOSSIP_PROPAGATION_DELAY"
 }
 
-# Poll until a KEL exists on both nodes (or timeout)
 wait_for_kel_on_both_nodes() {
-    local prefix="$1"
-    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
-    echo "Waiting for KEL $prefix to exist on both nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
-    while [ $SECONDS -lt $deadline ]; do
-        if kel_exists_on_node "$NODE_A_URL" "$prefix" \
-            && kel_exists_on_node "$NODE_B_URL" "$prefix"; then
-            return 0
-        fi
-        sleep 1
-    done
-    echo "Timeout waiting for KEL on both nodes"
-    return 1
+    wait_for_propagation "$1" "$CONVERGENCE_TIMEOUT" "$NODE_A_URL" "$NODE_B_URL"
 }
 
 # Poll until both nodes have matching KELs (or timeout)

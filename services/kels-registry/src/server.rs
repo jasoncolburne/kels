@@ -42,10 +42,6 @@ pub fn create_router(
         let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
             .route(
-                "/api/member-kels",
-                post(handlers::get_all_member_key_events),
-            )
-            .route(
                 "/api/member-kels/events",
                 post(handlers::submit_member_key_events),
             )

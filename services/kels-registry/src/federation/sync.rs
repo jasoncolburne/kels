@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
-use kels::IdentityClient;
+use kels::{IdentityClient, KelServer};
 
 use super::FederationNode;
 use crate::raft_store::MemberKelRepository;
@@ -72,11 +72,18 @@ pub async fn run_member_kel_sync_loop(
 }
 
 /// Fetch own KEL from identity, verify and store locally.
+/// Uses delta fetch (since local effective SAID) to avoid refetching the entire KEL.
 async fn sync_own_kel(
     identity_client: &IdentityClient,
     member_kel_repo: &MemberKelRepository,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let own_prefix = identity_client.get_prefix().await?;
+
+    let since = member_kel_repo
+        .effective_said(&own_prefix)
+        .await
+        .ok()
+        .flatten();
 
     let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/identity/kel");
     let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
@@ -89,7 +96,7 @@ async fn sync_own_kel(
         &sink,
         kels::MAX_EVENTS_PER_KEL_RESPONSE,
         kels::max_verification_pages(),
-        None,
+        since.as_deref(),
     )
     .await?;
 

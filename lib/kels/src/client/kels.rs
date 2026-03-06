@@ -3,16 +3,13 @@
 //! Pass-through pagination client — no client-side caching.
 //! Server-side Redis cache handles caching.
 
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crate::{
     error::KelsError,
     types::{
-        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, KelsAuditRecord,
-        SignedKeyEvent, SignedKeyEventPage,
+        BatchSubmitResponse, ErrorCode, ErrorResponse, KelsAuditRecord, SignedKeyEvent,
+        SignedKeyEventPage,
     },
 };
 
@@ -338,47 +335,6 @@ impl KelsClient {
             .await?;
 
         Ok(resp.status().is_success())
-    }
-
-    /// Batch-fetch KELs from the server. Automatically chunks to respect the server's
-    /// `MAX_BATCH_PREFIXES` limit. Returns `SignedKeyEventPage` per prefix — callers
-    /// handle their own verification and pagination loops for `has_more`.
-    pub async fn fetch_kels(
-        &self,
-        prefixes: &HashMap<String, Option<String>>,
-    ) -> Result<HashMap<String, SignedKeyEventPage>, KelsError> {
-        if prefixes.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let entries: Vec<_> = prefixes.iter().collect();
-        let mut result = HashMap::with_capacity(prefixes.len());
-
-        for chunk in entries.chunks(crate::MAX_BATCH_PREFIXES) {
-            let request = BatchKelsRequest {
-                prefixes: chunk
-                    .iter()
-                    .map(|(k, v)| ((*k).clone(), (*v).clone()))
-                    .collect(),
-            };
-
-            let resp = self
-                .client
-                .post(format!("{}{}/kels", self.base_url, self.path_prefix))
-                .json(&request)
-                .send()
-                .await?;
-
-            if !resp.status().is_success() {
-                let err: ErrorResponse = resp.json().await?;
-                return Err(KelsError::ServerError(err.error, err.code));
-            }
-
-            let batch: HashMap<String, SignedKeyEventPage> = resp.json().await?;
-            result.extend(batch);
-        }
-
-        Ok(result)
     }
 }
 

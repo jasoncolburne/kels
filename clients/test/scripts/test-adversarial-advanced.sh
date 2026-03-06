@@ -35,21 +35,8 @@ wait_for_propagation() {
     sleep "$GOSSIP_PROPAGATION_DELAY"
 }
 
-# Poll until a KEL exists on all three nodes (or timeout)
 wait_for_kel_on_all_nodes() {
-    local prefix="$1"
-    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
-    echo "Waiting for KEL $prefix to exist on all nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
-    while [ $SECONDS -lt $deadline ]; do
-        if kel_exists_on_node "$NODE_D_URL" "$prefix" \
-            && kel_exists_on_node "$NODE_E_URL" "$prefix" \
-            && kel_exists_on_node "$NODE_F_URL" "$prefix"; then
-            return 0
-        fi
-        sleep 1
-    done
-    echo "Timeout waiting for KEL on all nodes"
-    return 1
+    wait_for_propagation "$1" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 }
 
 # Poll until all three nodes have matching KELs (or timeout)
@@ -205,7 +192,7 @@ echo "Created KEL on node-d: $PREFIX3"
 run_test "KEL exists on all nodes" wait_for_kel_on_all_nodes "$PREFIX3"
 
 # Owner submits anchor on node-d while adversaries inject on node-e and node-f
-kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said "EOwnerAnchor_______________________________" &
+kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said "EOwnerAnchor________________________________" &
 PID_OWNER=$!
 kels-cli -u "$NODE_E_URL" adversary inject --prefix "$PREFIX3" --events ixn &
 PID_ADV1=$!

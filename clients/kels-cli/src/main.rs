@@ -11,9 +11,8 @@ use colored::Colorize;
 use kels::EventKind;
 use kels::{
     FileKelStore, HttpKelSource, KelStore, KelVerifier, KelsClient, KeyEventBuilder,
-    MAX_EVENTS_PER_KEL_RESPONSE, MultiRegistryClient, NodeStatus, ProviderConfig,
-    SoftwareKeyProvider, SoftwareProviderConfig, Verification, collect_key_events,
-    max_verification_pages,
+    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig, Verification, collect_key_events, max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -211,11 +210,14 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             return Err(anyhow!("No registry URLs provided"));
         }
 
-        let mut registry_client = MultiRegistryClient::new(registry_urls);
-        let nodes = registry_client
-            .nodes_sorted_by_latency(&cli.registry)
-            .await
-            .context("Failed to discover nodes from registry")?;
+        let store = create_kel_store(cli, "registry-discovery")?;
+        let nodes = kels::nodes_sorted_by_latency(
+            &registry_urls,
+            std::time::Duration::from_secs(10),
+            &store,
+        )
+        .await
+        .context("Failed to discover nodes from registry")?;
 
         println!("{}", "Node Latencies:".cyan());
         for node in &nodes {
@@ -260,10 +262,10 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let mut registry_client = MultiRegistryClient::new(registry_urls);
-    let nodes = registry_client
-        .nodes_sorted_by_latency(&cli.registry)
-        .await?;
+    let store = create_kel_store(cli, "registry-discovery")?;
+    let nodes =
+        kels::nodes_sorted_by_latency(&registry_urls, std::time::Duration::from_secs(10), &store)
+            .await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());
@@ -899,18 +901,11 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     let mut builder = KeyEventBuilder::with_events(key_provider, Some(client), None, events);
 
     let mut saids = Vec::new();
-    let mut counter = 0u32;
 
     for kind in &event_kinds {
         let signed = match kind {
             EventKind::Ixn => {
-                // Generate a realistic 44-char SAID-like anchor
-                let anchor = format!(
-                    "EAdversaryAnchor{}{}",
-                    counter,
-                    "_".repeat(44 - 16 - counter.to_string().len())
-                );
-                counter += 1;
+                let anchor = kels::generate_nonce();
                 builder.interact(&anchor).await?
             }
             EventKind::Rot => builder.rotate().await?,

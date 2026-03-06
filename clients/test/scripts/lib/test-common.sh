@@ -154,10 +154,35 @@ get_event_count() {
     echo "$events" | jq 'length'
 }
 
+# Wait for a KEL to propagate to all given node URLs.
+# Usage: wait_for_propagation PREFIX TIMEOUT URL1 URL2 ...
+wait_for_propagation() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+
+    for url in "${urls[@]}"; do
+        local converged=false
+        for attempt in $(seq 1 "$timeout"); do
+            if kel_exists_on_node "$url" "$prefix"; then
+                converged=true
+                break
+            fi
+            sleep 1
+        done
+        if [ "$converged" != "true" ]; then
+            echo -e "${RED}KEL $prefix did not propagate to $url within ${timeout}s${NC}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 get_latest_said() {
     local url="$1"
     local prefix="$2"
     local events
     events=$(fetch_all_events "$url" "$prefix")
-    echo "$events" | jq -r 'sort_by(.event.version) | .[-1].event.said // empty'
+    echo "$events" | jq -r 'sort_by(.event.serial) | .[-1].event.said // empty'
 }

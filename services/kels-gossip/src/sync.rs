@@ -14,7 +14,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use futures::StreamExt;
+use futures::{StreamExt, future::join_all};
 use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, RegistrySigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
@@ -590,11 +590,9 @@ async fn clear_seen_saids(redis: &redis::aio::ConnectionManager, kel_prefix: &st
 }
 
 /// Result of submitting fetched events to a KELS node.
-enum RepairResult {
-    /// Events applied successfully.
+pub(crate) enum RepairResult {
+    /// Events applied successfully (includes divergence — events were still stored).
     Repaired,
-    /// Submission revealed divergence — prefix should be tracked as divergent.
-    Diverged,
     /// KEL is contested — no further action possible.
     Contested,
     /// Submission or fetch failed — prefix should be re-queued as stale.
@@ -604,7 +602,7 @@ enum RepairResult {
 }
 
 /// Forward events from `source` to `dest` using delta-with-fallback streaming.
-async fn sync_prefix(
+pub(crate) async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
     prefix: &str,
@@ -707,85 +705,96 @@ pub async fn run_anti_entropy_loop(
                 stale_entries.len()
             );
 
-            // Group stale prefixes by peer URL with local since SAIDs
-            // Tuple: (kel_prefix, local_said, source_node_prefix)
-            let mut peer_groups: HashMap<String, Vec<(String, Option<String>, String)>> =
-                HashMap::new();
+            // For each stale prefix, query effective SAIDs from peers to find
+            // who has a different (newer) state, then sync only from those peers.
+            // Parallelized across prefixes.
+            let mut tasks = Vec::new();
             for (kel_prefix, source_node_prefix) in &stale_entries {
-                let kels_url = peers
-                    .iter()
-                    .find(|(pp, _)| pp == source_node_prefix)
-                    .or_else(|| peers.first())
-                    .map(|(_, url)| url.clone());
-                let Some(kels_url) = kels_url else {
+                // Build ordered peer list: source peer first, then others
+                let mut ordered_peers: Vec<(String, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                    ordered_peers.push(source.clone());
+                }
+                for peer in &peers {
+                    if peer.0 != *source_node_prefix {
+                        ordered_peers.push(peer.clone());
+                    }
+                }
+                if ordered_peers.is_empty() {
                     continue;
-                };
-                // Resolving: get local effective SAID for delta comparison
-                let local_said = local_client
-                    .fetch_effective_said(kel_prefix)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|(said, _)| said);
-                peer_groups.entry(kels_url).or_default().push((
-                    kel_prefix.clone(),
-                    local_said,
-                    source_node_prefix.clone(),
-                ));
+                }
+
+                let local = local_client.clone();
+                let prefix = kel_prefix.clone();
+                let source = source_node_prefix.clone();
+                tasks.push(async move {
+                    let local_said = local
+                        .fetch_effective_said(&prefix)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(s, _)| s);
+
+                    // Query each peer's effective SAID and sync from peers
+                    // that have a different state than local.
+                    let mut any_peer_differs = false;
+                    for (_, kels_url) in &ordered_peers {
+                        let remote = KelsClient::new(kels_url);
+                        let remote_said = remote
+                            .fetch_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+
+                        if remote_said == local_said {
+                            continue;
+                        }
+                        any_peer_differs = true;
+
+                        let result =
+                            sync_prefix(&remote, &local, &prefix, local_said.as_deref()).await;
+                        if matches!(result, RepairResult::Contested) {
+                            return (prefix, source, RepairResult::Contested);
+                        }
+
+                        // Check if local state actually changed
+                        let new_said = local
+                            .fetch_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+                        if new_said != local_said {
+                            return (prefix, source, RepairResult::Repaired);
+                        }
+                    }
+
+                    if any_peer_differs {
+                        // Peers had different state but sync didn't help — re-queue
+                        (prefix, source, RepairResult::Failed)
+                    } else {
+                        // All peers agree on same state — nothing to repair
+                        (prefix, source, RepairResult::NoOp)
+                    }
+                });
             }
 
-            // Batch fetch from each peer and process results
-            for (kels_url, prefix_group) in &peer_groups {
-                let remote_client = KelsClient::new(kels_url);
-                let request: HashMap<String, Option<String>> = prefix_group
-                    .iter()
-                    .map(|(p, s, _)| (p.clone(), s.clone()))
-                    .collect();
-
-                let events_map = match remote_client.fetch_kels(&request).await {
-                    Ok(map) => map,
-                    Err(e) => {
-                        warn!("Anti-entropy: batch fetch failed from {}: {}", kels_url, e);
-                        for (prefix, _, source) in prefix_group {
-                            warn!("Anti-entropy: re-queuing stale prefix {}", prefix);
-                            record_stale_prefix(redis.as_ref(), prefix, source).await;
-                        }
-                        continue;
+            for (kel_prefix, source_node_prefix, result) in join_all(tasks).await {
+                match result {
+                    RepairResult::Repaired => {
+                        info!("Anti-entropy: repaired {}", kel_prefix);
+                        clear_seen_saids(redis.as_ref(), &kel_prefix).await;
                     }
-                };
-
-                for (kel_prefix, _since, source_node_prefix) in prefix_group {
-                    let result = match events_map.get(kel_prefix) {
-                        Some(page) if !page.events.is_empty() => {
-                            match local_client.submit_events(&page.events).await {
-                                Ok(r) if r.applied => RepairResult::Repaired,
-                                Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
-                                Ok(_) => RepairResult::NoOp,
-                                Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
-                                Err(_) => RepairResult::Failed,
-                            }
-                        }
-                        _ => RepairResult::NoOp,
-                    };
-
-                    match result {
-                        RepairResult::Repaired => {
-                            info!("Anti-entropy: repaired {}", kel_prefix);
-                            clear_seen_saids(redis.as_ref(), kel_prefix).await;
-                        }
-                        RepairResult::Diverged => {
-                            // No action — Phase 2 will handle via seen SAIDs when
-                            // it next samples this prefix.
-                        }
-                        RepairResult::Contested => {
-                            warn!("Anti-entropy: KEL contested for {}", kel_prefix);
-                        }
-                        RepairResult::Failed => {
-                            warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
-                            record_stale_prefix(redis.as_ref(), kel_prefix, source_node_prefix)
-                                .await;
-                        }
-                        RepairResult::NoOp => {}
+                    RepairResult::Contested => {
+                        warn!("Anti-entropy: KEL contested for {}", kel_prefix);
+                    }
+                    RepairResult::Failed => {
+                        warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
+                        record_stale_prefix(redis.as_ref(), &kel_prefix, &source_node_prefix).await;
+                    }
+                    RepairResult::NoOp => {
+                        debug!("Anti-entropy: all peers agree on state for {}", kel_prefix);
                     }
                 }
             }
@@ -855,50 +864,43 @@ pub async fn run_anti_entropy_loop(
             to_fetch.push((state, local_said, local_divergent));
         }
 
-        // Batch fetch from remote and process results
+        // Sync each mismatched prefix concurrently via forward_key_events
         if !to_fetch.is_empty() {
-            let request: HashMap<String, Option<String>> = to_fetch
+            let tasks: Vec<_> = to_fetch
                 .iter()
-                .map(|(state, local_said, _)| (state.prefix.clone(), local_said.clone()))
+                .map(|(state, local_said, local_divergent)| {
+                    let remote = remote_client.clone();
+                    let local = local_client.clone();
+                    let prefix = state.prefix.clone();
+                    let remote_said = state.said.clone();
+                    let since = local_said.clone();
+                    let divergent = *local_divergent;
+                    async move {
+                        let result = sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
+                        (prefix, remote_said, divergent, result)
+                    }
+                })
                 .collect();
 
-            let events_map = remote_client.fetch_kels(&request).await.unwrap_or_default();
-
-            for (state, _local_said, local_divergent) in &to_fetch {
-                let result = match events_map.get(&state.prefix) {
-                    Some(page) if !page.events.is_empty() => {
-                        match local_client.submit_events(&page.events).await {
-                            Ok(r) if r.applied => RepairResult::Repaired,
-                            Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
-                            Ok(_) => RepairResult::NoOp,
-                            Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
-                            Err(_) => RepairResult::Failed,
-                        }
-                    }
-                    _ => RepairResult::Failed,
-                };
-
+            for (prefix, remote_said, local_divergent, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
-                        info!("Anti-entropy: repaired {} from remote", state.prefix);
-                        clear_seen_saids(redis.as_ref(), &state.prefix).await;
-                    }
-                    RepairResult::Diverged => {
-                        record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
+                        info!("Anti-entropy: repaired {} from remote", prefix);
+                        clear_seen_saids(redis.as_ref(), &prefix).await;
                     }
                     RepairResult::Failed => {
                         // Resolving: check if local KEL is already divergent (three-way).
                         // Only suppress retries when we know the local KEL is divergent,
                         // indicating a three-way divergence scenario.
-                        if local_divergent == &Some(true) {
+                        if local_divergent == Some(true) {
                             // Local KEL is divergent and merge failed — likely three-way
                             // divergence (nodes hold different adversary branch pairs). Record
                             // the remote's SAID as seen to stop retrying. This is a resolving
                             // heuristic: a wrong guess either causes an unnecessary retry or
                             // skips one sync cycle — neither is a security issue.
-                            record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
+                            record_seen_said(redis.as_ref(), &prefix, &remote_said).await;
                         } else {
-                            record_stale_prefix(redis.as_ref(), &state.prefix, &peer_prefix).await;
+                            record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
                         }
                     }
                     _ => {}
@@ -925,7 +927,7 @@ pub async fn run_anti_entropy_loop(
                 .flatten()
                 .map(|(said, _)| said);
 
-            match sync_prefix(
+            if let RepairResult::Repaired = sync_prefix(
                 &local_client,
                 &remote_client,
                 &state.prefix,
@@ -933,15 +935,7 @@ pub async fn run_anti_entropy_loop(
             )
             .await
             {
-                RepairResult::Repaired => {
-                    info!("Anti-entropy: pushed {} to remote", state.prefix);
-                }
-                RepairResult::Diverged => {
-                    if let Some(&remote_said) = remote_map.get(state.prefix.as_str()) {
-                        record_seen_said(redis.as_ref(), &state.prefix, remote_said).await;
-                    }
-                }
-                _ => {}
+                info!("Anti-entropy: pushed {} to remote", state.prefix);
             }
         }
     }

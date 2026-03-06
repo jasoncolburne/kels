@@ -55,7 +55,6 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 | GET | `/api/kels/kel/:prefix/audit` | None | Get audit records for prefix (recovery/contest archives) |
 | GET | `/api/kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 | GET | `/api/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
-| POST | `/api/kels/kels` | None | Batch fetch KELs for multiple prefixes (max 64); `prefixes` is a map of prefix → optional since SAID; returns per-prefix `SignedKeyEventPage {events, hasMore}` with max 512 events each |
 | POST | `/api/kels/prefixes` | **Signed request** | List prefix states (paginated) for P2P sync |
 
 **Notes:**
@@ -64,7 +63,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 - `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 512 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-512, default 512). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
 - `get_kel_audit` returns `Vec<KelsAuditRecord>` — archived events from recovery/contest operations, separate from the paginated KEL endpoint.
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
-- `get_kels_batch` returns per-prefix `SignedKeyEventPage {events, hasMore}` with max 512 events per prefix. Callers with `hasMore: true` should loop using `fetch_key_events(prefix, since=lastSAID, limit)` to get remaining events.
+- KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
 - `KELS_MAX_VERIFICATION_PAGES` environment variable (default 512) controls maximum pagination loops for callers fetching large KELs.
 - Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
@@ -96,7 +95,6 @@ All standalone endpoints plus:
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (from Raft state machine) |
-| POST | `/api/member-kels` | None | Batch fetch federation member KELs; body: `BatchKelsRequest { prefixes }` (defaults to all members if empty) |
 | POST | `/api/member-kels/events` | **Trusted prefix** | Submit member key events (push model); `?propagate=false` to skip fan-out; rate-limited per prefix and IP |
 | GET | `/api/member-kels/kel/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
 | GET | `/api/member-kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
@@ -151,7 +149,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/kels/prefixes` | **Signed request** | Fetch paginated prefix list for bootstrap (calls peer's KELS service) |
-| POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
+| GET | `/api/kels/kel/:prefix` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); paginated via `forward_key_events` |
 
 **Notes:**
 - Transport: Three-DH P-256 key exchange (ee + se + es) + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers

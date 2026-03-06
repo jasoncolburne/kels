@@ -294,13 +294,6 @@ GET /api/peers
 
 Returns the peer set from the Raft state machine.
 
-### Member Key Events (batch)
-```
-POST /api/member-kels
-```
-
-Batch fetch KELs for federation members. Body: `BatchKelsRequest { prefixes }` — a map of prefix → optional since SAID. Defaults to all trusted members if empty.
-
 ### Member Key Events (per-prefix)
 ```
 GET /api/member-kels/:prefix?limit=N&since=SAID

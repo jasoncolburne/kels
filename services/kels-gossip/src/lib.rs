@@ -41,7 +41,7 @@ mod sync;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use redis::AsyncCommands;
 use thiserror::Error;
@@ -50,7 +50,6 @@ use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use gossip_layer::{GossipCommand, GossipEvent};
 use hsm_signer::{IdentityGossipSigner, IdentityRegistrySigner, KelsPeerVerifier, SignerError};
-use kels::MAX_EVENTS_PER_KEL_RESPONSE;
 
 #[derive(Error, Debug)]
 pub enum ServiceError {
@@ -66,39 +65,11 @@ pub enum ServiceError {
     Signer(#[from] SignerError),
 }
 
-/// Load registry KELs from the local DB into a `MultiRegistryClient`.
-///
-/// This ensures the client can verify votes from registries that may no longer
-/// be reachable (e.g. removed during federation shrink). The local DB has their
-/// KELs from when they were active members.
-async fn load_local_registry_kels(
-    client: &mut kels::MultiRegistryClient,
+/// Create a `KelStore` wrapping the registry KEL repository.
+fn registry_kel_store(
     repo: &repository::RegistryKelRepository,
-) {
-    for prefix in kels::trusted_prefixes() {
-        let mut all_events = Vec::new();
-        let mut offset = 0u64;
-        loop {
-            match repo
-                .get_signed_history(prefix, MAX_EVENTS_PER_KEL_RESPONSE as u64, offset)
-                .await
-            {
-                Ok((events, has_more)) if !events.is_empty() => {
-                    offset += events.len() as u64;
-                    all_events.extend(events);
-                    if !has_more {
-                        break;
-                    }
-                }
-                _ => break,
-            }
-        }
-        if !all_events.is_empty()
-            && let Err(e) = client.load_local_events(prefix, all_events)
-        {
-            debug!("Failed to load local registry KEL for {}: {}", prefix, e);
-        }
-    }
+) -> kels::RepositoryKelStore<repository::RegistryKelRepository> {
+    kels::RepositoryKelStore::new(std::sync::Arc::new(repo.clone()))
 }
 
 /// Service configuration
@@ -240,7 +211,6 @@ impl Config {
 
 /// Run the gossip service
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use kels::MultiRegistryClient;
     use tokio::time::Duration;
     use tracing::warn;
 
@@ -320,30 +290,21 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // All federation registry URLs for peer discovery and authenticated operations
     let federation_registry_urls = config.federation_registry_urls.clone();
 
-    // Registry client with signer
-    let mut registry_client =
-        MultiRegistryClient::with_signer(federation_registry_urls.clone(), registry_signer.clone());
-
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
     info!("urls: {:?}", federation_registry_urls);
-    let registry_contexts = registry_client
-        .fetch_verified_member_key_events(true)
-        .await
-        .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
-
-    let registry_prefixes: Vec<_> = registry_contexts
+    let registry_prefixes: Vec<String> = kels::trusted_prefixes()
         .iter()
-        .map(|ctx| ctx.prefix().to_string())
+        .map(|p| p.to_string())
         .collect();
 
     if registry_prefixes.is_empty() {
         return Err(ServiceError::Config(
-            "Couldn't fetch registry KELs".to_string(),
+            "No trusted registry prefixes configured".to_string(),
         ));
     }
 
-    info!("Registry prefixes verified: {:?}", registry_prefixes);
+    info!("Registry prefixes: {:?}", registry_prefixes);
 
     // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -381,14 +342,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         Arc::new(repo)
     };
 
-    // Persist verified registry KELs to local store for anchoring checks
+    // Transfer verified registry KELs to local store for anchoring checks
     {
         let registry_kel_store =
             kels::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
-        for (prefix, events) in registry_client.cached_events() {
-            if let Err(e) = kels::KelStore::save(&registry_kel_store, prefix, events).await {
-                warn!(prefix = %prefix, error = %e, "Failed to persist registry KEL");
-            }
+        for prefix in &registry_prefixes {
+            kels::sync_member_kel(prefix, &federation_registry_urls, &registry_kel_store).await;
         }
     }
     info!("Registry KELs persisted to local store");
@@ -402,7 +361,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let mut bootstrap = BootstrapSync::new(
         bootstrap_config.clone(),
-        registry_client,
+        federation_registry_urls.clone(),
         allowlist.clone(),
         registry_signer.clone(),
     );
@@ -462,10 +421,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
-    let mut allowlist_client = MultiRegistryClient::new(federation_registry_urls.clone());
-    load_local_registry_kels(&mut allowlist_client, &gossip_repo.registry_kels).await;
-    match allowlist::refresh_allowlist(&mut allowlist_client, &allowlist, Some(&config.node_id))
-        .await
+    let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
+    match allowlist::refresh_allowlist(
+        &federation_registry_urls,
+        &allowlist_store,
+        &allowlist,
+        Some(&config.node_id),
+    )
+    .await
     {
         Ok(count) => info!("Allowlist refreshed with {} peers", count),
         Err(e) => warn!(
@@ -523,11 +486,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create gossip signer and verifier (signer uses identity service)
     let signer = IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str)?;
+    let verifier_store: std::sync::Arc<dyn kels::KelStore> =
+        std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
         allowlist.clone(),
         &config.kels_url,
         federation_registry_urls.clone(),
         config.node_id.clone(),
+        verifier_store,
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -652,12 +618,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let mut refresh_client = MultiRegistryClient::new(federation_registry_urls);
-    load_local_registry_kels(&mut refresh_client, &gossip_repo.registry_kels).await;
+    let refresh_urls = federation_registry_urls.clone();
+    let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
-            &mut refresh_client,
+            &refresh_urls,
+            &refresh_store,
             allowlist,
             refresh_interval,
             &refresh_node_id,

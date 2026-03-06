@@ -33,7 +33,6 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             "/api/kels/kel/:prefix/effective-said",
             get(handlers::get_effective_said),
         )
-        .route("/api/kels/kels", post(handlers::get_kels_batch))
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
 }

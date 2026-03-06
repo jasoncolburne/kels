@@ -61,6 +61,9 @@ async-trait = "0.1"
 # Async utilities
 futures = "0.3"
 
+# Random number generation (for failover URL shuffling)
+rand = "0.9"
+
 # Base64 encoding
 base64 = "0.22"
 
