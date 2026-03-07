@@ -160,6 +160,16 @@ First, add the following entries to `/etc/hosts` to enable local hostname resolu
 
 This allows the CLI and iOS app to connect to the local KELS nodes and registries using their service names.
 
+#### Ingress Controller
+
+Certain versions of Garden mistakenly create the Traefik ingress service as `ClusterIP` instead of
+`LoadBalancer`. On Docker Desktop, this prevents host access to services. If you get empty replies
+from `curl`, run:
+
+```bash
+make fix-ingress
+```
+
 #### Deployment
 
 We won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This

@@ -99,7 +99,7 @@ metadata:
   labels:
     app: kels
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: kels.${environment.namespace}.kels
       http:
