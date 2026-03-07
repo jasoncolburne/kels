@@ -601,8 +601,6 @@ pub async fn list_completed_proposals(
         return Ok(Json(CompletedProposalsResponse {
             additions: state.node.completed_addition_proposals_with_votes().await,
             removals: state.node.completed_removal_proposals_with_votes().await,
-            member_prefixes: state.node.member_prefixes(),
-            approval_threshold: state.node.approval_threshold(),
         }));
     }
 
@@ -612,19 +610,29 @@ pub async fn list_completed_proposals(
         .await
         .into_iter()
         .filter(|awv| {
-            let Some(last) = awv.history.records.last() else {
+            let Some(last) = awv.history.latest() else {
                 return false;
             };
-            !awv.history.is_withdrawn()
-                && awv.status(last.threshold) == ProposalStatus::Approved
+            awv.status(last.threshold) == ProposalStatus::Approved
+        })
+        .collect();
+
+    let removals = state
+        .node
+        .completed_removal_proposals_with_votes()
+        .await
+        .into_iter()
+        .filter(|rwv| {
+            let Some(last) = rwv.history.latest() else {
+                return false;
+            };
+            rwv.status(last.threshold) == ProposalStatus::Approved
         })
         .collect();
 
     Ok(Json(CompletedProposalsResponse {
         additions,
-        removals: vec![],
-        member_prefixes: state.node.member_prefixes(),
-        approval_threshold: state.node.approval_threshold(),
+        removals,
     }))
 }
 

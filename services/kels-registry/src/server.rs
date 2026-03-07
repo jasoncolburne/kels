@@ -145,6 +145,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                 "Federation configured with {} members",
                 config.members.len()
             );
+            // Sync all member KELs before Raft initialization.
+            // Raft log replay re-verifies vote anchoring, which requires
+            // member KELs to be present in the local DB.
+            crate::federation::sync::sync_all_member_kels(&config, &repo.member_kels).await;
+
             match FederationNode::new(config.clone(), identity_client.clone(), &repo).await {
                 Ok(node) => {
                     info!("Federation node initialized");

@@ -367,6 +367,14 @@ pub trait ProposalWithVotesMethods {
 
         let proposal_prefix = self.history().history_prefix();
 
+        let Some(inception) = self.history().inception() else {
+            return Err(KelsError::RegistryFailure(format!(
+                "Proposal {} has no inception record",
+                proposal_prefix
+            )));
+        };
+        let expires_at = inception.expires_at();
+
         for vote in self.proposal_votes() {
             vote.verify_said()?;
 
@@ -374,6 +382,13 @@ pub trait ProposalWithVotesMethods {
                 return Err(KelsError::RegistryFailure(format!(
                     "Vote {} references proposal {} but chain prefix is {}",
                     vote.said, vote.proposal, proposal_prefix
+                )));
+            }
+
+            if vote.voted_at > *expires_at {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Vote {} cast after proposal {} expired",
+                    vote.said, proposal_prefix
                 )));
             }
         }
@@ -692,8 +707,6 @@ impl ProposalWithVotesMethods for RemovalWithVotes {
 pub struct CompletedProposalsResponse {
     pub additions: Vec<AdditionWithVotes>,
     pub removals: Vec<RemovalWithVotes>,
-    pub member_prefixes: Vec<String>,
-    pub approval_threshold: usize,
 }
 
 #[cfg(test)]

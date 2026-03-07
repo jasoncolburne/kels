@@ -185,7 +185,7 @@ impl FederationNode {
 
         // Set the voter set to exactly the expected members
         self.raft
-            .change_membership(expected_voters, true)
+            .change_membership(expected_voters, false)
             .await
             .map_err(|e| FederationError::RaftError(e.to_string()))?;
 
