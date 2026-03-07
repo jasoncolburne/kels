@@ -261,7 +261,7 @@ async fn verify_and_authorize<T: serde::Serialize>(
         }
 
         // Verify vote anchoring: each approval vote in voter's KEL
-        let mut verified_voters = std::collections::HashSet::new();
+        let mut verified_voters = HashSet::new();
         for vote in &pwv.votes {
             if !vote.approve || !trusted.contains(vote.voter.as_str()) {
                 continue;
@@ -606,15 +606,6 @@ pub async fn list_completed_proposals(
         }));
     }
 
-    let active_peer_prefixes: HashSet<String> = state
-        .node
-        .peers()
-        .await
-        .into_iter()
-        .filter(|p| p.active)
-        .map(|p| p.peer_prefix)
-        .collect();
-
     let additions = state
         .node
         .completed_addition_proposals_with_votes()
@@ -624,10 +615,7 @@ pub async fn list_completed_proposals(
             let Some(last) = awv.history.records.last() else {
                 return false;
             };
-            awv.history
-                .inception()
-                .is_some_and(|p| active_peer_prefixes.contains(&p.peer_prefix))
-                && !awv.history.is_withdrawn()
+            !awv.history.is_withdrawn()
                 && awv.status(last.threshold) == ProposalStatus::Approved
         })
         .collect();

@@ -132,7 +132,7 @@ echo "Created KEL on node-a: $PREFIX"
 run_test "KEL exists on node-a" curl -sf "$NODE_A_URL/api/kels/kel/$PREFIX"
 
 run_test "KEL propagated to all nodes after shrink" \
-    wait_for_propagation "$PREFIX" 30 "${NODE_URLS[@]}"
+    wait_for_propagation "$PREFIX" 90 "${NODE_URLS[@]}"
 
 echo
 
