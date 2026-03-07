@@ -72,7 +72,7 @@ spec:
             - /etc/redis/redis.conf
           resources:
             requests:
-              cpu: 100m
+              cpu: 25m
               memory: 64Mi
             limits:
               cpu: 750m

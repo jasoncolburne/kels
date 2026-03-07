@@ -68,7 +68,7 @@ spec:
               mountPath: /docker-entrypoint-initdb.d
           resources:
             requests:
-              cpu: 250m
+              cpu: 50m
               memory: 256Mi
             limits:
               cpu: 1000m
