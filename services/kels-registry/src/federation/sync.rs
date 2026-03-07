@@ -19,7 +19,10 @@ use crate::raft_store::MemberKelRepository;
 /// Raft log replay re-verifies vote anchoring against the local member KEL DB.
 /// Without member KELs present, votes fail anchoring and proposals don't reach
 /// the completed state, leaving the node with empty proposal data.
-pub async fn sync_all_member_kels(config: &FederationConfig, member_kel_repo: &MemberKelRepository) {
+pub async fn sync_all_member_kels(
+    config: &FederationConfig,
+    member_kel_repo: &MemberKelRepository,
+) {
     let urls: Vec<String> = config.members.iter().map(|m| m.url.clone()).collect();
     let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
@@ -27,8 +30,7 @@ pub async fn sync_all_member_kels(config: &FederationConfig, member_kel_repo: &M
 
     for prefix in &config.trusted_prefixes {
         for url in &urls {
-            let source =
-                kels::HttpKelSource::new(url, "/api/member-kels/kel/{prefix}");
+            let source = kels::HttpKelSource::new(url, "/api/member-kels/kel/{prefix}");
             if kels::forward_key_events(
                 prefix,
                 &source,
