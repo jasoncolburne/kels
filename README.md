@@ -257,16 +257,75 @@ While these protocols could be upgraded with quantum-safe signature algorithms, 
 | `POST` | `/api/kels/kels` | Batch fetch multiple KELs (max 64 prefixes) |
 | `POST` | `/api/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
-## Development
+## Deploying Locally
 
 ### Prerequisites
 
+- [Garden](https://garden.io) >= 14.20 (for Kubernetes deployment)
+- Local Kubernetes cluster (Docker Desktop, minikube, kind, etc)
+
+### Getting Started
+
+```shell
+make test-comprehensive
+```
+
+Comprehensive tests take a while to run (~20m on my laptop), but they are an easy way to protect against regression and set up a development environment. They leave your kubernetes cluster in this state:
+
+#### Registries (Federation Members)
+
+Namespaces
+- kels-registry-a,
+- kels-registry-c,
+- kels-registry-d
+
+Children per Namespace
+- hsm
+- identity
+- kels-registry
+- postgres
+- redis
+
+#### Gossip Nodes
+
+Namespaces
+- kels-node-a
+- kels-node-b
+- kels-node-c
+- kels-node-d
+- kels-node-e
+- kels-node-f
+
+Children per Namespace
+- hsm
+- identity
+- kels (2)
+- kels-gossip
+- postgres
+- redis
+
+#### Special cases
+
+- Some nodes are built with the `dev-tools` feature flag enabled. This turns off authentication on the /prefixes endpoint, so an adversary can't scan for known prefixes. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing. 
+
+Nodes built with `dev-tools` enabled:
+- `node-a`
+- `node-b`
+- `node-d`
+
+- The `test-client` pod is only available in the `node-a` namespace (`kels-node-a`).
+
+This pod is used for running various scripts and curl commands during integration/regression tests.
+
+## Development
+
+### Prerequisites
 - Rust 2024 edition
-- PostgreSQL (for server)
-- Redis (optional, for caching)
 - `cargo-deny` (for dependency auditing)
-- [Garden](https://garden.io) (for Kubernetes deployment)
-- Local Kubernetes cluster (Docker Desktop, minikube, or kind)
+
+#### For Validation
+- [Garden](https://garden.io) >= 14.20 (for Kubernetes deployment)
+- Local Kubernetes cluster (Docker Desktop, minikube, kind, etc)
 
 ```bash
 # Install cargo-deny
