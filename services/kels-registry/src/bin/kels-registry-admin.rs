@@ -159,6 +159,7 @@ impl AdminContext {
         let self_prefix = identity_client.get_prefix().await?;
 
         let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .context("Failed to create HTTP client")?;

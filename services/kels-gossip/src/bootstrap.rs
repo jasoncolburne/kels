@@ -93,6 +93,7 @@ impl BootstrapSync {
         signer: Arc<dyn RegistrySigner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();

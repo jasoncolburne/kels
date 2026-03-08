@@ -112,7 +112,11 @@ async fn call_rotate(
     identity_url: &str,
     request: &RotateRequest,
 ) -> anyhow::Result<RotateResponse> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
     // Get prefix
     let info_resp = client
@@ -297,7 +301,11 @@ async fn cmd_scheduled_rotate(
     // Submit updated KEL to local KELS service if URL is configured
     let kels_url = kels_url.filter(|u| !u.is_empty());
     if let Some(url) = kels_url {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         let mut all_events = Vec::new();
         let mut since: Option<String> = None;
         loop {

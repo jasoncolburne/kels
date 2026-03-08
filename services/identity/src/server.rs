@@ -41,7 +41,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
     let kels_url = std::env::var("KELS_URL").ok().filter(|u| !u.is_empty());
     let registry_url = std::env::var("REGISTRY_URL").ok().filter(|u| !u.is_empty());
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
     info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)

@@ -103,6 +103,7 @@ impl KelsRegistryClient {
     /// Create a new registry client with custom timeout (no signing capability).
     pub fn with_timeout(registry_url: &str, timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
             .build()
             .unwrap_or_default();
@@ -126,6 +127,7 @@ impl KelsRegistryClient {
         timeout: Duration,
     ) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
             .build()
             .unwrap_or_default();

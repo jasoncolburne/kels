@@ -30,6 +30,7 @@ impl KelsClient {
     /// Create a client with a custom path prefix (e.g., "/api/member-kels").
     pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
@@ -43,6 +44,7 @@ impl KelsClient {
     /// Create a client with a custom timeout (useful for latency testing).
     pub fn with_timeout(base_url: &str, timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
             .build()
             .unwrap_or_default();

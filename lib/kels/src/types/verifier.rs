@@ -795,7 +795,11 @@ impl HttpKelSource {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -893,7 +897,11 @@ impl HttpKelSink {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
