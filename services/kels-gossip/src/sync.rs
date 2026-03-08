@@ -302,9 +302,18 @@ impl SyncHandler {
 
             match result {
                 Ok(()) => {
-                    info!("Forwarded events for prefix {} from {}", prefix, kels_url);
                     self.refresh_local_effective_said(prefix).await;
-                    return Ok(());
+                    let new_said = self.local_saids.get(prefix).cloned();
+                    if new_said != local_effective_said {
+                        info!("Forwarded events for prefix {} from {}", prefix, kels_url);
+                        return Ok(());
+                    }
+                    // Forward succeeded but no new events — peer has same state. Try others.
+                    debug!(
+                        "Forward from {} succeeded but no state change for {}",
+                        kels_url, prefix
+                    );
+                    continue;
                 }
                 Err(KelsError::EventNotFound(_)) => {
                     warn!("KEL not found on remote {} for {}", kels_url, prefix);
