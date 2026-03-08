@@ -22,8 +22,8 @@ use tracing::warn;
 
 use crate::repository::KelsRepository;
 
-/// Maximum submissions per prefix per minute (sliding window).
-const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 32;
+/// Maximum submissions per prefix per minute (sliding window). Excessive to stop gossip nodes from failing to update kels services. TODO: Provide an optional signed nonce during submit events that identifies the gossip node, stop rate limiting gossip nodes, and then reduce the rate limit
+const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 128;
 
 /// Maximum write requests per IP per second (token bucket: refill rate).
 const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_max_submissions_per_prefix_per_minute_constant() {
-        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 32);
+        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 128);
     }
 
     // ==================== health Tests ====================
