@@ -308,12 +308,15 @@ impl SyncHandler {
                         info!("Forwarded events for prefix {} from {}", prefix, kels_url);
                         return Ok(());
                     }
-                    // Forward succeeded but no new events — peer has same state. Try others.
+                    // Forward succeeded but no new events — this peer has
+                    // the same state as us. Record as stale so AE retries
+                    // systematically from all peers later.
                     debug!(
                         "Forward from {} succeeded but no state change for {}",
                         kels_url, prefix
                     );
-                    continue;
+                    self.record_stale(prefix, &announcement.origin).await;
+                    return Ok(());
                 }
                 Err(KelsError::EventNotFound(_)) => {
                     warn!("KEL not found on remote {} for {}", kels_url, prefix);
@@ -325,10 +328,10 @@ impl SyncHandler {
                 }
                 Err(KelsError::ContestRequired) => {
                     debug!(
-                        "KEL {} requires contest, cannot accept forwarded events",
-                        prefix
+                        "KEL {} requires contest, cannot accept forwarded events from {}",
+                        prefix, kels_url
                     );
-                    return Ok(());
+                    continue;
                 }
                 Err(e) => {
                     warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
