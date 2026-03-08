@@ -323,6 +323,13 @@ impl SyncHandler {
                     debug!("KEL {} is already contested locally, skipping sync", prefix);
                     return Ok(());
                 }
+                Err(KelsError::ContestRequired) => {
+                    debug!(
+                        "KEL {} requires contest, cannot accept forwarded events",
+                        prefix
+                    );
+                    return Ok(());
+                }
                 Err(e) => {
                     warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
                     continue;

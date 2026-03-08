@@ -931,7 +931,11 @@ impl PagedKelSink for HttpKelSink {
             let err: super::ErrorResponse = resp.json().await.map_err(|e| {
                 KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
             })?;
-            Err(KelsError::ServerError(err.error, err.code))
+            if err.code == super::ErrorCode::ContestRequired {
+                Err(KelsError::ContestRequired)
+            } else {
+                Err(KelsError::ServerError(err.error, err.code))
+            }
         }
     }
 }
