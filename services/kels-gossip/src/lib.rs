@@ -35,10 +35,11 @@ mod bootstrap;
 mod gossip_layer;
 mod hsm_signer;
 mod protocol;
+mod repository;
 mod server;
 mod sync;
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info};
 
@@ -64,6 +65,13 @@ pub enum ServiceError {
     Signer(#[from] SignerError),
 }
 
+/// Create a `KelStore` wrapping the registry KEL repository.
+fn registry_kel_store(
+    repo: &repository::RegistryKelRepository,
+) -> kels::RepositoryKelStore<repository::RegistryKelRepository> {
+    kels::RepositoryKelStore::new(std::sync::Arc::new(repo.clone()))
+}
+
 /// Service configuration
 #[derive(Clone)]
 pub struct Config {
@@ -73,6 +81,8 @@ pub struct Config {
     pub kels_url: String,
     /// Advertised KELS HTTP endpoint for clients and node-to-node sync
     pub kels_advertise_url: String,
+    /// PostgreSQL database URL for local registry KEL store
+    pub database_url: String,
     /// Redis URL for pub/sub
     pub redis_url: String,
     /// HSM service URL for identity keys
@@ -103,6 +113,7 @@ pub struct EnvValues {
     pub node_id: Option<String>,
     pub kels_url: Option<String>,
     pub kels_advertise_url: Option<String>,
+    pub database_url: Option<String>,
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
     pub identity_url: Option<String>,
@@ -143,6 +154,9 @@ impl Config {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
             kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
             kels_advertise_url,
+            database_url: env.database_url.unwrap_or_else(|| {
+                "postgres://kels_admin:password@postgres:5432/kels_gossip".to_string()
+            }),
             redis_url: env
                 .redis_url
                 .unwrap_or_else(|| "redis://redis:6379".to_string()),
@@ -168,24 +182,25 @@ impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ServiceError> {
         let env = EnvValues {
-            node_id: std::env::var("NODE_ID").ok(),
-            kels_url: std::env::var("KELS_URL").ok(),
-            kels_advertise_url: std::env::var("KELS_ADVERTISE_URL").ok(),
-            redis_url: std::env::var("REDIS_URL").ok(),
-            hsm_url: std::env::var("HSM_URL").ok(),
-            identity_url: std::env::var("IDENTITY_URL").ok(),
-            federation_registry_urls: std::env::var("FEDERATION_REGISTRY_URLS").ok(),
-            listen_addr: std::env::var("GOSSIP_LISTEN_ADDR").ok(),
-            advertise_addr: std::env::var("GOSSIP_ADVERTISE_ADDR").ok(),
-            topic: std::env::var("GOSSIP_TOPIC").ok(),
-            allowlist_refresh_interval_secs: std::env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
+            node_id: env::var("NODE_ID").ok(),
+            kels_url: env::var("KELS_URL").ok(),
+            kels_advertise_url: env::var("KELS_ADVERTISE_URL").ok(),
+            database_url: env::var("DATABASE_URL").ok(),
+            redis_url: env::var("REDIS_URL").ok(),
+            hsm_url: env::var("HSM_URL").ok(),
+            identity_url: env::var("IDENTITY_URL").ok(),
+            federation_registry_urls: env::var("FEDERATION_REGISTRY_URLS").ok(),
+            listen_addr: env::var("GOSSIP_LISTEN_ADDR").ok(),
+            advertise_addr: env::var("GOSSIP_ADVERTISE_ADDR").ok(),
+            topic: env::var("GOSSIP_TOPIC").ok(),
+            allowlist_refresh_interval_secs: env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
-            http_listen_host: std::env::var("HTTP_LISTEN_HOST").ok(),
-            http_listen_port: std::env::var("HTTP_LISTEN_PORT")
+            http_listen_host: env::var("HTTP_LISTEN_HOST").ok(),
+            http_listen_port: env::var("HTTP_LISTEN_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok()),
-            anti_entropy_interval_secs: std::env::var("ANTI_ENTROPY_INTERVAL_SECS")
+            anti_entropy_interval_secs: env::var("ANTI_ENTROPY_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
         };
@@ -196,7 +211,6 @@ impl Config {
 
 /// Run the gossip service
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use kels::MultiRegistryClient;
     use tokio::time::Duration;
     use tracing::warn;
 
@@ -204,7 +218,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Node ID: {}", config.node_id);
     info!("KELS URL (local): {}", config.kels_url);
     info!("KELS URL (advertised): {}", config.kels_advertise_url);
-    info!("Redis URL: {}", config.redis_url);
+    info!("Connecting to Redis");
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
     info!(
@@ -247,12 +261,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Local PeerPrefix: {}", peer_prefix_str);
 
     // Submit identity KEL to local KELS service so other peers can verify us
-    let identity_kel = identity_client
-        .get_kel()
+    let identity_page = identity_client
+        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
     let local_kels_client = kels::KelsClient::new(&config.kels_url);
-    let events = identity_kel.events().to_vec();
+    let events = identity_page.events;
     if !events.is_empty() {
         let _ = local_kels_client
             .submit_events(&events)
@@ -276,31 +290,21 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // All federation registry URLs for peer discovery and authenticated operations
     let federation_registry_urls = config.federation_registry_urls.clone();
 
-    // Registry client with signer
-    let mut registry_client =
-        MultiRegistryClient::with_signer(federation_registry_urls.clone(), registry_signer.clone());
-
     // Discover and verify registry prefix from the registry's KEL
     info!("Discovering registry prefix from KEL...");
     info!("urls: {:?}", federation_registry_urls);
-    let registry_kels = registry_client
-        .fetch_verified_registry_kels(true)
-        .await
-        .map_err(|e| ServiceError::Config(format!("Failed to fetch registry KEL: {}", e)))?;
-
-    let registry_prefixes: Vec<_> = registry_kels
+    let registry_prefixes: Vec<String> = kels::trusted_prefixes()
         .iter()
-        .filter_map(|k| k.prefix())
         .map(|p| p.to_string())
         .collect();
 
     if registry_prefixes.is_empty() {
         return Err(ServiceError::Config(
-            "Couldn't fetch registry KELs".to_string(),
+            "No trusted registry prefixes configured".to_string(),
         ));
     }
 
-    info!("Registry prefixes verified: {:?}", registry_prefixes);
+    info!("Registry prefixes: {:?}", registry_prefixes);
 
     // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -324,6 +328,30 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             }
         };
 
+    // Initialize PostgreSQL for local registry KEL store
+    info!("Connecting to database");
+    let gossip_repo = {
+        use verifiable_storage_postgres::RepositoryConnection;
+        let repo = repository::GossipRepository::connect(&config.database_url)
+            .await
+            .map_err(|e| ServiceError::Config(format!("Failed to connect to database: {}", e)))?;
+        repo.initialize()
+            .await
+            .map_err(|e| ServiceError::Config(format!("Failed to run migrations: {}", e)))?;
+        info!("Database connected and migrations applied");
+        Arc::new(repo)
+    };
+
+    // Transfer verified registry KELs to local store for anchoring checks
+    {
+        let registry_kel_store =
+            kels::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
+        for prefix in &registry_prefixes {
+            kels::sync_member_kel(prefix, &federation_registry_urls, &registry_kel_store).await;
+        }
+    }
+    info!("Registry KELs persisted to local store");
+
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
         kels_url: config.kels_url.clone(),
@@ -333,7 +361,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let mut bootstrap = BootstrapSync::new(
         bootstrap_config.clone(),
-        registry_client,
+        federation_registry_urls.clone(),
         allowlist.clone(),
         registry_signer.clone(),
     );
@@ -393,9 +421,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
-    let mut allowlist_client = MultiRegistryClient::new(federation_registry_urls.clone());
-    match allowlist::refresh_allowlist(&mut allowlist_client, &allowlist, Some(&config.node_id))
-        .await
+    let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
+    match allowlist::refresh_allowlist(
+        &federation_registry_urls,
+        &allowlist_store,
+        &allowlist,
+        Some(&config.node_id),
+    )
+    .await
     {
         Ok(count) => info!("Allowlist refreshed with {} peers", count),
         Err(e) => warn!(
@@ -453,11 +486,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create gossip signer and verifier (signer uses identity service)
     let signer = IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str)?;
+    let verifier_store: std::sync::Arc<dyn kels::KelStore> =
+        std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
         allowlist.clone(),
         &config.kels_url,
         federation_registry_urls.clone(),
         config.node_id.clone(),
+        verifier_store,
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -582,11 +618,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Start allowlist refresh loop
     let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let mut refresh_client = MultiRegistryClient::new(federation_registry_urls);
+    let refresh_urls = federation_registry_urls.clone();
+    let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
-            &mut refresh_client,
+            &refresh_urls,
+            &refresh_store,
             allowlist,
             refresh_interval,
             &refresh_node_id,

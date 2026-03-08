@@ -4,7 +4,7 @@ use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::{Kel, KelsError};
+use crate::{KelsError, SignedKeyEventPage};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,9 +65,18 @@ pub struct IdentityClient {
 impl IdentityClient {
     pub fn new(base_url: &str) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
             base_url: base_url.trim_end_matches('/').to_string(),
         }
+    }
+
+    /// The base URL of the identity service.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
@@ -94,8 +103,15 @@ impl IdentityClient {
         Ok(info.prefix)
     }
 
-    pub async fn get_kel(&self) -> Result<Kel, KelsError> {
-        let url = format!("{}/api/identity/kel", self.base_url);
+    pub async fn get_key_events(
+        &self,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<SignedKeyEventPage, KelsError> {
+        let mut url = format!("{}/api/identity/kel?limit={}", self.base_url, limit);
+        if let Some(since) = since {
+            url.push_str(&format!("&since={}", since));
+        }
         let response = self.client.get(&url).send().await?;
         self.parse_response(response).await
     }

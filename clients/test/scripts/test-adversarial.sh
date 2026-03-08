@@ -41,7 +41,7 @@ await_kel_status() {
     local expected="$2"
     for _ in $(seq 1 10); do
         local actual
-        actual=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
+        actual=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}')
         [ "$actual" = "$expected" ] && return 0
         sleep 0.2
     done
@@ -63,7 +63,7 @@ run_test_expect_divergence() {
         return 0
     else
         local status
-        status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "^  Status:" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2}')
+        status=$(kels-cli -u "$KELS_URL" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}')
         echo "Expected status DIVERGENT but got: $status"
         echo -e "${RED}FAILED: ${name} (expected divergence but not detected)${NC}"
         TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -71,24 +71,24 @@ run_test_expect_divergence() {
     fi
 }
 
-# Test that expects recovery protection (adversary used recovery key)
-run_test_expect_recovery_protected() {
+# Test that expects contest required (recovery key revealed)
+run_test_expect_contest_required() {
     local name="$1"
     local prefix="$2"
     shift 2
-    echo -e "${YELLOW}Testing (expect recovery protected): ${name}${NC}"
-    # Run the command and capture output (expected to fail with recovery protected error)
+    echo -e "${YELLOW}Testing (expect contest required): ${name}${NC}"
+    # Run the command and capture output (expected to fail with contest required error)
     local output
     output=$("$@" 2>&1) || true
     echo "$output"
-    # Check if the error message indicates recovery protection
-    if echo "$output" | grep -qi "recovery protected"; then
+    # Check if the error message indicates contest required
+    if echo "$output" | grep -qi "contest required"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
-        echo "Expected 'Recovery protected' error but got: $output"
-        echo -e "${RED}FAILED: ${name} (expected recovery protected but not detected)${NC}"
+        echo "Expected 'Contest required' error but got: $output"
+        echo -e "${RED}FAILED: ${name} (expected contest required but not detected)${NC}"
         TESTS_FAILED=$((TESTS_FAILED + 1))
         return 1
     fi
@@ -117,7 +117,7 @@ check_server_kel_event_count() {
     local expected_count="$2"
     local actual_count
     for _ in $(seq 1 10); do
-        actual_count=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq '. | length')
+        actual_count=$(fetch_all_events "$KELS_URL" "$prefix" | jq 'length')
         [ "$actual_count" = "$expected_count" ] && return 0
         sleep 0.2
     done
@@ -137,7 +137,7 @@ check_kel_ends_with() {
     # Retry for eventual consistency across replicas
     local actual_kinds
     for _ in $(seq 1 10); do
-        actual_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r ".[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
+        actual_kinds=$(fetch_all_events "$KELS_URL" "$prefix" | jq -r ".[-$expected_count:][].event.kind" | tr '\n' ',' | sed 's/,$//')
         [ "$actual_kinds" = "$expected_kinds" ] && return 0
         sleep 0.2
     done
@@ -145,7 +145,7 @@ check_kel_ends_with() {
     echo "Expected last $expected_count events to be: $expected_kinds"
     echo "Actual last $expected_count events are: $actual_kinds"
     local all_kinds
-    all_kinds=$(curl -s "$KELS_URL/api/kels/kel/$prefix" | jq -r '.[].event.kind' | tr '\n' ',' | sed 's/,$//')
+    all_kinds=$(fetch_all_events "$KELS_URL" "$prefix" | jq -r '.[].event.kind' | tr '\n' ',' | sed 's/,$//')
     echo "Full KEL event kinds: $all_kinds"
     return 1
 }
@@ -437,8 +437,8 @@ save_adversary_keys
 # Adversary injects ror event (they have both signing and recovery keys!)
 run_test "Adversary injects ror event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX6" --events ror
 
-# Owner tries to add event - blocked by recovery protection (adversary revealed recovery key)
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX6" \
+# Owner tries to add event - blocked (contest required) (adversary revealed recovery key)
+run_test_expect_contest_required "Owner anchor blocked (contest required)" "$PREFIX6" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX6" --said "EOwnerAnchorAfterAdversaryRor_______________"
 
 # Owner contests directly (adversary revealed recovery key)
@@ -479,8 +479,8 @@ save_adversary_keys
 # Adversary injects dec event (permanent freeze attempt!)
 run_test "Adversary injects dec event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX7" --events dec
 
-# Owner tries to add event - blocked by recovery protection (adversary revealed recovery key)
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX7" \
+# Owner tries to add event - blocked (contest required) (adversary revealed recovery key)
+run_test_expect_contest_required "Owner anchor blocked (contest required)" "$PREFIX7" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX7" --said "EOwnerAnchorAfterAdversaryDec_______________"
 
 # Owner contests - adversary used recovery key for dec
@@ -669,8 +669,8 @@ save_adversary_keys
 # Adversary tries to decommission (freezing owner's data)
 run_test "Adversary injects dec after owner anchors" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX11" --events dec
 
-# Owner tries to add more data - blocked by recovery protection
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX11" \
+# Owner tries to add more data - blocked (contest required)
+run_test_expect_contest_required "Owner anchor blocked (contest required)" "$PREFIX11" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX11" --said "EOwnerData4AfterAdversaryDec________________"
 
 # Owner contests (adversary used recovery key)
@@ -714,8 +714,8 @@ save_adversary_keys
 # Adversary injects rec event (they have the recovery key!)
 run_test "Adversary injects rec event" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX12" --events rec
 
-# Owner tries to add event - blocked by recovery protection
-run_test_expect_recovery_protected "Owner anchor blocked by recovery protection" "$PREFIX12" \
+# Owner tries to add event - blocked (contest required)
+run_test_expect_contest_required "Owner anchor blocked (contest required)" "$PREFIX12" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX12" --said "EOwnerAnchorAfterAdversaryRec_______________"
 
 # Owner contests (adversary used recovery key)
@@ -835,7 +835,7 @@ run_test "Owner rotates recovery key proactively" kels-cli -u "$KELS_URL" rotate
 # because ror at v2 protects earlier versions
 swap_to_adversary
 
-run_test_expect_fail "Adversary injection rejected (RecoveryProtected)" \
+run_test_expect_fail "Adversary injection rejected (ContestRequired)" \
     kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX15" --events ixn
 
 swap_to_owner
@@ -888,7 +888,7 @@ run_test "KEL status is OK after recovery" check_kel_status "$PREFIX16" "OK"
 # because rec at v3 protects earlier versions
 swap_to_adversary
 
-run_test_expect_fail "Adversary re-injection rejected (RecoveryProtected)" \
+run_test_expect_fail "Adversary re-injection rejected (ContestRequired)" \
     kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX16" --events ixn
 
 swap_to_owner

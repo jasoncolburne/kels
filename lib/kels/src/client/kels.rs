@@ -1,293 +1,57 @@
 //! KELS HTTP Client
+//!
+//! Pass-through pagination client — no client-side caching.
+//! Server-side Redis cache handles caching.
 
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
-};
-
-use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 use crate::{
     error::KelsError,
     types::{
-        BatchKelsRequest, BatchSubmitResponse, ErrorCode, ErrorResponse, Kel, KelResponse,
-        SignedKeyEvent,
+        BatchSubmitResponse, ErrorCode, ErrorResponse, KelsAuditRecord, SignedKeyEvent,
+        SignedKeyEventPage,
     },
 };
 
-#[cfg(feature = "redis")]
-use redis::aio::ConnectionManager;
-
-#[doc(hidden)]
-#[derive(Clone, Serialize, Deserialize)]
-pub struct CachedKelEntry {
-    kel: Kel,
-    last_access: u64,
-}
-
-#[doc(hidden)]
-#[derive(Serialize, Deserialize)]
-pub struct KelCacheInner {
-    entries: HashMap<String, CachedKelEntry>,
-    access_counter: u64,
-    max_entries: usize,
-}
-
-impl KelCacheInner {
-    fn new(max_entries: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            access_counter: 0,
-            max_entries,
-        }
-    }
-
-    fn set(&mut self, prefix: String, kel: Kel) {
-        if self.entries.len() >= self.max_entries
-            && !self.entries.contains_key(&prefix)
-            && let Some(lru_key) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, v)| v.last_access)
-                .map(|(k, _)| k.clone())
-        {
-            self.entries.remove(&lru_key);
-        }
-
-        self.access_counter += 1;
-        self.entries.insert(
-            prefix,
-            CachedKelEntry {
-                kel,
-                last_access: self.access_counter,
-            },
-        );
-    }
-
-    fn invalidate(&mut self, prefix: &str) {
-        self.entries.remove(prefix);
-    }
-
-    fn resize(&mut self, max_entries: usize) {
-        self.max_entries = max_entries;
-        while self.entries.len() > self.max_entries {
-            if let Some(lru_key) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, v)| v.last_access)
-                .map(|(k, _)| k.clone())
-            {
-                self.entries.remove(&lru_key);
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.access_counter = 0;
-    }
-}
-
-/// Redis-backed KEL cache. No local caching - must see latest state from Redis for anchor verification.
-#[cfg(feature = "redis")]
-#[derive(Clone)]
-pub struct RedisKelCache {
-    conn: ConnectionManager,
-    key_prefix: String,
-}
-
-#[cfg(feature = "redis")]
-impl RedisKelCache {
-    /// Entries never expire - eviction handled by Redis's maxmemory-policy.
-    pub fn new(conn: ConnectionManager, key_prefix: &str) -> Self {
-        Self {
-            conn,
-            key_prefix: key_prefix.to_string(),
-        }
-    }
-
-    fn cache_key(&self, prefix: &str) -> String {
-        format!("{}:{}", self.key_prefix, prefix)
-    }
-
-    pub async fn get(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
-        use redis::AsyncCommands;
-        let key = self.cache_key(prefix);
-        let mut conn = self.conn.clone();
-        let result: Option<String> = conn
-            .get(&key)
-            .await
-            .map_err(|e| KelsError::CacheError(format!("Redis get failed: {}", e)))?;
-
-        match result {
-            Some(json) => {
-                let events: Vec<SignedKeyEvent> = serde_json::from_str(&json)?;
-                let kel = Kel::from_events(events, true)?;
-                Ok(Some(kel))
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub async fn set(&self, prefix: &str, kel: &Kel) -> Result<(), KelsError> {
-        use redis::AsyncCommands;
-        let key = self.cache_key(prefix);
-        let json = serde_json::to_string(kel.events())?;
-        let mut conn = self.conn.clone();
-        let _: () = conn
-            .set(&key, &json)
-            .await
-            .map_err(|e| KelsError::CacheError(format!("Redis set failed: {}", e)))?;
-        Ok(())
-    }
-
-    pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
-        use redis::AsyncCommands;
-        let key = self.cache_key(prefix);
-        let mut conn = self.conn.clone();
-        let _: () = conn
-            .del(&key)
-            .await
-            .map_err(|e| KelsError::CacheError(format!("Redis del failed: {}", e)))?;
-        Ok(())
-    }
-
-    pub async fn clear(&self) -> Result<(), KelsError> {
-        use redis::AsyncCommands;
-        let pattern = format!("{}:*", self.key_prefix);
-        let mut conn = self.conn.clone();
-        let keys: Vec<String> = conn
-            .keys(&pattern)
-            .await
-            .map_err(|e| KelsError::CacheError(format!("Redis keys failed: {}", e)))?;
-        if !keys.is_empty() {
-            conn.del::<_, ()>(keys)
-                .await
-                .map_err(|e| KelsError::CacheError(format!("Redis del failed: {}", e)))?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub enum KelCache {
-    InMemory(Arc<RwLock<KelCacheInner>>),
-    #[cfg(feature = "redis")]
-    Redis(Box<RedisKelCache>),
-}
-
-#[derive(Clone, Debug)]
-pub struct KelCacheConfig {
-    pub max_entries: usize,
-    pub enabled: bool,
-}
-
-impl Default for KelCacheConfig {
-    fn default() -> Self {
-        Self {
-            max_entries: 256,
-            enabled: true,
-        }
-    }
-}
-
-/// KELS API Client - fetches/submits key events, caches KELs for anchor verification
+/// KELS API Client - fetches/submits key events via HTTP.
+/// No client-side caching — server-side Redis cache handles that.
 #[derive(Clone)]
 pub struct KelsClient {
     base_url: String,
+    path_prefix: String,
     client: reqwest::Client,
-    cache: Option<KelCache>,
 }
 
 impl KelsClient {
     pub fn new(base_url: &str) -> Self {
+        Self::with_path_prefix(base_url, "/api/kels")
+    }
+
+    /// Create a client with a custom path prefix (e.g., "/api/member-kels").
+    pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
+            path_prefix: path_prefix.to_string(),
             client,
-            cache: None,
         }
     }
 
     /// Create a client with a custom timeout (useful for latency testing).
     pub fn with_timeout(base_url: &str, timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
             .build()
             .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
+            path_prefix: "/api/kels".to_string(),
             client,
-            cache: None,
-        }
-    }
-
-    pub fn with_caching(base_url: &str) -> Self {
-        Self::with_cache_config(base_url, KelCacheConfig::default())
-    }
-
-    pub fn with_cache_config(base_url: &str, config: KelCacheConfig) -> Self {
-        let cache = if config.enabled {
-            Some(KelCache::InMemory(Arc::new(RwLock::new(
-                KelCacheInner::new(config.max_entries),
-            ))))
-        } else {
-            None
-        };
-
-        KelsClient {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-            cache,
-        }
-    }
-
-    #[cfg(feature = "redis")]
-    pub fn with_redis_cache(base_url: &str, redis_cache: RedisKelCache) -> Self {
-        KelsClient {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-            cache: Some(KelCache::Redis(Box::new(redis_cache))),
-        }
-    }
-
-    /// Load cache from file. max_entries takes precedence over stored size, evicting LRU if needed.
-    pub fn with_cache_file(base_url: &str, cache_path: &Path, max_entries: usize) -> Self {
-        let mut inner = if cache_path.exists() {
-            std::fs::read_to_string(cache_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<KelCacheInner>(&s).ok())
-        } else {
-            None
-        }
-        .unwrap_or_else(|| KelCacheInner::new(max_entries));
-
-        inner.resize(max_entries);
-
-        KelsClient {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-            cache: Some(KelCache::InMemory(Arc::new(RwLock::new(inner)))),
-        }
-    }
-
-    pub fn save_cache(&self, cache_path: &Path) {
-        if let Some(KelCache::InMemory(cache)) = &self.cache
-            && let Ok(cache) = cache.read()
-        {
-            if let Some(parent) = cache_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(&*cache) {
-                let _ = std::fs::write(cache_path, json);
-            }
         }
     }
 
@@ -295,77 +59,17 @@ impl KelsClient {
         &self.base_url
     }
 
-    pub fn clear_cache(&self) {
-        if let Some(KelCache::InMemory(cache)) = &self.cache
-            && let Ok(mut cache) = cache.write()
-        {
-            cache.clear();
-        }
+    /// Create an `HttpKelSource` for this client's KEL endpoint.
+    pub fn as_kel_source(&self) -> crate::HttpKelSource {
+        crate::HttpKelSource::new(
+            &self.base_url,
+            &format!("{}/kel/{{prefix}}", self.path_prefix),
+        )
     }
 
-    #[cfg(feature = "redis")]
-    pub async fn clear_cache_async(&self) -> Result<(), KelsError> {
-        match &self.cache {
-            Some(KelCache::InMemory(cache)) => {
-                if let Ok(mut cache) = cache.write() {
-                    cache.clear();
-                }
-                Ok(())
-            }
-            Some(KelCache::Redis(redis)) => redis.clear().await,
-            None => Ok(()),
-        }
-    }
-
-    pub fn invalidate_cache(&self, prefix: &str) {
-        if let Some(KelCache::InMemory(cache)) = &self.cache
-            && let Ok(mut cache) = cache.write()
-        {
-            cache.invalidate(prefix);
-        }
-    }
-
-    pub async fn invalidate_cache_async(&self, prefix: &str) -> Result<(), KelsError> {
-        match &self.cache {
-            Some(KelCache::InMemory(cache)) => {
-                if let Ok(mut cache) = cache.write() {
-                    cache.invalidate(prefix);
-                }
-                Ok(())
-            }
-            #[cfg(feature = "redis")]
-            Some(KelCache::Redis(redis)) => redis.invalidate(prefix).await,
-            None => Ok(()),
-        }
-    }
-
-    async fn cache_get(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
-        match &self.cache {
-            Some(KelCache::InMemory(cache)) => {
-                let cache_read = cache.read().map_err(|e| {
-                    KelsError::CacheError(format!("Failed to acquire cache read lock: {}", e))
-                })?;
-                Ok(cache_read.entries.get(prefix).map(|e| e.kel.clone()))
-            }
-            #[cfg(feature = "redis")]
-            Some(KelCache::Redis(redis)) => redis.get(prefix).await,
-            None => Ok(None),
-        }
-    }
-
-    async fn cache_set(&self, prefix: &str, kel: &Kel) -> Result<(), KelsError> {
-        match &self.cache {
-            Some(KelCache::InMemory(cache)) => {
-                let mut cache_write = cache.write().map_err(|e| {
-                    KelsError::CacheError(format!("Failed to acquire cache write lock: {}", e))
-                })?;
-                cache_write.set(prefix.to_string(), kel.clone());
-                Ok(())
-            }
-            #[cfg(feature = "redis")]
-            Some(KelCache::Redis(redis)) => redis.set(prefix, kel).await,
-            None => Ok(()),
-        }
+    /// Create an `HttpKelSink` for this client's events endpoint.
+    pub fn as_kel_sink(&self) -> crate::HttpKelSink {
+        crate::HttpKelSink::new(&self.base_url, &format!("{}/events", self.path_prefix))
     }
 
     pub async fn health(&self) -> Result<String, KelsError> {
@@ -417,12 +121,28 @@ impl KelsClient {
         &self,
         events: &[SignedKeyEvent],
     ) -> Result<BatchSubmitResponse, KelsError> {
-        let resp = self
-            .client
-            .post(format!("{}/api/kels/events", self.base_url))
-            .json(events)
-            .send()
-            .await?;
+        self.submit_events_inner(events, true).await
+    }
+
+    /// Submit events without triggering fan-out propagation on the receiver.
+    pub async fn submit_events_no_propagate(
+        &self,
+        events: &[SignedKeyEvent],
+    ) -> Result<BatchSubmitResponse, KelsError> {
+        self.submit_events_inner(events, false).await
+    }
+
+    async fn submit_events_inner(
+        &self,
+        events: &[SignedKeyEvent],
+        propagate: bool,
+    ) -> Result<BatchSubmitResponse, KelsError> {
+        let mut url = format!("{}{}/events", self.base_url, self.path_prefix);
+        if !propagate {
+            url.push_str("?propagate=false");
+        }
+
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
@@ -431,38 +151,137 @@ impl KelsClient {
             Err(KelsError::ContestedKel(err.error))
         } else {
             let err: ErrorResponse = resp.json().await?;
-            if err.code == ErrorCode::RecoveryProtected {
-                Err(KelsError::RecoveryProtected)
+            if err.code == ErrorCode::ContestRequired {
+                Err(KelsError::ContestRequired)
             } else {
                 Err(KelsError::ServerError(err.error, err.code))
             }
         }
     }
 
-    pub async fn get_kel(&self, prefix: &str) -> Result<Kel, KelsError> {
-        if self.cache.is_some()
-            && let Some(cached_kel) = self.cache_get(prefix).await?
-        {
-            return Ok(cached_kel);
-        }
-
-        let kel = self.fetch_full_kel(prefix, false).await?;
-        self.cache_set(prefix, &kel).await?;
-
-        Ok(kel)
-    }
-
-    /// Fetch KEL events after a given SAID (delta fetch).
-    pub async fn fetch_kel_since(
+    /// Fetch a page of KEL events. Pass-through to server pagination.
+    ///
+    /// - `since`: Optional SAID for delta fetch (events after this SAID).
+    /// - `limit`: Page size.
+    ///
+    /// Returns `SignedKeyEventPage` with `events` and `has_more`.
+    pub async fn fetch_key_events(
         &self,
         prefix: &str,
-        since: &str,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<SignedKeyEventPage, KelsError> {
+        let mut url = format!(
+            "{}{}/kel/{}?limit={}",
+            self.base_url, self.path_prefix, prefix, limit
+        );
+        if let Some(since_said) = since {
+            url.push_str(&format!("&since={}", since_said));
+        }
+
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::EventNotFound(prefix.to_string()))
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch all KEL events by paginating through all pages.
+    ///
+    /// Accumulates events from all pages into a single `Vec`. Uses `max_pages`
+    /// to bound resource consumption — returns an error if exceeded.
+    ///
+    /// - `since`: Optional SAID for delta fetch (events after this SAID).
+    /// - `limit`: Page size per request.
+    /// - `max_pages`: Maximum number of pages to fetch before failing.
+    pub async fn fetch_all_key_events(
+        &self,
+        prefix: &str,
+        since: Option<&str>,
+        limit: usize,
+        max_pages: usize,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let mut all_events = Vec::new();
+        let mut current_since = since.map(String::from);
+        let mut exhausted = false;
+
+        for _ in 0..max_pages {
+            let page = self
+                .fetch_key_events(prefix, current_since.as_deref(), limit)
+                .await?;
+
+            if page.events.is_empty() {
+                exhausted = true;
+                break;
+            }
+
+            let last_said = page.events.last().map(|e| e.event.said.clone());
+            all_events.extend(page.events);
+
+            if !page.has_more {
+                exhausted = true;
+                break;
+            }
+
+            current_since = last_said;
+        }
+
+        if !exhausted {
+            return Err(KelsError::InvalidKel(format!(
+                "KEL fetch for {} exceeds max_pages limit ({})",
+                prefix, max_pages,
+            )));
+        }
+
+        Ok(all_events)
+    }
+
+    /// Fetch the effective tail SAID for a prefix.
+    ///
+    /// **RESOLVING ONLY — NOT VERIFIED.** Use only for sync comparison.
+    /// A wrong value triggers an unnecessary sync, not a security hole.
+    /// Returns `None` if the prefix doesn't exist.
+    pub async fn fetch_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<(String, bool)>, KelsError> {
         let resp = self
             .client
             .get(format!(
-                "{}/api/kels/kel/{}?since={}",
-                self.base_url, prefix, since
+                "{}{}/kel/{}/effective-said",
+                self.base_url, self.path_prefix, prefix
+            ))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await?;
+            let said = body.get("said").and_then(|s| s.as_str()).map(String::from);
+            let divergent = body
+                .get("divergent")
+                .and_then(|d| d.as_bool())
+                .unwrap_or(false);
+            Ok(said.map(|s| (s, divergent)))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch audit records for a prefix (separate endpoint from KEL events).
+    pub async fn fetch_kel_audit(&self, prefix: &str) -> Result<Vec<KelsAuditRecord>, KelsError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}{}/kel/{}/audit",
+                self.base_url, self.path_prefix, prefix
             ))
             .send()
             .await?;
@@ -470,10 +289,7 @@ impl KelsClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(format!(
-                "Since SAID {} not found for prefix {}",
-                since, prefix
-            )))
+            Err(KelsError::EventNotFound(prefix.to_string()))
         } else {
             let err: ErrorResponse = resp.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -496,7 +312,7 @@ impl KelsClient {
         let signed = crate::sign_request(signer, &request).await?;
         let resp = self
             .client
-            .post(format!("{}/api/kels/prefixes", self.base_url))
+            .post(format!("{}{}/prefixes", self.base_url, self.path_prefix))
             .json(&signed)
             .send()
             .await?;
@@ -513,128 +329,14 @@ impl KelsClient {
     pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
         let resp = self
             .client
-            .get(format!("{}/api/kels/events/{}/exists", self.base_url, said))
-            .send()
-            .await?;
-
-        Ok(resp.status().is_success())
-    }
-
-    pub async fn fetch_full_kel(&self, prefix: &str, skip_verify: bool) -> Result<Kel, KelsError> {
-        let resp = self
-            .client
-            .get(format!("{}/api/kels/kel/{}", self.base_url, prefix))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            let signed_events: Vec<SignedKeyEvent> = resp.json().await?;
-            Kel::from_events(signed_events, skip_verify)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
-    }
-
-    pub async fn fetch_kel_with_audit(&self, prefix: &str) -> Result<KelResponse, KelsError> {
-        let resp = self
-            .client
             .get(format!(
-                "{}/api/kels/kel/{}?audit=true",
-                self.base_url, prefix
+                "{}{}/events/{}/exists",
+                self.base_url, self.path_prefix, said
             ))
             .send()
             .await?;
 
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::KeyNotFound(prefix.to_string()))
-        } else {
-            let err: ErrorResponse = resp.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
-    }
-
-    /// Batch-fetch KELs from the server. Automatically chunks to respect the server's
-    /// `MAX_BATCH_PREFIXES` limit. Returns raw signed events per prefix — callers
-    /// handle their own verification. Short-circuits on empty input.
-    pub async fn fetch_kels(
-        &self,
-        prefixes: &HashMap<String, Option<String>>,
-    ) -> Result<HashMap<String, Vec<SignedKeyEvent>>, KelsError> {
-        if prefixes.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let entries: Vec<_> = prefixes.iter().collect();
-        let mut result = HashMap::with_capacity(prefixes.len());
-
-        for chunk in entries.chunks(crate::MAX_BATCH_PREFIXES) {
-            let request = BatchKelsRequest {
-                prefixes: chunk
-                    .iter()
-                    .map(|(k, v)| ((*k).clone(), (*v).clone()))
-                    .collect(),
-            };
-
-            let resp = self
-                .client
-                .post(format!("{}/api/kels/kels", self.base_url))
-                .json(&request)
-                .send()
-                .await?;
-
-            if !resp.status().is_success() {
-                let err: ErrorResponse = resp.json().await?;
-                return Err(KelsError::ServerError(err.error, err.code));
-            }
-
-            let batch: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
-            result.extend(batch);
-        }
-
-        Ok(result)
-    }
-
-    /// Skips signature verification - only for benchmarking/testing
-    #[cfg(feature = "dev-tools")]
-    pub async fn fetch_kels_unverified(&self, prefixes: &[&str]) -> Result<Vec<Kel>, KelsError> {
-        if prefixes.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let request = BatchKelsRequest {
-            prefixes: prefixes.iter().map(|p| (p.to_string(), None)).collect(),
-        };
-
-        let resp = self
-            .client
-            .post(format!("{}/api/kels/kels", self.base_url))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let err: ErrorResponse = resp.json().await?;
-            return Err(KelsError::ServerError(err.error, err.code));
-        }
-
-        let events_map: HashMap<String, Vec<SignedKeyEvent>> = resp.json().await?;
-
-        let mut kels = Vec::with_capacity(prefixes.len());
-        for prefix in prefixes {
-            if let Some(events) = events_map.get(*prefix) {
-                let kel = Kel::from_events(events.clone(), true)?;
-                kels.push(kel);
-            } else {
-                kels.push(Kel::default());
-            }
-        }
-
-        Ok(kels)
+        Ok(resp.status().is_success())
     }
 }
 
@@ -662,151 +364,6 @@ mod tests {
         assert_eq!(client.base_url(), "http://kels:8091");
     }
 
-    // ==================== LRU Cache Tests ====================
-
-    async fn create_test_kel_with_prefix(_data: &str) -> Kel {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        Kel::from_events(vec![icp], true).unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_cache_set_and_get() {
-        let mut cache = KelCacheInner::new(2);
-        let kel1 = create_test_kel_with_prefix("kel1").await;
-        let kel2 = create_test_kel_with_prefix("kel2").await;
-
-        cache.set("prefix1".to_string(), kel1);
-        cache.set("prefix2".to_string(), kel2);
-
-        assert_eq!(cache.entries.len(), 2);
-        assert!(cache.entries.contains_key("prefix1"));
-        assert!(cache.entries.contains_key("prefix2"));
-    }
-
-    #[tokio::test]
-    async fn test_cache_lru_eviction_when_full() {
-        let mut cache = KelCacheInner::new(2);
-        let kel1 = create_test_kel_with_prefix("k1").await;
-        let kel2 = create_test_kel_with_prefix("k2").await;
-        let kel3 = create_test_kel_with_prefix("k3").await;
-
-        cache.set("p1".to_string(), kel1); // access_counter: 1
-        cache.set("p2".to_string(), kel2); // access_counter: 2
-        cache.set("p3".to_string(), kel3); // access_counter: 3, should evict p1
-
-        assert_eq!(cache.entries.len(), 2);
-        assert!(!cache.entries.contains_key("p1")); // LRU evicted
-        assert!(cache.entries.contains_key("p2"));
-        assert!(cache.entries.contains_key("p3"));
-    }
-
-    #[tokio::test]
-    async fn test_cache_update_existing_doesnt_evict() {
-        let mut cache = KelCacheInner::new(2);
-        let kel1 = create_test_kel_with_prefix("k1").await;
-        let kel2 = create_test_kel_with_prefix("k2").await;
-        let kel1_new = create_test_kel_with_prefix("k1new").await;
-
-        cache.set("p1".to_string(), kel1);
-        cache.set("p2".to_string(), kel2);
-
-        // Update p1 - should not trigger eviction
-        cache.set("p1".to_string(), kel1_new);
-
-        assert_eq!(cache.entries.len(), 2);
-        assert!(cache.entries.contains_key("p1"));
-        assert!(cache.entries.contains_key("p2"));
-    }
-
-    #[tokio::test]
-    async fn test_cache_invalidate() {
-        let mut cache = KelCacheInner::new(2);
-        let kel = create_test_kel_with_prefix("k").await;
-
-        cache.set("prefix1".to_string(), kel);
-        assert_eq!(cache.entries.len(), 1);
-
-        cache.invalidate("prefix1");
-        assert_eq!(cache.entries.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_cache_invalidate_nonexistent() {
-        let mut cache = KelCacheInner::new(2);
-        // Should not panic
-        cache.invalidate("nonexistent");
-        assert_eq!(cache.entries.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_cache_resize_shrink_evicts_lru() {
-        let mut cache = KelCacheInner::new(3);
-        let kel1 = create_test_kel_with_prefix("k1").await;
-        let kel2 = create_test_kel_with_prefix("k2").await;
-        let kel3 = create_test_kel_with_prefix("k3").await;
-
-        cache.set("p1".to_string(), kel1); // access: 1
-        cache.set("p2".to_string(), kel2); // access: 2
-        cache.set("p3".to_string(), kel3); // access: 3
-
-        cache.resize(2); // Should evict p1 (lowest access)
-
-        assert_eq!(cache.entries.len(), 2);
-        assert!(!cache.entries.contains_key("p1"));
-        assert!(cache.entries.contains_key("p2"));
-        assert!(cache.entries.contains_key("p3"));
-    }
-
-    #[tokio::test]
-    async fn test_cache_resize_expand() {
-        let mut cache = KelCacheInner::new(2);
-        let kel = create_test_kel_with_prefix("k").await;
-
-        cache.set("p1".to_string(), kel);
-
-        cache.resize(5);
-        assert_eq!(cache.max_entries, 5);
-        assert_eq!(cache.entries.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_cache_clear() {
-        let mut cache = KelCacheInner::new(3);
-        let kel1 = create_test_kel_with_prefix("k1").await;
-        let kel2 = create_test_kel_with_prefix("k2").await;
-
-        cache.set("p1".to_string(), kel1);
-        cache.set("p2".to_string(), kel2);
-        assert_eq!(cache.entries.len(), 2);
-        assert_eq!(cache.access_counter, 2);
-
-        cache.clear();
-        assert_eq!(cache.entries.len(), 0);
-        assert_eq!(cache.access_counter, 0);
-    }
-
-    // ==================== Cache Config Tests ====================
-
-    #[test]
-    fn test_default_cache_config() {
-        let config = KelCacheConfig::default();
-        assert_eq!(config.max_entries, 256);
-        assert!(config.enabled);
-    }
-
-    #[test]
-    fn test_client_with_caching_creates_cache() {
-        let client = KelsClient::with_caching("http://localhost:8080");
-        assert!(client.cache.is_some());
-    }
-
-    #[test]
-    fn test_client_without_caching_no_cache() {
-        let client = KelsClient::new("http://localhost:8080");
-        assert!(client.cache.is_none());
-    }
-
     #[test]
     fn test_client_with_timeout() {
         let client = KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60));
@@ -814,97 +371,17 @@ mod tests {
     }
 
     #[test]
-    fn test_client_with_cache_config_disabled() {
-        let config = KelCacheConfig {
-            max_entries: 100,
-            enabled: false,
-        };
-        let client = KelsClient::with_cache_config("http://localhost:8080", config);
-        assert!(client.cache.is_none());
-    }
-
-    #[test]
-    fn test_client_with_cache_config_enabled() {
-        let config = KelCacheConfig {
-            max_entries: 50,
-            enabled: true,
-        };
-        let client = KelsClient::with_cache_config("http://localhost:8080", config);
-        assert!(client.cache.is_some());
-    }
-
-    #[test]
-    fn test_client_clear_cache() {
-        let client = KelsClient::with_caching("http://localhost:8080");
-        // Should not panic even when cache is empty
-        client.clear_cache();
-
-        // Test with no cache
-        let client_no_cache = KelsClient::new("http://localhost:8080");
-        client_no_cache.clear_cache(); // Should not panic
-    }
-
-    #[test]
-    fn test_client_invalidate_cache() {
-        let client = KelsClient::with_caching("http://localhost:8080");
-        // Should not panic on nonexistent prefix
-        client.invalidate_cache("nonexistent");
-
-        // Test with no cache
-        let client_no_cache = KelsClient::new("http://localhost:8080");
-        client_no_cache.invalidate_cache("prefix"); // Should not panic
-    }
-
-    #[test]
-    fn test_client_save_and_load_cache() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let cache_path = temp_dir.path().join("cache.json");
-
-        // Create client with cache and save
-        let client = KelsClient::with_cache_config(
-            "http://localhost:8080",
-            KelCacheConfig {
-                max_entries: 10,
-                enabled: true,
-            },
-        );
-        client.save_cache(&cache_path);
-
-        // Load from file
-        let client2 = KelsClient::with_cache_file("http://localhost:8080", &cache_path, 10);
-        assert!(client2.cache.is_some());
-    }
-
-    #[test]
-    fn test_client_with_cache_file_nonexistent() {
-        let path = std::path::PathBuf::from("/nonexistent/path/cache.json");
-        let client = KelsClient::with_cache_file("http://localhost:8080", &path, 10);
-        // Should create new cache when file doesn't exist
-        assert!(client.cache.is_some());
-    }
-
-    #[test]
-    fn test_client_save_cache_no_cache() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let cache_path = temp_dir.path().join("cache.json");
-
-        // Client without cache
-        let client = KelsClient::new("http://localhost:8080");
-        client.save_cache(&cache_path);
-
-        // File should not be created
-        assert!(!cache_path.exists());
+    fn test_client_with_path_prefix() {
+        let client = KelsClient::with_path_prefix("http://registry:8080", "/api/member-kels");
+        assert_eq!(client.base_url(), "http://registry:8080");
+        assert_eq!(client.path_prefix, "/api/member-kels");
     }
 
     // ==================== HTTP Client Tests with Mock Server ====================
 
     mod http_tests {
         use super::*;
-        use crate::types::{BatchSubmitResponse, ErrorCode, ErrorResponse, KelResponse};
+        use crate::types::{BatchSubmitResponse, ErrorCode, ErrorResponse};
         use wiremock::matchers::{method, path, path_regex};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -956,7 +433,6 @@ mod tests {
             let result = client.test_latency().await;
 
             assert!(result.is_ok());
-            // Latency should be positive
             assert!(result.unwrap().as_micros() > 0);
         }
 
@@ -972,7 +448,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/api/kels/events"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-                .expect(1) // Single chunk - single request
+                .expect(1)
                 .mount(&mock_server)
                 .await;
 
@@ -999,7 +475,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/api/kels/events"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-                .expect(3) // 3 events with chunk size 1 = 3 requests
+                .expect(3)
                 .mount(&mock_server)
                 .await;
 
@@ -1031,7 +507,6 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            // Create a test event
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
             let signed = builder.incept().await.unwrap();
 
@@ -1042,33 +517,6 @@ mod tests {
             let resp = result.unwrap();
             assert!(resp.applied);
             assert!(resp.diverged_at.is_none());
-        }
-
-        #[tokio::test]
-        async fn test_submit_events_divergence() {
-            let mock_server = MockServer::start().await;
-
-            let response = BatchSubmitResponse {
-                applied: true,
-                diverged_at: Some(1),
-            };
-
-            Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-                .mount(&mock_server)
-                .await;
-
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let signed = builder.incept().await.unwrap();
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.submit_events(&[signed]).await;
-
-            assert!(result.is_ok());
-            let resp = result.unwrap();
-            assert!(resp.applied);
-            assert_eq!(resp.diverged_at, Some(1));
         }
 
         #[tokio::test]
@@ -1096,12 +544,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_submit_events_recovery_protected() {
+        async fn test_submit_events_contest_required() {
             let mock_server = MockServer::start().await;
 
             let error = ErrorResponse {
-                error: "Recovery protected".to_string(),
-                code: ErrorCode::RecoveryProtected,
+                error: "Contest required".to_string(),
+                code: ErrorCode::ContestRequired,
             };
 
             Mock::given(method("POST"))
@@ -1116,58 +564,39 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri());
             let result = client.submit_events(&[signed]).await;
 
-            assert!(matches!(result, Err(KelsError::RecoveryProtected)));
+            assert!(matches!(result, Err(KelsError::ContestRequired)));
         }
 
         #[tokio::test]
-        async fn test_submit_events_server_error() {
+        async fn test_fetch_key_events_success() {
             let mock_server = MockServer::start().await;
 
-            let error = ErrorResponse {
-                error: "Internal error".to_string(),
-                code: ErrorCode::InternalError,
-            };
-
-            Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
-                .respond_with(ResponseTemplate::new(500).set_body_json(&error))
-                .mount(&mock_server)
-                .await;
-
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let signed = builder.incept().await.unwrap();
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.submit_events(&[signed]).await;
-
-            assert!(matches!(result, Err(KelsError::ServerError(..))));
-        }
-
-        #[tokio::test]
-        async fn test_fetch_full_kel_success() {
-            let mock_server = MockServer::start().await;
-
-            // Create a test KEL
             let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
             let icp = builder.incept().await.unwrap();
             let prefix = icp.event.prefix.clone();
 
+            let response = SignedKeyEventPage {
+                events: vec![icp],
+                has_more: false,
+            };
+
             Mock::given(method("GET"))
                 .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(vec![icp.clone()]))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .mount(&mock_server)
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_full_kel(&prefix, true).await;
+            let result = client.fetch_key_events(&prefix, None, 512).await;
 
             assert!(result.is_ok());
-            let kel = result.unwrap();
-            assert_eq!(kel.len(), 1);
+            let page = result.unwrap();
+            assert_eq!(page.events.len(), 1);
+            assert!(!page.has_more);
         }
 
         #[tokio::test]
-        async fn test_fetch_full_kel_not_found() {
+        async fn test_fetch_key_events_not_found() {
             let mock_server = MockServer::start().await;
 
             Mock::given(method("GET"))
@@ -1177,13 +606,13 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_full_kel("nonexistent", true).await;
+            let result = client.fetch_key_events("nonexistent", None, 512).await;
 
-            assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
+            assert!(matches!(result, Err(KelsError::EventNotFound(_))));
         }
 
         #[tokio::test]
-        async fn test_fetch_full_kel_server_error() {
+        async fn test_fetch_key_events_server_error() {
             let mock_server = MockServer::start().await;
 
             let error = ErrorResponse {
@@ -1198,109 +627,9 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_full_kel("prefix", true).await;
+            let result = client.fetch_key_events("prefix", None, 512).await;
 
             assert!(matches!(result, Err(KelsError::ServerError(..))));
-        }
-
-        #[tokio::test]
-        async fn test_get_kel_with_cache_miss() {
-            let mock_server = MockServer::start().await;
-
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let icp = builder.incept().await.unwrap();
-            let prefix = icp.event.prefix.clone();
-
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(vec![icp.clone()]))
-                .expect(1) // Should only be called once
-                .mount(&mock_server)
-                .await;
-
-            let client = KelsClient::with_caching(&mock_server.uri());
-
-            // First call - cache miss, fetches from server
-            let result1 = client.get_kel(&prefix).await;
-            assert!(result1.is_ok());
-
-            // Second call - should be cached (mock expects only 1 call)
-            let result2 = client.get_kel(&prefix).await;
-            assert!(result2.is_ok());
-        }
-
-        #[tokio::test]
-        async fn test_fetch_kel_with_audit_success() {
-            let mock_server = MockServer::start().await;
-
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-            let icp = builder.incept().await.unwrap();
-            let prefix = icp.event.prefix.clone();
-
-            let response = KelResponse {
-                events: vec![icp],
-                audit_records: Some(vec![]),
-            };
-
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-                .mount(&mock_server)
-                .await;
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_kel_with_audit(&prefix).await;
-
-            assert!(result.is_ok());
-            let resp = result.unwrap();
-            assert_eq!(resp.events.len(), 1);
-            assert!(resp.audit_records.as_ref().is_none_or(|v| v.is_empty()));
-        }
-
-        #[tokio::test]
-        async fn test_fetch_kel_with_audit_not_found() {
-            let mock_server = MockServer::start().await;
-
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
-                .respond_with(ResponseTemplate::new(404))
-                .mount(&mock_server)
-                .await;
-
-            let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_kel_with_audit("nonexistent").await;
-
-            assert!(matches!(result, Err(KelsError::KeyNotFound(_))));
-        }
-
-        #[tokio::test]
-        async fn test_cache_get_no_cache() {
-            let client = KelsClient::new("http://localhost:8080");
-            let result = client.cache_get("prefix").await;
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_none());
-        }
-
-        #[tokio::test]
-        async fn test_cache_set_no_cache() {
-            let kel = Kel::new();
-            let client = KelsClient::new("http://localhost:8080");
-            let result = client.cache_set("prefix", &kel).await;
-            assert!(result.is_ok());
-        }
-
-        #[tokio::test]
-        async fn test_invalidate_cache_async_no_cache() {
-            let client = KelsClient::new("http://localhost:8080");
-            let result = client.invalidate_cache_async("prefix").await;
-            assert!(result.is_ok());
-        }
-
-        #[tokio::test]
-        async fn test_invalidate_cache_async_with_cache() {
-            let client = KelsClient::with_caching("http://localhost:8080");
-            let result = client.invalidate_cache_async("prefix").await;
-            assert!(result.is_ok());
         }
     }
 }

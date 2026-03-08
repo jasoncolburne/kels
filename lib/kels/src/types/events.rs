@@ -2,7 +2,7 @@
 
 use std::{
     cmp::{Eq, PartialEq},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt,
     hash::{Hash, Hasher},
     str::FromStr,
@@ -68,7 +68,7 @@ impl EventKind {
 
     /// Sort priority within the same serial (lower = earlier in sorted order).
     /// Ensures state-determining events (recovery, contest) sort after normal events,
-    /// so `Kel.last()` reflects the most significant event for announcements.
+    /// so the last event reflects the most significant event for announcements.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::Icp => 0,
@@ -80,6 +80,25 @@ impl EventKind {
             Self::Rec => 6,
             Self::Cnt => 7,
         }
+    }
+
+    const ALL: [Self; 8] = [
+        Self::Icp,
+        Self::Dip,
+        Self::Ixn,
+        Self::Rot,
+        Self::Ror,
+        Self::Dec,
+        Self::Rec,
+        Self::Cnt,
+    ];
+
+    /// Returns the sort priority mapping for use with `order_by_case` in DB queries.
+    pub fn sort_priority_mapping() -> Vec<(&'static str, i64)> {
+        Self::ALL
+            .iter()
+            .map(|k| (k.as_str(), k.sort_priority() as i64))
+            .collect()
     }
 
     pub fn is_inception(&self) -> bool {
@@ -105,6 +124,25 @@ impl EventKind {
 
     pub fn decommissions(&self) -> bool {
         matches!(self, Self::Dec | Self::Cnt)
+    }
+
+    /// Returns the DB string representations of all establishment event kinds.
+    /// Used to query for the last establishment event without hardcoding kind strings in SQL.
+    pub fn establishment_kinds() -> Vec<String> {
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_establishment())
+            .map(|k| k.as_str().to_string())
+            .collect()
+    }
+
+    /// Returns the DB string representations of kinds that reveal the recovery key.
+    pub fn recovery_revealing_kinds() -> Vec<String> {
+        Self::ALL
+            .iter()
+            .filter(|k| k.reveals_recovery_key())
+            .map(|k| k.as_str().to_string())
+            .collect()
     }
 }
 
@@ -137,12 +175,12 @@ impl FromStr for EventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelMergeResult {
-    Accepted,  // Events appended normally
-    Recovered, // Recovery succeeded
-    Contested, // Contest accepted, KEL locked
-    Diverged,  // Divergent event accepted, KEL now frozen
-    Rejected,  // Already divergent, submit rec to recover
-    Protected, // Adversary used recovery key, submit contest
+    Accepted,        // Events appended normally
+    Recovered,       // Recovery succeeded
+    Contested,       // Contest accepted, KEL locked
+    Diverged,        // Divergent event accepted, KEL now frozen
+    RecoverRequired, // Already divergent, submit rec to recover
+    ContestRequired, // Adversary used recovery key, submit contest
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -653,6 +691,13 @@ pub struct BatchSubmitResponse {
     pub applied: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveSaidResponse {
+    pub said: String,
+    pub divergent: bool,
+}
+
 /// Audit record for tracking archived events during recovery/contest
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "kels_audit_records")]
@@ -687,18 +732,14 @@ impl KelsAuditRecord {
     }
 }
 
+/// NOTE: `build_page_bytes` in `services/kels/src/handlers.rs` manually constructs
+/// this struct's JSON from cached bytes to avoid a serde round-trip. If you add or
+/// rename fields here, update `build_page_bytes` to match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BatchKelsRequest {
-    pub prefixes: HashMap<String, Option<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KelResponse {
-    pub events: Vec<SignedKeyEvent>, // May include divergent events at same version
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audit_records: Option<Vec<KelsAuditRecord>>,
+pub struct SignedKeyEventPage {
+    pub events: Vec<SignedKeyEvent>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

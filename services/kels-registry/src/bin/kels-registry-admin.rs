@@ -114,6 +114,9 @@ enum IdentityAction {
         /// Output as JSON
         #[arg(short, long)]
         json: bool,
+        /// Maximum number of pages to fetch
+        #[arg(long, default_value_t = kels::max_verification_pages())]
+        max_pages: usize,
     },
 }
 
@@ -156,6 +159,7 @@ impl AdminContext {
         let self_prefix = identity_client.get_prefix().await?;
 
         let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .context("Failed to create HTTP client")?;
@@ -273,31 +277,47 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
     None
 }
 
-/// Submit own KEL to the leader so anchoring can be verified.
+/// Push own KEL events to the local registry, which fans out to all federation members.
 ///
-/// After anchoring a SAID in the local identity KEL, the new event must reach
-/// Raft before the leader can verify it. Submits all events; merge() deduplicates.
-async fn sync_kel_to_leader(ctx: &AdminContext, leader_url: &str) -> anyhow::Result<()> {
-    let kel = ctx
-        .identity_client
-        .get_kel()
-        .await
-        .context("Failed to get own KEL")?;
-    let events = kel.events().to_vec();
-    if events.is_empty() {
+/// After anchoring a SAID in the identity KEL, the registry's
+/// MemberKelRepository must have the latest events before the leader
+/// can verify anchoring. The submit endpoint stores locally and
+/// propagates to all federation members.
+///
+/// The identity service also pushes post-anchor (via `push_kel_to_registry`),
+/// but this explicit push eliminates the race where the admin tool submits
+/// a proposal before the identity push has completed fan-out.
+async fn push_kel_to_registry(ctx: &AdminContext) -> anyhow::Result<()> {
+    let client = kels::KelsClient::with_path_prefix(&ctx.registry_url, "/api/member-kels");
+
+    let mut all_events = Vec::new();
+    let mut since: Option<String> = None;
+    loop {
+        let page = ctx
+            .identity_client
+            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            .context("Failed to fetch KEL events from identity")?;
+        all_events.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+        since = all_events.last().map(|e| e.event.said.clone());
+    }
+
+    if all_events.is_empty() {
         return Ok(());
     }
 
-    let url = format!(
-        "{}/api/federation/key-events",
-        leader_url.trim_end_matches('/')
-    );
-    let resp = ctx.http_client.post(&url).json(&events).send().await?;
-    if !resp.status().is_success() {
-        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        let error = body["error"].as_str().unwrap_or("unknown error");
-        return Err(anyhow!("Failed to sync KEL to leader: {}", error));
+    let result = client
+        .submit_events(&all_events)
+        .await
+        .context("Failed to push KEL events to registry")?;
+
+    if !result.applied {
+        return Err(anyhow!("Registry rejected KEL events (not applied)"));
     }
+
     Ok(())
 }
 
@@ -343,8 +363,8 @@ async fn propose_peer(
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Push KEL to local registry (fans out to all federation members including leader)
+    push_kel_to_registry(ctx).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -418,8 +438,8 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Push KEL to local registry (fans out to all federation members including leader)
+    push_kel_to_registry(ctx).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -480,8 +500,8 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
     // Get leader URL from federation status
     let mut target_url = ctx.get_leader_url().await?;
 
-    // Sync KEL to leader so anchor is available for verification
-    sync_kel_to_leader(ctx, &target_url).await?;
+    // Push KEL to local registry (fans out to all federation members including leader)
+    push_kel_to_registry(ctx).await?;
 
     // Retry loop for leader changes
     for attempt in 0..2 {
@@ -708,7 +728,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
-            sync_kel_to_leader(ctx, &target_url).await?;
+            push_kel_to_registry(ctx).await?;
 
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/addition-proposals", target_url);
@@ -769,7 +789,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
-            sync_kel_to_leader(ctx, &target_url).await?;
+            push_kel_to_registry(ctx).await?;
 
             for attempt in 0..2 {
                 let url = format!("{}/api/admin/removal-proposals", target_url);
@@ -993,25 +1013,50 @@ async fn show_federation_status(ctx: &AdminContext, json: bool) -> anyhow::Resul
     Ok(())
 }
 
-async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<()> {
+async fn show_identity_status(
+    ctx: &AdminContext,
+    json: bool,
+    max_pages: usize,
+) -> anyhow::Result<()> {
     let prefix = ctx
         .identity_client
         .get_prefix()
         .await
         .context("Failed to get identity prefix")?;
-    let kel = ctx
-        .identity_client
-        .get_kel()
-        .await
-        .context("Failed to get identity KEL")?;
-
-    let is_decommissioned = kel.is_decommissioned();
+    let mut all_events = Vec::new();
+    let mut since: Option<String> = None;
+    for _ in 0..max_pages {
+        let page = ctx
+            .identity_client
+            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .await
+            .context("Failed to get identity KEL")?;
+        if page.events.is_empty() {
+            break;
+        }
+        since = page.events.last().map(|e| e.event.said.clone());
+        all_events.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+    }
+    let event_count = all_events.len();
+    let mut verifier = kels::KelVerifier::new(&prefix);
+    let verification = if verifier.verify_page(&all_events).is_ok() {
+        verifier.into_verification().ok()
+    } else {
+        None
+    };
+    let is_decommissioned = verification
+        .as_ref()
+        .map(|c| c.is_decommissioned())
+        .unwrap_or(false);
 
     if json {
         let status = serde_json::json!({
             "initialized": true,
             "prefix": prefix,
-            "eventCount": kel.len(),
+            "eventCount": event_count,
             "decommissioned": is_decommissioned
         });
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -1019,7 +1064,7 @@ async fn show_identity_status(ctx: &AdminContext, json: bool) -> anyhow::Result<
         println!("Registry Identity Status");
         println!("{}", "=".repeat(40));
         println!("Prefix: {}", prefix);
-        println!("Event count: {}", kel.len());
+        println!("Event count: {}", event_count);
         println!("Decommissioned: {}", is_decommissioned);
         println!();
         println!("Note: Identity management (rotate, decommission) is handled");
@@ -1076,8 +1121,8 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Identity { action } => match action {
-            IdentityAction::Status { json } => {
-                show_identity_status(&ctx, json).await?;
+            IdentityAction::Status { json, max_pages } => {
+                show_identity_status(&ctx, json, max_pages).await?;
             }
         },
         Commands::Federation { action } => match action {

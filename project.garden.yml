@@ -56,7 +56,7 @@ providers:
     environments: [registry-a, registry-b, registry-c, registry-d, node-a, node-b, node-c, node-d, node-e, node-f]
     namespace:
       name: ${environment.namespace}
-    setupIngressController: nginx
+    setupIngressController: traefik
     defaultHostname: ${environment.namespace}.kels
     buildMode: local-docker
 

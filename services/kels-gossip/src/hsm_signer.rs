@@ -137,9 +137,10 @@ impl Signer for IdentityGossipSigner {
 /// establishment event). On key mismatch (rotation), re-fetches the KEL and retries.
 pub struct KelsPeerVerifier {
     allowlist: SharedAllowlist,
-    kels_client: kels::KelsClient,
+    kels_url: String,
     federation_registry_urls: Vec<String>,
     node_id: String,
+    registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
 }
 
 impl KelsPeerVerifier {
@@ -148,12 +149,14 @@ impl KelsPeerVerifier {
         kels_url: &str,
         federation_registry_urls: Vec<String>,
         node_id: String,
+        registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
     ) -> Self {
         Self {
             allowlist,
-            kels_client: kels::KelsClient::new(kels_url),
+            kels_url: kels_url.to_string(),
             federation_registry_urls,
             node_id,
+            registry_kel_store,
         }
     }
 
@@ -165,10 +168,13 @@ impl KelsPeerVerifier {
 
     /// Refresh the allowlist from the registry, then check again.
     async fn is_in_allowlist_refreshed(&self, prefix: &str) -> Result<bool, GossipError> {
-        let mut client = kels::MultiRegistryClient::new(self.federation_registry_urls.clone());
-        if let Err(e) =
-            crate::allowlist::refresh_allowlist(&mut client, &self.allowlist, Some(&self.node_id))
-                .await
+        if let Err(e) = crate::allowlist::refresh_allowlist(
+            &self.federation_registry_urls,
+            self.registry_kel_store.as_ref(),
+            &self.allowlist,
+            Some(&self.node_id),
+        )
+        .await
         {
             tracing::warn!("Allowlist refresh during handshake failed: {}", e);
         }
@@ -177,23 +183,29 @@ impl KelsPeerVerifier {
     }
 
     /// Get the current public key from a peer's KEL as compressed SEC1 bytes.
-    async fn public_key_from_kel(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
-        let kel = self.kels_client.get_kel(prefix).await.map_err(|e| {
-            GossipError::VerificationFailed(format!("KEL fetch for {}: {}", prefix, e))
+    async fn public_key_from_key_events(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
+        // Consuming: verify KEL (paginated) to extract trusted public key for signing
+        let source = kels::HttpKelSource::new(&self.kels_url, "/api/kels/kel/{prefix}");
+        let ctx = kels::verify_key_events(
+            prefix,
+            &source,
+            kels::KelVerifier::new(prefix),
+            kels::MAX_EVENTS_PER_KEL_QUERY,
+            kels::max_verification_pages(),
+        )
+        .await
+        .map_err(|e| {
+            GossipError::VerificationFailed(format!("KEL verify for {}: {}", prefix, e))
         })?;
 
-        if kel.find_divergence().is_some() {
+        if ctx.is_divergent() {
             return Err(GossipError::VerificationFailed(format!(
                 "KEL for {} is divergent",
                 prefix
             )));
         }
 
-        let event = kel.last_establishment_event().ok_or_else(|| {
-            GossipError::VerificationFailed(format!("No establishment event in KEL for {}", prefix))
-        })?;
-
-        let qb64_key = event.event.public_key.as_ref().ok_or_else(|| {
+        let qb64_key = ctx.current_public_key().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
@@ -234,7 +246,7 @@ impl KelsPeerVerifier {
         signature: &[u8],
         handshake_key: &[u8],
     ) -> Result<bool, GossipError> {
-        let kel_key = match self.public_key_from_kel(prefix).await {
+        let kel_key = match self.public_key_from_key_events(prefix).await {
             Ok(key) => key,
             Err(_) => return Ok(false), // KEL not found locally — trigger refresh
         };
@@ -264,20 +276,18 @@ impl KelsPeerVerifier {
                 })?
         };
 
-        // Fetch KEL from the peer's KELS instance
-        let remote_client = kels::KelsClient::new(&peer_kels_url);
-        let kel = remote_client.get_kel(prefix).await.map_err(|e| {
-            GossipError::VerificationFailed(format!(
-                "Remote KEL fetch for {} from {}: {}",
-                prefix, peer_kels_url, e
-            ))
-        })?;
-
-        // Submit the refreshed KEL to our local KELS instance
-        let events: Vec<_> = kel.events().to_vec();
-        if !events.is_empty() {
-            let _ = self.kels_client.submit_events(&events).await;
-        }
+        // Forward KEL from peer's KELS to our local KELS (paginated)
+        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/kels/kel/{prefix}");
+        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/kels/events");
+        let _ = kels::forward_key_events(
+            prefix,
+            &source,
+            &sink,
+            kels::MAX_EVENTS_PER_KEL_QUERY,
+            kels::max_verification_pages(),
+            None,
+        )
+        .await;
 
         // Retry verification with the now-updated local KEL
         self.try_verify(prefix, data, signature, handshake_key)
@@ -461,8 +471,15 @@ mod tests {
         let sig_bytes = sig.to_bytes();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let verifier =
-            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
+        let store: Arc<dyn kels::KelStore> =
+            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let verifier = KelsPeerVerifier::new(
+            allowlist,
+            "http://localhost:8080",
+            vec![],
+            String::new(),
+            store,
+        );
 
         let result = verifier.verify_signature(data, &sig_bytes, public_key);
         assert!(result.is_ok());
@@ -485,8 +502,15 @@ mod tests {
         let bad_sig = vec![1u8; 64];
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let verifier =
-            KelsPeerVerifier::new(allowlist, "http://localhost:8080", vec![], String::new());
+        let store: Arc<dyn kels::KelStore> =
+            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let verifier = KelsPeerVerifier::new(
+            allowlist,
+            "http://localhost:8080",
+            vec![],
+            String::new(),
+            store,
+        );
 
         let result = verifier.verify_signature(b"test data", &bad_sig, public_key);
         assert!(result.is_err());

@@ -66,7 +66,7 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
     case kelFrozen
     case networkError(String?)
     case notIncepted
-    case recoveryProtected
+    case contestRequired
     case unknown(String)
 
     public var errorDescription: String? {
@@ -86,8 +86,8 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
             return "Network or server error"
         case .notIncepted:
             return "KEL has not been incepted yet"
-        case .recoveryProtected:
-            return "Adversary used recovery key - use Contest to freeze KEL"
+        case .contestRequired:
+            return "Contest required: recovery key revealed. Use Contest to freeze KEL."
         case .unknown(let message):
             return message
         }

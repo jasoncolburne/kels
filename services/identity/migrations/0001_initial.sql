@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS identity_key_events (
 
 CREATE INDEX IF NOT EXISTS idx_key_events_prefix ON identity_key_events(prefix);
 CREATE INDEX IF NOT EXISTS idx_key_events_prefix_serial ON identity_key_events(prefix, serial);
+CREATE INDEX IF NOT EXISTS idx_key_events_prefix_previous ON identity_key_events(prefix, previous);
 
 -- Signatures for key events
 CREATE TABLE IF NOT EXISTS identity_key_event_signatures (

@@ -55,7 +55,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
 4. If SAID is new:
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
-   - **Audit fetch** (on `KeyNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
+   - **Audit fetch** (on `EventNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
@@ -146,15 +146,15 @@ Gossip nodes use persistent HSM-backed identities:
 - Unauthorized peers are rejected during the gossip handshake
 - The handshake uses a three-DH pattern: ephemeral-ephemeral (forward secrecy), static-ephemeral via HSM (our static key × their ephemeral), and ephemeral-static locally (our ephemeral × their static key). Session keys are derived from all three shared secrets via BLAKE3 key derivation. The static private key never leaves the HSM.
 - Each peer's handshake signature is verified against their KEL public key via the verified allowlist
-- See [Secure Registration](secure-registration.md) for details on the peer allowlist
+- See [Secure Registration](design/secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback
 
 - **Delta fetch** (`?since=<said>`) is the primary sync mechanism — only fetches events newer than local state
 - Uses the `serial` field on `KeyEvent` for efficient DB-ordered queries (`ORDER BY serial ASC`)
 - Falls back to **full KEL fetch** when delta is unavailable (e.g., new prefix, network error)
-- **Recovery-aware audit fetch**: when a delta fetch fails with `KeyNotFound` (local SAID was purged by recovery on the remote), fetches with `?audit=true` to retrieve both the clean chain and archived adversary events
-- Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split at the first recovery-revealing event and submitted in stages so merge() processes recovery correctly
+- **Recovery-aware audit fetch**: when a delta fetch fails with `EventNotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/kels/kel/:prefix` + `/api/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
+- Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split before the event preceding the first recovery-revealing event and submitted in stages so merge() processes recovery correctly. The owner's event at the divergence serial is bundled with the recovery event — this ensures nodes that have only adversary events at that serial (no owner event) can insert the owner event as part of recovery processing (the submit handler's divergent recovery branch handles this via look-ahead for `rec` in the batch)
 - KELS handles duplicate events idempotently
 
 ### Registry-based discovery (not hardcoded bootstrap peers)
@@ -218,10 +218,9 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 **Phase 1 — Targeted repair of known-stale prefixes:**
 - Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → source_node_prefix` entries
 - For each entry, fetches the KEL from the source peer and submits locally
-- Failures are not re-queued (Phase 2 rediscovers if still needed)
-- If any stale entries were processed, Phase 2 is skipped (spread work across cycles)
+- Failures are re-queued for the next cycle (batch fetch failures and individual submit failures both re-record the stale entry)
 
-**Phase 2 — Random sampling (only when no stale entries):**
+**Phase 2 — Random sampling (runs every cycle):**
 - Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
 - Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs this is a deterministic Blake3 hash of sorted tip SAIDs
 - If digests match, done for this cycle
@@ -256,7 +255,9 @@ The gossip layer doesn't need special divergence logic - KELS handles all verifi
 
 `clients/test/scripts/test-adversarial-advanced.sh` verifies multi-node adversarial scenarios:
 - Dual adversary injection on separate nodes + owner recovery propagation
-- Triple simultaneous events (adversary + adversary + owner) with delayed gossip
+- Triple adversary injection (3 adversary events on 3 nodes) + owner recovery
+- Triple simultaneous events (2 adversary + 1 owner on 3 nodes) causing mixed divergence pairs across nodes + owner recovery propagation
+- Adversary attack timed with owner recovery-rotation (ror), then owner recovery
 
 `clients/test/scripts/test-consistency.sh` verifies cross-node consistency:
 - All nodes have the same set of prefixes

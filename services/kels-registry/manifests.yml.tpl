@@ -116,7 +116,7 @@ metadata:
   labels:
     app: kels-registry
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: kels-registry.${environment.namespace}.kels
       http:

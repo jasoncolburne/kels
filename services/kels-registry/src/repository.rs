@@ -5,7 +5,8 @@
 use verifiable_storage_postgres::Stored;
 
 use crate::raft_store::{
-    RaftLogAuditRepository, RaftLogRepository, RaftStateRepository, RaftVoteRepository,
+    MemberKelRepository, RaftLogAuditRepository, RaftLogRepository, RaftStateRepository,
+    RaftVoteRepository,
 };
 
 /// Combined repository that manages all kels-registry database tables.
@@ -21,4 +22,5 @@ pub struct RegistryRepository {
     pub raft_logs: RaftLogRepository,
     pub raft_state: RaftStateRepository,
     pub raft_log_audit: RaftLogAuditRepository,
+    pub member_kels: MemberKelRepository,
 }

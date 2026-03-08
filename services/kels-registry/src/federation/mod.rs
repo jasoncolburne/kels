@@ -36,12 +36,12 @@ pub use types::{
 };
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 use tracing::info;
 
-use kels::{Peer, SignedKeyEvent};
+use kels::Peer;
 use openraft::Raft;
 
 use crate::repository::RegistryRepository;
@@ -51,7 +51,7 @@ use crate::repository::RegistryRepository;
 /// Each registry runs a FederationNode that:
 /// - Participates in Raft consensus with other registries
 /// - Replicates peer set changes
-/// - Stores member KELs in Raft-replicated state
+/// - Triggers member KEL sync across federation
 pub struct FederationNode {
     /// The Raft consensus instance
     raft: Raft<TypeConfig>,
@@ -82,7 +82,9 @@ impl FederationNode {
             Arc::new(repository.raft_state.clone()),
             node_id,
         );
-        let state_machine = StateMachineStore::new(config.clone());
+        let state_machine = StateMachineStore::new(config.clone())
+            .with_member_kel_repo(repository.member_kels.clone())
+            .with_identity_url(identity_client.base_url().to_string());
 
         // Create network layer (with signing capability)
         let network = FederationNetwork::new(config.clone(), identity_client);
@@ -183,7 +185,7 @@ impl FederationNode {
 
         // Set the voter set to exactly the expected members
         self.raft
-            .change_membership(expected_voters, true)
+            .change_membership(expected_voters, false)
             .await
             .map_err(|e| FederationError::RaftError(e.to_string()))?;
 
@@ -344,7 +346,7 @@ impl FederationNode {
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
     pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
         self.state_machine
-            .verify_member_anchoring_with_lock(said, member_prefix)
+            .verify_member_anchoring(said, member_prefix)
             .await
     }
 
@@ -602,79 +604,6 @@ impl FederationNode {
                 .map(|m| m.prefix.clone())
                 .collect(),
         }
-    }
-
-    /// Submit key events to Raft for a member's KEL.
-    ///
-    /// On the leader, writes directly to Raft. On followers, forwards via HTTP
-    /// to the leader's `/api/federation/key-events` endpoint.
-    pub async fn submit_key_events(
-        &self,
-        events: Vec<SignedKeyEvent>,
-    ) -> Result<FederationResponse, FederationError> {
-        if self.is_leader().await {
-            let request = FederationRequest::SubmitKeyEvents(events);
-            let result = self
-                .raft
-                .client_write(request)
-                .await
-                .map_err(|e| FederationError::RaftError(e.to_string()))?;
-            return Ok(result.response().clone());
-        }
-
-        // Forward to leader via HTTP
-        let leader_url = self
-            .leader_url()
-            .await
-            .ok_or_else(|| FederationError::RaftError("No leader known".to_string()))?;
-
-        let url = format!(
-            "{}/api/federation/key-events",
-            leader_url.trim_end_matches('/')
-        );
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-        let resp = client
-            .post(&url)
-            .json(&events)
-            .send()
-            .await
-            .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-
-        if resp.status().is_success() {
-            let body: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| FederationError::NetworkError(e.to_string()))?;
-            let prefix = body["prefix"].as_str().unwrap_or("").to_string();
-            let new_count = body["new_count"].as_u64().unwrap_or(0) as usize;
-            Ok(FederationResponse::KeyEventsAccepted { prefix, new_count })
-        } else {
-            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            let error = body["error"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
-            Ok(FederationResponse::KeyEventsRejected(error))
-        }
-    }
-
-    /// Get a member KEL from Raft-replicated state.
-    pub async fn get_member_kel(&self, prefix: &str) -> Option<kels::Kel> {
-        self.state_machine
-            .inner()
-            .lock()
-            .await
-            .member_kel(prefix)
-            .cloned()
-    }
-
-    /// Get all member KELs from Raft-replicated state.
-    pub async fn get_all_member_kels(&self) -> HashMap<String, kels::Kel> {
-        self.state_machine.inner().lock().await.all_member_kels()
     }
 }
 

@@ -79,4 +79,33 @@ CREATE TABLE IF NOT EXISTS raft_log_audit (
 CREATE INDEX IF NOT EXISTS idx_raft_log_audit_node_id ON raft_log_audit(node_id);
 CREATE INDEX IF NOT EXISTS idx_raft_log_audit_recorded_at ON raft_log_audit(recorded_at);
 
+-- Member KELs: stores key events for federation members (replicated via Raft)
+-- Same schema as kels_key_events but in the registry database
+CREATE TABLE IF NOT EXISTS member_key_events (
+    said CHAR(44) PRIMARY KEY,
+    prefix CHAR(44) NOT NULL,
+    previous CHAR(44),
+    serial BIGINT NOT NULL,
+    public_key TEXT,
+    rotation_hash CHAR(44),
+    recovery_key TEXT,
+    recovery_hash CHAR(44),
+    kind TEXT NOT NULL,
+    anchor CHAR(44),
+    delegating_prefix CHAR(44)
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix ON member_key_events(prefix);
+CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_serial ON member_key_events(prefix, serial);
+CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_previous ON member_key_events(prefix, previous);
+
+CREATE TABLE IF NOT EXISTS member_key_event_signatures (
+    said CHAR(44) PRIMARY KEY,
+    event_said CHAR(44) NOT NULL,
+    public_key TEXT NOT NULL,
+    signature TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_key_event_sigs_event_said ON member_key_event_signatures(event_said);
+
 COMMIT;

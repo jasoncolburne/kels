@@ -1,84 +1,239 @@
 //! Background sync tasks for federation state.
 //!
-//! KEL sync: every node periodically submits its own identity KEL to Raft,
-//! ensuring member KELs survive restarts and are available for verification.
+//! Member KEL sync: every node periodically syncs its own identity KEL to local
+//! storage, then pushes deltas to members that have stale effective SAIDs.
 
-use std::{sync::Arc, time::Duration};
-use tokio::time::interval;
-use tracing::{debug, info};
+use std::sync::Arc;
+use std::time::Duration;
 
-use kels::IdentityClient;
+use tokio::time::{interval, sleep};
+use tracing::{debug, info, warn};
 
-use super::FederationNode;
+use kels::{IdentityClient, KelServer};
 
-/// Run the KEL sync loop.
+use super::{FederationConfig, FederationNode};
+use crate::raft_store::MemberKelRepository;
+
+/// Sync all member KELs from peer registries before Raft initialization.
 ///
-/// Every node (not leader-only) periodically fetches its own KEL from the
-/// identity service and submits events to Raft. Each member is responsible
-/// for syncing its own KEL. Deduplication happens in the Raft apply logic.
-pub async fn run_kel_sync_loop(
+/// Raft log replay re-verifies vote anchoring against the local member KEL DB.
+/// Without member KELs present, votes fail anchoring and proposals don't reach
+/// the completed state, leaving the node with empty proposal data.
+pub async fn sync_all_member_kels(
+    config: &FederationConfig,
+    member_kel_repo: &MemberKelRepository,
+) {
+    let urls: Vec<String> = config.members.iter().map(|m| m.url.clone()).collect();
+    let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+        member_kel_repo.pool.clone(),
+    )));
+
+    for prefix in &config.trusted_prefixes {
+        for url in &urls {
+            let source = kels::HttpKelSource::new(url, "/api/member-kels/kel/{prefix}");
+            if kels::forward_key_events(
+                prefix,
+                &source,
+                &sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+                None,
+            )
+            .await
+            .is_ok()
+            {
+                debug!(prefix = %prefix, url = %url, "Pre-Raft member KEL sync OK");
+                break;
+            }
+        }
+    }
+
+    info!("Pre-Raft member KEL sync completed");
+}
+
+/// Run the member KEL sync loop.
+///
+/// Every node (not leader-only) periodically:
+/// 1. Syncs own KEL from identity service to local `MemberKelRepository`
+/// 2. Compares own effective SAID with each member's view
+/// 3. Pushes delta events to members with stale state
+///
+/// Each node only pushes its own KEL — every node pushes its own, so all
+/// member KELs get distributed. No need for node A to push node B's KEL.
+///
+/// Eagerly retries every 2s until the first successful sync, then falls into
+/// the regular interval.
+pub async fn run_member_kel_sync_loop(
     node: Arc<FederationNode>,
     identity_client: Arc<IdentityClient>,
+    member_kel_repo: MemberKelRepository,
     sync_interval: Duration,
 ) {
-    info!("Starting KEL sync loop (interval: {:?})", sync_interval);
+    info!(
+        "Starting member KEL sync loop (interval: {:?})",
+        sync_interval
+    );
 
+    // Eager sync: retry quickly until the federation is reachable and our
+    // KEL is stored locally.
+    loop {
+        match sync_own_kel(&identity_client, &member_kel_repo).await {
+            Ok(()) => {
+                info!("Initial member KEL sync completed");
+                break;
+            }
+            Err(e) => {
+                debug!("Waiting for identity service: {}", e);
+                sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+
+    // Regular interval
     let mut ticker = interval(sync_interval);
 
     loop {
         ticker.tick().await;
 
-        if let Err(e) = sync_own_kel(&node, &identity_client).await {
-            debug!("KEL sync: {}", e);
+        // 1. Sync own KEL from identity
+        if let Err(e) = sync_own_kel(&identity_client, &member_kel_repo).await {
+            debug!("KEL sync from identity: {}", e);
+            continue;
+        }
+
+        // 2. Push to members with stale state
+        if let Err(e) = push_to_stale_members(&node, &identity_client, &member_kel_repo).await {
+            debug!("KEL push to members: {}", e);
         }
     }
 }
 
-/// Fetch own KEL from identity and submit to Raft if there are new events.
+/// Fetch own KEL from identity, verify and store locally.
+/// Uses delta fetch (since local effective SAID) to avoid refetching the entire KEL.
 async fn sync_own_kel(
+    identity_client: &IdentityClient,
+    member_kel_repo: &MemberKelRepository,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let own_prefix = identity_client.get_prefix().await?;
+
+    let since = member_kel_repo
+        .effective_said(&own_prefix)
+        .await
+        .ok()
+        .flatten();
+
+    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/identity/kel");
+    let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+        member_kel_repo.pool.clone(),
+    )));
+
+    kels::forward_key_events(
+        &own_prefix,
+        &source,
+        &sink,
+        kels::MAX_EVENTS_PER_KEL_RESPONSE,
+        kels::max_verification_pages(),
+        since.as_deref(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Compare own effective SAID with each member's view and push deltas.
+///
+/// Uses `forward_key_events` with a repo-backed source and per-member HTTP sink.
+/// Delta fetch (via `since` parameter) with automatic full-fetch fallback.
+async fn push_to_stale_members(
     node: &FederationNode,
     identity_client: &IdentityClient,
+    member_kel_repo: &MemberKelRepository,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let own_kel = identity_client.get_kel().await?;
-    let own_prefix = match own_kel.prefix() {
-        Some(p) => p.to_string(),
-        None => return Ok(()),
+    let own_prefix = identity_client.get_prefix().await?;
+    let config = node.config();
+
+    let local_said = member_kel_repo
+        .compute_prefix_effective_said(&own_prefix)
+        .await?;
+
+    let local_said = match local_said {
+        Some((said, _)) => said,
+        None => return Ok(()), // Nothing to push
     };
 
-    let identity_count = own_kel.events().len();
+    let repo_store = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+        member_kel_repo.pool.clone(),
+    )));
+    let repo_source = kels::StoreKelSource::new(&repo_store);
 
-    // Check Raft state for current event count
-    let raft_count = node
-        .get_member_kel(&own_prefix)
-        .await
-        .map(|k| k.events().len())
-        .unwrap_or(0);
+    for member in &config.members {
+        if member.prefix == config.self_prefix {
+            continue;
+        }
 
-    if identity_count > raft_count {
-        debug!(
-            "Submitting own KEL to Raft ({} new events, Raft has {})",
-            identity_count - raft_count,
-            raft_count
-        );
-        // Only submit events Raft doesn't have yet — merge() can't handle
-        // re-submission from inception because the inception event's previous
-        // is None, which doesn't chain onto the existing KEL tip.
-        let events = own_kel.events()[raft_count..].to_vec();
-        match node.submit_key_events(events).await {
-            Ok(crate::federation::FederationResponse::KeyEventsAccepted { new_count, .. }) => {
-                info!(
-                    "Synced own KEL to Raft ({} -> {} events, {} new)",
-                    raft_count, identity_count, new_count
-                );
+        let client = kels::KelsClient::with_path_prefix(&member.url, "/api/member-kels");
+
+        // Check member's view of our effective SAID
+        let member_said = match client.fetch_effective_said(&own_prefix).await {
+            Ok(said) => said.map(|(s, _)| s),
+            Err(e) => {
+                debug!(member = %member.prefix, error = %e, "Failed to fetch member's effective SAID");
+                continue;
             }
-            Ok(crate::federation::FederationResponse::KeyEventsRejected(reason)) => {
-                debug!("KEL sync rejected: {}", reason);
+        };
+
+        if member_said.as_deref() == Some(&local_said) {
+            continue; // Member is up to date
+        }
+
+        let member_sink = kels::HttpKelSink::new(&member.url, "/api/member-kels/events");
+
+        // Delta fetch with fallback: try since=member_said, fall back to full
+        let since = member_said.as_deref();
+        let result = if since.is_some() {
+            match kels::forward_key_events(
+                &own_prefix,
+                &repo_source,
+                &member_sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+                since,
+            )
+            .await
+            {
+                Ok(()) => Ok(()),
+                Err(kels::KelsError::EventNotFound(_)) => {
+                    // Member SAID not found locally (e.g., composite divergent SAID)
+                    kels::forward_key_events(
+                        &own_prefix,
+                        &repo_source,
+                        &member_sink,
+                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                        kels::max_verification_pages(),
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
             }
-            Ok(_) => {
-                debug!("KEL sync: unexpected response");
+        } else {
+            kels::forward_key_events(
+                &own_prefix,
+                &repo_source,
+                &member_sink,
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+                None,
+            )
+            .await
+        };
+
+        match result {
+            Ok(()) => {
+                debug!(member = %member.prefix, "Pushed KEL delta to member");
             }
             Err(e) => {
-                debug!("KEL sync submission: {}", e);
+                warn!(member = %member.prefix, error = %e, "Failed to push KEL to member");
             }
         }
     }

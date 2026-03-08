@@ -52,9 +52,9 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 ### Bootstrap Response Size Explosion
 
-**Attack:** Request batch KEL fetches for many prefixes to generate large responses.
-- **Mitigation:** Batch requests are capped at 50 prefixes (`MAX_BATCH_PREFIXES`). Pagination limit is clamped to `1..=1000`.
-- **Residual risk:** 50 large KELs could still produce a substantial response. No per-request byte limit.
+**Attack:** Request KEL fetches that generate large responses.
+- **Mitigation:** KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via `PagedKelSource` / `PagedKelSink` traits. Each page is bounded by `MAX_EVENTS_PER_KEL_QUERY` (512 events). Pagination limit is clamped to `1..=512`.
+- **Residual risk:** A single large KEL could still require many pages. No per-request byte limit.
 
 ## Network-Level Attacks
 
@@ -84,11 +84,11 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 - **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (token bucket: 200 req/s refill, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
 - **Residual risk:** Valid-format signatures that fail later verification still consume database resources within the rate limits.
 
-### Denial of Service — Batch Request Abuse
+### Denial of Service — Read Request Abuse
 
-**Attack:** Send many batch KEL requests to exhaust memory or database connections.
-- **Mitigation:** Batch size capped at 50 prefixes. Redis cache reduces database load for frequently accessed KELs. Body size limit (5 MiB) bounds response processing cost.
-- **Residual risk:** Read endpoints are not per-IP rate limited (idempotent and cache-backed). Concurrent batch requests from many distinct sources could still exhaust database connections.
+**Attack:** Send many concurrent KEL read requests to exhaust memory or database connections.
+- **Mitigation:** KELs are fetched individually per prefix with paginated responses (max 512 events per page). Redis cache reduces database load for frequently accessed KELs. Body size limit (5 MiB) bounds response processing cost.
+- **Residual risk:** Read endpoints are not per-IP rate limited (idempotent and cache-backed). Concurrent requests from many distinct sources could still exhaust database connections.
 
 ### Advisory Lock Contention
 

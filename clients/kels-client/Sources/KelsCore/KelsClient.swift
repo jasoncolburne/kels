@@ -367,8 +367,8 @@ public final class KelsClient: @unchecked Sendable {
             return .networkError(errorMessage)
         case KELS_STATUS_NOT_INCEPTED:
             return .notIncepted
-        case KELS_STATUS_RECOVERY_PROTECTED:
-            return .recoveryProtected
+        case KELS_STATUS_CONTEST_REQUIRED:
+            return .contestRequired
         default:
             return .unknown(errorMessage ?? "Unknown error")
         }

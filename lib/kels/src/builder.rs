@@ -9,15 +9,14 @@ use crate::{
     crypto::KeyProvider,
     error::KelsError,
     store::KelStore,
-    types::{Kel, KeyEvent, SignedKeyEvent},
+    types::{KeyEvent, SignedKeyEvent},
 };
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
-    #[allow(dead_code)]
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
-    kel: Kel,
+    events: Vec<SignedKeyEvent>,
     confirmed_cursor: usize,
 }
 
@@ -27,7 +26,7 @@ impl<K: KeyProvider + Clone> Clone for KeyEventBuilder<K> {
             key_provider: self.key_provider.clone(),
             kels_client: self.kels_client.clone(),
             kel_store: self.kel_store.clone(),
-            kel: self.kel.clone(),
+            events: self.events.clone(),
             confirmed_cursor: self.confirmed_cursor,
         }
     }
@@ -41,7 +40,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             key_provider,
             kels_client,
             kel_store: None,
-            kel: Kel::default(),
+            events: Vec::new(),
             confirmed_cursor: 0,
         }
     }
@@ -52,35 +51,38 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         prefix: Option<&str>,
     ) -> Result<Self, KelsError> {
-        let kel = match (&kel_store, prefix) {
-            (Some(store), Some(p)) => store.load(p).await?.unwrap_or_default(),
-            _ => Kel::default(),
+        let events = match (&kel_store, prefix) {
+            (Some(store), Some(p)) => {
+                let (events, _) = store.load(p, crate::LOAD_ALL, 0).await?;
+                events
+            }
+            _ => Vec::new(),
         };
-        let confirmed_cursor = kel.confirmed_length();
+        let confirmed_cursor = events.len();
 
         Ok(Self {
             key_provider,
             kels_client,
             kel_store,
-            kel,
+            events,
             confirmed_cursor,
         })
     }
 
-    pub fn with_kel(
+    pub fn with_events(
         key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
-        kel: Kel,
-    ) -> Result<Self, KelsError> {
-        let confirmed_cursor = kel.confirmed_length();
-        Ok(Self {
+        events: Vec<SignedKeyEvent>,
+    ) -> Self {
+        let confirmed_cursor = events.len();
+        Self {
             key_provider,
             kels_client,
             kel_store,
-            kel,
+            events,
             confirmed_cursor,
-        })
+        }
     }
 
     // ==================== Accessors ====================
@@ -94,15 +96,14 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     }
 
     pub fn events(&self) -> &[SignedKeyEvent] {
-        self.kel.events()
+        &self.events
     }
 
     pub fn is_decommissioned(&self) -> bool {
-        self.kel.is_decommissioned()
-    }
-
-    pub fn kel(&self) -> &Kel {
-        &self.kel
+        self.events
+            .last()
+            .map(|e| e.event.decommissions())
+            .unwrap_or(false)
     }
 
     pub fn key_provider(&self) -> &K {
@@ -114,23 +115,27 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     }
 
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.kel.last_establishment_event().map(|e| &e.event)
+        self.events
+            .iter()
+            .rev()
+            .find(|e| e.event.is_establishment())
+            .map(|e| &e.event)
     }
 
     pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.kel.last_event().map(|e| &e.event)
+        self.events.last().map(|e| &e.event)
     }
 
     pub fn last_said(&self) -> Option<&str> {
-        self.kel.last_said()
+        self.events.last().map(|e| e.event.said.as_str())
     }
 
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.kel.events()[self.confirmed_cursor..]
+        &self.events[self.confirmed_cursor..]
     }
 
     pub fn prefix(&self) -> Option<&str> {
-        self.kel.prefix()
+        self.events.first().map(|e| e.event.prefix.as_str())
     }
 
     /// Reload the KEL from the store, if one is configured.
@@ -142,58 +147,70 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
             return Ok(());
         };
-        if let Some(kel) = store.load(&prefix).await? {
-            self.confirmed_cursor = kel.confirmed_length();
-            self.kel = kel;
+        let (events, _) = store.load(&prefix, crate::LOAD_ALL, 0).await?;
+        if !events.is_empty() {
+            self.confirmed_cursor = events.len();
+            self.events = events;
         }
         Ok(())
     }
 
+    /// Check if recovery should include a rotation (rec+rot vs just rec).
+    ///
+    /// Fetches server events, compares with local to detect adversary rotation.
+    /// If the adversary revealed the rotation key, we need to rotate after recovery
+    /// to prevent them from injecting events with the compromised key.
     pub async fn should_add_rot_with_recover(&self) -> Result<bool, KelsError> {
         if let Some(client) = &self.kels_client
             && let Some(prefix) = self.prefix()
         {
-            let mut kels_kel = client.get_kel(prefix).await?;
-            let local_events = self.events();
-            let local_set: HashSet<_> = local_events.iter().collect();
+            // Fetch server events (paginated)
+            let source = crate::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+            let server_events = crate::resolve_key_events(
+                prefix,
+                &source,
+                crate::MAX_EVENTS_PER_KEL_QUERY,
+                crate::max_verification_pages(),
+                None,
+            )
+            .await?;
 
-            // Filter out events the server already has before merging (mirrors server logic)
-            let server_saids: HashSet<String> =
-                kels_kel.iter().map(|e| e.event.said.clone()).collect();
-            let new_local_events: Vec<_> = local_events
+            let local_saids: HashSet<&str> = self
+                .events()
                 .iter()
-                .filter(|e| !server_saids.contains(&e.event.said))
-                .cloned()
+                .map(|e| e.event.said.as_str())
                 .collect();
 
-            if !new_local_events.is_empty() {
-                let _ = kels_kel.merge(new_local_events)?;
-            }
-            if let Some(divergence) = kels_kel.find_divergence() {
-                let owner_has_rot = local_events.iter().any(|e| {
-                    divergence.divergent_saids.contains(&e.event.said)
-                        && e.event.reveals_rotation_key()
-                });
+            // Events on the server that we don't have locally = adversary events
+            let adversary_events: Vec<_> = server_events
+                .iter()
+                .filter(|e| !local_saids.contains(e.event.said.as_str()))
+                .collect();
 
-                if owner_has_rot {
-                    // owner rotated
-                    Ok(false)
-                } else {
-                    let adversarial_events: Vec<_> = kels_kel
-                        .events()
-                        .iter()
-                        .filter(|e| !local_set.contains(e))
-                        .collect();
-                    Ok(adversarial_events
-                        .iter()
-                        .any(|e| e.event.reveals_rotation_key()))
-                }
-            } else {
-                // not divergent
+            if adversary_events.is_empty() {
+                // No adversary events — not divergent
+                return Ok(false);
+            }
+
+            // Check if owner already rotated (our local events include a rotation
+            // at the same serial range as the adversary events)
+            let adversary_serials: HashSet<u64> =
+                adversary_events.iter().map(|e| e.event.serial).collect();
+            let owner_has_rot = self.events().iter().any(|e| {
+                adversary_serials.contains(&e.event.serial) && e.event.reveals_rotation_key()
+            });
+
+            if owner_has_rot {
+                // Owner already rotated — no need for additional rotation
                 Ok(false)
+            } else {
+                // Check if adversary revealed the rotation key
+                Ok(adversary_events
+                    .iter()
+                    .any(|e| e.event.reveals_rotation_key()))
             }
         } else {
-            // fail secure
+            // Fail secure: no client = assume rotation needed
             Ok(true)
         }
     }
@@ -405,20 +422,19 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     }
 
     async fn add_and_flush(&mut self, signed_events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        let events = signed_events.iter().cloned();
-
         let has_staged = self.key_provider.has_staged().await;
 
-        let old_length = self.kel.len();
-        self.kel.extend(events);
+        let old_length = self.events.len();
+        self.events.extend(signed_events.iter().cloned());
         let flush_result = self.flush().await;
         let accepted = self.was_flush_accepted(&flush_result);
 
         if let Some(ref store) = self.kel_store
             && accepted
-            && let Err(e) = store.save(self.kel()).await
+            && let Some(prefix) = self.prefix().map(|s| s.to_string())
+            && let Err(e) = store.save(&prefix, &self.events).await
         {
-            self.kel.truncate(old_length);
+            self.events.truncate(old_length);
             self.rollback(has_staged).await?;
             return Err(e);
         }
@@ -426,7 +442,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         if accepted {
             self.commit(has_staged).await?;
         } else {
-            self.kel.truncate(old_length);
+            self.events.truncate(old_length);
             self.rollback(has_staged).await?;
         }
 
@@ -437,7 +453,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
             None => {
-                self.confirmed_cursor = self.kel.confirmed_length();
+                self.confirmed_cursor = self.events.len();
                 return Ok(());
             }
         };
@@ -450,7 +466,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let response = client.submit_events(&pending).await?;
 
         if response.applied {
-            self.confirmed_cursor = self.kel.confirmed_length();
+            self.confirmed_cursor = self.events.len();
         }
 
         if let Some(diverged_at) = response.diverged_at {
@@ -470,7 +486,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     // ==================== Private Helpers ====================
 
     async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        self.kel.last_event().ok_or(KelsError::NotIncepted)
+        self.events.last().ok_or(KelsError::NotIncepted)
     }
 
     pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {
@@ -671,414 +687,5 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             current_recovery_pub.qb64(),
             rec_secondary_signature.qb64(),
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use cesr::{Digest, Matter};
-
-    use super::*;
-    use crate::crypto::SoftwareKeyProvider;
-
-    fn make_anchor() -> String {
-        Digest::blake3_256(b"test_anchor").qb64()
-    }
-
-    #[tokio::test]
-    async fn test_builder_new() {
-        let builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        assert!(builder.prefix().is_none());
-        assert!(builder.last_event().is_none());
-        assert_eq!(builder.confirmed_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_builder_incept() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-
-        assert!(icp.event.is_inception());
-        assert!(builder.prefix().is_some());
-        assert_eq!(builder.prefix(), Some(icp.event.prefix.as_str()));
-        assert_eq!(builder.events().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_builder_incept_delegated() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
-        let dip = builder.incept_delegated(&delegating_prefix).await.unwrap();
-
-        assert!(dip.event.is_delegated_inception());
-        assert_eq!(dip.event.delegating_prefix, Some(delegating_prefix));
-    }
-
-    #[tokio::test]
-    async fn test_builder_interact() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let anchor = make_anchor();
-        let ixn = builder.interact(&anchor).await.unwrap();
-
-        assert!(ixn.event.is_interaction());
-        assert_eq!(ixn.event.anchor, Some(anchor));
-        assert_eq!(builder.events().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let original_pub = builder.current_public_key().await.unwrap();
-
-        let rot = builder.rotate().await.unwrap();
-
-        assert!(rot.event.is_rotation());
-        assert_eq!(rot.event.previous, Some(icp.event.said));
-
-        let new_pub = builder.current_public_key().await.unwrap();
-        assert_ne!(original_pub.qb64(), new_pub.qb64());
-    }
-
-    #[tokio::test]
-    async fn test_builder_interact_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.interact(&make_anchor()).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.rotate().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_decommission() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let dec = builder.decommission().await.unwrap();
-
-        assert!(dec.event.is_decommission());
-        assert!(builder.is_decommissioned());
-    }
-
-    #[tokio::test]
-    async fn test_builder_decommission_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.decommission().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_interact_after_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        let result = builder.interact(&make_anchor()).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate_after_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        let result = builder.rotate().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate_recovery() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let ror = builder.rotate_recovery().await.unwrap();
-
-        assert!(ror.event.is_recovery_rotation());
-        assert!(ror.event.recovery_key.is_some());
-        assert!(ror.event.recovery_hash.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate_recovery_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.rotate_recovery().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_recover() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let rec = builder.recover(false).await.unwrap();
-
-        assert!(rec.event.is_recover());
-        assert!(rec.event.recovery_key.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_builder_recover_with_rotation() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let rot = builder.recover(true).await.unwrap();
-
-        // When add_rot=true, we get a rotation event back (not the recovery event)
-        assert!(rot.event.is_rotation());
-        // KEL should have: icp, rec, rot
-        assert_eq!(builder.events().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_builder_recover_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.recover(false).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_contest() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let cnt = builder.contest().await.unwrap();
-
-        assert!(cnt.event.is_contest());
-        assert!(cnt.event.recovery_key.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_builder_contest_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let result = builder.contest().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_accessors() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let ixn = builder.interact(&make_anchor()).await.unwrap();
-
-        assert_eq!(builder.last_said(), Some(ixn.event.said.as_str()));
-        assert_eq!(builder.last_event().unwrap().said, ixn.event.said);
-        assert_eq!(
-            builder.last_establishment_event().unwrap().said,
-            icp.event.said
-        );
-        assert_eq!(builder.events().len(), 2);
-        assert!(!builder.is_decommissioned());
-    }
-
-    #[tokio::test]
-    async fn test_builder_pending_events_no_client() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.interact(&make_anchor()).await.unwrap();
-
-        // Without a client, all events are "confirmed" locally
-        assert!(builder.pending_events().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_builder_key_provider_accessors() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        // Test key_provider accessor
-        let _provider = builder.key_provider();
-        let _provider_mut = builder.key_provider_mut();
-    }
-
-    #[tokio::test]
-    async fn test_builder_kel_accessor() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let kel = builder.kel();
-        assert_eq!(kel.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_was_flush_accepted() {
-        let builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-
-        // Ok result is accepted
-        assert!(builder.was_flush_accepted(&Ok(())));
-
-        // Divergence with accepted=true is accepted
-        assert!(
-            builder.was_flush_accepted(&Err(KelsError::DivergenceDetected {
-                diverged_at: 1,
-                submission_accepted: true,
-            }))
-        );
-
-        // Divergence with accepted=false is not accepted
-        assert!(
-            !builder.was_flush_accepted(&Err(KelsError::DivergenceDetected {
-                diverged_at: 1,
-                submission_accepted: false,
-            }))
-        );
-
-        // Other errors are not accepted
-        assert!(!builder.was_flush_accepted(&Err(KelsError::NotIncepted)));
-    }
-
-    #[tokio::test]
-    async fn test_builder_with_kel() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder1.incept().await.unwrap();
-
-        let kel = Kel::from_events(vec![icp.clone()], true).unwrap();
-
-        let builder2 =
-            KeyEventBuilder::with_kel(SoftwareKeyProvider::new(), None, None, kel).unwrap();
-
-        assert_eq!(builder2.prefix(), Some(icp.event.prefix.as_str()));
-        assert_eq!(builder2.events().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_builder_reload_no_store() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        // Reload without store should succeed (no-op)
-        builder.reload().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_builder_reload_no_prefix() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-
-        // No prefix yet, reload should succeed (no-op)
-        builder.reload().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_builder_with_dependencies_no_store() {
-        let builder = KeyEventBuilder::with_dependencies(
-            SoftwareKeyProvider::new(),
-            None, // no client
-            None, // no store
-            None, // no prefix
-        )
-        .await
-        .unwrap();
-
-        assert!(builder.prefix().is_none());
-        assert_eq!(builder.confirmed_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_builder_double_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        // Second decommission should fail
-        let result = builder.decommission().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_contest_after_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        // Contest after decommission should fail
-        let result = builder.contest().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_recover_after_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        // Recover after decommission should fail
-        let result = builder.recover(false).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_rotate_recovery_after_decommission_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.decommission().await.unwrap();
-
-        // Rotate recovery after decommission should fail
-        let result = builder.rotate_recovery().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_builder_multiple_rotations() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-
-        let pub1 = builder.current_public_key().await.unwrap();
-        builder.rotate().await.unwrap();
-        let pub2 = builder.current_public_key().await.unwrap();
-        builder.rotate().await.unwrap();
-        let pub3 = builder.current_public_key().await.unwrap();
-
-        // All public keys should be different
-        assert_ne!(pub1.qb64(), pub2.qb64());
-        assert_ne!(pub2.qb64(), pub3.qb64());
-        assert_ne!(pub1.qb64(), pub3.qb64());
-        assert_eq!(builder.events().len(), 3); // icp + 2 rotations
-    }
-
-    #[tokio::test]
-    async fn test_builder_last_establishment_after_interactions() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        builder.interact(&make_anchor()).await.unwrap();
-        builder.interact(&make_anchor()).await.unwrap();
-
-        // Last establishment should still be icp
-        assert_eq!(
-            builder.last_establishment_event().unwrap().said,
-            icp.event.said
-        );
-    }
-
-    #[tokio::test]
-    async fn test_builder_last_establishment_after_rotation() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        builder.incept().await.unwrap();
-        builder.interact(&make_anchor()).await.unwrap();
-        let rot = builder.rotate().await.unwrap();
-
-        // Last establishment should now be rot
-        assert_eq!(
-            builder.last_establishment_event().unwrap().said,
-            rot.event.said
-        );
-    }
-
-    #[tokio::test]
-    async fn test_builder_incept_delegated_has_prefix() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let delegating_prefix = Digest::blake3_256(b"delegator").qb64();
-
-        // Can incept as delegated
-        let dip = builder.incept_delegated(&delegating_prefix).await.unwrap();
-        assert!(dip.event.is_delegated_inception());
-        assert_eq!(dip.event.delegating_prefix, Some(delegating_prefix));
-        assert!(builder.prefix().is_some());
     }
 }

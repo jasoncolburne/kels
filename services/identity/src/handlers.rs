@@ -1,16 +1,19 @@
 //! Identity Service REST API Handlers
 
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 use tokio::sync::RwLock;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use kels::{Kel, KelsError, KeyEventBuilder};
+use kels::{
+    KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -89,6 +92,8 @@ pub struct AppState {
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
     pub kels_url: Option<String>,
+    pub registry_url: Option<String>,
+    pub http_client: reqwest::Client,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -143,20 +148,58 @@ pub async fn get_identity(
     }))
 }
 
-/// Fetches fresh from the database to include events anchored by other processes.
-pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, ApiError> {
+/// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
+pub async fn get_key_events(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<KeyEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    let kel = state
-        .kel_repo
-        .get_kel(prefix)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+    let limit = query
+        .limit
+        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
+        .min(MAX_EVENTS_PER_KEL_RESPONSE) as u64;
 
-    Ok(Json(kel))
+    let page = kels::serve_kel_page(
+        state.kel_repo.as_ref(),
+        prefix,
+        query.since.as_deref(),
+        limit,
+    )
+    .await?;
+
+    Ok(Json(page))
+}
+
+/// Push all KEL events to the local registry's member KEL endpoint.
+///
+/// Best-effort: logs warning on failure, doesn't block the caller.
+pub(crate) async fn push_kel_to_registry(state: &AppState) {
+    let registry_url = match state.registry_url.as_ref() {
+        Some(url) => url,
+        None => return,
+    };
+
+    let builder = state.builder.read().await;
+    let events = builder.events().to_vec();
+    drop(builder);
+
+    if events.is_empty() {
+        return;
+    }
+
+    let client = kels::KelsClient::with_path_prefix(registry_url, "/api/member-kels");
+    match client.submit_events(&events).await {
+        Ok(_) => {
+            tracing::debug!("Pushed KEL events to registry");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to push KEL events to registry: {}", e);
+        }
+    }
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.
@@ -177,11 +220,17 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
+    // Release write lock before pushing
+    drop(builder);
+
     tracing::info!(
         "Anchored {} in identity KEL at {}",
         request.said,
         ixn.event.said,
     );
+
+    // Best-effort push to local registry
+    push_kel_to_registry(&state).await;
 
     Ok(Json(AnchorResponse {
         event_said: ixn.event.said,
@@ -271,22 +320,38 @@ pub async fn rotate(
             .to_string()
     };
 
-    let kel = state
+    // Consuming: verify full KEL under advisory lock (paginated)
+    let mut tx = state
         .kel_repo
-        .get_kel(&prefix)
+        .begin_locked_transaction(&prefix)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
 
-    kel.verify(false)
-        .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
+    let ctx = kels::completed_verification(
+        &mut tx,
+        &prefix,
+        MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        iter::empty(),
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed
-        .verify_signature(&kel)
+        .verify_signature_with_ctx(&ctx)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
+
+    // Release advisory lock — perform_rotation acquires its own via save_with_merge
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
 
     let response = crate::server::perform_rotation(&state, signed.payload.mode)
         .await
         .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
+
+    // Best-effort push to local registry (after rotation, not before — we're pushing events)
+    push_kel_to_registry(&state).await;
 
     Ok(Json(response))
 }
@@ -377,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_api_error_from_kels_key_not_found() {
-        let kels_err = KelsError::KeyNotFound("test-key".to_string());
+        let kels_err = KelsError::EventNotFound("test-key".to_string());
         let api_err: ApiError = kels_err.into();
         assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(api_err.1.error.contains("test-key"));

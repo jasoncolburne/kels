@@ -41,7 +41,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Extract rotation event kinds in order (rot, ror)
-ROTATION_KINDS=$(echo "$KEL" | jq -r '[.[] | .event | select(.kind == "kels/v1/rot" or .kind == "kels/v1/ror") | .kind] | .[]')
+ROTATION_KINDS=$(echo "$KEL" | jq -r '[.events[] | .event | select(.kind == "kels/v1/rot" or .kind == "kels/v1/ror") | .kind] | .[]')
 echo "Rotation event kinds:"
 echo "$ROTATION_KINDS" | nl
 echo ""

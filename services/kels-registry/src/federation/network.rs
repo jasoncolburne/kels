@@ -79,6 +79,7 @@ impl FederationNetwork {
     /// Create a new federation network layer.
     pub fn new(config: FederationConfig, identity_client: Arc<IdentityClient>) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap_or_default();

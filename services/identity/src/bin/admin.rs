@@ -112,7 +112,11 @@ async fn call_rotate(
     identity_url: &str,
     request: &RotateRequest,
 ) -> anyhow::Result<RotateResponse> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
     // Get prefix
     let info_resp = client
@@ -297,26 +301,55 @@ async fn cmd_scheduled_rotate(
     // Submit updated KEL to local KELS service if URL is configured
     let kels_url = kels_url.filter(|u| !u.is_empty());
     if let Some(url) = kels_url {
-        let client = reqwest::Client::new();
-        let kel_resp = client
-            .get(format!("{}/api/identity/kel", identity_url))
-            .send()
-            .await?;
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        let mut all_events = Vec::new();
+        let mut since: Option<String> = None;
+        loop {
+            let kel_url = match &since {
+                Some(s) => format!(
+                    "{}/api/identity/kel?since={}&limit={}",
+                    identity_url,
+                    s,
+                    kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                ),
+                None => format!(
+                    "{}/api/identity/kel?limit={}",
+                    identity_url,
+                    kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                ),
+            };
+            let kel_resp = client.get(&kel_url).send().await?;
 
-        if !kel_resp.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to fetch KEL after rotation"));
+            if !kel_resp.status().is_success() {
+                return Err(anyhow::anyhow!("Failed to fetch KEL after rotation"));
+            }
+
+            let page: kels::SignedKeyEventPage = kel_resp.json().await?;
+            if page.events.is_empty() {
+                break;
+            }
+            since = page.events.last().map(|e| e.event.said.clone());
+            all_events.extend(page.events);
+            if !page.has_more {
+                break;
+            }
         }
 
-        let kel: kels::Kel = kel_resp.json().await?;
-        let kels_client = KelsClient::new(&url);
-        let submit_resp = kels_client.submit_events(kel.events()).await?;
+        if !all_events.is_empty() {
+            let kels_client = KelsClient::new(&url);
+            let submit_resp = kels_client.submit_events(&all_events).await?;
 
-        if !submit_resp.applied {
-            return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));
-        }
+            if !submit_resp.applied {
+                return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));
+            }
 
-        if !json {
-            println!("{}", "Updated KEL submitted to KELS service.".green());
+            if !json {
+                println!("{}", "Updated KEL submitted to KELS service.".green());
+            }
         }
     }
 

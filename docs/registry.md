@@ -113,7 +113,6 @@ services/kels-registry/
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
-| `GET` | `/api/registry-kel` | Get registry's KEL (for verifying peer SAIDs) |
 
 #### Federation-Only Endpoints
 
@@ -130,7 +129,9 @@ Peer discovery:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/peers` | Get peer allowlist (from Raft) |
-| `GET` | `/api/registry-kels` | Get KELs for all federation members |
+| `POST` | `/api/member-kels/events` | Submit member key events (push model); `?propagate=false` to skip fan-out |
+| `GET` | `/api/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
+| `GET` | `/api/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
 
 Federation protocol:
 
@@ -139,7 +140,6 @@ Federation protocol:
 | `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
 | `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
 | `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
-| `POST` | `/api/federation/key-events` | Submit member KEL events to Raft (forwarded to leader) |
 
 Admin API (signed requests):
 
@@ -150,7 +150,7 @@ Admin API (signed requests):
 | `POST` | `/api/admin/proposals/:proposal_id` | Get proposal details |
 | `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
 
-> **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./secure-registration.md) for details.
+> **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./design/secure-registration.md) for details.
 
 ### Data Model
 

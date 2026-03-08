@@ -33,7 +33,7 @@ Divergent KEL:  g0 → g1 → g2 → g3(owner)
 
 Events are linked by their `previous` field (the SAID of the prior event). Generation is the position in the chain, computed dynamically by following `previous` links from inception.
 
-The `Kel::find_divergence()` method returns the first generation with multiple SAIDs.
+After verification, `Verification::diverged_at_serial()` returns the first serial with multiple events.
 
 ### Owner Tail Tracking
 
@@ -72,8 +72,8 @@ Client                              KELS Server
   │      { applied: true,                │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel() ─────────────────────>│
-  │<──── [all events including forks] ───│
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
   │                                      │
   │ detect divergence locally            │
   │ create rec event from owner's tail   │
@@ -97,8 +97,8 @@ Client                              KELS Server
   │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel() ─────────────────────>│
-  │<──── [all events including forks] ───│
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
   │                                      │
   │ sync local state with server         │
   │ create rec event from owner's tail   │
@@ -220,40 +220,31 @@ Content-Type: application/json
 Response:
 {
   "applied": true,
-  "divergedAt": <generation> | null
+  "divergedAt": <serial> | null
 }
 ```
 
-Where `divergedAt` is the generation number (0-indexed position in chain) where divergence was detected, or null if no divergence.
+Where `divergedAt` is the serial number (0-indexed position in chain) where divergence was detected, or null if no divergence.
 
-### Fetch KEL
-
-```
-GET /api/kels/kel/:prefix
-
-Response: [SignedKeyEvent, ...]
-```
-
-### Fetch KEL with Audit Records
+### Fetch KEL (paginated)
 
 ```
-GET /api/kels/kel/:prefix?audit=true
+GET /api/kels/kel/:prefix?limit=512&since=<SAID>
 
-Response: {
-  "events": [SignedKeyEvent, ...],
-  "audit_records": [KelsAuditRecord, ...]
-}
+Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 ```
 
-### Fetch Since SAID
+Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-512, default 512). Loop with `hasMore` for full retrieval.
+
+### Fetch Audit Records
 
 ```
-GET /api/kels/kel/:prefix/since/:said
+GET /api/kels/kel/:prefix/audit
 
-Response: [SignedKeyEvent, ...]
+Response: [KelsAuditRecord, ...]
 ```
 
-SAID-based queries return all events added after a given event, including divergent events.
+Audit records are separate from the paginated KEL endpoint.
 
 ## CLI Commands
 
@@ -296,7 +287,7 @@ Once divergence is detected, the KEL is frozen:
 ### Recovery Protection
 
 Protection is based on whether existing divergent events reveal the recovery key, not on generation comparison:
-- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions _before_ the revealing event are rejected with `Protected`
+- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions return `ContestRequired`
 - Only contest (`cnt`) events are allowed through when divergence occurs before a recovery-revealing event — once anyone reveals recovery, the only valid response is to contest
 - Enables proactive protection: rotating recovery key (`ror`) causes future adversary submissions before that point to require contest
 

@@ -2,19 +2,21 @@
 
 mod error;
 mod events;
-mod kel;
 mod node;
 mod peer;
 mod raft;
 mod sync;
+mod verification;
+mod verifier;
 
 pub use error::*;
 pub use events::*;
-pub use kel::*;
 pub use node::*;
 pub use peer::*;
 pub use raft::*;
 pub use sync::*;
+pub use verification::*;
+pub use verifier::*;
 
 #[cfg(test)]
 mod tests {

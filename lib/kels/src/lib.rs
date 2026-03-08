@@ -41,15 +41,19 @@ pub mod builder;
 pub mod client;
 pub mod crypto;
 pub mod error;
+pub mod merge;
 pub mod repository;
+pub mod serving;
 pub mod store;
 pub mod types;
 
-#[cfg(feature = "redis")]
-pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
-#[cfg(feature = "redis")]
-pub use client::RedisKelCache;
+use std::env;
+use std::sync::LazyLock;
 
+#[cfg(feature = "redis")]
+pub use cache::{
+    LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
+};
 #[cfg(feature = "server")]
 pub use server::shutdown_signal;
 
@@ -60,31 +64,72 @@ pub use hardware::HardwareKeyProvider;
 
 pub use builder::KeyEventBuilder;
 pub use client::{
-    IdentityClient, KelCache, KelCacheConfig, KelsClient, KelsRegistryClient, MultiRegistryClient,
-    RegistrySigner, SignResult, sign_request, trusted_prefixes,
+    IdentityClient, KelsClient, KelsRegistryClient, RegistrySigner, SignResult,
+    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
 pub use error::KelsError;
+pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::SignedEventRepository;
-pub use store::{FileKelStore, KelStore, RepositoryKelStore};
+pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
+pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
-    AdditionHistory, AdditionWithVotes, AdminRequest, BatchKelsRequest, BatchSubmitResponse,
-    CachedKel, CompletedProposalsResponse, DeregisterRequest, ErrorCode, ErrorResponse, EventKind,
-    EventSignature, KelMergeResult, KelResponse, KelsAuditRecord, KeyEvent, KeyEventSignature,
+    AdditionHistory, AdditionWithVotes, AdminRequest, BatchSubmitResponse, CachedKel,
+    CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode, ErrorResponse,
+    EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature,
     NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
     ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
-    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedRequest,
-    StatusUpdateRequest, Vote, compute_effective_tail_said, generate_nonce, hash_tip_saids,
-    validate_timestamp,
+    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids, validate_timestamp,
 };
-pub use types::{Kel, compute_rotation_hash};
+pub use types::{
+    BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
+    StoreKelSource, StorePageLoader, Verification, benchmark_key_events, collect_key_events,
+    completed_verification, compute_rotation_hash, forward_key_events, resolve_key_events,
+    truncate_incomplete_generation, verify_key_events,
+};
 
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = 500;
+pub const MAX_EVENTS_PER_SUBMISSION: usize = 512;
 
-/// Maximum number of prefixes allowed in a single batch fetch request.
-/// Shared between the server handler and client chunking logic.
-pub const MAX_BATCH_PREFIXES: usize = 50;
+/// Maximum number of events fetched in a single KEL database query or HTTP page.
+pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
+
+/// Default maximum number of pages to walk during `completed_verification()`.
+/// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
+/// At 512 events per page, 512 pages = ~262K events before failing secure.
+pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
+
+static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
+    match env::var("KELS_MAX_VERIFICATION_PAGES") {
+        Ok(s) => match s.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "KELS_MAX_VERIFICATION_PAGES is set but not a valid usize: {:?}, using default {}",
+                    s, DEFAULT_MAX_VERIFICATION_PAGES
+                );
+                DEFAULT_MAX_VERIFICATION_PAGES
+            }
+        },
+        Err(_) => DEFAULT_MAX_VERIFICATION_PAGES,
+    }
+});
+
+/// Read the max verification pages, cached from env on first access.
+pub fn max_verification_pages() -> usize {
+    *MAX_VERIFICATION_PAGES
+}
+
+/// Maximum number of events returned in a single KEL response page.
+/// KELs larger than this are not cached server-side.
+pub const MAX_EVENTS_PER_KEL_RESPONSE: usize = MAX_EVENTS_PER_KEL_QUERY;
+
+/// Sentinel limit for loading an entire KEL without pagination.
+/// Only appropriate for client-side local stores (CLI, FFI) and tests —
+/// never use on server-side code paths.
+pub const LOAD_ALL: u64 = i64::MAX as u64;

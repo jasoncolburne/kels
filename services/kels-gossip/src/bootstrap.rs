@@ -23,15 +23,17 @@
 //! preload KELs via HTTP. But events occurring between the last preload and
 //! joining the gossip network would be missed. The resync catches these events.
 
-use kels::{
-    KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, MultiRegistryClient, PrefixListResponse,
-    PrefixState, PrefixesRequest, RegistrySigner,
-};
 use std::collections::HashMap;
 use std::sync::Arc;
-use thiserror::Error;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
+
+use futures::future::join_all;
+use kels::{
+    KelsClient, KelsError, KelsRegistryClient, PrefixListResponse, PrefixState, PrefixesRequest,
+    RegistrySigner,
+};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BootstrapError {
@@ -75,7 +77,7 @@ pub struct DiscoveryResult {
 /// Handles bootstrap synchronization from existing peers.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    registry: MultiRegistryClient,
+    urls: Vec<String>,
     allowlist: crate::allowlist::SharedAllowlist,
     signer: Arc<dyn RegistrySigner>,
     http_client: reqwest::Client,
@@ -83,21 +85,22 @@ pub struct BootstrapSync {
 }
 
 impl BootstrapSync {
-    /// Create a new BootstrapSync with an existing registry client, shared allowlist, and signer.
+    /// Create a new BootstrapSync with registry URLs, shared allowlist, and signer.
     pub fn new(
         config: BootstrapConfig,
-        registry: MultiRegistryClient,
+        urls: Vec<String>,
         allowlist: crate::allowlist::SharedAllowlist,
         signer: Arc<dyn RegistrySigner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
 
         Self {
             config,
-            registry,
+            urls,
             allowlist,
             signer,
             http_client,
@@ -160,8 +163,28 @@ impl BootstrapSync {
     }
 
     /// Check if a peer is authorized in the allowlist.
-    pub async fn is_peer_authorized(&mut self, peer_prefix: &str) -> Result<bool, BootstrapError> {
-        Ok(self.registry.is_peer_authorized(peer_prefix).await?)
+    pub async fn is_peer_authorized(&self, peer_prefix: &str) -> Result<bool, BootstrapError> {
+        // Try each registry URL until one succeeds
+        for url in &self.urls {
+            let client = KelsRegistryClient::new(url);
+            match client.fetch_peers().await {
+                Ok((peers_response, _)) => {
+                    return Ok(peers_response.peers.iter().any(|history| {
+                        history
+                            .records
+                            .last()
+                            .map(|peer| peer.peer_prefix == peer_prefix && peer.active)
+                            .unwrap_or(false)
+                    }));
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "Failed to check peer authorization, trying next");
+                }
+            }
+        }
+        Err(BootstrapError::Failed(
+            "Could not check peer authorization from any registry".to_string(),
+        ))
     }
 
     /// Check if there are Ready peers we should resync from.
@@ -254,149 +277,56 @@ impl BootstrapSync {
 
         info!("Found {} unique prefixes needing sync", prefix_count);
 
-        // Step 2: Assign each prefix to its source peer (the peer that reported it)
-        let mut peer_assignments: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
-        // Track source peer prefix per kel prefix for stale recording
-        let mut source_peer_prefixes: HashMap<String, String> = HashMap::new();
-
-        for (prefix, (since, source_url, source_peer_prefix)) in all_prefixes {
-            source_peer_prefixes.insert(prefix.clone(), source_peer_prefix);
-            peer_assignments
-                .entry(source_url)
-                .or_default()
-                .push((prefix, since));
-        }
-
-        info!("Assigned prefixes to {} peer(s)", peer_assignments.len());
-
-        // Step 3: Batch fetch KELs from each peer (50 at a time) - all peers in parallel
-        const BATCH_SIZE: usize = 50;
-
-        // Build all batch tasks across all peers
-        let mut batch_tasks = Vec::new();
-        for (peer_url, prefixes) in peer_assignments {
-            info!("Syncing {} prefixes from {}", prefixes.len(), peer_url);
-
-            for chunk in prefixes.chunks(BATCH_SIZE) {
-                let chunk_vec: Vec<(String, Option<String>)> = chunk.to_vec();
-                batch_tasks.push((peer_url.clone(), chunk_vec));
-            }
-        }
-
-        // Run all batch fetches in parallel
-        let batch_futures: Vec<_> = batch_tasks
-            .iter()
-            .map(|(peer_url, chunk)| self.batch_fetch_and_submit(peer_url, chunk, &local_client))
+        // Step 2: Sync all prefixes concurrently using forward_key_events
+        let tasks: Vec<_> = all_prefixes
+            .into_iter()
+            .map(|(prefix, (since, source_url, source_peer_prefix))| {
+                let local = local_client.clone();
+                async move {
+                    let remote = KelsClient::new(&source_url);
+                    let result =
+                        crate::sync::sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
+                    (prefix, source_peer_prefix, result)
+                }
+            })
             .collect();
 
-        let all_results = futures::future::join_all(batch_futures).await;
+        let results = join_all(tasks).await;
 
-        // Process results and record stale prefixes for anti-entropy repair
         let mut total_synced = 0;
         let mut total_errors = 0;
-        let mut total_not_found = 0;
 
-        for (batch_idx, results) in all_results.into_iter().enumerate() {
-            let (_peer_url, chunk) = &batch_tasks[batch_idx];
-            for (i, result) in results.into_iter().enumerate() {
-                match result {
-                    Ok(true) => total_synced += 1,
-                    Ok(false) => {
-                        total_not_found += 1;
-                        // Record as stale — peer didn't have it or returned empty
-                        if let Some(ref redis) = self.redis {
-                            let prefix = chunk.get(i).map(|(s, _)| s.as_str()).unwrap_or("?");
-                            if let Some(source_pp) = source_peer_prefixes.get(prefix) {
-                                crate::sync::record_stale_prefix(redis.as_ref(), prefix, source_pp)
-                                    .await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let prefix = chunk.get(i).map(|(s, _)| s.as_str()).unwrap_or("?");
-                        warn!("Failed to sync prefix {}: {}", prefix, e);
-                        total_errors += 1;
-                        // Record as stale for anti-entropy repair
-                        if let Some(ref redis) = self.redis
-                            && let Some(source_pp) = source_peer_prefixes.get(prefix)
-                        {
-                            crate::sync::record_stale_prefix(redis.as_ref(), prefix, source_pp)
-                                .await;
-                        }
+        for (prefix, source_peer_prefix, result) in results {
+            match result {
+                crate::sync::RepairResult::Repaired => {
+                    info!("Synced KEL for {}", prefix);
+                    total_synced += 1;
+                }
+                crate::sync::RepairResult::NoOp => {}
+                crate::sync::RepairResult::Contested => {
+                    warn!("KEL contested for {}", prefix);
+                }
+                crate::sync::RepairResult::Failed => {
+                    warn!("Failed to sync prefix {}", prefix);
+                    total_errors += 1;
+                    if let Some(ref redis) = self.redis {
+                        crate::sync::record_stale_prefix(
+                            redis.as_ref(),
+                            &prefix,
+                            &source_peer_prefix,
+                        )
+                        .await;
                     }
                 }
             }
         }
 
         info!(
-            "Bootstrap sync complete: {} KELs synced, {} not found, {} errors",
-            total_synced, total_not_found, total_errors
+            "Bootstrap sync complete: {} KELs synced, {} errors",
+            total_synced, total_errors
         );
 
         Ok(())
-    }
-
-    /// Batch fetch KELs from a peer using `KelsClient::fetch_kels()` and submit to local KELS.
-    /// Each entry is (prefix, optional since SAID for delta fetch).
-    async fn batch_fetch_and_submit(
-        &self,
-        peer_url: &str,
-        prefixes: &[(String, Option<String>)],
-        local_client: &KelsClient,
-    ) -> Vec<Result<bool, BootstrapError>> {
-        if prefixes.is_empty() {
-            return vec![];
-        }
-
-        let remote_client = KelsClient::new(peer_url);
-        let request: HashMap<String, Option<String>> = prefixes
-            .iter()
-            .map(|(p, s)| (p.clone(), s.clone()))
-            .collect();
-
-        let events_map = match remote_client.fetch_kels(&request).await {
-            Ok(map) => map,
-            Err(e) => {
-                let err_msg = format!("Batch fetch failed: {}", e);
-                return prefixes
-                    .iter()
-                    .map(|_| Err(BootstrapError::Failed(err_msg.clone())))
-                    .collect();
-            }
-        };
-
-        // Submit each KEL to local KELS, using chunked submission for large KELs
-        let mut results = Vec::with_capacity(prefixes.len());
-        for (prefix, _since) in prefixes {
-            let result = match events_map.get(prefix) {
-                Some(events) if !events.is_empty() => {
-                    debug!("Fetched {} events for {} from peer", events.len(), prefix);
-                    match local_client
-                        .submit_events_chunked(events, MAX_EVENTS_PER_SUBMISSION)
-                        .await
-                    {
-                        Ok(submit_result) => {
-                            if submit_result.applied {
-                                info!("Synced KEL for {} ({} events)", prefix, events.len());
-                                Ok(true)
-                            } else {
-                                warn!(
-                                    "KEL for {} not applied: diverged_at={:?}",
-                                    prefix, submit_result.diverged_at
-                                );
-                                // Still consider it synced - divergence will be handled by gossip protocol
-                                Ok(true)
-                            }
-                        }
-                        Err(e) => Err(BootstrapError::Kels(e)),
-                    }
-                }
-                Some(_) | None => Ok(false), // Peer doesn't have it or empty
-            };
-            results.push(result);
-        }
-
-        results
     }
 
     /// Fetch a single page of prefix states via signed POST request.
@@ -435,23 +365,27 @@ impl BootstrapSync {
     /// - `None` = up to date, skip
     /// - `Some(None)` = no local KEL, full fetch
     /// - `Some(Some(said))` = has partial KEL, delta from effective tail SAID
+    ///
+    /// Resolving: compare local effective SAID with remote to decide if sync needed.
+    /// A wrong answer triggers an unnecessary sync (which itself verifies).
     async fn sync_check(
         &self,
         remote_state: &PrefixState,
         local_client: &KelsClient,
     ) -> Option<Option<String>> {
-        match local_client.get_kel(&remote_state.prefix).await {
-            Ok(kel) => {
-                if kel.is_empty() {
-                    return Some(None);
-                }
-                let local_effective = kel.effective_tail_said();
-                match local_effective {
-                    Some(ref eff) if eff == &remote_state.said => None,
-                    _ => Some(local_effective),
+        match local_client
+            .fetch_effective_said(&remote_state.prefix)
+            .await
+        {
+            Ok(Some((local_effective, _))) => {
+                if local_effective == remote_state.said {
+                    None // In sync
+                } else {
+                    Some(Some(local_effective)) // Delta fetch from this SAID
                 }
             }
-            Err(_) => Some(None),
+            Ok(None) => Some(None), // No local KEL, full fetch
+            Err(_) => Some(None),   // Error, try full fetch
         }
     }
 }

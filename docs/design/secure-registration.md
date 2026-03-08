@@ -56,7 +56,7 @@ The registry namespace includes a dedicated identity service (single replica) th
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/identity` | Get registry prefix |
-| `GET` | `/api/identity/kel` | Get registry's full KEL |
+| `GET` | `/api/identity/kel` | Get registry's KEL (paginated; `?limit=N&since=SAID`) |
 | `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
 | `POST` | `/api/identity/sign` | Sign data with registry's current key |
 | `POST` | `/api/identity/ecdh` | ECDH key agreement |
@@ -148,7 +148,7 @@ struct SignedRequest<T> {
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/peers` | Get peer allowlist |
-| `GET` | `/api/registry-kel` | Get registry's KEL |
+| `GET` | `/api/member-kels/:prefix` | Get a federation member's KEL |
 | `GET` | `/health` | Health check |
 
 ## Verification Flow
@@ -206,10 +206,14 @@ kels-gossip signs requests using `IdentityRegistrySigner`:
 ```rust
 // In kels-gossip startup
 let registry_signer = IdentityRegistrySigner::new(identity_url, &peer_prefix);
-let registry_client = MultiRegistryClient::with_signer(registry_urls, Arc::new(registry_signer));
+let registry_client = KelsRegistryClient::with_signer(registry_url, Arc::new(registry_signer));
 
 // Registration is now automatically signed
-registry_client.register(node_id, kels_url, ...).await?;
+// with_failover shuffles registry URLs and tries each in turn
+with_failover(&registry_urls, |url| async {
+    let client = KelsRegistryClient::with_signer(url, signer.clone());
+    client.register(node_id, kels_url, ...).await
+}).await?;
 ```
 
 The public key is not included in the request. During verification, the registry looks up the peer by `peer_prefix`, fetches their KEL, and extracts the public key to verify the signature.

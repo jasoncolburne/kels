@@ -10,11 +10,9 @@ if [ -z "$NODE_NAME" ]; then
     exit 1
 fi
 
-# Get the garden binary path
-GARDEN_BIN="${GARDEN_BIN:-garden}"
-
 # Fetch the peer prefix from the node's gossip service
-PEER_PREFIX=$("$GARDEN_BIN" run fetch-gossip-identity --env "$NODE_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[a-zA-Z0-9_-]{44}$' | tail -1)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PEER_PREFIX=$("$SCRIPT_DIR/fetch-gossip-identity.sh" "kels-${NODE_NAME}")
 if [ -z "$PEER_PREFIX" ]; then
     echo "Error: Could not fetch PeerPrefix from $NODE_NAME" >&2
     exit 1
