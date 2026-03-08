@@ -1717,7 +1717,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let store = FileKelStore::new(&store_dir)?;
 
         let nodes =
-            kels::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(10), &store)
+            kels::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store)
                 .await?;
 
         // Filter to verified nodes and convert to JSON format
