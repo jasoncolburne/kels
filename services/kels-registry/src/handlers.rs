@@ -1,7 +1,6 @@
 //! KELS Registry REST API Handlers
 
 use std::{
-    collections::HashSet,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -16,11 +15,10 @@ use axum::{
 use cesr::Matter;
 use dashmap::DashMap;
 use kels::{
-    AdditionHistory, AdminRequest, CompletedProposalsResponse, DeregisterRequest,
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, KeyEventsQuery, NodeRegistration, Peer,
-    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, Proposal,
-    ProposalHistory, ProposalStatus, ProposalWithVotesMethods, RegisterNodeRequest, RemovalHistory,
-    SignedKeyEvent, SignedKeyEventPage, SignedRequest, StatusUpdateRequest, Vote,
+    AdditionHistory, AdminRequest, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode,
+    ErrorResponse, KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
+    RemovalHistory, SignedKeyEvent, SignedKeyEventPage, SignedRequest, Vote,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -28,12 +26,9 @@ use verifiable_storage::SelfAddressed;
 
 use kels::IdentityClient;
 
-use crate::{
-    federation::{
-        FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
-        SignedFederationRpc,
-    },
-    store::{RegistryStore, StoreError},
+use crate::federation::{
+    FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
+    SignedFederationRpc,
 };
 
 /// Maximum write requests per IP per second (token bucket: refill rate).
@@ -41,13 +36,6 @@ const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
 
 /// Burst capacity for per-IP write rate limiting.
 const IP_RATE_LIMIT_BURST: u32 = 1000;
-
-pub struct AppState {
-    pub store: RegistryStore,
-    pub federation_node: Option<Arc<FederationNode>>,
-    /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
-    pub ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
-}
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
@@ -134,237 +122,15 @@ fn check_ip_rate_limit(
     Ok(())
 }
 
-impl From<StoreError> for ApiError {
-    fn from(e: StoreError) -> Self {
-        match e {
-            StoreError::NotFound(id) => ApiError::not_found(format!("Node not found: {}", id)),
-            StoreError::Redis(e) => ApiError::internal_error(format!("Storage error: {}", e)),
-            StoreError::Serialization(e) => {
-                ApiError::internal_error(format!("Serialization error: {}", e))
-            }
-        }
-    }
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, self.1).into_response()
     }
 }
 
-/// Verifies peer is in allowlist and verifies the backing proposal
-/// was properly approved with sufficient anchored votes.
-async fn verify_and_authorize<T: serde::Serialize>(
-    state: &AppState,
-    signed_request: &SignedRequest<T>,
-) -> Result<Peer, ApiError> {
-    let peer_prefix_str = &signed_request.peer_prefix;
-
-    // Look up the peer from Raft state (source of truth)
-    let federation_node = state
-        .federation_node
-        .as_ref()
-        .ok_or_else(|| ApiError::internal_error("Federation not configured"))?;
-    let peer = {
-        let sm = federation_node.state_machine().inner().lock().await;
-        sm.get_peer(peer_prefix_str).cloned()
-    };
-
-    let peer = match peer {
-        Some(peer) if peer.active => peer,
-        Some(_) => {
-            return Err(ApiError::forbidden(format!(
-                "Peer {} is not authorized (deactivated)",
-                peer_prefix_str
-            )));
-        }
-        None => {
-            return Err(ApiError::forbidden(format!(
-                "Peer {} is not in allowlist",
-                peer_prefix_str
-            )));
-        }
-    };
-
-    // Verify signature against peer's current public key from their KEL
-    // Consuming: verify peer's KEL (paginated) to extract trusted public key
-    let source = kels::HttpKelSource::new(&peer.kels_url, "/api/kels/kel/{prefix}");
-    let ctx = kels::verify_key_events(
-        &peer.peer_prefix,
-        &source,
-        kels::KelVerifier::new(&peer.peer_prefix),
-        kels::MAX_EVENTS_PER_KEL_QUERY,
-        kels::max_verification_pages(),
-    )
-    .await
-    .map_err(|e| ApiError::unauthorized(format!("Peer KEL verification failed: {}", e)))?;
-
-    signed_request
-        .verify_signature_with_ctx(&ctx)
-        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
-
-    // Verify the backing proposal was properly approved
-    if let Some(node) = state.federation_node.as_ref() {
-        let trusted = kels::trusted_prefixes();
-
-        // Find an approved, non-withdrawn addition proposal for this peer
-        let proposals = node.completed_addition_proposals_with_votes().await;
-        let pwv = proposals
-            .iter()
-            .find(|pw| {
-                let Some(last) = pw.history.records.last() else {
-                    return false;
-                };
-                pw.history
-                    .inception()
-                    .is_some_and(|p| p.peer_prefix == peer.peer_prefix)
-                    && !pw.history.is_withdrawn()
-                    && pw.status(last.threshold) == kels::ProposalStatus::Approved
-            })
-            .ok_or_else(|| {
-                ApiError::forbidden(format!(
-                    "No approved proposal found for peer {}",
-                    peer.peer_prefix
-                ))
-            })?;
-
-        let proposal_threshold = pwv
-            .history
-            .inception()
-            .map(|p| p.threshold)
-            .unwrap_or(usize::MAX);
-
-        // Structural verification: chain, votes, references, withdrawal invariant
-        pwv.verify().map_err(|e| {
-            ApiError::forbidden(format!(
-                "Proposal verification failed for peer {}: {}",
-                peer.peer_prefix, e
-            ))
-        })?;
-
-        // Verify proposal anchoring: each record in proposer's KEL
-        let proposer = pwv
-            .proposer()
-            .ok_or_else(|| ApiError::internal_error("Approved proposal has no proposer"))?;
-
-        if !trusted.contains(proposer) {
-            return Err(ApiError::forbidden(format!(
-                "Proposer {} is not a trusted registry",
-                proposer
-            )));
-        }
-
-        for record in &pwv.history.records {
-            node.verify_anchoring(&record.said, &record.proposer)
-                .await
-                .map_err(|e| ApiError::forbidden(format!("Proposal anchoring failed: {}", e)))?;
-        }
-
-        // Verify vote anchoring: each approval vote in voter's KEL
-        let mut verified_voters = HashSet::new();
-        for vote in &pwv.votes {
-            if !vote.approve || !trusted.contains(vote.voter.as_str()) {
-                continue;
-            }
-
-            if node.verify_anchoring(&vote.said, &vote.voter).await.is_ok() {
-                verified_voters.insert(vote.voter.clone());
-            }
-        }
-
-        if verified_voters.len() < proposal_threshold {
-            return Err(ApiError::forbidden(format!(
-                "Insufficient verified votes for peer {} ({}/{})",
-                peer.peer_prefix,
-                verified_voters.len(),
-                proposal_threshold
-            )));
-        }
-    }
-
-    Ok(peer)
-}
-
-#[derive(Debug, Serialize)]
-pub struct NodesResponse {
-    pub nodes: Vec<NodeRegistration>,
-    pub next_cursor: Option<String>,
-}
-
 pub async fn health() -> StatusCode {
     StatusCode::OK
 }
-
-pub async fn register_node(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(signed_request): Json<SignedRequest<RegisterNodeRequest>>,
-) -> Result<Json<NodeRegistration>, ApiError> {
-    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
-    let peer = verify_and_authorize(&state, &signed_request).await?;
-    let request = signed_request.payload;
-
-    if request.node_id != peer.node_id {
-        return Err(ApiError::forbidden(format!(
-            "Cannot register node_id '{}' with peer authorized for '{}'",
-            request.node_id, peer.node_id
-        )));
-    }
-    if request.kels_url.is_empty() {
-        return Err(ApiError::bad_request("kels_url is required"));
-    }
-    if request.gossip_addr.is_empty() {
-        return Err(ApiError::bad_request("gossip_addr is required"));
-    }
-
-    let registration = state.store.register(request).await?;
-    Ok(Json(registration))
-}
-
-pub async fn deregister_node(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(signed_request): Json<SignedRequest<DeregisterRequest>>,
-) -> Result<StatusCode, ApiError> {
-    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
-    let peer = verify_and_authorize(&state, &signed_request).await?;
-    let request = signed_request.payload;
-
-    if request.node_id != peer.node_id {
-        return Err(ApiError::forbidden(format!(
-            "Cannot deregister node_id '{}' with peer authorized for '{}'",
-            request.node_id, peer.node_id
-        )));
-    }
-
-    state.store.deregister(&request.node_id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn update_status(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(signed_request): Json<SignedRequest<StatusUpdateRequest>>,
-) -> Result<Json<NodeRegistration>, ApiError> {
-    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
-    let peer = verify_and_authorize(&state, &signed_request).await?;
-    let request = signed_request.payload;
-
-    if request.node_id != peer.node_id {
-        return Err(ApiError::forbidden(format!(
-            "Cannot update status for node_id '{}' with peer authorized for '{}'",
-            request.node_id, peer.node_id
-        )));
-    }
-
-    let registration = state
-        .store
-        .update_status(&request.node_id, request.status)
-        .await?;
-    Ok(Json(registration))
-}
-
-// ==================== Peer Handlers ====================
 
 // ==================== Federation Handlers ====================
 
@@ -1535,34 +1301,6 @@ mod tests {
         assert_eq!(err.1.error, "Too many requests");
     }
 
-    // ==================== ApiError From<StoreError> Tests ====================
-
-    #[test]
-    fn test_api_error_from_store_not_found() {
-        let store_err = StoreError::NotFound("node-123".to_string());
-        let api_err: ApiError = store_err.into();
-        assert_eq!(api_err.0, StatusCode::NOT_FOUND);
-        assert!(api_err.1.error.contains("Node not found: node-123"));
-    }
-
-    #[test]
-    fn test_api_error_from_store_redis() {
-        let redis_err = redis::RedisError::from((redis::ErrorKind::IoError, "connection failed"));
-        let store_err = StoreError::Redis(redis_err);
-        let api_err: ApiError = store_err.into();
-        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(api_err.1.error.contains("Storage error"));
-    }
-
-    #[test]
-    fn test_api_error_from_store_serialization() {
-        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
-        let store_err = StoreError::Serialization(json_err);
-        let api_err: ApiError = store_err.into();
-        assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(api_err.1.error.contains("Serialization error"));
-    }
-
     // ==================== ErrorResponse Tests ====================
 
     #[test]
@@ -1574,31 +1312,6 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test error"));
         assert!(json.contains("bad_request"));
-    }
-
-    // ==================== NodesResponse Tests ====================
-
-    #[test]
-    fn test_nodes_response_serialization() {
-        let response = NodesResponse {
-            nodes: vec![],
-            next_cursor: Some("next".to_string()),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("nodes"));
-        assert!(json.contains("next_cursor"));
-        assert!(json.contains("next"));
-    }
-
-    #[test]
-    fn test_nodes_response_without_cursor() {
-        let response = NodesResponse {
-            nodes: vec![],
-            next_cursor: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("nodes"));
-        assert!(json.contains("null"));
     }
 
     // ==================== health Tests ====================

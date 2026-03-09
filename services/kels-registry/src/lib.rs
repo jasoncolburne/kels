@@ -20,11 +20,9 @@ pub mod handlers;
 pub mod raft_store;
 pub mod repository;
 pub mod server;
-pub mod store;
 
 pub use federation::{
     FederationConfig, FederationError, FederationMember, FederationNetwork, FederationNode,
     FederationStatus,
 };
 pub use server::run;
-pub use store::RegistryStore;

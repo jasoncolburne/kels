@@ -9,35 +9,22 @@ use axum::{
     routing::{get, post},
 };
 use kels::shutdown_signal;
-use redis::Client as RedisClient;
 use verifiable_storage::RepositoryConnection;
 
 use kels::IdentityClient;
 
 use crate::{
     federation::{FederationConfig, FederationNode},
-    handlers::{self, AppState, FederationState},
+    handlers::{self, FederationState},
     repository::RegistryRepository,
-    store::RegistryStore,
 };
 
-pub fn create_router(
-    state: Arc<AppState>,
-    federation_state: Option<Arc<FederationState>>,
-) -> Router {
+pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
     // Base router with health endpoint
     let base_router = Router::new().route("/health", get(handlers::health));
 
     // Federation mode routes (node management + peer management + admin)
     let federation_router = if let Some(fed_state) = federation_state {
-        // Node management routes — per-IP rate limited (write endpoints)
-        // Only available in federation mode (requires peer allowlist)
-        let node_router = Router::new()
-            .route("/api/nodes/register", post(handlers::register_node))
-            .route("/api/nodes/deregister", post(handlers::deregister_node))
-            .route("/api/nodes/status", post(handlers::update_status))
-            .with_state(state);
-
         // Peer discovery and member KEL endpoints
         let discovery_router = Router::new()
             .route("/api/peers", get(handlers::list_peers_federated))
@@ -82,12 +69,10 @@ pub fn create_router(
                 post(handlers::admin_vote_proposal),
             );
 
-        let fed_router = discovery_router
+        discovery_router
             .merge(federation_router)
             .merge(admin_router)
-            .with_state(fed_state);
-
-        fed_router.merge(node_router)
+            .with_state(fed_state)
     } else {
         // Standalone mode: health only
         Router::new()
@@ -100,17 +85,8 @@ pub fn create_router(
 }
 
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
     let postgres_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@postgres:5432/kels".to_string());
-
-    info!("Connecting to Redis");
-    let redis_client = RedisClient::open(redis_url.as_str())
-        .map_err(|e| format!("Failed to create Redis client: {}", e))?;
-    let redis_conn = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
-    info!("Connected to Redis");
 
     info!("Connecting to PostgreSQL");
     let repo = RegistryRepository::connect(&postgres_url)
@@ -122,8 +98,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .await
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database initialized");
-
-    let store = RegistryStore::new(redis_conn, "kels-registry");
 
     // Connect to identity service to get the registry's prefix
     let identity_url =
@@ -139,7 +113,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     info!("Registry prefix from identity service: {}", prefix);
 
     // Initialize federation if configured
-    let (federation_node, federation_state) = match FederationConfig::from_env() {
+    let federation_state = match FederationConfig::from_env() {
         Ok(Some(config)) => {
             info!(
                 "Federation configured with {} members",
@@ -212,16 +186,13 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         });
                     }
 
-                    (
-                        Some(node.clone()),
-                        Some(Arc::new(FederationState {
-                            node,
-                            identity_client: identity_client.clone(),
-                            member_kel_repo: repo.member_kels.clone(),
-                            member_kel_ip_rate_limits: dashmap::DashMap::new(),
-                            member_kel_prefix_rate_limits: dashmap::DashMap::new(),
-                        })),
-                    )
+                    Some(Arc::new(FederationState {
+                        node,
+                        identity_client: identity_client.clone(),
+                        member_kel_repo: repo.member_kels.clone(),
+                        member_kel_ip_rate_limits: dashmap::DashMap::new(),
+                        member_kel_prefix_rate_limits: dashmap::DashMap::new(),
+                    }))
                 }
                 Err(e) => {
                     error!("Failed to initialize federation node: {}", e);
@@ -231,7 +202,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         }
         Ok(None) => {
             info!("Federation not configured, running in standalone mode");
-            (None, None)
+            None
         }
         Err(e) => {
             error!("Invalid federation configuration: {}", e);
@@ -239,14 +210,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         }
     };
 
-    let state = Arc::new(AppState {
-        store,
-        federation_node,
-        ip_rate_limits: dashmap::DashMap::new(),
-    });
-
-    let app =
-        create_router(state, federation_state).into_make_service_with_connect_info::<SocketAddr>();
+    let app = create_router(federation_state).into_make_service_with_connect_info::<SocketAddr>();
 
     info!(
         "KELS Registry service listening on {}",

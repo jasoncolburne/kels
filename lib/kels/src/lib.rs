@@ -76,14 +76,14 @@ pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchSubmitResponse, CachedKel,
-    CompletedProposalsResponse, DeregisterRequest, EffectiveSaidResponse, ErrorCode, ErrorResponse,
-    EventKind, EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature,
-    NodeInfo, NodeRegistration, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
-    ProposalHistory, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
-    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote,
-    RegisterNodeRequest, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
-    SignedRequest, StatusUpdateRequest, Vote, generate_nonce, hash_tip_saids, validate_timestamp,
+    CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
+    EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
+    NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
+    ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD,
+    RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory, RemovalWithVotes,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, Vote, generate_nonce, hash_tip_saids,
+    validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,

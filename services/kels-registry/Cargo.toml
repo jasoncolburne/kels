@@ -40,9 +40,6 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
 
-# Redis for storage (node registrations)
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-
 # PostgreSQL for peer allowlist
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 

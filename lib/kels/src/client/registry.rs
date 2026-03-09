@@ -8,7 +8,6 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     iter,
-    sync::Arc,
     time::Duration,
 };
 use tracing::{debug, info, warn};
@@ -20,9 +19,8 @@ use verifiable_storage::StorageDatetime;
 use crate::{
     error::KelsError,
     types::{
-        CompletedProposalsResponse, DeregisterRequest, ErrorResponse, NodeInfo, NodeRegistration,
-        NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
-        ProposalWithVotesMethods, RegisterNodeRequest, SignedRequest, StatusUpdateRequest,
+        CompletedProposalsResponse, ErrorResponse, NodeInfo, NodeStatus, Peer, PeersResponse,
+        Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods, SignedRequest,
         Verification, Vote,
     },
 };
@@ -91,7 +89,6 @@ where
 pub struct KelsRegistryClient {
     client: reqwest::Client,
     base_url: String,
-    signer: Option<Arc<dyn RegistrySigner>>,
 }
 
 impl KelsRegistryClient {
@@ -111,108 +108,6 @@ impl KelsRegistryClient {
         Self {
             client,
             base_url: registry_url.trim_end_matches('/').to_string(),
-            signer: None,
-        }
-    }
-
-    /// Create a new registry client with signing capability.
-    pub fn with_signer(registry_url: &str, signer: Arc<dyn RegistrySigner>) -> Self {
-        Self::with_signer_and_timeout(registry_url, signer, Duration::from_secs(10))
-    }
-
-    /// Create a new registry client with signing capability and custom timeout.
-    pub fn with_signer_and_timeout(
-        registry_url: &str,
-        signer: Arc<dyn RegistrySigner>,
-        timeout: Duration,
-    ) -> Self {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(timeout)
-            .build()
-            .unwrap_or_default();
-
-        Self {
-            client,
-            base_url: registry_url.trim_end_matches('/').to_string(),
-            signer: Some(signer),
-        }
-    }
-
-    /// Create a signed request wrapper for the given payload.
-    async fn sign_request<T>(&self, payload: &T) -> Result<SignedRequest<T>, KelsError>
-    where
-        T: serde::Serialize + Clone,
-    {
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or_else(|| KelsError::SigningFailed("No signer configured".to_string()))?;
-
-        sign_request(signer.as_ref(), payload).await
-    }
-
-    /// Register a node with the registry.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn register(
-        &self,
-        node_id: &str,
-        kels_url: &str,
-        gossip_addr: &str,
-        status: NodeStatus,
-    ) -> Result<NodeRegistration, KelsError> {
-        let request = RegisterNodeRequest {
-            node_id: node_id.to_string(),
-            node_type: crate::NodeType::Kels,
-            kels_url: kels_url.to_string(),
-            gossip_addr: gossip_addr.to_string(),
-            status,
-        };
-
-        // Sign the request
-        let signed_request = self.sign_request(&request).await?;
-
-        info!("${:?}", signed_request);
-
-        let response = self
-            .client
-            .post(format!("{}/api/nodes/register", self.base_url))
-            .json(&signed_request)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else {
-            let err: ErrorResponse = response.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
-    }
-
-    /// Deregister a node from the registry.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn deregister(&self, node_id: &str) -> Result<(), KelsError> {
-        let request = DeregisterRequest {
-            node_id: node_id.to_string(),
-        };
-
-        // Sign the request
-        let signed_request = self.sign_request(&request).await?;
-
-        let response = self
-            .client
-            .post(format!("{}/api/nodes/deregister", self.base_url))
-            .json(&signed_request)
-            .send()
-            .await?;
-
-        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(())
-        } else {
-            let err: ErrorResponse = response.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
         }
     }
 
@@ -243,39 +138,6 @@ impl KelsRegistryClient {
             })
             .collect();
         Ok(nodes)
-    }
-
-    /// Update node status.
-    ///
-    /// Requires a signer to be configured (use `with_signer` constructor).
-    pub async fn update_status(
-        &self,
-        node_id: &str,
-        status: NodeStatus,
-    ) -> Result<NodeRegistration, KelsError> {
-        let request = StatusUpdateRequest {
-            node_id: node_id.to_string(),
-            status,
-        };
-
-        // Sign the request
-        let signed_request = self.sign_request(&request).await?;
-
-        let response = self
-            .client
-            .post(format!("{}/api/nodes/status", self.base_url))
-            .json(&signed_request)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(node_id.to_string()))
-        } else {
-            let err: ErrorResponse = response.json().await?;
-            Err(KelsError::ServerError(err.error, err.code))
-        }
     }
 
     /// Check if the registry is healthy.
@@ -1014,186 +876,16 @@ pub async fn nodes_sorted_by_latency(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{NodeRegistration, NodeType, Peer, PeerHistory};
-    use std::time::Duration;
+    use crate::types::{Peer, PeerHistory};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // Mock signer for testing
-    struct MockSigner;
-
-    #[async_trait::async_trait]
-    impl RegistrySigner for MockSigner {
-        async fn sign(&self, _data: &[u8]) -> Result<SignResult, KelsError> {
-            Ok(SignResult {
-                signature: "0BAAAA_mock_signature".to_string(),
-                peer_prefix: "EMockPeerPrefix_____________________________".to_string(),
-            })
-        }
-    }
-
     // ==================== Constructor Tests ====================
-
-    #[test]
-    fn test_new_client() {
-        let client = KelsRegistryClient::new("http://registry:8080");
-        assert!(client.signer.is_none());
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let client =
-            KelsRegistryClient::with_timeout("http://registry:8080", Duration::from_secs(5));
-        assert!(client.signer.is_none());
-    }
-
-    #[test]
-    fn test_with_signer() {
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer("http://registry:8080", signer);
-        assert!(client.signer.is_some());
-    }
-
-    #[test]
-    fn test_with_signer_and_timeout() {
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer_and_timeout(
-            "http://registry:8080",
-            signer,
-            Duration::from_secs(30),
-        );
-        assert!(client.signer.is_some());
-    }
 
     #[test]
     fn test_url_trailing_slash_stripped() {
         let client = KelsRegistryClient::new("http://registry:8080/");
         assert_eq!(client.base_url, "http://registry:8080");
-    }
-
-    // ==================== Registration Tests ====================
-
-    #[tokio::test]
-    async fn test_register_success() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_addr: "10.0.0.1:9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Bootstrapping,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/register"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client
-            .register(
-                "node-1",
-                "http://node-1:8091",
-                "10.0.0.1:9000",
-                NodeStatus::Bootstrapping,
-            )
-            .await;
-
-        assert!(result.is_ok());
-        let reg = result.unwrap();
-        assert_eq!(reg.node_id, "node-1");
-    }
-
-    #[tokio::test]
-    async fn test_register_without_signer_fails() {
-        let client = KelsRegistryClient::new("http://registry:8080");
-        let result = client
-            .register(
-                "node-1",
-                "http://node-1:8091",
-                "10.0.0.1:9000",
-                NodeStatus::Bootstrapping,
-            )
-            .await;
-
-        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
-    }
-
-    #[tokio::test]
-    async fn test_register_server_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/register"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": "Internal error",
-                "code": "internal_error"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client
-            .register(
-                "node-1",
-                "http://node-1:8091",
-                "10.0.0.1:9000",
-                NodeStatus::Bootstrapping,
-            )
-            .await;
-
-        assert!(matches!(result, Err(KelsError::ServerError(..))));
-    }
-
-    // ==================== Deregistration Tests ====================
-
-    #[tokio::test]
-    async fn test_deregister_success() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/deregister"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client.deregister("node-1").await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_deregister_not_found_ok() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/deregister"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client.deregister("node-1").await;
-
-        // 404 is OK for deregister (already deregistered)
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_deregister_without_signer_fails() {
-        let client = KelsRegistryClient::new("http://registry:8080");
-        let result = client.deregister("node-1").await;
-
-        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
     }
 
     #[tokio::test]
@@ -1235,60 +927,6 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node_id, "node-1");
         assert_eq!(nodes[0].kels_url, "http://node-1:8091");
-    }
-
-    // ==================== Update Status Tests ====================
-
-    #[tokio::test]
-    async fn test_update_status_success() {
-        let mock_server = MockServer::start().await;
-
-        let response = NodeRegistration {
-            node_id: "node-1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://node-1:8091".to_string(),
-            gossip_addr: "10.0.0.1:9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/status"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client.update_status("node-1", NodeStatus::Ready).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_update_status_not_found() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/nodes/status"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
-
-        let signer = Arc::new(MockSigner);
-        let client = KelsRegistryClient::with_signer(&mock_server.uri(), signer);
-        let result = client.update_status("unknown", NodeStatus::Ready).await;
-
-        assert!(matches!(result, Err(KelsError::EventNotFound(_))));
-    }
-
-    #[tokio::test]
-    async fn test_update_status_without_signer_fails() {
-        let client = KelsRegistryClient::new("http://registry:8080");
-        let result = client.update_status("node-1", NodeStatus::Ready).await;
-
-        assert!(matches!(result, Err(KelsError::SigningFailed(_))));
     }
 
     // ==================== Peers Tests ====================

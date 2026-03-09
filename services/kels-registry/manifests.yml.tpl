@@ -26,17 +26,6 @@ spec:
                 sleep 2;
               done;
               echo "Postgres is ready!";
-        - name: wait-for-redis
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z redis 6379; do
-                echo "Waiting for redis...";
-                sleep 2;
-              done;
-              echo "Redis is ready!";
         - name: wait-for-identity
           image: busybox:1.36
           command:
@@ -57,8 +46,6 @@ spec:
           env:
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
-            - name: REDIS_URL
-              value: "${var.redisUrl}"
             - name: DATABASE_URL
               value: "${var.kelsRegistryDatabaseUrl}"
             - name: IDENTITY_URL
