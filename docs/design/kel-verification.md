@@ -6,6 +6,8 @@ This document describes the verification protocol used to validate the integrity
 
 KEL verification ensures:
 - Serials start at 0 and increment by 1 with no gaps
+- The inception event has a valid prefix
+- All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from inception to current state via `previous` links
 - Pre-rotation commitments are honored (rotation hash → public key)
