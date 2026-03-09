@@ -29,18 +29,13 @@ use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use futures::future::join_all;
-use kels::{
-    KelsClient, KelsError, KelsRegistryClient, PrefixListResponse, PrefixState, PrefixesRequest,
-    RegistrySigner,
-};
+use kels::{KelsClient, KelsError, KelsRegistryClient, PrefixState, RegistrySigner};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BootstrapError {
     #[error("KELS/Registry error: {0}")]
     Kels(#[from] KelsError),
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
     #[error("Bootstrap failed: {0}")]
     Failed(String),
 }
@@ -242,10 +237,18 @@ impl BootstrapSync {
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
+            let peer_client = KelsClient::new(peer_url);
             let mut cursor: Option<String> = None;
 
             loop {
-                match self.fetch_prefix_page(peer_url, cursor.as_deref()).await {
+                match peer_client
+                    .fetch_prefixes(
+                        self.signer.as_ref(),
+                        cursor.as_deref(),
+                        self.config.page_size,
+                    )
+                    .await
+                {
                     Ok(page) => {
                         for state in &page.prefixes {
                             if let Some(since) = self.sync_check(state, &local_client).await {
@@ -327,36 +330,6 @@ impl BootstrapSync {
         );
 
         Ok(())
-    }
-
-    /// Fetch a single page of prefix states via signed POST request.
-    async fn fetch_prefix_page(
-        &self,
-        kels_url: &str,
-        cursor: Option<&str>,
-    ) -> Result<PrefixListResponse, BootstrapError> {
-        let request = PrefixesRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
-            since: cursor.map(|s| s.to_string()),
-            limit: Some(self.config.page_size),
-        };
-        let signed = kels::sign_request(self.signer.as_ref(), &request)
-            .await
-            .map_err(|e| {
-                BootstrapError::Failed(format!("Failed to sign prefixes request: {}", e))
-            })?;
-        let url = format!("{}/api/kels/prefixes", kels_url.trim_end_matches('/'));
-        let response: PrefixListResponse = self
-            .http_client
-            .post(&url)
-            .json(&signed)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        Ok(response)
     }
 
     /// Check if a prefix needs syncing by comparing with local state.
