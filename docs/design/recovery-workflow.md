@@ -1,8 +1,8 @@
-# Recovery Workflow: Decoupling Member KELs from Raft
+# Recovery Workflow
 
-## Problem Statement
+## Historical Context
 
-The original architecture stores member KEL events through Raft consensus: each node submits its identity KEL events to Raft, which verifies them in `apply_submit_key_events` and maintains a `member_contexts` HashMap of `Verification` tokens in the replicated state machine. This creates several issues:
+The original architecture stored member KEL events through Raft consensus: each node submitted its identity KEL events to Raft, which verified them in `apply_submit_key_events` and maintained a `member_contexts` HashMap of `Verification` tokens in the replicated state machine. This created several issues that motivated the current decoupled design:
 
 ### Issue 1: Composite SAID Cursor
 
@@ -26,7 +26,7 @@ The Raft state machine's `apply_submit_key_events` stores full key events, verif
 
 - **Malicious KEL extension:** An insider extends a member KEL with unauthorized events. These pass verification (valid signatures) but shouldn't be trusted. Recovery requires the identity operator to issue a contest or recovery event, which again needs the full chain context.
 
-## New Architecture
+## Current Architecture
 
 ### Principle: Direct Push, No Raft Involvement
 
@@ -47,7 +47,6 @@ Raft has no role in member KEL synchronization. The submit handler eagerly fans 
 
 3. **Anchoring verification** at consumption time:
    - `verify_member_anchoring_from_repo` reads from `MemberKelRepository` and performs full verification
-   - The only change from the old architecture is how that DB gets populated (direct push instead of Raft-replicated events)
 
 ### Recovery Propagation
 

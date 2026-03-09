@@ -2,13 +2,13 @@
 
 ## Why Trusted Prefixes Are Permanent
 
-Once a registry's prefix is in `TRUSTED_REGISTRY_MEMBERS`, it must remain there permanently. Removing a trusted prefix would break verification of all historical data that registry anchored in the Raft log:
+Once a registry's prefix is in `TRUSTED_REGISTRY_MEMBERS`, it must remain there permanently. Removing a trusted prefix would break verification of all historical data that registry anchored:
 
 - **Votes**: Each vote's SAID is anchored in the voter's KEL. Removing the voter's prefix makes those votes unverifiable.
 - **Proposals**: Proposal SAIDs are anchored in the proposer's KEL. Removing the proposer's prefix breaks the audit trail.
 - **Peer records**: Peers are anchored in the authorizing registry's KEL. Removing that registry's prefix makes the peer's provenance unverifiable.
 
-The Raft-replicated KEL preserves the ability to verify this data even after the registry is gone.
+The locally-stored member KEL preserves the ability to verify this data even after the registry is gone.
 
 ## Decommission Procedure
 
@@ -24,9 +24,9 @@ EventKind::Dec
 
 The `dec` event signals a clean, intentional termination of the KEL.
 
-### Step 2: Submit to Raft
+### Step 2: Propagate to Members
 
-The `dec` event is submitted to Raft via the KEL sync loop (within 30s). Once in Raft:
+The `dec` event propagates to other federation members via the member KEL sync loop (within 30s). Once stored on all members:
 
 - `Verification::is_decommissioned()` returns `true` for this prefix
 - The submit handler rejects any further events with `KelsError::KelDecommissioned`
@@ -34,19 +34,19 @@ The `dec` event is submitted to Raft via the KEL sync loop (within 30s). Once in
 
 ### Step 3: Remove from Federation
 
-After decommission is confirmed in Raft, the registry can be removed from the active federation.
+After decommission is confirmed across all members, the registry can be removed from the active federation.
 
 If any nodes are associated with the registry and should be removed, they should likely be removed before removing the registry.
 
 ### Step 4: Keep the Prefix
 
-The prefix stays in `TRUSTED_REGISTRY_MEMBERS` in all builds. The KEL lives on in Raft snapshots, ensuring all historical data remains verifiable.
+The prefix stays in `TRUSTED_REGISTRY_MEMBERS` in all builds. The KEL lives on in each member's local `MemberKelRepository`, ensuring all historical data remains verifiable.
 
 ## What Happens Without Decommission
 
 If a registry is removed from the federation without decommissioning its identity KEL first:
 
-- The KEL remains in Raft state but is **not frozen** — it still accepts new events from anyone who holds the signing key
+- The KEL remains in each member's local store but is **not frozen** — it still accepts new events from anyone who holds the signing key
 - Without the `dec` event's dual-signature termination, the registry's keys cannot be safely retired — an attacker who compromises the signing key can extend the KEL and anchor unauthorized data
 - The auto-rotation loop is no longer running, so the signing key is never refreshed, increasing the window of exposure over time
 
