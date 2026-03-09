@@ -28,28 +28,26 @@ The Raft state machine's `apply_submit_key_events` stores full key events, verif
 
 ## New Architecture
 
-### Principle: Raft Stores Triggers, Not Events
+### Principle: Direct Push, No Raft Involvement
 
-Raft consensus is used for what it's good at: agreeing on "this prefix needs syncing." Each member independently fetches and verifies KELs using the existing `transfer_key_events` infrastructure. Recovery from identity propagates naturally through the sync loop.
+Raft has no role in member KEL synchronization. The submit handler eagerly fans out all KEL appends to other registries. If fan-out fails, each node's background sync loop fills in gaps by comparing effective SAIDs and pushing deltas to stale members. Recovery events from identity propagate through this same mechanism.
 
 ### Data Flow
 
-1. **Sync loop** (every node, periodically):
+1. **Submit handler** (`POST /api/member-kels/events`):
+   - Stores events locally via `save_with_merge`
+   - Eagerly fans out to all other registries with `propagate=true`
+   - Receiving members store with `propagate=false` (no further fan-out)
+
+2. **Sync loop** (every node, periodically):
    - Fetch own KEL from identity using `HttpKelSource`
-   - Verify and store locally using `transfer_key_events` with `RepositoryKelStore` as the sink
-   - If new events were stored, submit `SyncMemberKel { prefix }` to Raft
+   - Store locally using `forward_key_events` with `RepositoryKelStore` as the sink
+   - Compare own effective SAID with each member's view
+   - Push delta events to members with stale state
 
-2. **Raft apply** for `SyncMemberKel`:
-   - Trivial: just acknowledges consensus that this prefix has new data
-   - No verification, no DB writes, no `member_contexts` update
-
-3. **Other nodes** observe the Raft trigger:
-   - Fetch from the advertising member's registry using `HttpKelSource` pointed at `GET /api/member-kels/{prefix}`
-   - Verify and store locally using the same `transfer_key_events` flow
-
-4. **Anchoring verification** moves to consumption time:
-   - `verify_member_anchoring_from_repo` already reads from `MemberKelRepository` and performs full verification
-   - The only change is how that DB gets populated (sync fetch instead of Raft-replicated events)
+3. **Anchoring verification** at consumption time:
+   - `verify_member_anchoring_from_repo` reads from `MemberKelRepository` and performs full verification
+   - The only change from the old architecture is how that DB gets populated (direct push instead of Raft-replicated events)
 
 ### Recovery Propagation
 
@@ -57,9 +55,9 @@ When a member KEL needs recovery:
 
 1. **Identity operator** issues a recovery/contest event via identity-admin CLI
 2. **Sync loop** picks up the new events from identity
-3. **`transfer_key_events`** handles the recovery naturally (it verifies from scratch, sees the divergence + recovery)
-4. **`SyncMemberKel`** notifies other nodes via Raft
-5. **Other nodes** fetch the recovered KEL and verify independently
+3. **`forward_key_events`** stores the recovery events locally (merge handles divergence + recovery naturally)
+4. **Sync loop** detects stale members and pushes delta events directly via HTTP
+5. **Other nodes** receive and store the recovered KEL events
 
 No special recovery logic needed in Raft. The existing verification infrastructure handles all cases.
 
