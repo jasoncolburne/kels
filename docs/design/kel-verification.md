@@ -9,7 +9,7 @@ KEL verification ensures:
 - The inception event has a valid prefix
 - All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
-- Events chain correctly from inception to current state via `previous` links
+- Events chain correctly from current state to inception via `previous` links
 - Pre-rotation commitments are honored (rotation hash → public key)
 - Recovery key commitments are honored (recovery hash → recovery key)
 - All signatures are valid
