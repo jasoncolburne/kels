@@ -121,26 +121,7 @@ impl KelsClient {
         &self,
         events: &[SignedKeyEvent],
     ) -> Result<BatchSubmitResponse, KelsError> {
-        self.submit_events_inner(events, true).await
-    }
-
-    /// Submit events without triggering fan-out propagation on the receiver.
-    pub async fn submit_events_no_propagate(
-        &self,
-        events: &[SignedKeyEvent],
-    ) -> Result<BatchSubmitResponse, KelsError> {
-        self.submit_events_inner(events, false).await
-    }
-
-    async fn submit_events_inner(
-        &self,
-        events: &[SignedKeyEvent],
-        propagate: bool,
-    ) -> Result<BatchSubmitResponse, KelsError> {
-        let mut url = format!("{}{}/events", self.base_url, self.path_prefix);
-        if !propagate {
-            url.push_str("?propagate=false");
-        }
+        let url = format!("{}{}/events", self.base_url, self.path_prefix);
 
         let resp = self.client.post(&url).json(events).send().await?;
 

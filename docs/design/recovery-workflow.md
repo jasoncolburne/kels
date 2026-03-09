@@ -36,8 +36,8 @@ Raft has no role in member KEL synchronization. The submit handler eagerly fans 
 
 1. **Submit handler** (`POST /api/member-kels/events`):
    - Stores events locally via `save_with_merge`
-   - Eagerly fans out to all other registries with `propagate=true`
-   - Receiving members store with `propagate=false` (no further fan-out)
+   - Fans out to other members only when the submitted prefix matches the receiver's own prefix
+   - This means identity pushes to local registry → local registry fans out; other members just store
 
 2. **Sync loop** (every node, periodically):
    - Fetch own KEL from identity using `HttpKelSource`

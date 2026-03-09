@@ -1292,32 +1292,20 @@ pub async fn list_peers_federated(
     Ok(Json(PeersResponse { peers: histories }))
 }
 
-/// Query parameters for the member KEL submit endpoint.
-#[derive(Debug, Deserialize)]
-pub struct PropagateQuery {
-    #[serde(default = "default_propagate")]
-    pub propagate: bool,
-}
-
-fn default_propagate() -> bool {
-    true
-}
-
 /// Per-prefix rate limit constants for member KEL submissions.
 const MAX_MEMBER_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 60;
 
 /// Submit member key events (push model).
 ///
-/// Accepts signed key events for a federation member's KEL. If `propagate` is true
-/// (default), fans out to all federation members. Receiving members see `propagate=false`
-/// and store without further fan-out.
+/// Accepts signed key events for a federation member's KEL. If the submitted prefix
+/// matches this node's own prefix, fans out to all other federation members.
+/// Events received for other members' prefixes are stored without further fan-out.
 ///
 /// Follows the KELS submit handler pattern: signature pre-validation, save_with_merge,
 /// per-prefix and per-IP rate limiting.
 pub async fn submit_member_key_events(
     State(state): State<Arc<FederationState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Query(query): Query<PropagateQuery>,
     Json(events): Json<Vec<SignedKeyEvent>>,
 ) -> Result<Json<kels::BatchSubmitResponse>, ApiError> {
     if events.is_empty() {
@@ -1408,9 +1396,10 @@ pub async fn submit_member_key_events(
             | kels::KelMergeResult::Diverged
     );
 
-    // Fan out to members if propagate is true and events were applied
-    if query.propagate && applied {
-        let config = state.node.config();
+    // Fan out to members if this is our own prefix and events were applied
+    let config = state.node.config();
+    let propagate = prefix == config.self_prefix;
+    if propagate && applied {
         let self_prefix = config.self_prefix.clone();
         let futures: Vec<_> = config
             .members
@@ -1424,7 +1413,7 @@ pub async fn submit_member_key_events(
                     let client = kels::KelsClient::with_path_prefix(&url, "/api/member-kels");
                     match tokio::time::timeout(
                         Duration::from_secs(5),
-                        client.submit_events_no_propagate(&events),
+                        client.submit_events(&events),
                     )
                     .await
                     {

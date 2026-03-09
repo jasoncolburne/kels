@@ -129,7 +129,7 @@ Peer discovery:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/peers` | Get peer allowlist (from Raft) |
-| `POST` | `/api/member-kels/events` | Submit member key events (push model); `?propagate=false` to skip fan-out |
+| `POST` | `/api/member-kels/events` | Submit member key events (push model); fans out only when prefix matches receiver's own |
 | `GET` | `/api/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
 | `GET` | `/api/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
 
