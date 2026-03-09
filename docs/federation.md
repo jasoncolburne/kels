@@ -308,7 +308,7 @@ Peer proposal management:
 ```
 POST   /api/admin/addition-proposals              # Propose a new peer (addition)
 POST   /api/admin/removal-proposals              # Propose removal of a peer
-POST   /api/admin/proposals/:proposal_id         # Get proposal details (signed request)
+GET    /api/federation/proposals/:proposal_id     # Get proposal details (unauthenticated)
 POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
 ```
 

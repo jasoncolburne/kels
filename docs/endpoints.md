@@ -106,6 +106,7 @@ All standalone endpoints plus:
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
+| GET | `/api/federation/proposals/:id` | None | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 
 #### Admin API
 
@@ -113,13 +114,11 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | POST | `/api/admin/addition-proposals` | **Federation member + KEL anchoring** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | POST | `/api/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| POST | `/api/admin/proposals/:id` | **Signed admin request** | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 | POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 
 **Notes:**
 - Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_prefix in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
-- Admin query API: `verify_admin_request()` validates `SignedRequest<AdminRequest>` against the node's own identity KEL — requires HSM-backed signing via the identity service
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
 - Withdrawals: POST a v1 `PeerAdditionProposal` with `withdrawn_at` set; only allowed before any votes are cast

@@ -338,6 +338,145 @@ impl KelsRegistryClient {
             Err(KelsError::ServerError(err.error, err.code))
         }
     }
+
+    /// Fetch completed proposals with full audit trail (includes all historical proposals).
+    pub async fn fetch_completed_proposals_audit(
+        &self,
+    ) -> Result<CompletedProposalsResponse, KelsError> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/federation/proposals?audit=true",
+                self.base_url
+            ))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch federation status.
+    pub async fn fetch_federation_status(&self) -> Result<crate::FederationStatus, KelsError> {
+        let response = self
+            .client
+            .get(format!("{}/api/federation/status", self.base_url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch all peers (including inactive) from the registry.
+    pub async fn fetch_all_peers(&self) -> Result<crate::PeersResponse, KelsError> {
+        let response = self
+            .client
+            .get(format!("{}/api/peers?all=true", self.base_url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Submit a peer addition proposal.
+    pub async fn submit_addition_proposal(
+        &self,
+        proposal: &crate::PeerAdditionProposal,
+    ) -> Result<crate::ProposalResponse, KelsError> {
+        let response = self
+            .client
+            .post(format!("{}/api/admin/addition-proposals", self.base_url))
+            .json(proposal)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Submit a peer removal proposal.
+    pub async fn submit_removal_proposal(
+        &self,
+        proposal: &crate::PeerRemovalProposal,
+    ) -> Result<crate::ProposalResponse, KelsError> {
+        let response = self
+            .client
+            .post(format!("{}/api/admin/removal-proposals", self.base_url))
+            .json(proposal)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Submit a vote on a proposal.
+    pub async fn submit_vote(
+        &self,
+        proposal_id: &str,
+        vote: &crate::Vote,
+    ) -> Result<crate::ProposalResponse, KelsError> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/api/admin/proposals/{}/vote",
+                self.base_url, proposal_id
+            ))
+            .json(vote)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch a specific proposal by ID.
+    pub async fn fetch_proposal(
+        &self,
+        proposal_id: &str,
+    ) -> Result<crate::ProposalWithVotes, KelsError> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/federation/proposals/{}",
+                self.base_url, proposal_id
+            ))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else {
+            let err: ErrorResponse = response.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
 }
 
 /// Try each registry URL in shuffled order until one succeeds.

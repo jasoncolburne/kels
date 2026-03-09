@@ -77,13 +77,13 @@ pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BatchSubmitResponse, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
-    EventSignature, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo,
-    NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    EventSignature, FederationStatus, KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature,
+    NodeInfo, NodeStatus, NodeType, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
     PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
-    ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD,
-    RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory, RemovalWithVotes,
-    SignedKeyEvent, SignedKeyEventPage, SignedRequest, Vote, generate_nonce, hash_tip_saids,
-    validate_timestamp,
+    ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory,
+    RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest, Vote,
+    compute_approval_threshold, generate_nonce, hash_tip_saids, validate_timestamp,
 };
 pub use types::{
     BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,

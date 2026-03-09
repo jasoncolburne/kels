@@ -6,16 +6,14 @@
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
 
 use verifiable_storage::{Chained, StorageDatetime};
 
-use kels::IdentityClient;
 use kels::{
-    AdminRequest, CompletedProposalsResponse, PeerAdditionProposal, PeerRemovalProposal,
-    PeersResponse, ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
+    FederationStatus, IdentityClient, KelsError, KelsRegistryClient, PeerAdditionProposal,
+    PeerRemovalProposal, ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
+    compute_approval_threshold,
 };
-use kels_registry::federation::FederationStatus;
 
 #[derive(Parser)]
 #[command(name = "kels-registry-admin")]
@@ -130,22 +128,12 @@ enum FederationAction {
     },
 }
 
-// Response types from admin API
-#[derive(Debug, Deserialize)]
-struct ProposalResponse {
-    proposal_id: String,
-    status: String,
-    votes_needed: usize,
-    current_votes: usize,
-    message: String,
-}
-
 /// Shared context for all commands
 struct AdminContext {
     identity_client: IdentityClient,
     self_prefix: String,
     registry_url: String,
-    http_client: reqwest::Client,
+    registry_client: KelsRegistryClient,
 }
 
 impl AdminContext {
@@ -157,44 +145,23 @@ impl AdminContext {
 
         let identity_client = IdentityClient::new(&identity_url);
         let self_prefix = identity_client.get_prefix().await?;
-
-        let http_client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .context("Failed to create HTTP client")?;
+        let registry_client = KelsRegistryClient::new(&registry_url);
 
         Ok(Self {
             identity_client,
             self_prefix,
             registry_url,
-            http_client,
+            registry_client,
         })
     }
 
     /// Get federation status from the registry's HTTP API.
     /// Returns None if federation is not enabled or not available.
     async fn get_federation_status(&self) -> anyhow::Result<Option<FederationStatus>> {
-        let url = format!("{}/api/federation/status", self.registry_url);
-        let resp = self.http_client.get(&url).send().await;
-
-        match resp {
-            Ok(r) if r.status().is_success() => {
-                let status: FederationStatus = r
-                    .json()
-                    .await
-                    .context("Failed to parse federation status")?;
-                Ok(Some(status))
-            }
-            Ok(r) if r.status().as_u16() == 404 => {
-                // Federation not enabled
-                Ok(None)
-            }
-            Ok(r) => Err(anyhow!("Federation status request failed: {}", r.status())),
-            Err(e) => {
-                // Connection error - federation might not be available
-                Err(anyhow!("Failed to connect to registry: {}", e))
-            }
+        match self.registry_client.fetch_federation_status().await {
+            Ok(status) => Ok(Some(status)),
+            Err(KelsError::ServerError(_, kels::ErrorCode::NotFound)) => Ok(None),
+            Err(e) => Err(anyhow!("Failed to get federation status: {}", e)),
         }
     }
 
@@ -202,66 +169,18 @@ impl AdminContext {
     /// Returns the leader's URL, or falls back to local registry if not in federation.
     async fn get_leader_url(&self) -> anyhow::Result<String> {
         match self.get_federation_status().await? {
-            Some(status) if status.is_leader => {
-                // We are the leader, use local URL
-                Ok(self.registry_url.clone())
-            }
-            Some(status) => {
-                // Not the leader, use leader's URL
-                status
-                    .leader_url
-                    .ok_or_else(|| anyhow!("Federation has no leader (election in progress?)"))
-            }
-            None => {
-                // Not in federation mode, use local URL
-                Ok(self.registry_url.clone())
-            }
+            Some(status) if status.is_leader => Ok(self.registry_url.clone()),
+            Some(status) => status
+                .leader_url
+                .ok_or_else(|| anyhow!("Federation has no leader (election in progress?)")),
+            None => Ok(self.registry_url.clone()),
         }
     }
-}
 
-/// Signs admin requests via the identity service (HSM-backed).
-struct AdminSigner {
-    identity_client: IdentityClient,
-    self_prefix: String,
-}
-
-#[async_trait::async_trait]
-impl kels::RegistrySigner for AdminSigner {
-    async fn sign(&self, data: &[u8]) -> Result<kels::SignResult, kels::KelsError> {
-        let data_str = std::str::from_utf8(data)
-            .map_err(|e| kels::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e)))?;
-
-        let result = self
-            .identity_client
-            .sign(data_str)
-            .await
-            .map_err(|e| kels::KelsError::SigningFailed(e.to_string()))?;
-
-        Ok(kels::SignResult {
-            signature: result.signature,
-            peer_prefix: self.self_prefix.clone(),
-        })
+    /// Get a registry client pointed at the given URL.
+    fn client_for(&self, url: &str) -> KelsRegistryClient {
+        KelsRegistryClient::new(url)
     }
-}
-
-/// Build a signed admin request using the identity service.
-async fn sign_admin_request(
-    ctx: &AdminContext,
-) -> anyhow::Result<kels::SignedRequest<AdminRequest>> {
-    let request = AdminRequest {
-        timestamp: chrono::Utc::now().timestamp(),
-        nonce: kels::generate_nonce(),
-    };
-    let signer = AdminSigner {
-        identity_client: IdentityClient::new(
-            &std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity".to_string()),
-        ),
-        self_prefix: ctx.self_prefix.clone(),
-    };
-    kels::sign_request(&signer, &request)
-        .await
-        .map_err(|e| anyhow!("Failed to sign admin request: {}", e))
 }
 
 /// Extract leader URL from a "Not leader" error message.
@@ -275,6 +194,35 @@ fn extract_leader_url_from_error(error_msg: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Execute an operation against the leader, retrying once on leader redirect.
+async fn with_leader_retry<T, F, Fut>(ctx: &AdminContext, f: F) -> anyhow::Result<T>
+where
+    F: Fn(KelsRegistryClient) -> Fut,
+    Fut: std::future::Future<Output = Result<T, KelsError>>,
+{
+    let mut target_url = ctx.get_leader_url().await?;
+
+    for attempt in 0..2 {
+        let client = ctx.client_for(&target_url);
+        match f(client).await {
+            Ok(result) => return Ok(result),
+            Err(KelsError::ServerError(ref msg, _))
+                if msg.contains("Not leader") && attempt == 0 =>
+            {
+                if let Some(new_url) = extract_leader_url_from_error(msg) {
+                    println!("Redirecting to leader at {}...", new_url);
+                    target_url = new_url;
+                    continue;
+                }
+                return Err(anyhow!("{}", msg));
+            }
+            Err(e) => return Err(anyhow!("{}", e)),
+        }
+    }
+
+    Err(anyhow!("Failed after leader retries"))
 }
 
 /// Push own KEL events to the local registry, which fans out to all federation members.
@@ -337,9 +285,7 @@ async fn propose_peer(
 
     // Get the approval threshold from federation status
     let threshold = match ctx.get_federation_status().await? {
-        Some(status) => kels_registry::federation::FederationConfig::compute_approval_threshold(
-            status.members.len(),
-        ),
+        Some(status) => compute_approval_threshold(status.members.len()),
         None => return Err(anyhow!("Federation not configured")),
     };
 
@@ -360,49 +306,18 @@ async fn propose_peer(
         .await
         .context("Failed to anchor proposal")?;
 
-    // Get leader URL from federation status
-    let mut target_url = ctx.get_leader_url().await?;
-
     // Push KEL to local registry (fans out to all federation members including leader)
     push_kel_to_registry(ctx).await?;
 
-    // Retry loop for leader changes
-    for attempt in 0..2 {
-        let url = format!("{}/api/admin/addition-proposals", target_url);
-        let resp = ctx
-            .http_client
-            .post(&url)
-            .json(&peer_proposal)
-            .send()
-            .await?;
+    let result = with_leader_retry(ctx, |client| {
+        let proposal = peer_proposal.clone();
+        async move { client.submit_addition_proposal(&proposal).await }
+    })
+    .await?;
 
-        if resp.status().is_success() {
-            let result: ProposalResponse = resp.json().await?;
-            println!("Proposal created: {}", result.proposal_id);
-            println!("{}", result.message);
-            return Ok(());
-        }
-
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        let error_msg = error
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("unknown error");
-
-        // Check if this is a "not leader" error and extract new leader URL
-        if error_msg.contains("Not leader")
-            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
-            && attempt == 0
-        {
-            println!("Redirecting to leader at {}...", new_leader_url);
-            target_url = new_leader_url;
-            continue;
-        }
-
-        return Err(anyhow!("Failed to create proposal: {}", error_msg));
-    }
-
-    Err(anyhow!("Failed to create proposal after retries"))
+    println!("Proposal created: {}", result.proposal_id);
+    println!("{}", result.message);
+    Ok(())
 }
 
 async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
@@ -415,9 +330,7 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
 
     // Get the approval threshold from federation status
     let threshold = match ctx.get_federation_status().await? {
-        Some(status) => kels_registry::federation::FederationConfig::compute_approval_threshold(
-            status.members.len(),
-        ),
+        Some(status) => compute_approval_threshold(status.members.len()),
         None => return Err(anyhow!("Federation not configured")),
     };
 
@@ -435,48 +348,18 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
         .await
         .context("Failed to anchor removal proposal")?;
 
-    // Get leader URL from federation status
-    let mut target_url = ctx.get_leader_url().await?;
-
     // Push KEL to local registry (fans out to all federation members including leader)
     push_kel_to_registry(ctx).await?;
 
-    // Retry loop for leader changes
-    for attempt in 0..2 {
-        let url = format!("{}/api/admin/removal-proposals", target_url);
-        let resp = ctx
-            .http_client
-            .post(&url)
-            .json(&removal_proposal)
-            .send()
-            .await?;
+    let result = with_leader_retry(ctx, |client| {
+        let proposal = removal_proposal.clone();
+        async move { client.submit_removal_proposal(&proposal).await }
+    })
+    .await?;
 
-        if resp.status().is_success() {
-            let result: ProposalResponse = resp.json().await?;
-            println!("Removal proposal created: {}", result.proposal_id);
-            println!("{}", result.message);
-            return Ok(());
-        }
-
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        let error_msg = error
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("unknown error");
-
-        if error_msg.contains("Not leader")
-            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
-            && attempt == 0
-        {
-            println!("Redirecting to leader at {}...", new_leader_url);
-            target_url = new_leader_url;
-            continue;
-        }
-
-        return Err(anyhow!("Failed to create removal proposal: {}", error_msg));
-    }
-
-    Err(anyhow!("Failed to create removal proposal after retries"))
+    println!("Removal proposal created: {}", result.proposal_id);
+    println!("{}", result.message);
+    Ok(())
 }
 
 async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> anyhow::Result<()> {
@@ -497,206 +380,142 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .await
         .context("Failed to anchor vote in KEL")?;
 
-    // Get leader URL from federation status
-    let mut target_url = ctx.get_leader_url().await?;
-
     // Push KEL to local registry (fans out to all federation members including leader)
     push_kel_to_registry(ctx).await?;
 
-    // Retry loop for leader changes
-    for attempt in 0..2 {
-        let url = format!("{}/api/admin/proposals/{}/vote", target_url, proposal_id);
-        let resp = ctx.http_client.post(&url).json(&vote).send().await?;
+    let pid = proposal_id.to_string();
+    let result = with_leader_retry(ctx, |client| {
+        let v = vote.clone();
+        let id = pid.clone();
+        async move { client.submit_vote(&id, &v).await }
+    })
+    .await?;
 
-        if resp.status().is_success() {
-            let result: ProposalResponse = resp.json().await?;
-            println!("{}", result.message);
-            println!(
-                "Progress: {}/{} approvals",
-                result.current_votes, result.votes_needed
-            );
-            if result.status == "approved" {
-                println!("Peer has been added.");
-            } else if result.status == "removal_approved" {
-                println!("Peer has been removed.");
-            }
-            return Ok(());
-        }
-
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        let error_msg = error
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("unknown error");
-
-        // Check if this is a "not leader" error and extract new leader URL
-        if error_msg.contains("Not leader")
-            && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
-            && attempt == 0
-        {
-            println!("Redirecting to leader at {}...", new_leader_url);
-            target_url = new_leader_url;
-            continue;
-        }
-
-        return Err(anyhow!("Failed to vote: {}", error_msg));
+    println!("{}", result.message);
+    println!(
+        "Progress: {}/{} approvals",
+        result.current_votes, result.votes_needed
+    );
+    if result.status == "approved" {
+        println!("Peer has been added.");
+    } else if result.status == "removal_approved" {
+        println!("Peer has been removed.");
     }
-
-    Err(anyhow!("Failed to vote after retries"))
+    Ok(())
 }
 
 async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/federation/proposals?audit=true", ctx.registry_url);
-    let resp = ctx.http_client.get(&url).send().await?;
+    let response = ctx
+        .registry_client
+        .fetch_completed_proposals_audit()
+        .await
+        .map_err(|e| anyhow!("Failed to list proposals: {}", e))?;
 
-    if resp.status().is_success() {
-        let response: CompletedProposalsResponse = resp.json().await?;
+    if response.additions.is_empty() && response.removals.is_empty() {
+        println!("No proposals");
+        return Ok(());
+    }
 
-        if response.additions.is_empty() && response.removals.is_empty() {
-            println!("No proposals");
-            return Ok(());
-        }
-
-        if !response.additions.is_empty() {
-            println!("Addition Proposals");
-            println!("{}", "=".repeat(50));
-            for pwv in &response.additions {
-                if let Some(p) = pwv.history.inception() {
-                    let status = pwv.status(p.threshold);
-                    let expires = p.expires_at.to_string();
-                    let expires = expires.split('T').next().unwrap_or(&expires);
-                    println!("Proposal:  {}", pwv.proposal_id());
-                    println!("Peer ID:   {}", p.peer_prefix);
-                    println!("Proposer:  {}", p.proposer);
-                    println!("Status:    {:?}", status);
-                    println!("Approvals: {}", pwv.approval_count());
-                    println!("Expires:   {}", expires);
-                    println!();
-                }
+    if !response.additions.is_empty() {
+        println!("Addition Proposals");
+        println!("{}", "=".repeat(50));
+        for pwv in &response.additions {
+            if let Some(p) = pwv.history.inception() {
+                let status = pwv.status(p.threshold);
+                let expires = p.expires_at.to_string();
+                let expires = expires.split('T').next().unwrap_or(&expires);
+                println!("Proposal:  {}", pwv.proposal_id());
+                println!("Peer ID:   {}", p.peer_prefix);
+                println!("Proposer:  {}", p.proposer);
+                println!("Status:    {:?}", status);
+                println!("Approvals: {}", pwv.approval_count());
+                println!("Expires:   {}", expires);
+                println!();
             }
         }
+    }
 
-        if !response.removals.is_empty() {
-            println!("Removal Proposals");
-            println!("{}", "=".repeat(50));
-            for rwv in &response.removals {
-                if let Some(p) = rwv.history.inception() {
-                    let status = rwv.status(p.threshold);
-                    let expires = p.expires_at.to_string();
-                    let expires = expires.split('T').next().unwrap_or(&expires);
-                    println!("Proposal:  {}", rwv.proposal_id());
-                    println!("Peer ID:   {}", p.peer_prefix);
-                    println!("Proposer:  {}", p.proposer);
-                    println!("Status:    {:?}", status);
-                    println!("Approvals: {}", rwv.approval_count());
-                    println!("Expires:   {}", expires);
-                    println!();
-                }
+    if !response.removals.is_empty() {
+        println!("Removal Proposals");
+        println!("{}", "=".repeat(50));
+        for rwv in &response.removals {
+            if let Some(p) = rwv.history.inception() {
+                let status = rwv.status(p.threshold);
+                let expires = p.expires_at.to_string();
+                let expires = expires.split('T').next().unwrap_or(&expires);
+                println!("Proposal:  {}", rwv.proposal_id());
+                println!("Peer ID:   {}", p.peer_prefix);
+                println!("Proposer:  {}", p.proposer);
+                println!("Status:    {:?}", status);
+                println!("Approvals: {}", rwv.approval_count());
+                println!("Expires:   {}", expires);
+                println!();
             }
         }
-    } else {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to list proposals: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
     }
 
     Ok(())
 }
 
 async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
-    let signed = sign_admin_request(ctx).await?;
-    let url = format!("{}/api/admin/proposals/{}", ctx.registry_url, proposal_id);
-    let resp = ctx.http_client.post(&url).json(&signed).send().await?;
+    let proposal = ctx
+        .registry_client
+        .fetch_proposal(proposal_id)
+        .await
+        .map_err(|e| anyhow!("Failed to get proposal: {}", e))?;
 
-    if resp.status().is_success() {
-        let proposal: ProposalWithVotes = resp.json().await?;
-        match proposal {
-            ProposalWithVotes::Addition(pwv) => {
-                if let Some(p) = pwv.history.inception() {
-                    println!("Addition Proposal: {}", pwv.proposal_id());
-                    println!("{}", "=".repeat(50));
-                    println!("SAID:       {}", p.said);
-                    println!("Peer ID:    {}", p.peer_prefix);
-                    println!("Node ID:    {}", p.node_id);
-                    println!("Proposer:   {}", p.proposer);
-                    println!("Approvals:  {}", pwv.approval_count());
-                    println!("Rejections: {}", pwv.rejection_count());
-                    println!("Created:    {}", p.created_at);
-                    println!("Expires:    {}", p.expires_at);
-                    if pwv.history.is_withdrawn()
-                        && let Some(latest) = pwv.history.latest()
-                        && let Some(ref withdrawn_at) = latest.withdrawn_at
-                    {
-                        println!("Withdrawn:  {}", withdrawn_at);
-                    }
-                }
-            }
-            ProposalWithVotes::Removal(rwv) => {
-                if let Some(p) = rwv.history.inception() {
-                    println!("Removal Proposal: {}", rwv.proposal_id());
-                    println!("{}", "=".repeat(50));
-                    println!("SAID:       {}", p.said);
-                    println!("Peer ID:    {}", p.peer_prefix);
-                    println!("Proposer:   {}", p.proposer);
-                    println!("Approvals:  {}", rwv.approval_count());
-                    println!("Rejections: {}", rwv.rejection_count());
-                    println!("Created:    {}", p.created_at);
-                    println!("Expires:    {}", p.expires_at);
-                    if rwv.history.is_withdrawn()
-                        && let Some(latest) = rwv.history.latest()
-                        && let Some(ref withdrawn_at) = latest.withdrawn_at
-                    {
-                        println!("Withdrawn:  {}", withdrawn_at);
-                    }
+    match proposal {
+        ProposalWithVotes::Addition(pwv) => {
+            if let Some(p) = pwv.history.inception() {
+                println!("Addition Proposal: {}", pwv.proposal_id());
+                println!("{}", "=".repeat(50));
+                println!("SAID:       {}", p.said);
+                println!("Peer ID:    {}", p.peer_prefix);
+                println!("Node ID:    {}", p.node_id);
+                println!("Proposer:   {}", p.proposer);
+                println!("Approvals:  {}", pwv.approval_count());
+                println!("Rejections: {}", pwv.rejection_count());
+                println!("Created:    {}", p.created_at);
+                println!("Expires:    {}", p.expires_at);
+                if pwv.history.is_withdrawn()
+                    && let Some(latest) = pwv.history.latest()
+                    && let Some(ref withdrawn_at) = latest.withdrawn_at
+                {
+                    println!("Withdrawn:  {}", withdrawn_at);
                 }
             }
         }
-    } else {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to get proposal: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
+        ProposalWithVotes::Removal(rwv) => {
+            if let Some(p) = rwv.history.inception() {
+                println!("Removal Proposal: {}", rwv.proposal_id());
+                println!("{}", "=".repeat(50));
+                println!("SAID:       {}", p.said);
+                println!("Peer ID:    {}", p.peer_prefix);
+                println!("Proposer:   {}", p.proposer);
+                println!("Approvals:  {}", rwv.approval_count());
+                println!("Rejections: {}", rwv.rejection_count());
+                println!("Created:    {}", p.created_at);
+                println!("Expires:    {}", p.expires_at);
+                if rwv.history.is_withdrawn()
+                    && let Some(latest) = rwv.history.latest()
+                    && let Some(ref withdrawn_at) = latest.withdrawn_at
+                {
+                    println!("Withdrawn:  {}", withdrawn_at);
+                }
+            }
+        }
     }
 
     Ok(())
 }
 
 async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
-    // 1. Fetch the current proposal from the registry
-    let mut target_url = ctx.get_leader_url().await?;
-    let signed = sign_admin_request(ctx).await?;
-    let fetch_url = format!("{}/api/admin/proposals/{}", target_url, proposal_id);
-    let resp = ctx
-        .http_client
-        .post(&fetch_url)
-        .json(&signed)
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to fetch proposal: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
-    }
-
-    let proposal: ProposalWithVotes = resp
-        .json()
+    // Fetch the current proposal from the registry
+    let proposal = ctx
+        .registry_client
+        .fetch_proposal(proposal_id)
         .await
-        .context("Failed to parse proposal response")?;
+        .map_err(|e| anyhow!("Failed to fetch proposal: {}", e))?;
 
     match proposal {
         ProposalWithVotes::Addition(pwv) => {
@@ -730,35 +549,14 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
 
             push_kel_to_registry(ctx).await?;
 
-            for attempt in 0..2 {
-                let url = format!("{}/api/admin/addition-proposals", target_url);
-                let resp = ctx.http_client.post(&url).json(&withdrawal).send().await?;
+            let result = with_leader_retry(ctx, |client| {
+                let w = withdrawal.clone();
+                async move { client.submit_addition_proposal(&w).await }
+            })
+            .await?;
 
-                if resp.status().is_success() {
-                    let result: ProposalResponse = resp.json().await?;
-                    println!("{}", result.message);
-                    return Ok(());
-                }
-
-                let error: serde_json::Value = resp.json().await.unwrap_or_default();
-                let error_msg = error
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("unknown error");
-
-                if error_msg.contains("Not leader")
-                    && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
-                    && attempt == 0
-                {
-                    println!("Redirecting to leader at {}...", new_leader_url);
-                    target_url = new_leader_url;
-                    continue;
-                }
-
-                return Err(anyhow!("Failed to withdraw proposal: {}", error_msg));
-            }
-
-            Err(anyhow!("Failed to withdraw proposal after retries"))
+            println!("{}", result.message);
+            Ok(())
         }
         ProposalWithVotes::Removal(rwv) => {
             let current = rwv
@@ -791,58 +589,25 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
 
             push_kel_to_registry(ctx).await?;
 
-            for attempt in 0..2 {
-                let url = format!("{}/api/admin/removal-proposals", target_url);
-                let resp = ctx.http_client.post(&url).json(&withdrawal).send().await?;
+            let result = with_leader_retry(ctx, |client| {
+                let w = withdrawal.clone();
+                async move { client.submit_removal_proposal(&w).await }
+            })
+            .await?;
 
-                if resp.status().is_success() {
-                    let result: ProposalResponse = resp.json().await?;
-                    println!("{}", result.message);
-                    return Ok(());
-                }
-
-                let error: serde_json::Value = resp.json().await.unwrap_or_default();
-                let error_msg = error
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("unknown error");
-
-                if error_msg.contains("Not leader")
-                    && let Some(new_leader_url) = extract_leader_url_from_error(error_msg)
-                    && attempt == 0
-                {
-                    println!("Redirecting to leader at {}...", new_leader_url);
-                    target_url = new_leader_url;
-                    continue;
-                }
-
-                return Err(anyhow!(
-                    "Failed to withdraw removal proposal: {}",
-                    error_msg
-                ));
-            }
-
-            Err(anyhow!("Failed to withdraw removal proposal after retries"))
+            println!("{}", result.message);
+            Ok(())
         }
     }
 }
 
 async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/peers?all=true", ctx.registry_url);
-    let resp = ctx.http_client.get(&url).send().await?;
+    let response = ctx
+        .registry_client
+        .fetch_all_peers()
+        .await
+        .map_err(|e| anyhow!("Failed to list peers: {}", e))?;
 
-    if !resp.status().is_success() {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to list peers: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
-    }
-
-    let response: PeersResponse = resp.json().await?;
     let peers: Vec<_> = response
         .peers
         .iter()
@@ -869,21 +634,12 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/peers", ctx.registry_url);
-    let resp = ctx.http_client.get(&url).send().await?;
+    let (response, _) = ctx
+        .registry_client
+        .fetch_peers()
+        .await
+        .map_err(|e| anyhow!("Failed to fetch allowlist: {}", e))?;
 
-    if !resp.status().is_success() {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to fetch allowlist: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
-    }
-
-    let response: PeersResponse = resp.json().await?;
     let active_peers: Vec<_> = response
         .peers
         .iter()
@@ -904,21 +660,11 @@ async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
-    let url = format!("{}/api/federation/proposals?audit=true", ctx.registry_url);
-    let resp = ctx.http_client.get(&url).send().await?;
-
-    if !resp.status().is_success() {
-        let error: serde_json::Value = resp.json().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Failed to fetch proposal history: {}",
-            error
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown error")
-        ));
-    }
-
-    let response: CompletedProposalsResponse = resp.json().await?;
+    let response = ctx
+        .registry_client
+        .fetch_completed_proposals_audit()
+        .await
+        .map_err(|e| anyhow!("Failed to fetch proposal history: {}", e))?;
 
     if response.additions.is_empty() && response.removals.is_empty() {
         println!("No peer history");

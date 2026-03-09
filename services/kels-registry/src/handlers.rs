@@ -15,12 +15,12 @@ use axum::{
 use cesr::Matter;
 use dashmap::DashMap;
 use kels::{
-    AdditionHistory, AdminRequest, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
-    RemovalHistory, SignedKeyEvent, SignedKeyEventPage, SignedRequest, Vote,
+    AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
+    KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
+    Proposal, ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotesMethods,
+    RemovalHistory, SignedKeyEvent, SignedKeyEventPage, Vote,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::warn;
 use verifiable_storage::SelfAddressed;
 
@@ -405,42 +405,6 @@ pub async fn list_completed_proposals(
 // ==================== Admin API ====================
 
 /// Verify a signed admin request against this node's own identity.
-///
-/// Checks that the request was signed by this node's identity key by:
-/// 1. Confirming the signer prefix matches our own
-/// 2. Verifying the signature against our KEL's current public key
-async fn verify_admin_request<T: Serialize>(
-    signed_request: &SignedRequest<T>,
-    identity_client: &IdentityClient,
-) -> Result<(), ApiError> {
-    let our_prefix = identity_client
-        .get_prefix()
-        .await
-        .map_err(|e| ApiError::internal_error(format!("Identity error: {}", e)))?;
-
-    if signed_request.peer_prefix != our_prefix {
-        return Err(ApiError::forbidden("Not signed by this node's identity"));
-    }
-
-    // Consuming: verify identity KEL (paginated) for admin signature check
-    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/identity/kel");
-    let ctx = kels::verify_key_events(
-        &our_prefix,
-        &source,
-        kels::KelVerifier::new(&our_prefix),
-        kels::MAX_EVENTS_PER_KEL_QUERY,
-        kels::max_verification_pages(),
-    )
-    .await
-    .map_err(|e| ApiError::unauthorized(format!("Identity KEL verification failed: {}", e)))?;
-
-    signed_request
-        .verify_signature_with_ctx(&ctx)
-        .map_err(|_| ApiError::unauthorized("Admin signature verification failed"))?;
-
-    Ok(())
-}
-
 /// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
@@ -450,29 +414,11 @@ pub struct AddPeerRequest {
     pub gossip_addr: String,
 }
 
-/// Response for proposal operations.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProposalResponse {
-    pub proposal_id: String,
-    pub status: String,
-    pub votes_needed: usize,
-    pub current_votes: usize,
-    pub message: String,
-}
-
-/// Get a specific proposal with votes (admin, signed request required).
-/// Returns either an addition or removal proposal.
-///
-/// This endpoint uses `SignedRequest<AdminRequest>` for authentication — the admin
-/// CLI signs the request via the identity service (HSM-backed). If we add more admin
-/// query endpoints, they should follow this same pattern.
-pub async fn admin_get_proposal(
+/// Get a specific proposal with votes.
+pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
-    Json(signed_request): Json<SignedRequest<AdminRequest>>,
 ) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
-    verify_admin_request(&signed_request, &state.identity_client).await?;
-
     if let Some(addition) = state
         .node
         .get_addition_proposal_with_votes(&proposal_id)

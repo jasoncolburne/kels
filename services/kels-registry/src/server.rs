@@ -48,6 +48,10 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
             .route(
                 "/api/federation/proposals",
                 get(handlers::list_completed_proposals),
+            )
+            .route(
+                "/api/federation/proposals/:proposal_id",
+                get(handlers::get_proposal),
             );
 
         // Admin API (localhost only) for proposal and peer management
@@ -59,10 +63,6 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
             .route(
                 "/api/admin/removal-proposals",
                 post(handlers::admin_submit_removal_proposal),
-            )
-            .route(
-                "/api/admin/proposals/:proposal_id",
-                post(handlers::admin_get_proposal),
             )
             .route(
                 "/api/admin/proposals/:proposal_id/vote",

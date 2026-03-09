@@ -147,7 +147,7 @@ Admin API (signed requests):
 |--------|------|-------------|
 | `POST` | `/api/admin/addition-proposals` | Propose a new peer (addition) |
 | `POST` | `/api/admin/removal-proposals` | Propose removal of a peer |
-| `POST` | `/api/admin/proposals/:proposal_id` | Get proposal details |
+| `GET` | `/api/federation/proposals/:proposal_id` | Get proposal details |
 | `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
 
 > **Note:** Node management, peer discovery, federation, and admin endpoints are only available when federation is configured. Registration and deregistration require cryptographically signed requests from nodes in the peer allowlist. See [Secure Registration](./design/secure-registration.md) for details.

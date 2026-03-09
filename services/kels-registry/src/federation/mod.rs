@@ -607,18 +607,4 @@ impl FederationNode {
     }
 }
 
-/// Federation status information.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FederationStatus {
-    pub node_id: FederationNodeId,
-    pub self_prefix: String,
-    pub is_leader: bool,
-    pub leader_id: Option<FederationNodeId>,
-    pub leader_prefix: Option<String>,
-    pub leader_url: Option<String>,
-    pub term: u64,
-    pub last_log_index: u64,
-    pub last_applied: u64,
-    pub members: Vec<String>,
-}
+pub use kels::FederationStatus;
