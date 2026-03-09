@@ -5,6 +5,7 @@ This document describes the verification protocol used to validate the integrity
 ## Overview
 
 KEL verification ensures:
+- Events match their explicit schemas
 - Serials start at 0 and increment by 1 with no gaps
 - The inception event has a valid prefix
 - All event prefixes match
@@ -26,8 +27,8 @@ For each event in the page:
 
 ```
 verify_event(event):
-    // 1. SAID integrity
-    event.verify()  // Recompute SAID, compare to stored
+    // 1. SAID and prefix integrity
+    event.verify()  // Inception: verify both prefix and SAID; subsequent: verify SAID
 
     // 2. Prefix consistency
     if event.prefix != verifier.prefix:
@@ -143,6 +144,7 @@ Derived accessors:
 | Property | Verification Method |
 |----------|---------------------|
 | SAID integrity | Recompute and compare |
+| Prefix integrity | Inception prefix recomputed and compared |
 | Prefix consistency | All events have same prefix |
 | Event chaining | Previous field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
