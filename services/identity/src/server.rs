@@ -105,6 +105,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .await
         .map_err(|e| format!("Failed to create builder: {}", e))?
     } else {
+        // No eager push to registry needed — identity starts before registry,
+        // and registry pulls all member KELs via sync_all_member_kels on startup.
         info!("No existing identity - auto-incepting");
 
         let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
