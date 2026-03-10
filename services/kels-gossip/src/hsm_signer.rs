@@ -3,7 +3,7 @@
 //! Provides:
 //! - `IdentityGossipSigner`: implements `gossip::net::Signer` for gossip protocol handshakes
 //! - `KelsPeerVerifier`: implements `gossip::net::PeerVerifier` for peer authentication
-//! - `IdentityRegistrySigner`: implements `kels::RegistrySigner` for registry API requests
+//! - `IdentitySigner`: implements `kels::PeerSigner` for signed API requests
 //!
 //! All signing goes through the identity service, which holds the node's single
 //! cryptographic identity (HSM-backed key pair + KEL).
@@ -345,19 +345,19 @@ impl PeerVerifier for KelsPeerVerifier {
 }
 
 // ============================================================================
-// IdentityRegistrySigner — implements kels::RegistrySigner
+// IdentitySigner — implements kels::PeerSigner
 // ============================================================================
 
 /// Registry signer implementation using the identity service.
 ///
 /// Signs registry API requests via the identity service, ensuring the same
 /// key is used for all signing operations (gossip handshakes, registry requests).
-pub struct IdentityRegistrySigner {
+pub struct IdentitySigner {
     identity_client: kels::IdentityClient,
     peer_prefix: String,
 }
 
-impl IdentityRegistrySigner {
+impl IdentitySigner {
     pub fn new(identity_url: &str, peer_prefix: String) -> Self {
         Self {
             identity_client: kels::IdentityClient::new(identity_url),
@@ -367,7 +367,7 @@ impl IdentityRegistrySigner {
 }
 
 #[async_trait::async_trait]
-impl kels::RegistrySigner for IdentityRegistrySigner {
+impl kels::PeerSigner for IdentitySigner {
     async fn sign(&self, data: &[u8]) -> Result<kels::SignResult, kels::KelsError> {
         let data_str = std::str::from_utf8(data)
             .map_err(|e| kels::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e)))?;
@@ -410,11 +410,11 @@ mod tests {
         assert_eq!(err.to_string(), "Key error: Invalid key format");
     }
 
-    // ==================== IdentityRegistrySigner Tests ====================
+    // ==================== IdentitySigner Tests ====================
 
     #[test]
     fn test_identity_registry_signer_new() {
-        let signer = IdentityRegistrySigner::new(
+        let signer = IdentitySigner::new(
             "http://identity:80",
             "ETestPeerPrefix_____________________________".to_string(),
         );

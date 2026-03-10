@@ -49,7 +49,7 @@ use thiserror::Error;
 use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use gossip_layer::{GossipCommand, GossipEvent};
-use hsm_signer::{IdentityGossipSigner, IdentityRegistrySigner, KelsPeerVerifier, SignerError};
+use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
 
 #[derive(Error, Debug)]
 pub enum ServiceError {
@@ -282,9 +282,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer =
-        IdentityRegistrySigner::new(&config.identity_url, peer_prefix_str.clone());
-    let registry_signer: Arc<dyn kels::RegistrySigner> = Arc::new(registry_signer);
+    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone());
+    let registry_signer: Arc<dyn kels::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
     // All federation registry URLs for peer discovery and authenticated operations

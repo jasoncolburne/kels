@@ -65,8 +65,8 @@ pub use hardware::HardwareKeyProvider;
 pub use builder::KeyEventBuilder;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
-    ManageKelOperation, ManageKelRequest, ManageKelResponse, RegistrySigner, RotateMode,
-    SignResult, nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,
+    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
     verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
@@ -76,21 +76,19 @@ pub use repository::SignedEventRepository;
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
-    AdditionHistory, AdditionWithVotes, AdminRequest, CachedKel, CompletedProposalsResponse,
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind, EventSignature, FederationStatus,
-    KelMergeResult, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeStatus, NodeType,
-    Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
-    PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory, ProposalResponse,
-    ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD,
-    RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory, RemovalWithVotes,
-    SignedKeyEvent, SignedKeyEventPage, SignedRequest, SubmitEventsResponse, Vote,
-    compute_approval_threshold, generate_nonce, hash_tip_saids, validate_timestamp,
-};
-pub use types::{
-    BranchTip, HttpKelSink, HttpKelSource, KelVerifier, PageLoader, PagedKelSink, PagedKelSource,
-    StoreKelSource, StorePageLoader, Verification, benchmark_key_events, collect_key_events,
-    completed_verification, compute_rotation_hash, forward_key_events, resolve_key_events,
-    truncate_incomplete_generation, verify_key_events,
+    AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
+    CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
+    EventSignature, FederationStatus, HttpKelSink, HttpKelSource, KelMergeResult, KelVerifier,
+    KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeStatus, NodeType, PageLoader,
+    PagedKelSink, PagedKelSource, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
+    ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory,
+    RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest, StoreKelSource,
+    StorePageLoader, SubmitEventsResponse, Verification, Vote, benchmark_key_events,
+    collect_key_events, completed_verification, compute_approval_threshold, compute_rotation_hash,
+    forward_key_events, generate_nonce, hash_tip_saids, resolve_key_events,
+    truncate_incomplete_generation, validate_timestamp, verify_key_events,
 };
 
 /// Maximum number of events allowed in a single submit_events request.

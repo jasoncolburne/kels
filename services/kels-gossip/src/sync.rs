@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::{StreamExt, future::join_all};
-use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, RegistrySigner};
+use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, PeerSigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -693,7 +693,7 @@ pub async fn run_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
     local_kels_url: String,
-    signer: Arc<dyn RegistrySigner>,
+    signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
     let local_client = KelsClient::new(&local_kels_url);

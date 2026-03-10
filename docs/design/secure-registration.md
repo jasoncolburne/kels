@@ -198,7 +198,7 @@ When the registry receives a signed request:
 
 ## Request Signing Flow (Client Side)
 
-kels-gossip signs requests using `IdentityRegistrySigner`:
+kels-gossip signs requests using `IdentitySigner`:
 
 1. **Create signer** on startup with identity service URL and peer_prefix
 2. **Sign requests** by calling the identity service sign endpoint (returns signature)
@@ -206,7 +206,7 @@ kels-gossip signs requests using `IdentityRegistrySigner`:
 
 ```rust
 // In kels-gossip startup
-let registry_signer = IdentityRegistrySigner::new(identity_url, &peer_prefix);
+let registry_signer = IdentitySigner::new(identity_url, &peer_prefix);
 
 // Registration is signed via sign_request(), then submitted to the registry
 let signed = sign_request(&registry_signer, &register_request).await?;

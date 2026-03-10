@@ -29,7 +29,7 @@ use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use futures::future::join_all;
-use kels::{KelsClient, KelsError, KelsRegistryClient, PrefixState, RegistrySigner};
+use kels::{KelsClient, KelsError, KelsRegistryClient, PeerSigner, PrefixState};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -74,7 +74,7 @@ pub struct BootstrapSync {
     config: BootstrapConfig,
     urls: Vec<String>,
     allowlist: crate::allowlist::SharedAllowlist,
-    signer: Arc<dyn RegistrySigner>,
+    signer: Arc<dyn PeerSigner>,
     http_client: reqwest::Client,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
 }
@@ -85,7 +85,7 @@ impl BootstrapSync {
         config: BootstrapConfig,
         urls: Vec<String>,
         allowlist: crate::allowlist::SharedAllowlist,
-        signer: Arc<dyn RegistrySigner>,
+        signer: Arc<dyn PeerSigner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))

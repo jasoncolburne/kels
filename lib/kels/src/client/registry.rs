@@ -51,21 +51,21 @@ pub struct SignResult {
     pub peer_prefix: String,
 }
 
-/// Trait for signing registry requests.
+/// Trait for signing requests.
 ///
 /// Implementors sign data and return the signature along with the signer's
 /// peer identity (KELS prefix). The public key is not included — verifiers
 /// look it up from the peer's cached KEL.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-pub trait RegistrySigner: Send + Sync {
+pub trait PeerSigner: Send + Sync {
     /// Sign the given data and return the signature and peer identity.
     async fn sign(&self, data: &[u8]) -> Result<SignResult, KelsError>;
 }
 
 /// Create a signed request wrapper for the given payload using the provided signer.
 pub async fn sign_request<T>(
-    signer: &dyn RegistrySigner,
+    signer: &dyn PeerSigner,
     payload: &T,
 ) -> Result<SignedRequest<T>, KelsError>
 where

@@ -280,7 +280,7 @@ impl KelsClient {
     /// Fetch a page of prefix states via signed POST request.
     pub async fn fetch_prefixes(
         &self,
-        signer: &dyn crate::RegistrySigner,
+        signer: &dyn crate::PeerSigner,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
