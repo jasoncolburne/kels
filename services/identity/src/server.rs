@@ -8,9 +8,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use kels::{
-    KelStore, KelsClient, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal,
-};
+use kels::{KelStore, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal};
 use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
@@ -42,8 +40,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
-    let kels_url = std::env::var("KELS_URL").ok().filter(|u| !u.is_empty());
-    let registry_url = std::env::var("REGISTRY_URL").ok().filter(|u| !u.is_empty());
+    let forward_url = std::env::var("KEL_FORWARD_URL")
+        .ok()
+        .filter(|u| !u.is_empty());
+    let forward_path_prefix =
+        std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/kels".to_string());
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
@@ -183,8 +184,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
-        kels_url,
-        registry_url,
+        forward_url,
+        forward_path_prefix,
         http_client,
     });
 
@@ -308,31 +309,6 @@ async fn check_and_rotate(
             mode: RotateMode::Scheduled,
         };
         perform_kel_operation(state, &op).await?;
-
-        // Submit updated KEL to local KELS service if configured
-        if let Some(kels_url) = state.kels_url.as_ref() {
-            let builder = state.builder.read().await;
-            let events = builder.events().to_vec();
-            drop(builder);
-
-            if !events.is_empty() {
-                let client = KelsClient::new(kels_url);
-                match client.submit_events(&events).await {
-                    Ok(resp) if resp.applied => {
-                        info!("Submitted rotated KEL to KELS service");
-                    }
-                    Ok(_) => {
-                        warn!("KELS service rejected updated KEL");
-                    }
-                    Err(e) => {
-                        warn!("Failed to submit KEL to KELS: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Best-effort push to local registry (after rotation, not before)
-        handlers::push_kel_to_registry(state).await;
 
         return Ok(true);
     }
@@ -479,6 +455,12 @@ pub(crate) async fn perform_kel_operation(
         "KEL operation completed: kind={}, said={}",
         event_kind, event.event.said
     );
+
+    // Release write lock before forwarding
+    drop(builder);
+
+    // Best-effort forward KEL to colocated service if configured
+    handlers::forward_kel(state, &prefix).await;
 
     Ok(ManageKelResponse {
         prefix,

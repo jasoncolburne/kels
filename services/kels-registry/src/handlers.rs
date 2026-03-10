@@ -1019,9 +1019,9 @@ pub async fn submit_member_key_events(
     State(state): State<Arc<FederationState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
-) -> Result<Json<kels::BatchSubmitResponse>, ApiError> {
+) -> Result<Json<kels::SubmitEventsResponse>, ApiError> {
     if events.is_empty() {
-        return Ok(Json(kels::BatchSubmitResponse {
+        return Ok(Json(kels::SubmitEventsResponse {
             diverged_at: None,
             applied: true,
         }));
@@ -1144,7 +1144,7 @@ pub async fn submit_member_key_events(
         futures::future::join_all(futures).await;
     }
 
-    Ok(Json(kels::BatchSubmitResponse {
+    Ok(Json(kels::SubmitEventsResponse {
         diverged_at: outcome.diverged_at,
         applied,
     }))

@@ -10,7 +10,7 @@ use cesr::{Digest, Matter};
 use chrono::Utc;
 use ctor::dtor;
 use kels::{
-    BatchSubmitResponse, KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider,
+    KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider, SubmitEventsResponse,
 };
 use reqwest::Client;
 use std::{net::TcpListener, sync::OnceLock, time::Duration};
@@ -278,7 +278,7 @@ async fn test_submit_and_get_kel() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -320,7 +320,7 @@ async fn test_submit_multiple_events() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Retrieve and verify
@@ -413,7 +413,7 @@ async fn test_idempotent_submit() {
             .unwrap();
 
         assert_eq!(response.status(), 200);
-        let result: BatchSubmitResponse = response.json().await.unwrap();
+        let result: SubmitEventsResponse = response.json().await.unwrap();
         assert!(result.applied);
     }
 
@@ -444,7 +444,7 @@ async fn test_submit_empty_events() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 }
 
@@ -611,7 +611,7 @@ async fn test_submit_rotation_event() {
         .expect("Failed to submit rotation");
 
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Verify KEL now has 2 events
@@ -736,7 +736,7 @@ async fn test_submit_decommission_event() {
         .expect("Failed to submit decommission");
 
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Verify KEL now has 2 events (icp + dec)
@@ -834,7 +834,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -853,7 +853,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -869,7 +869,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 
@@ -931,7 +931,7 @@ async fn test_recovery_from_divergence() {
         .send()
         .await
         .unwrap();
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 
@@ -953,7 +953,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // GET KEL — should show the recovered chain
@@ -978,7 +978,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 }
@@ -1034,7 +1034,7 @@ async fn test_contest_freezes_kel() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_some());
 
@@ -1106,7 +1106,7 @@ async fn test_overlap_submission_creates_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: BatchSubmitResponse = response.json().await.unwrap();
+    let result: SubmitEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 

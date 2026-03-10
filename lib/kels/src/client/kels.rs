@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use crate::{
     error::KelsError,
     types::{
-        BatchSubmitResponse, ErrorCode, ErrorResponse, KelsAuditRecord, SignedKeyEvent,
-        SignedKeyEventPage,
+        ErrorCode, ErrorResponse, KelsAuditRecord, SignedKeyEvent, SignedKeyEventPage,
+        SubmitEventsResponse,
     },
 };
 
@@ -103,11 +103,11 @@ impl KelsClient {
         &self,
         events: &[SignedKeyEvent],
         max_events: usize,
-    ) -> Result<BatchSubmitResponse, KelsError> {
+    ) -> Result<SubmitEventsResponse, KelsError> {
         if events.len() <= max_events {
             return self.submit_events(events).await;
         }
-        let mut last_response = BatchSubmitResponse {
+        let mut last_response = SubmitEventsResponse {
             diverged_at: None,
             applied: true,
         };
@@ -120,7 +120,7 @@ impl KelsClient {
     pub async fn submit_events(
         &self,
         events: &[SignedKeyEvent],
-    ) -> Result<BatchSubmitResponse, KelsError> {
+    ) -> Result<SubmitEventsResponse, KelsError> {
         let url = format!("{}{}/events", self.base_url, self.path_prefix);
 
         let resp = self.client.post(&url).json(events).send().await?;
@@ -362,7 +362,7 @@ mod tests {
 
     mod http_tests {
         use super::*;
-        use crate::types::{BatchSubmitResponse, ErrorCode, ErrorResponse};
+        use crate::types::{ErrorCode, ErrorResponse, SubmitEventsResponse};
         use wiremock::matchers::{method, path, path_regex};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -421,7 +421,7 @@ mod tests {
         async fn test_submit_events_chunked_small_batch() {
             let mock_server = MockServer::start().await;
 
-            let response = BatchSubmitResponse {
+            let response = SubmitEventsResponse {
                 applied: true,
                 diverged_at: None,
             };
@@ -448,7 +448,7 @@ mod tests {
         async fn test_submit_events_chunked_multiple_chunks() {
             let mock_server = MockServer::start().await;
 
-            let response = BatchSubmitResponse {
+            let response = SubmitEventsResponse {
                 applied: true,
                 diverged_at: None,
             };
@@ -477,7 +477,7 @@ mod tests {
         async fn test_submit_events_success() {
             let mock_server = MockServer::start().await;
 
-            let response = BatchSubmitResponse {
+            let response = SubmitEventsResponse {
                 applied: true,
                 diverged_at: None,
             };

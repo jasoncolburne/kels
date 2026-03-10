@@ -118,8 +118,7 @@ struct KelAnnouncement {
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
 | `HSM_URL` | HSM service URL | `http://hsm` |
 | `IDENTITY_URL` | Identity service URL | `http://identity` |
-| `REGISTRY_URL` | Registry service URL for bootstrap sync | (required) |
-| `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for HA | (required) |
+| `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for peer discovery and HA | (required) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
 | `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |

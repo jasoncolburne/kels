@@ -218,7 +218,7 @@ All recorded data in KELS is KEL-backed and verified independently before use:
 
 The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that checks every 6 hours whether the current HSM key binding is older than 30 days. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
 
-All rotations — automatic and manual — go through a single `perform_rotation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The rotation endpoint (`POST /api/identity/rotate`) requires a signed request verified against the identity's own KEL.
+All KEL management operations — automatic and manual — go through a single `perform_kel_operation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The management endpoint (`POST /api/identity/kel/manage`) requires a signed request verified against the identity's own KEL.
 
 ### Proactive Protection
 

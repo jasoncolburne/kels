@@ -11,8 +11,9 @@ use axum::{
 };
 use base64::Engine;
 use kels::{
-    IdentityInfo, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
-    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, SignedKeyEventPage,
+    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, RepositoryKelStore,
+    SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,8 +57,8 @@ pub struct AppState {
     pub repo: Arc<IdentityRepository>,
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
-    pub kels_url: Option<String>,
-    pub registry_url: Option<String>,
+    pub forward_url: Option<String>,
+    pub forward_path_prefix: String,
     pub http_client: reqwest::Client,
 }
 
@@ -179,31 +180,30 @@ pub async fn get_key_events(
     Ok(Json(page))
 }
 
-/// Push all KEL events to the local registry's member KEL endpoint.
-///
-/// Best-effort: logs warning on failure, doesn't block the caller.
-pub(crate) async fn push_kel_to_registry(state: &AppState) {
-    let registry_url = match state.registry_url.as_ref() {
+/// Best-effort forward KEL events to the colocated service (KELS or registry).
+pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
+    let forward_url = match state.forward_url.as_ref() {
         Some(url) => url,
         None => return,
     };
 
-    let builder = state.builder.read().await;
-    let events = builder.events().to_vec();
-    drop(builder);
+    let kel_store = RepositoryKelStore::new(state.kel_repo.clone());
+    let source = kels::StoreKelSource::new(&kel_store);
+    let client = KelsClient::with_path_prefix(forward_url, &state.forward_path_prefix);
+    let sink = client.as_kel_sink();
 
-    if events.is_empty() {
-        return;
-    }
-
-    let client = kels::KelsClient::with_path_prefix(registry_url, "/api/member-kels");
-    match client.submit_events(&events).await {
-        Ok(_) => {
-            tracing::debug!("Pushed KEL events to registry");
-        }
-        Err(e) => {
-            tracing::warn!("Failed to push KEL events to registry: {}", e);
-        }
+    match kels::forward_key_events(
+        prefix,
+        &source,
+        &sink,
+        MAX_EVENTS_PER_KEL_QUERY,
+        kels::max_verification_pages(),
+        None,
+    )
+    .await
+    {
+        Ok(_) => tracing::debug!("Forwarded KEL to {}", forward_url),
+        Err(e) => tracing::warn!("Failed to forward KEL to {}: {}", forward_url, e),
     }
 }
 
@@ -220,12 +220,17 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
+    let prefix = builder
+        .prefix()
+        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
+        .to_string();
+
     let ixn = builder
         .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
-    // Release write lock before pushing
+    // Release write lock before forwarding
     drop(builder);
 
     tracing::info!(
@@ -234,8 +239,8 @@ pub async fn anchor(
         ixn.event.said,
     );
 
-    // Best-effort push to local registry
-    push_kel_to_registry(&state).await;
+    // Best-effort forward to colocated service
+    forward_kel(&state, &prefix).await;
 
     Ok(Json(AnchorResponse {
         event_said: ixn.event.said,
@@ -361,9 +366,6 @@ pub async fn manage_kel(
     let response = crate::server::perform_kel_operation(&state, &signed.payload.operation)
         .await
         .map_err(|e| ApiError::internal(format!("Operation failed: {}", e)))?;
-
-    // Best-effort push to local registry (after operation, not before — we're pushing events)
-    push_kel_to_registry(&state).await;
 
     Ok(Json(response))
 }

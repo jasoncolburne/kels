@@ -173,7 +173,7 @@ If the latest binding verification fails, rotation is triggered immediately — 
 
 ### Rotation Execution
 
-All rotations — automatic and admin-initiated — go through a single `perform_rotation` code path:
+All KEL operations — automatic and admin-initiated — go through a single `perform_kel_operation` code path:
 1. The builder's KEL is reloaded from the database
 2. The rotation event (`rot` or `ror`) is created and signed via the HSM
 3. The builder's key provider is updated in-place with the new key handles
@@ -187,7 +187,7 @@ This ensures the server's in-memory signing state is always consistent with the 
 - **Bounded exposure window:** A compromised signing key is useful for at most 30 days before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
 - **Recovery key freshness:** Recovery keys rotate every ~90 days, limiting the window for recovery key compromise.
 - **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
-- **Authenticated rotation endpoint:** The `POST /api/identity/rotate` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized rotation triggers.
+- **Authenticated management endpoint:** The `POST /api/identity/kel/manage` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized KEL operations.
 
 ## DB Compromise + Key Compromise
 

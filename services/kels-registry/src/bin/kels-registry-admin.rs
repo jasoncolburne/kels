@@ -225,50 +225,6 @@ where
     Err(anyhow!("Failed after leader retries"))
 }
 
-/// Push own KEL events to the local registry, which fans out to all federation members.
-///
-/// After anchoring a SAID in the identity KEL, the registry's
-/// MemberKelRepository must have the latest events before the leader
-/// can verify anchoring. The submit endpoint stores locally and
-/// propagates to all federation members.
-///
-/// The identity service also pushes post-anchor (via `push_kel_to_registry`),
-/// but this explicit push eliminates the race where the admin tool submits
-/// a proposal before the identity push has completed fan-out.
-async fn push_kel_to_registry(ctx: &AdminContext) -> anyhow::Result<()> {
-    let client = kels::KelsClient::with_path_prefix(&ctx.registry_url, "/api/member-kels");
-
-    let mut all_events = Vec::new();
-    let mut since: Option<String> = None;
-    loop {
-        let page = ctx
-            .identity_client
-            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
-            .await
-            .context("Failed to fetch KEL events from identity")?;
-        all_events.extend(page.events);
-        if !page.has_more {
-            break;
-        }
-        since = all_events.last().map(|e| e.event.said.clone());
-    }
-
-    if all_events.is_empty() {
-        return Ok(());
-    }
-
-    let result = client
-        .submit_events(&all_events)
-        .await
-        .context("Failed to push KEL events to registry")?;
-
-    if !result.applied {
-        return Err(anyhow!("Registry rejected KEL events (not applied)"));
-    }
-
-    Ok(())
-}
-
 async fn propose_peer(
     ctx: &AdminContext,
     peer_prefix: &str,
@@ -305,9 +261,6 @@ async fn propose_peer(
         .anchor(&peer_proposal.said)
         .await
         .context("Failed to anchor proposal")?;
-
-    // Push KEL to local registry (fans out to all federation members including leader)
-    push_kel_to_registry(ctx).await?;
 
     let result = with_leader_retry(ctx, |client| {
         let proposal = peer_proposal.clone();
@@ -348,9 +301,6 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
         .await
         .context("Failed to anchor removal proposal")?;
 
-    // Push KEL to local registry (fans out to all federation members including leader)
-    push_kel_to_registry(ctx).await?;
-
     let result = with_leader_retry(ctx, |client| {
         let proposal = removal_proposal.clone();
         async move { client.submit_removal_proposal(&proposal).await }
@@ -379,9 +329,6 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .anchor(&vote.said)
         .await
         .context("Failed to anchor vote in KEL")?;
-
-    // Push KEL to local registry (fans out to all federation members including leader)
-    push_kel_to_registry(ctx).await?;
 
     let pid = proposal_id.to_string();
     let result = with_leader_retry(ctx, |client| {
@@ -547,8 +494,6 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
-            push_kel_to_registry(ctx).await?;
-
             let result = with_leader_retry(ctx, |client| {
                 let w = withdrawal.clone();
                 async move { client.submit_addition_proposal(&w).await }
@@ -586,8 +531,6 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .anchor(&withdrawal.said)
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
-
-            push_kel_to_registry(ctx).await?;
 
             let result = with_leader_retry(ctx, |client| {
                 let w = withdrawal.clone();

@@ -33,13 +33,14 @@ HSM-backed key management for cryptographic identity (KEL). Used by both registr
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
-| POST | `/api/identity/rotate` | **Signed request (own KEL)** | Perform key rotation (standard, recovery, or scheduled); updates in-memory builder |
+| GET | `/api/identity/status` | None | Get identity status (initialized, prefix, last SAID, current key handle) |
+| POST | `/api/identity/kel/manage` | **Signed request (own KEL)** | Manage KEL (rotate, recover, contest, decommission); updates in-memory builder |
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
 - KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 512) and `?since=SAID` for delta fetch
 - Sign returns qb64-encoded signature + public key
-- Rotate accepts `SignedRequest<RotateRequest>` — signature verified against own KEL. Mode can be `standard` (signing key), `recovery` (recovery key), or `scheduled` (auto-selects based on rotation count). All rotations go through `perform_rotation()` which updates the builder's key provider in-place, keeping the server in sync. Also called internally by the auto-rotation loop (every 30 days).
+- Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
 
 ## KELS Service

@@ -137,6 +137,17 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 
 ## Node Configuration
 
+### Identity Service (`identity`)
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection URL |
+| `HSM_URL` | HSM service URL |
+| `KEY_HANDLE_PREFIX` | HSM key handle prefix (`kels-registry` or `kels-gossip`) |
+| `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
+| `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/member-kels` for registry, `/api/kels` for nodes) |
+| `RUST_LOG` | Logging level |
+
 ### KELS Service (`kels`)
 
 | Variable | Description |
@@ -153,7 +164,6 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `NODE_ID` | Unique node identifier |
 | `KELS_URL` | Local KELS service URL |
 | `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
-| `REGISTRY_URL` | Primary registry URL for this node |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |

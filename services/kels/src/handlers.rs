@@ -14,9 +14,9 @@ use axum::{
 use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use kels::{
-    BatchSubmitResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult,
-    KelsAuditRecord, KelsError, KeyEventsQuery, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE,
-    MAX_EVENTS_PER_SUBMISSION, PrefixListResponse, ServerKelCache, SignedKeyEvent,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
+    KeyEventsQuery, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
+    PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
 use tracing::warn;
 
@@ -275,11 +275,11 @@ pub(crate) async fn submit_events(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
-) -> Result<Json<BatchSubmitResponse>, ApiError> {
+) -> Result<Json<SubmitEventsResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
     if events.is_empty() {
-        return Ok(Json(BatchSubmitResponse {
+        return Ok(Json(SubmitEventsResponse {
             diverged_at: None,
             applied: true,
         }));
@@ -415,7 +415,7 @@ pub(crate) async fn submit_events(
         }
     }
 
-    Ok(Json(BatchSubmitResponse {
+    Ok(Json(SubmitEventsResponse {
         diverged_at: outcome.diverged_at,
         applied,
     }))

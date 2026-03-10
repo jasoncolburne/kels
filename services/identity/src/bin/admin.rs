@@ -5,7 +5,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
-use kels::{IdentityClient, KelsClient, RotateMode};
+use kels::{IdentityClient, RotateMode};
 
 #[derive(Parser)]
 #[command(name = "identity-admin")]
@@ -38,11 +38,7 @@ enum Commands {
     /// Decommission the registry identity (permanent, cannot be undone)
     Decommission,
     /// Perform scheduled rotation (auto-selects ROT vs ROR based on rotation count)
-    ScheduledRotate {
-        /// KELS service URL (if set, submit updated KEL after rotation)
-        #[arg(long, env = "KELS_URL")]
-        kels_url: Option<String>,
-    },
+    ScheduledRotate,
 }
 
 #[tokio::main]
@@ -51,43 +47,47 @@ async fn main() -> anyhow::Result<()> {
 
     let identity_client = IdentityClient::new(&cli.identity_url);
 
-    match cli.command {
-        Commands::Status => {
-            cmd_status(&identity_client, cli.json).await?;
-        }
-        Commands::Rotate => {
-            cmd_rotate(&identity_client, cli.json).await?;
-        }
-        Commands::RotateRecovery => {
-            cmd_rotate_recovery(&identity_client, cli.json).await?;
-        }
-        Commands::Recover => {
-            cmd_recover(&identity_client, cli.json).await?;
-        }
-        Commands::Contest => {
-            cmd_contest(&identity_client, cli.json).await?;
-        }
-        Commands::Decommission => {
-            cmd_decommission(&identity_client, cli.json).await?;
-        }
-        Commands::ScheduledRotate { kels_url } => {
-            cmd_scheduled_rotate(&identity_client, kels_url, cli.json).await?;
-        }
+    if let Commands::Status = &cli.command {
+        cmd_status(&identity_client, cli.json).await?;
+        return Ok(());
     }
+
+    let prefix = identity_client
+        .get_prefix()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get prefix: {}", e))?;
+
+    let operation = match &cli.command {
+        Commands::Rotate => kels::ManageKelOperation::Rotate {
+            mode: RotateMode::Standard,
+        },
+        Commands::RotateRecovery => kels::ManageKelOperation::Rotate {
+            mode: RotateMode::Recovery,
+        },
+        Commands::ScheduledRotate => kels::ManageKelOperation::Rotate {
+            mode: RotateMode::Scheduled,
+        },
+        Commands::Recover => kels::ManageKelOperation::Recover,
+        Commands::Contest => kels::ManageKelOperation::Contest,
+        Commands::Decommission => kels::ManageKelOperation::Decommission,
+        Commands::Status => unreachable!(),
+    };
+
+    let response = manage_kel(&identity_client, &prefix, operation).await?;
+    print_manage_response(&response, cli.json);
 
     Ok(())
 }
 
 async fn manage_kel(
     identity_client: &IdentityClient,
+    prefix: &str,
     operation: kels::ManageKelOperation,
 ) -> anyhow::Result<kels::ManageKelResponse> {
-    let prefix = identity_client
-        .get_prefix()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get prefix: {}", e))?;
-
-    let request = kels::ManageKelRequest { prefix, operation };
+    let request = kels::ManageKelRequest {
+        prefix: prefix.to_string(),
+        operation,
+    };
     identity_client
         .manage_kel(&request)
         .await
@@ -150,125 +150,5 @@ async fn cmd_status(identity_client: &IdentityClient, json: bool) -> anyhow::Res
         }
     }
 
-    Ok(())
-}
-
-async fn cmd_rotate(identity_client: &IdentityClient, json: bool) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "Rotating Registry Key...".cyan());
-    }
-
-    let response = manage_kel(
-        identity_client,
-        kels::ManageKelOperation::Rotate {
-            mode: RotateMode::Standard,
-        },
-    )
-    .await?;
-
-    print_manage_response(&response, json);
-    Ok(())
-}
-
-async fn cmd_rotate_recovery(identity_client: &IdentityClient, json: bool) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "Rotating Recovery Key...".cyan());
-    }
-
-    let response = manage_kel(
-        identity_client,
-        kels::ManageKelOperation::Rotate {
-            mode: RotateMode::Recovery,
-        },
-    )
-    .await?;
-
-    print_manage_response(&response, json);
-    Ok(())
-}
-
-async fn cmd_scheduled_rotate(
-    identity_client: &IdentityClient,
-    kels_url: Option<String>,
-    json: bool,
-) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "Performing Scheduled Rotation...".cyan());
-    }
-
-    let response = manage_kel(
-        identity_client,
-        kels::ManageKelOperation::Rotate {
-            mode: RotateMode::Scheduled,
-        },
-    )
-    .await?;
-
-    // Submit updated KEL to local KELS service if URL is configured
-    let kels_url = kels_url.filter(|u| !u.is_empty());
-    if let Some(url) = kels_url {
-        let mut all_events = Vec::new();
-        let mut since: Option<String> = None;
-        loop {
-            let page = identity_client
-                .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to fetch KEL after rotation: {}", e))?;
-            if page.events.is_empty() {
-                break;
-            }
-            since = page.events.last().map(|e| e.event.said.clone());
-            all_events.extend(page.events);
-            if !page.has_more {
-                break;
-            }
-        }
-
-        if !all_events.is_empty() {
-            let kels_client = KelsClient::new(&url);
-            let submit_resp = kels_client.submit_events(&all_events).await?;
-
-            if !submit_resp.applied {
-                return Err(anyhow::anyhow!("KELS service rejected the updated KEL"));
-            }
-
-            if !json {
-                println!("{}", "Updated KEL submitted to KELS service.".green());
-            }
-        }
-    }
-
-    print_manage_response(&response, json);
-    Ok(())
-}
-
-async fn cmd_recover(identity_client: &IdentityClient, json: bool) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "Recovering Identity...".yellow().bold());
-    }
-
-    let response = manage_kel(identity_client, kels::ManageKelOperation::Recover).await?;
-    print_manage_response(&response, json);
-    Ok(())
-}
-
-async fn cmd_contest(identity_client: &IdentityClient, json: bool) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "Contesting Malicious Recovery...".red().bold());
-    }
-
-    let response = manage_kel(identity_client, kels::ManageKelOperation::Contest).await?;
-    print_manage_response(&response, json);
-    Ok(())
-}
-
-async fn cmd_decommission(identity_client: &IdentityClient, json: bool) -> anyhow::Result<()> {
-    if !json {
-        println!("{}", "WARNING: Decommissioning is PERMANENT!".red().bold());
-        println!("{}", "This identity will be permanently ended.".red());
-    }
-
-    let response = manage_kel(identity_client, kels::ManageKelOperation::Decommission).await?;
-    print_manage_response(&response, json);
     Ok(())
 }
