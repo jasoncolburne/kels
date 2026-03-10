@@ -71,7 +71,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 
 ## KELS Registry Service
 
-Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
+Peer allowlist management and federation consensus. Requires a federation of at least 3 registries for peer management (peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
 
 ### Standalone Mode
 
@@ -82,14 +82,6 @@ Peer allowlist management, node registration, federation consensus. Requires a f
 ### Federation Mode
 
 All standalone endpoints plus:
-
-#### Node Management (rate-limited)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_prefix must match allowlist entry) |
-| POST | `/api/nodes/deregister` | **Signed + allowlisted** | Deregister a node |
-| POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Unhealthy) |
 
 #### Peer Discovery
 
@@ -118,7 +110,6 @@ All standalone endpoints plus:
 | POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 
 **Notes:**
-- Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_prefix in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
@@ -160,7 +151,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Method | Where Used | Mechanism |
 |--------|-----------|-----------|
-| **Signed request** | Node registration, prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
+| **Signed request** | Prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Signed admin request** | Admin API | SignedRequest<AdminRequest> verified against own identity KEL |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |

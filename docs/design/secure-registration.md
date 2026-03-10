@@ -1,12 +1,12 @@
-# Secure Node Registration
+# Secure Peer Authorization
 
-This document describes the cryptographically secured node registration system for KELS gossip nodes. All registration requests are signed using HSM-backed identities and verified against a peer allowlist.
+This document describes the cryptographically secured peer authorization system for KELS gossip nodes. Signed requests are verified using HSM-backed identities against a peer allowlist.
 
 ## Overview
 
-The secure registration system ensures that only authorized nodes can:
-- Register with the kels-registry service
+The secure authorization system ensures that only authorized nodes can:
 - Participate in the gossip network
+- Access authenticated endpoints (e.g., prefix listing)
 
 Each node has a persistent secp256r1 identity stored in an HSM (the example implementation uses the software based SoftHSM2 - don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
 
@@ -17,7 +17,7 @@ Each node has a persistent secp256r1 identity stored in an HSM (the example impl
 │                            kels-registry namespace                           │
 │                                                                              │
 │  ┌────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
-│  │  identity  │───>│  Peer Allowlist │───>│  Registration Verification   │   │
+│  │  identity  │───>│  Peer Allowlist │───>│  Request Verification        │   │
 │  │  service   │    │  (PostgreSQL)   │    │  - Verify signature          │   │
 │  │ (1 replica)│    │  [PeerPrefix list]  │    │  - Check PeerPrefix in allowlist │   │
 │  └─────┬──────┘    └─────────────────┘    └──────────────────────────────┘   │
@@ -134,27 +134,9 @@ struct SignedRequest<T> {
 2. Sign the JSON bytes with secp256r1 key
 3. Encode signature as CESR qb64
 
-## API Changes
-
-### Authenticated Endpoints
-
-| Method | Path | Request Body | Description |
-|--------|------|--------------|-------------|
-| `POST` | `/api/nodes/register` | `SignedRequest<RegisterNodeRequest>` | Register a node |
-| `POST` | `/api/nodes/deregister` | `SignedRequest<DeregisterRequest>` | Deregister a node |
-| `POST` | `/api/nodes/status` | `SignedRequest<StatusUpdateRequest>` | Update node status |
-
-### Unauthenticated Endpoints (unchanged)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/peers` | Get peer allowlist |
-| `GET` | `/api/member-kels/:prefix` | Get a federation member's KEL |
-| `GET` | `/health` | Health check |
-
 ## Verification Flow
 
-When the registry receives a signed request:
+When a service receives a signed request:
 
 1. **Parse signature components** from SignedRequest
 2. **Look up peer** by `peer_prefix` in the database, fetch their KEL, and extract the current public key
@@ -208,13 +190,11 @@ kels-gossip signs requests using `IdentitySigner`:
 // In kels-gossip startup
 let registry_signer = IdentitySigner::new(identity_url, &peer_prefix);
 
-// Registration is signed via sign_request(), then submitted to the registry
-let signed = sign_request(&registry_signer, &register_request).await?;
-let registry_client = KelsRegistryClient::new(registry_url);
-registry_client.register_signed(&signed).await?;
+// Sign a request payload and submit it
+let signed = sign_request(&registry_signer, &payload).await?;
 ```
 
-The public key is not included in the request. During verification, the registry looks up the peer by `peer_prefix`, fetches their KEL, and extracts the public key to verify the signature.
+The public key is not included in the request. During verification, the service looks up the peer by `peer_prefix`, fetches their KEL, and extracts the public key to verify the signature.
 
 ## Allowlist Management
 
@@ -256,7 +236,7 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 
 1. Deploy new node namespace with HSM service
 2. Deploy kels-gossip - it generates/loads HSM key and logs PeerPrefix
-3. Node attempts to register with registry - **fails** (not in allowlist)
+3. Node attempts to connect to gossip peers - **rejected** (not in allowlist)
 4. Node can still fetch KELS data via HTTP (read-only, no auth required)
 
 ### Phase 2: Authorize Node
@@ -270,7 +250,7 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 
 ### Phase 3: Node Becomes Operational
 
-1. Node retries registration - **succeeds** (now in allowlist)
+1. Other nodes refresh their allowlist and accept connections from the new peer
 2. Node connects to gossip peers
 3. Node is fully operational
 
@@ -322,9 +302,7 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 |-----------|---------------|
 | Read KELS data | None (public) |
 | Read peer list | None (public) |
-| Register node | Signed + allowlist |
-| Deregister node | Signed + allowlist |
-| Status update | Signed + allowlist |
+| Prefix listing | Signed + allowlist |
 | Gossip connection | Verified allowlist + KEL signature check during handshake |
 
 ## Deployment
@@ -336,7 +314,7 @@ kels-registry/
 ├── hsm (SoftHSM2 service)
 ├── identity (manages registry's KELS identity, 1 replica)
 ├── postgres (peer allowlist + identity KEL)
-├── redis (node registrations)
+├── redis
 └── kels-registry
 ```
 
@@ -353,7 +331,7 @@ kels-node-x/
 
 ## Troubleshooting
 
-### Node Cannot Register
+### Node Cannot Connect
 
 1. Check if peer is in allowlist:
    ```bash
