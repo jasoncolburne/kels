@@ -23,7 +23,7 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 
 ## Identity Service
 
-HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The rotate endpoint requires a signed request.
+HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The manage endpoint requires a signed request (the `IdentityClient` handles signing internally).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
