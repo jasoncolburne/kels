@@ -355,7 +355,7 @@ pub async fn manage_kel(
     .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed
-        .verify_signature_with_ctx(&ctx)
+        .verify_signature(&ctx)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
     // Release advisory lock — perform_operation acquires its own via save_with_merge

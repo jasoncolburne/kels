@@ -14,7 +14,7 @@ Examples: `GET /api/kels/kel/:prefix`, `get_effective_said`, `get_key_events`
 
 Using data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full KEL first.** The only way to access consumed data is through `Verification`, which can only be obtained via `KelVerifier::into_verification()`. This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
 
-Examples: peer signature verification (`verify_signature_with_ctx`), anchor checking, submit handler routing decisions
+Examples: peer signature verification (`verify_signature`), anchor checking, submit handler routing decisions
 
 ### 3. Resolving
 

@@ -580,7 +580,7 @@ pub(crate) async fn list_prefixes(
         .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
 
         signed_request
-            .verify_signature_with_ctx(&ctx)
+            .verify_signature(&ctx)
             .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
     }
 

@@ -42,7 +42,7 @@ impl<T: Serialize> SignedRequest<T> {
     ///
     /// Uses the current public key from the `Verification` (proof-of-verification token).
     /// Fails secure if the KEL is divergent (no unambiguous key).
-    pub fn verify_signature_with_ctx(&self, ctx: &Verification) -> Result<(), KelsError> {
+    pub fn verify_signature(&self, ctx: &Verification) -> Result<(), KelsError> {
         if ctx.is_divergent() {
             return Err(KelsError::Divergent);
         }
@@ -884,7 +884,7 @@ mod tests {
             signature: "test_sig".to_string(),
         };
 
-        let result = signed.verify_signature_with_ctx(&ctx);
+        let result = signed.verify_signature(&ctx);
         assert!(
             matches!(result, Err(crate::KelsError::Divergent)),
             "Expected Divergent error, got: {:?}",
