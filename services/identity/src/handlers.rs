@@ -11,8 +11,8 @@ use axum::{
 };
 use base64::Engine;
 use kels::{
-    KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
-    MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEventPage,
+    IdentityInfo, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,43 +48,8 @@ pub struct SignResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IdentityInfo {
-    pub prefix: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum RotateMode {
-    #[default]
-    Scheduled,
-    Standard,
-    Recovery,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RotateRequest {
-    #[serde(default)]
-    pub mode: RotateMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RotateResponse {
-    pub prefix: String,
-    pub said: String,
-    pub mode: String,
-    pub rotation_number: usize,
-    pub current_key_handle: String,
-    pub next_key_handle: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_key_handle: Option<String>,
 }
 
 pub struct AppState {
@@ -145,6 +110,46 @@ pub async fn get_identity(
 
     Ok(Json(IdentityInfo {
         prefix: prefix.to_string(),
+    }))
+}
+
+pub async fn get_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<kels::IdentityStatus>, ApiError> {
+    let builder = state.builder.read().await;
+    let prefix = match builder.prefix() {
+        Some(p) => p.to_string(),
+        None => {
+            return Ok(Json(kels::IdentityStatus {
+                initialized: false,
+                prefix: None,
+                last_said: None,
+                current_key_handle: None,
+            }));
+        }
+    };
+
+    let binding = state
+        .repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get HSM binding: {}", e)))?;
+
+    let authority = state
+        .repo
+        .authority
+        .get_by_name(crate::repository::AUTHORITY_IDENTITY_NAME)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get authority: {}", e)))?;
+
+    let last_said = authority.map(|a| a.last_said);
+
+    Ok(Json(kels::IdentityStatus {
+        initialized: true,
+        prefix: Some(prefix),
+        last_said,
+        current_key_handle: binding.as_ref().map(|b| b.current_key_handle.clone()),
     }))
 }
 
@@ -308,10 +313,10 @@ pub async fn ecdh(
     }))
 }
 
-pub async fn rotate(
+pub async fn manage_kel(
     State(state): State<Arc<AppState>>,
-    Json(signed): Json<kels::SignedRequest<RotateRequest>>,
-) -> Result<Json<RotateResponse>, ApiError> {
+    Json(signed): Json<kels::SignedRequest<ManageKelRequest>>,
+) -> Result<Json<ManageKelResponse>, ApiError> {
     let prefix = {
         let builder = state.builder.read().await;
         builder
@@ -319,6 +324,13 @@ pub async fn rotate(
             .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
             .to_string()
     };
+
+    if signed.payload.prefix != prefix {
+        return Err(ApiError::bad_request(format!(
+            "Prefix mismatch: request has {}, identity has {}",
+            signed.payload.prefix, prefix
+        )));
+    }
 
     // Consuming: verify full KEL under advisory lock (paginated)
     let mut tx = state
@@ -341,16 +353,16 @@ pub async fn rotate(
         .verify_signature_with_ctx(&ctx)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
-    // Release advisory lock — perform_rotation acquires its own via save_with_merge
+    // Release advisory lock — perform_operation acquires its own via save_with_merge
     tx.commit()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
 
-    let response = crate::server::perform_rotation(&state, signed.payload.mode)
+    let response = crate::server::perform_kel_operation(&state, &signed.payload.operation)
         .await
-        .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Operation failed: {}", e)))?;
 
-    // Best-effort push to local registry (after rotation, not before — we're pushing events)
+    // Best-effort push to local registry (after operation, not before — we're pushing events)
     push_kel_to_registry(&state).await;
 
     Ok(Json(response))

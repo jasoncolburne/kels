@@ -15,8 +15,10 @@ use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
 
+use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
+
 use crate::{
-    handlers::{self, AppState, RotateMode, RotateResponse},
+    handlers::{self, AppState},
     hsm::{HsmClient, HsmKeyProvider},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
@@ -25,11 +27,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/identity", get(handlers::get_identity))
-        .route("/api/identity/kel", get(handlers::get_key_events))
+        .route("/api/identity/status", get(handlers::get_status))
         .route("/api/identity/anchor", post(handlers::anchor))
-        .route("/api/identity/sign", post(handlers::sign))
         .route("/api/identity/ecdh", post(handlers::ecdh))
-        .route("/api/identity/rotate", post(handlers::rotate))
+        .route("/api/identity/kel", get(handlers::get_key_events))
+        .route("/api/identity/kel/manage", post(handlers::manage_kel))
+        .route("/api/identity/sign", post(handlers::sign))
         .with_state(state)
 }
 
@@ -295,13 +298,16 @@ async fn check_and_rotate(
         }
     };
 
-    // Release advisory lock — perform_rotation acquires its own via save_with_merge
+    // Release advisory lock — perform_kel_operation acquires its own via save_with_merge
     tx.commit().await?;
 
     if should_rotate {
         info!("Triggering scheduled rotation");
 
-        perform_rotation(state, RotateMode::Scheduled).await?;
+        let op = ManageKelOperation::Rotate {
+            mode: RotateMode::Scheduled,
+        };
+        perform_kel_operation(state, &op).await?;
 
         // Submit updated KEL to local KELS service if configured
         if let Some(kels_url) = state.kels_url.as_ref() {
@@ -334,15 +340,15 @@ async fn check_and_rotate(
     Ok(false)
 }
 
-/// Perform a key rotation and update the in-memory builder.
+/// Perform a KEL management operation and update the in-memory builder.
 ///
-/// This is the single source of truth for all rotations — called by both the
-/// HTTP handler and the auto-rotation loop. The builder's key provider is
+/// This is the single source of truth for all KEL operations — called by both
+/// the HTTP handler and the auto-rotation loop. The builder's key provider is
 /// updated in-place, so no rebuild is needed.
-pub(crate) async fn perform_rotation(
+pub(crate) async fn perform_kel_operation(
     state: &Arc<AppState>,
-    requested_mode: RotateMode,
-) -> Result<RotateResponse, Box<dyn std::error::Error + Send + Sync>> {
+    operation: &ManageKelOperation,
+) -> Result<ManageKelResponse, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = state.builder.write().await;
 
     // Reload to pick up any external changes
@@ -353,75 +359,106 @@ pub(crate) async fn perform_rotation(
 
     let prefix = builder.prefix().ok_or("Builder has no prefix")?.to_string();
 
-    // Determine actual mode
-    let rotation_count = builder
-        .events()
-        .iter()
-        .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
-        .count();
+    if builder.last_said().is_none() {
+        return Err("KEL is empty".into());
+    }
 
-    let actual_mode = match requested_mode {
-        RotateMode::Scheduled => {
-            if rotation_count % 3 == 2 {
-                RotateMode::Recovery
+    let (event, event_kind, rotation_number, updates_signing_keys) = match operation {
+        ManageKelOperation::Rotate { mode } => {
+            let rotation_count = builder
+                .events()
+                .iter()
+                .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
+                .count();
+
+            let actual_mode = match mode {
+                RotateMode::Scheduled => {
+                    if rotation_count % 3 == 2 {
+                        RotateMode::Recovery
+                    } else {
+                        RotateMode::Standard
+                    }
+                }
+                other => other.clone(),
+            };
+
+            let event = match actual_mode {
+                RotateMode::Standard => builder.rotate().await?,
+                RotateMode::Recovery => builder.rotate_recovery().await?,
+                RotateMode::Scheduled => unreachable!(),
+            };
+
+            let kind = if actual_mode == RotateMode::Recovery {
+                "ror"
             } else {
-                RotateMode::Standard
-            }
+                "rot"
+            };
+
+            (event, kind, Some(rotation_count + 1), true)
         }
-        other => other,
+        ManageKelOperation::Recover => {
+            let add_rot = builder.should_add_rot_with_recover().await?;
+            let event = builder.recover(add_rot).await?;
+            (event, "rec", None, true)
+        }
+        ManageKelOperation::Contest => {
+            let event = builder.contest().await?;
+            (event, "cnt", None, false)
+        }
+        ManageKelOperation::Decommission => {
+            if builder.is_decommissioned() {
+                return Err("Identity is already decommissioned".into());
+            }
+            let event = builder.decommission().await?;
+            (event, "dec", None, false)
+        }
     };
 
-    // Perform the rotation
-    let event = match actual_mode {
-        RotateMode::Standard => builder.rotate().await?,
-        RotateMode::Recovery => builder.rotate_recovery().await?,
-        RotateMode::Scheduled => unreachable!(),
-    };
-
-    // Get updated handles
+    // Get current handles
     let current_handle = builder
         .key_provider()
         .current_handle()
         .await
-        .ok_or("No current handle after rotation")?;
+        .ok_or("No current handle")?;
     let next_handle = builder
         .key_provider()
         .next_handle()
         .await
-        .ok_or("No next handle after rotation")?;
+        .ok_or("No next handle")?;
 
-    // Get latest binding and chain it
-    let mut binding = state
-        .repo
-        .hsm_bindings
-        .get_latest_by_kel_prefix(&prefix)
-        .await?
-        .ok_or("HSM binding not found")?;
+    // Update HSM binding if signing keys changed
+    if updates_signing_keys {
+        let mut binding = state
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix(&prefix)
+            .await?
+            .ok_or("HSM binding not found")?;
 
-    binding.current_key_handle = current_handle.clone();
-    binding.next_key_handle = next_handle.clone();
-    binding.signing_generation = builder.key_provider().signing_generation().await;
+        binding.current_key_handle = current_handle.clone();
+        binding.next_key_handle = next_handle.clone();
+        binding.signing_generation = builder.key_provider().signing_generation().await;
 
-    let mut recovery_handle_response = None;
-    if actual_mode == RotateMode::Recovery {
-        let recovery_handle = builder
-            .key_provider()
-            .recovery_handle()
+        // Recovery key changes on ROR and REC
+        if event_kind == "ror" || event_kind == "rec" {
+            let recovery_handle = builder
+                .key_provider()
+                .recovery_handle()
+                .await
+                .ok_or("No recovery handle")?;
+            binding.recovery_key_handle = recovery_handle;
+            binding.recovery_generation = builder.key_provider().recovery_generation().await;
+        }
+
+        binding.increment()?;
+        builder.interact(&binding.said).await?;
+        state
+            .repo
+            .hsm_bindings
+            .insert(binding)
             .await
-            .ok_or("No recovery handle after rotation")?;
-        binding.recovery_key_handle = recovery_handle.clone();
-        binding.recovery_generation = builder.key_provider().recovery_generation().await;
-        recovery_handle_response = Some(recovery_handle);
+            .map_err(|e| format!("Failed to insert binding: {}", e))?;
     }
-
-    binding.increment()?;
-    builder.interact(&binding.said).await?;
-    state
-        .repo
-        .hsm_bindings
-        .insert(binding)
-        .await
-        .map_err(|e| format!("Failed to insert binding: {}", e))?;
 
     // Update authority
     let mut authority = state
@@ -438,25 +475,17 @@ pub(crate) async fn perform_rotation(
         .await
         .map_err(|e| format!("Failed to update authority: {}", e))?;
 
-    let mode_str = match actual_mode {
-        RotateMode::Standard => "standard",
-        RotateMode::Recovery => "recovery",
-        RotateMode::Scheduled => unreachable!(),
-    };
-
     info!(
-        "Rotation completed: mode={}, said={}",
-        mode_str, event.event.said
+        "KEL operation completed: kind={}, said={}",
+        event_kind, event.event.said
     );
 
-    Ok(RotateResponse {
+    Ok(ManageKelResponse {
         prefix,
         said: event.event.said,
-        mode: mode_str.to_string(),
-        rotation_number: rotation_count + 1,
+        event_kind: event_kind.to_string(),
+        rotation_number,
         current_key_handle: current_handle,
-        next_key_handle: next_handle,
-        recovery_key_handle: recovery_handle_response,
     })
 }
 

@@ -64,8 +64,9 @@ pub use hardware::HardwareKeyProvider;
 
 pub use builder::KeyEventBuilder;
 pub use client::{
-    IdentityClient, KelsClient, KelsRegistryClient, RegistrySigner, SignResult,
-    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
+    ManageKelOperation, ManageKelRequest, ManageKelResponse, RegistrySigner, RotateMode,
+    SignResult, nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
     verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
