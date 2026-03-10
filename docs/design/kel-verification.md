@@ -115,10 +115,10 @@ verify_signatures(signed_event, public_key):
 
 ## Verification Return Value
 
-`KelVerifier::into_verification()` produces a `Verification` token — the proof-of-verification type:
+`KelVerifier::into_verification()` produces a `KelVerification` token — the proof-of-verification type:
 
 ```
-Verification:
+KelVerification:
     prefix: String
     branch_tips: Vec<BranchTip>   // one per branch (1 = linear, N = divergent)
     is_contested: bool
@@ -157,7 +157,7 @@ Derived accessors:
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `Verification` token (`is_divergent()`, `diverged_at_serial()`)
+- Divergence is detected and tracked in the `KelVerification` token (`is_divergent()`, `diverged_at_serial()`)
 - All branches of a divergent KEL are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler is responsible for resolving divergence
 
@@ -199,7 +199,7 @@ struct KelVerifier {
 ### Constructors
 
 - `KelVerifier::new(prefix)` — Start from inception. Full verification of untrusted KELs.
-- `KelVerifier::resume(prefix, &Verification)` — Resume from a verified `Verification` token. Used by the submit handler's fast path to verify appended events without re-verifying the entire KEL.
+- `KelVerifier::resume(prefix, &KelVerification)` — Resume from a verified `KelVerification` token. Used by the submit handler's fast path to verify appended events without re-verifying the entire KEL.
 - `KelVerifier::from_branch_tip(prefix, &BranchTip)` — Resume verification from a specific branch tip. Used for verifying events against a specific branch in divergence/recovery scenarios.
 
 ### Usage
@@ -218,11 +218,11 @@ let verification = verifier.into_verification();
 
 ### Inline Anchor Checking
 
-Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `Verification` token via `is_said_anchored()` and `anchors_all_saids()`.
+Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
 
 ### Paginated Verification Helper
 
-`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `StorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `Verification` token. The `max_pages` parameter prevents resource exhaustion (default 512 pages = ~262K events).
+`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `StorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 512 pages = ~262K events).
 
 ### Checks Per Event
 

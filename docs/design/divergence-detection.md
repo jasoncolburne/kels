@@ -33,7 +33,7 @@ Divergent KEL:  g0 → g1 → g2 → g3(owner)
 
 Events are linked by their `previous` field (the SAID of the prior event). Generation is the position in the chain, computed dynamically by following `previous` links from inception.
 
-After verification, `Verification::diverged_at_serial()` returns the first serial with multiple events.
+After verification, `KelVerification::diverged_at_serial()` returns the first serial with multiple events.
 
 ### Owner Tail Tracking
 

@@ -28,7 +28,7 @@ The `dec` event signals a clean, intentional termination of the KEL.
 
 The `dec` event propagates to other federation members via the member KEL sync loop (within 30s). Once stored on all members:
 
-- `Verification::is_decommissioned()` returns `true` for this prefix
+- `KelVerification::is_decommissioned()` returns `true` for this prefix
 - The submit handler rejects any further events with `KelsError::KelDecommissioned`
 - The KEL is frozen at its final state
 

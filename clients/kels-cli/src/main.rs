@@ -10,9 +10,9 @@ use colored::Colorize;
 #[cfg(feature = "dev-tools")]
 use kels::EventKind;
 use kels::{
-    FileKelStore, HttpKelSource, KelStore, KelVerifier, KelsClient, KeyEventBuilder,
-    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig, Verification, collect_key_events, max_verification_pages,
+    FileKelStore, HttpKelSource, KelStore, KelVerification, KelVerifier, KelsClient,
+    KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig, collect_key_events, max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -502,15 +502,15 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_kel_status(ctx: &Verification, verbose: bool) {
+fn print_kel_status(kel_verification: &KelVerification, verbose: bool) {
     if verbose {
         println!("  Verified: Yes");
     }
-    if ctx.is_contested() {
+    if kel_verification.is_contested() {
         println!("  Status: {}", "CONTESTED".red());
-    } else if ctx.is_decommissioned() {
+    } else if kel_verification.is_decommissioned() {
         println!("  Status: {}", "DECOMMISSIONED".red());
-    } else if ctx.is_divergent() {
+    } else if kel_verification.is_divergent() {
         println!("  Status: {}", "DIVERGENT".yellow());
     } else {
         println!("  Status: {}", "OK".green());

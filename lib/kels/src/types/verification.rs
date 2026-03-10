@@ -1,8 +1,8 @@
 //! Verification — proof-of-verification token for KEL state.
 //!
-//! `Verification` is the ONLY way to access verified KEL state. It cannot be
+//! `KelVerification` is the ONLY way to access verified KEL state. It cannot be
 //! constructed directly — it must be obtained through `KelVerifier::into_verification()`.
-//! Having a `Verification` proves the KEL was verified.
+//! Having a `KelVerification` proves the KEL was verified.
 
 use std::collections::BTreeSet;
 
@@ -27,12 +27,12 @@ pub struct BranchTip {
 /// Proof-of-verification token for KEL state.
 ///
 /// Cannot be constructed directly — only via `KelVerifier::into_verification()`.
-/// Having a `Verification` proves the KEL was fully verified. The SAID is a
-/// content-addressable digest of the verified state — two `Verification`s with
+/// Having a `KelVerification` proves the KEL was fully verified. The SAID is a
+/// content-addressable digest of the verified state — two `KelVerification`s with
 /// the same SAID represent the same KEL state.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[crate_new]
-pub struct Verification {
+pub struct KelVerification {
     #[said]
     said: String,
     prefix: String,
@@ -44,7 +44,7 @@ pub struct Verification {
     queried_saids: BTreeSet<String>,
 }
 
-impl Verification {
+impl KelVerification {
     /// The SAID (content-addressable digest) of this verification state.
     pub fn said(&self) -> &str {
         &self.said

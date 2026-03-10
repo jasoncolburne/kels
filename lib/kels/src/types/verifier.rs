@@ -4,7 +4,7 @@
 //! Tracks evolving cryptographic state as it walks forward through the chain,
 //! supporting both linear and divergent KELs.
 //!
-//! After verification, call `into_verification()` to get a `Verification` — the
+//! After verification, call `into_verification()` to get a `KelVerification` — the
 //! proof-of-verification token that provides access to verified KEL state.
 //!
 //! `PagedKelSource` / `PagedKelSink` / `transfer_key_events` provide divergence-aware
@@ -21,7 +21,7 @@ use cesr::{Digest, Matter, PublicKey, Signature};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use super::events::SignedKeyEvent;
-use super::verification::{BranchTip, Verification};
+use super::verification::{BranchTip, KelVerification};
 use crate::error::KelsError;
 use crate::store::KelStore;
 
@@ -75,7 +75,7 @@ fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsE
 /// (all events at a given serial must be in the same page). Use
 /// `truncate_incomplete_generation()` to ensure this at page boundaries.
 ///
-/// After verification, call `into_verification()` to produce a `Verification`
+/// After verification, call `into_verification()` to produce a `KelVerification`
 /// (proof-of-verification token).
 pub struct KelVerifier {
     prefix: String,
@@ -136,25 +136,32 @@ impl KelVerifier {
         })
     }
 
-    /// Resume from a verified `Verification`.
-    pub fn resume(prefix: impl Into<String>, ctx: &Verification) -> Result<Self, KelsError> {
+    /// Resume from a verified `KelVerification`.
+    pub fn resume(
+        prefix: impl Into<String>,
+        kel_verification: &KelVerification,
+    ) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
-        for bt in ctx.branch_tips() {
+        for bt in kel_verification.branch_tips() {
             let (said, state) = branch_state_from_tip(bt)?;
             branches.insert(said, state);
         }
 
-        let last_verified_serial = ctx.branch_tips().iter().map(|bt| bt.tip.event.serial).max();
+        let last_verified_serial = kel_verification
+            .branch_tips()
+            .iter()
+            .map(|bt| bt.tip.event.serial)
+            .max();
 
         Ok(Self {
             prefix,
             branches,
             last_verified_serial,
-            diverged_at_serial: ctx.diverged_at_serial(),
-            is_contested: ctx.is_contested(),
-            event_count: ctx.event_count(),
+            diverged_at_serial: kel_verification.diverged_at_serial(),
+            is_contested: kel_verification.is_contested(),
+            event_count: kel_verification.event_count(),
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         })
@@ -164,7 +171,7 @@ impl KelVerifier {
     ///
     /// Call this before `verify_page()`. As the verifier walks events, it checks
     /// each `ixn` event's `anchor` field against these SAIDs. Results are available
-    /// via `Verification::anchored_saids()` after calling `into_verification()`.
+    /// via `KelVerification::anchored_saids()` after calling `into_verification()`.
     pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = String>) {
         self.queried_saids.extend(saids);
     }
@@ -209,8 +216,8 @@ impl KelVerifier {
         Ok(())
     }
 
-    /// Consume the verifier and produce a `Verification` (proof-of-verification token).
-    pub fn into_verification(self) -> Result<Verification, KelsError> {
+    /// Consume the verifier and produce a `KelVerification` (proof-of-verification token).
+    pub fn into_verification(self) -> Result<KelVerification, KelsError> {
         let mut branch_tips: Vec<BranchTip> = self
             .branches
             .into_values()
@@ -223,7 +230,7 @@ impl KelVerifier {
         // Deterministic ordering for SAID derivation
         branch_tips.sort_by(|a, b| a.tip.event.said.cmp(&b.tip.event.said));
 
-        let mut v = Verification::new(
+        let mut kel_verification = KelVerification::new(
             self.prefix,
             branch_tips,
             self.is_contested,
@@ -232,9 +239,10 @@ impl KelVerifier {
             self.anchored_saids,
             self.queried_saids,
         );
-        v.derive_said()
+        kel_verification
+            .derive_said()
             .map_err(|e| KelsError::InvalidKel(format!("SAID derivation failed: {}", e)))?;
-        Ok(v)
+        Ok(kel_verification)
     }
 
     /// Verify a complete generation (all events at a given serial).
@@ -687,14 +695,14 @@ impl PagedKelSource for StoreKelSource<'_> {
     }
 }
 
-/// Verify a full KEL using paginated reads, returning a trusted `Verification`.
+/// Verify a full KEL using paginated reads, returning a trusted `KelVerification`.
 ///
 /// Pages through the loader with `KelVerifier` and returns the proof-of-verification
 /// token. `max_pages` limits resource exhaustion from enormous KELs — fails secure
 /// if exceeded.
 ///
 /// `anchor_saids` optionally registers SAIDs to check for anchoring during the walk.
-/// Results are available via `Verification::anchored_saids()` / `anchors_all_saids()`.
+/// Results are available via `KelVerification::anchored_saids()` / `anchors_all_saids()`.
 ///
 /// Use `StorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
 /// locked transaction wrapper to read under advisory lock.
@@ -704,7 +712,7 @@ pub async fn completed_verification(
     page_size: u64,
     max_pages: usize,
     anchor_saids: impl IntoIterator<Item = String>,
-) -> Result<Verification, KelsError> {
+) -> Result<KelVerification, KelsError> {
     let mut verifier = KelVerifier::new(prefix);
     verifier.check_anchors(anchor_saids);
     let mut offset: u64 = 0;
@@ -739,7 +747,7 @@ pub async fn completed_verification(
     }
 
     // Fail secure: if we ran out of pages before exhausting the source,
-    // return an error rather than a partial Verification.
+    // return an error rather than a partial KelVerification.
     if !exhausted {
         return Err(KelsError::InvalidKel(format!(
             "KEL for {} exceeds max_pages limit ({}) — verification incomplete",
@@ -1140,14 +1148,14 @@ async fn transfer_key_events(
     Ok(())
 }
 
-/// Verify-only: pages through source, verifies, returns `Verification`.
+/// Verify-only: pages through source, verifies, returns `KelVerification`.
 pub async fn verify_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
     max_pages: usize,
-) -> Result<Verification, KelsError> {
+) -> Result<KelVerification, KelsError> {
     let sink = NoOpSink;
     let mut verifier = verifier;
     transfer_key_events(
@@ -1163,7 +1171,7 @@ pub async fn verify_key_events(
     verifier.into_verification()
 }
 
-/// Verify + collect: pages through source, verifies, returns events + `Verification`.
+/// Verify + collect: pages through source, verifies, returns events + `KelVerification`.
 ///
 /// **WARNING:** This is an unbounded call, and should be used with care.
 pub async fn collect_key_events(
@@ -1172,7 +1180,7 @@ pub async fn collect_key_events(
     verifier: KelVerifier,
     page_size: usize,
     max_pages: usize,
-) -> Result<(Verification, Vec<SignedKeyEvent>), KelsError> {
+) -> Result<(KelVerification, Vec<SignedKeyEvent>), KelsError> {
     let sink = CollectSink::new();
     let mut verifier = verifier;
     transfer_key_events(
@@ -1185,8 +1193,8 @@ pub async fn collect_key_events(
         None,
     )
     .await?;
-    let ctx = verifier.into_verification()?;
-    Ok((ctx, sink.into_events().await))
+    let kel_verification = verifier.into_verification()?;
+    Ok((kel_verification, sink.into_events().await))
 }
 
 /// Forward without verification: pages through source, sends to sink.
@@ -1280,19 +1288,19 @@ mod tests {
         });
     }
 
-    /// Verify events with KelVerifier and return Verification
-    fn verify(events: &[SignedKeyEvent]) -> Verification {
+    /// Verify events with KelVerifier and return KelVerification
+    fn verify(events: &[SignedKeyEvent]) -> KelVerification {
         let prefix = events[0].event.prefix.clone();
         let mut verifier = KelVerifier::new(&prefix);
         verifier.verify_page(events).unwrap();
         verifier.into_verification().unwrap()
     }
 
-    /// Verify events with anchor checking and return Verification
+    /// Verify events with anchor checking and return KelVerification
     fn verify_with_anchors(
         events: &[SignedKeyEvent],
         anchors: impl IntoIterator<Item = String>,
-    ) -> Verification {
+    ) -> KelVerification {
         let prefix = events[0].event.prefix.clone();
         let mut verifier = KelVerifier::new(&prefix);
         verifier.check_anchors(anchors);

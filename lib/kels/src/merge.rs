@@ -15,9 +15,9 @@ use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
 use crate::{
-    BranchTip, EventKind, EventSignature, KelMergeResult, KelVerifier, KelsAuditRecord, KelsError,
-    KeyEvent, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEvent, Verification, completed_verification,
-    max_verification_pages, types::PageLoader,
+    BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier,
+    KelsAuditRecord, KelsError, KeyEvent, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEvent,
+    completed_verification, max_verification_pages, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -352,7 +352,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         let prefix = self.prefix.clone();
 
-        // Re-verify the entire KEL on every submission. We cannot cache Verification
+        // Re-verify the entire KEL on every submission. We cannot cache KelVerification
         // tokens because the DB cannot be trusted (verification invariant).
         let ctx = completed_verification(
             self,
@@ -400,10 +400,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Normal append to a non-divergent KEL (~99% of submissions).
     async fn handle_normal_append(
         &mut self,
-        ctx: &Verification,
+        kel_verification: &KelVerification,
         events: &[SignedKeyEvent],
     ) -> Result<MergeOutcome, KelsError> {
-        if ctx.is_decommissioned() {
+        if kel_verification.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
         if events[0].event.is_contest() {
@@ -413,7 +413,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         let prefix = &self.prefix;
-        let mut verifier = KelVerifier::resume(prefix, ctx).map_err(|e| {
+        let mut verifier = KelVerifier::resume(prefix, kel_verification).map_err(|e| {
             KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
         })?;
         verifier
@@ -458,12 +458,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Full path: divergence, recovery, overlap (rare).
     async fn handle_full_path(
         &mut self,
-        ctx: &Verification,
+        kel_verification: &KelVerification,
         events: &[SignedKeyEvent],
         prefix: &str,
     ) -> Result<MergeOutcome, KelsError> {
         // Contested KELs reject all submissions
-        if ctx.is_contested() {
+        if kel_verification.is_contested() {
             return Err(KelsError::ContestedKel(
                 "KEL is already contested".to_string(),
             ));
@@ -481,7 +481,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if new_events.is_empty() {
             return Ok(MergeOutcome {
                 result: KelMergeResult::Accepted,
-                diverged_at: ctx.diverged_at_serial(),
+                diverged_at: kel_verification.diverged_at_serial(),
                 tip_said: None,
             });
         }
@@ -496,11 +496,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Check if dedup turned this into a normal append
-        if !ctx.is_divergent()
-            && ctx.branch_tips().len() == 1
-            && new_first_previous == Some(ctx.branch_tips()[0].tip.event.said.as_str())
+        if !kel_verification.is_divergent()
+            && kel_verification.branch_tips().len() == 1
+            && new_first_previous == Some(kel_verification.branch_tips()[0].tip.event.said.as_str())
         {
-            let mut verifier = KelVerifier::resume(prefix, ctx).map_err(|e| {
+            let mut verifier = KelVerifier::resume(prefix, kel_verification).map_err(|e| {
                 KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
             })?;
             verifier
@@ -517,9 +517,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             });
         }
 
-        if ctx.is_divergent() {
+        if kel_verification.is_divergent() {
             let (result, diverged_at) = self
-                .handle_divergent_submission(ctx, &new_events, prefix)
+                .handle_divergent_submission(kel_verification, &new_events, prefix)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -528,7 +528,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             })
         } else {
             let (result, diverged_at) = self
-                .handle_overlap_submission(ctx, &new_events, prefix)
+                .handle_overlap_submission(kel_verification, &new_events, prefix)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -543,11 +543,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Handle submission to an already-divergent KEL.
     async fn handle_divergent_submission(
         &mut self,
-        ctx: &Verification,
+        kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
         prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
-        let Some(diverged_at) = ctx.diverged_at_serial() else {
+        let Some(diverged_at) = kel_verification.diverged_at_serial() else {
             return Err(KelsError::StorageError(
                 "Divergent KEL missing diverged_at_serial".to_string(),
             ));
@@ -563,7 +563,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            if ctx.is_contested() {
+            if kel_verification.is_contested() {
                 return Err(KelsError::ContestedKel(
                     "KEL is already contested".to_string(),
                 ));
@@ -694,11 +694,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Handle submission that overlaps with or creates new divergence in a non-divergent KEL.
     async fn handle_overlap_submission(
         &mut self,
-        ctx: &Verification,
+        kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
         prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
-        if ctx.is_divergent() || ctx.is_contested() {
+        if kel_verification.is_divergent() || kel_verification.is_contested() {
             return Err(KelsError::StorageError(
                 "handle_overlap_submission called with divergent or contested KEL".to_string(),
             ));

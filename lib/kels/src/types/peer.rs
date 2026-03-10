@@ -8,7 +8,7 @@ use cesr::{Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
-use super::Verification;
+use super::KelVerification;
 use crate::KelsError;
 
 /// Validate that a timestamp is within the acceptable window.
@@ -40,14 +40,14 @@ pub struct SignedRequest<T> {
 impl<T: Serialize> SignedRequest<T> {
     /// Verify the request signature against a verified KEL context.
     ///
-    /// Uses the current public key from the `Verification` (proof-of-verification token).
+    /// Uses the current public key from the `KelVerification` (proof-of-verification token).
     /// Fails secure if the KEL is divergent (no unambiguous key).
-    pub fn verify_signature(&self, ctx: &Verification) -> Result<(), KelsError> {
-        if ctx.is_divergent() {
+    pub fn verify_signature(&self, kel_verification: &KelVerification) -> Result<(), KelsError> {
+        if kel_verification.is_divergent() {
             return Err(KelsError::Divergent);
         }
 
-        let public_key_qb64 = ctx
+        let public_key_qb64 = kel_verification
             .current_public_key()
             .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
 
@@ -113,9 +113,9 @@ impl PeerHistory {
     pub fn verify_with_contexts(
         &self,
         trusted_prefixes: &HashSet<&'static str>,
-        contexts: &[&Verification],
+        kel_verifications: &[&KelVerification],
     ) -> Result<(), KelsError> {
-        for ctx in contexts {
+        for ctx in kel_verifications {
             if !trusted_prefixes.contains(ctx.prefix()) {
                 return Err(KelsError::RegistryFailure(format!(
                     "Could not verify KEL {} as trusted",
@@ -875,8 +875,8 @@ mod tests {
 
         let mut verifier = KelVerifier::new(&prefix);
         verifier.verify_page(&events).unwrap();
-        let ctx = verifier.into_verification().unwrap();
-        assert!(ctx.is_divergent());
+        let kel_verification = verifier.into_verification().unwrap();
+        assert!(kel_verification.is_divergent());
 
         let signed = SignedRequest {
             payload: "test".to_string(),
@@ -884,7 +884,7 @@ mod tests {
             signature: "test_sig".to_string(),
         };
 
-        let result = signed.verify_signature(&ctx);
+        let result = signed.verify_signature(&kel_verification);
         assert!(
             matches!(result, Err(crate::KelsError::Divergent)),
             "Expected Divergent error, got: {:?}",

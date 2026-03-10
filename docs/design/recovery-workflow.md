@@ -2,7 +2,7 @@
 
 ## Historical Context
 
-The original architecture stored member KEL events through Raft consensus: each node submitted its identity KEL events to Raft, which verified them in `apply_submit_key_events` and maintained a `member_contexts` HashMap of `Verification` tokens in the replicated state machine. This created several issues that motivated the current decoupled design:
+The original architecture stored member KEL events through Raft consensus: each node submitted its identity KEL events to Raft, which verified them in `apply_submit_key_events` and maintained a `member_contexts` HashMap of `KelVerification` tokens in the replicated state machine. This created several issues that motivated the current decoupled design:
 
 ### Issue 1: Composite SAID Cursor
 
@@ -10,11 +10,11 @@ The original architecture stored member KEL events through Raft consensus: each 
 
 ### Issue 2: Raft Cannot Handle Recovery
 
-The Raft state machine's `apply_submit_key_events` stores full key events, verifies them, and maintains `Verification` in `member_contexts`. But it has no recovery merge logic:
+The Raft state machine's `apply_submit_key_events` stores full key events, verifies them, and maintains `KelVerification` in `member_contexts`. But it has no recovery merge logic:
 
-1. **Verifier can't rewind:** `KelVerifier::resume()` continues from a `Verification` context. If the underlying KEL needs to be re-verified from scratch (e.g., after recovery resolves divergence), the verifier can't "go back."
+1. **Verifier can't rewind:** `KelVerifier::resume()` continues from a `KelVerification` context. If the underlying KEL needs to be re-verified from scratch (e.g., after recovery resolves divergence), the verifier can't "go back."
 
-2. **Snapshot compaction loses events:** After Raft snapshot compaction, the original clean events are gone from the log; only the (possibly corrupted) `Verification` survives in the snapshot.
+2. **Snapshot compaction loses events:** After Raft snapshot compaction, the original clean events are gone from the log; only the (possibly corrupted) `KelVerification` survives in the snapshot.
 
 3. **No recovery path:** If a member KEL becomes divergent or is maliciously extended (via DB attack with key compromise), the registry can't accept a recovered KEL from identity because the verifier can't process recovery events that resolve divergence it didn't observe.
 
@@ -22,7 +22,7 @@ The Raft state machine's `apply_submit_key_events` stores full key events, verif
 
 - **DB tamper with key compromise:** Attacker gains DB access and has compromised the signing key. They inject a divergent event into `MemberKelRepository`. The Raft integrity check (DB SAID vs Raft SAID) catches this, but recovery requires re-verifying from scratch, which the Raft-embedded verifier can't do.
 
-- **Identity DB tamper:** Attacker modifies the identity service's KEL. The sync loop picks up corrupted events and submits them to Raft. After Raft applies them, the `member_contexts` contains a corrupted `Verification`. Recovery requires identity to issue a recovery event, but Raft can't process it against the corrupted context.
+- **Identity DB tamper:** Attacker modifies the identity service's KEL. The sync loop picks up corrupted events and submits them to Raft. After Raft applies them, the `member_contexts` contains a corrupted `KelVerification`. Recovery requires identity to issue a recovery event, but Raft can't process it against the corrupted context.
 
 - **Malicious KEL extension:** An insider extends a member KEL with unauthorized events. These pass verification (valid signatures) but shouldn't be trusted. Recovery requires the identity operator to issue a contest or recovery event, which again needs the full chain context.
 
@@ -65,7 +65,7 @@ No special recovery logic needed in Raft. The existing verification infrastructu
 The DB cannot be trusted. All operations fall into three categories:
 
 1. **Serving** - returning data to a client/peer. No verification needed.
-2. **Consuming** - using data for security decisions. Requires a `Verification` token.
+2. **Consuming** - using data for security decisions. Requires a `KelVerification` token.
 3. **Resolving** - comparing state to decide sync. Wrong answers trigger unnecessary syncs, not security holes.
 
 ## Operator Recovery Workflow

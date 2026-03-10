@@ -569,7 +569,7 @@ pub(crate) async fn list_prefixes(
 
         // Consuming: verify peer's KEL (paginated) to extract trusted public key
         let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
-        let ctx = kels::completed_verification(
+        let kel_verification = kels::completed_verification(
             &mut loader,
             &signed_request.peer_prefix,
             kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -580,7 +580,7 @@ pub(crate) async fn list_prefixes(
         .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
 
         signed_request
-            .verify_signature(&ctx)
+            .verify_signature(&kel_verification)
             .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
     }
 

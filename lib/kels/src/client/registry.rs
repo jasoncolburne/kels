@@ -19,9 +19,9 @@ use verifiable_storage::StorageDatetime;
 use crate::{
     error::KelsError,
     types::{
-        CompletedProposalsResponse, ErrorResponse, NodeInfo, NodeStatus, Peer, PeersResponse,
-        Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods, SignedRequest,
-        Verification, Vote,
+        CompletedProposalsResponse, ErrorResponse, KelVerification, NodeInfo, NodeStatus, Peer,
+        PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
+        SignedRequest, Vote,
     },
 };
 
@@ -187,7 +187,7 @@ impl KelsRegistryClient {
         &self,
         peer_prefix: &str,
         trusted_prefixes: &HashSet<&'static str>,
-        contexts: &[&Verification],
+        kel_verifications: &[&KelVerification],
     ) -> Result<bool, KelsError> {
         let (peers_response, _) = self.fetch_peers().await?;
         if !peers_response.peers.iter().any(|history| {
@@ -205,7 +205,7 @@ impl KelsRegistryClient {
 
         Ok(peers_response.peers.iter().any(|history| {
             history
-                .verify_with_contexts(trusted_prefixes, contexts)
+                .verify_with_contexts(trusted_prefixes, kel_verifications)
                 .is_ok()
         }))
     }
@@ -712,7 +712,7 @@ async fn verify_anchors_from_store(
     prefix: &str,
     saids: impl IntoIterator<Item = String> + Clone,
     registry_urls: &[String],
-) -> Result<Option<Verification>, KelsError> {
+) -> Result<Option<KelVerification>, KelsError> {
     // First try from local store
     let mut loader = crate::StorePageLoader::new(store);
     let ctx = crate::completed_verification(
@@ -735,7 +735,7 @@ async fn verify_anchors_from_store(
     sync_member_kel(prefix, registry_urls, &sink).await;
 
     let mut loader = crate::StorePageLoader::new(store);
-    let ctx = crate::completed_verification(
+    let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
         crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
@@ -744,8 +744,8 @@ async fn verify_anchors_from_store(
     )
     .await?;
 
-    if ctx.anchors_all_saids() {
-        Ok(Some(ctx))
+    if kel_verification.anchors_all_saids() {
+        Ok(Some(kel_verification))
     } else {
         Ok(None)
     }

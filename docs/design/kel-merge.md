@@ -207,17 +207,17 @@ The `SignedEvents` derive macro generates a `save_with_merge(prefix, events)` me
 
 ## Submit Handler Architecture
 
-The KELS service's `submit_events` handler routes submissions through two paths based on the `Verification` token obtained from `completed_verification()` under an advisory lock:
+The KELS service's `submit_events` handler routes submissions through two paths based on the `KelVerification` token obtained from `completed_verification()` under an advisory lock:
 
 ### Fast Path (~99% of submissions)
 
 Conditions: single tip (non-divergent), submitted events chain from the tip, KEL not contested.
 
-Uses `KelVerifier::resume(prefix, &ctx)` for incremental verification against the verified `Verification` token. **No full KEL load** — the `Verification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
+Uses `KelVerifier::resume(prefix, &ctx)` for incremental verification against the verified `KelVerification` token. **No full KEL load** — the `KelVerification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
 
 ### Full Path (divergence/recovery/overlap)
 
-Uses bounded DB operations with the verified `Verification` token. No full KEL in memory. Each case is handled independently:
+Uses bounded DB operations with the verified `KelVerification` token. No full KEL in memory. Each case is handled independently:
 
 - **Already divergent + contest**: Query events from `diverged_at_serial` onward to check recovery key revelation. Verify contest event, insert.
 - **Already divergent + recovery**: Walk owner chain backward via paginated DB queries, collect adversary events, archive them, insert recovery events.

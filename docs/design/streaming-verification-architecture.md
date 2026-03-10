@@ -21,14 +21,14 @@ The sole verification mechanism for KELs. Walks forward through events, tracking
 
 **Constructors:**
 - `new(prefix)` — from inception. Full verification of untrusted KELs.
-- `resume(prefix, &Verification)` — continue from a verified `Verification` token. Used for appending events to a known-good KEL.
+- `resume(prefix, &KelVerification)` — continue from a verified `KelVerification` token. Used for appending events to a known-good KEL.
 - `from_branch_tip(prefix, &BranchTip)` — resume from a specific branch. Used in divergence/recovery paths.
 
 **Processing:** Events are processed in **generations** (all events at a given serial). `verify_page()` groups events by serial, then calls `verify_generation()` for each group. On divergence (more events than expected branches at a serial), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
 
-### Verification (proof-of-verification token)
+### KelVerification (proof-of-verification token)
 
-`KelVerifier::into_verification()` produces a `Verification` — the proof that a KEL was verified. This is the ONLY way to access verified KEL state.
+`KelVerifier::into_verification()` produces a `KelVerification` — the proof that a KEL was verified. This is the ONLY way to access verified KEL state.
 
 **Fields (all private):**
 - `prefix` — the KEL prefix
@@ -37,7 +37,7 @@ The sole verification mechanism for KELs. Walks forward through events, tracking
 - `diverged_at_serial` — where divergence occurs
 - `anchored_saids` / `queried_saids` — anchor checking results
 
-**Key invariant:** `Verification` has no public constructor. The only way to obtain one is through `KelVerifier::into_verification()` or `completed_verification()`. Functions that consume KEL data accept `&Verification` to prove the KEL was verified. This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
+**Key invariant:** `KelVerification` has no public constructor. The only way to obtain one is through `KelVerifier::into_verification()` or `completed_verification()`. Functions that consume KEL data accept `&KelVerification` to prove the KEL was verified. This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
 
 ### BranchTip
 
@@ -63,7 +63,7 @@ Implementations:
 
 ### completed_verification()
 
-Guard function: pages through a `PageLoader` with `KelVerifier`, calling `truncate_incomplete_generation()` at page boundaries. Returns a trusted `Verification` token.
+Guard function: pages through a `PageLoader` with `KelVerifier`, calling `truncate_incomplete_generation()` at page boundaries. Returns a trusted `KelVerification` token.
 
 Parameters: `loader`, `prefix`, `page_size`, `max_pages`, `anchors`
 
@@ -85,7 +85,7 @@ Examples: `GET /api/kels/kel/:prefix`, `get_effective_said`, `get_key_events`
 
 ### 2. Consuming
 
-Using KEL data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full KEL first.** The only way to access consumed data is through `Verification`, which can only be obtained via `KelVerifier::into_verification()`.
+Using KEL data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full KEL first.** The only way to access consumed data is through `KelVerification`, which can only be obtained via `KelVerifier::into_verification()`.
 
 Examples: peer signature verification (`verify_signature`), anchor checking, submit handler routing decisions
 
@@ -97,7 +97,7 @@ Examples: `effective_tail_said` endpoint, anti-entropy comparison, `should_add_r
 
 ## Inline Anchor Checking
 
-Register SAIDs to check with `verifier.check_anchors(saids)` before starting the walk. As the verifier processes events, it checks each event's `anchor` field against the queried SAIDs. Anchors must be valid CESR digests (Blake3-256, 44-char base64url). Results are available on the `Verification` token via `is_said_anchored()` and `anchors_all_saids()`.
+Register SAIDs to check with `verifier.check_anchors(saids)` before starting the walk. As the verifier processes events, it checks each event's `anchor` field against the queried SAIDs. Anchors must be valid CESR digests (Blake3-256, 44-char base64url). Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
 
 This replaces separate DB queries for anchoring — verification and anchor checking happen in a single pass.
 

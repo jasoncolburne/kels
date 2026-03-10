@@ -344,7 +344,7 @@ pub async fn manage_kel(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
 
-    let ctx = kels::completed_verification(
+    let kel_verification = kels::completed_verification(
         &mut tx,
         &prefix,
         MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -355,7 +355,7 @@ pub async fn manage_kel(
     .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed
-        .verify_signature(&ctx)
+        .verify_signature(&kel_verification)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
     // Release advisory lock — perform_operation acquires its own via save_with_merge

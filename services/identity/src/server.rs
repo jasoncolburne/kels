@@ -476,9 +476,9 @@ pub(crate) async fn perform_kel_operation(
 /// be fixed by rotating, so triggering rotation here would loop forever.
 fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
-    ctx: &kels::Verification,
+    kel_verification: &kels::KelVerification,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if ctx.is_divergent() {
+    if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -511,7 +511,7 @@ fn audit_binding_chain(
         }
     }
 
-    if !ctx.anchors_all_saids() {
+    if !kel_verification.anchors_all_saids() {
         return Err("Not all binding SAIDs are anchored in KEL".into());
     }
 
@@ -522,9 +522,9 @@ fn audit_binding_chain(
 /// actively wrong with the current key state and defensive rotation is warranted.
 fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
-    ctx: &kels::Verification,
+    kel_verification: &kels::KelVerification,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if ctx.is_divergent() {
+    if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -541,7 +541,7 @@ fn verify_latest_binding(
         }
     }
 
-    if !ctx.is_said_anchored(&latest.said) {
+    if !kel_verification.is_said_anchored(&latest.said) {
         return Err("Latest binding SAID not anchored in KEL".into());
     }
 
