@@ -1385,7 +1385,7 @@ mod tests {
         store.save(&prefix, &events).await.unwrap();
 
         // Verify with small page size to force multiple pages
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -1395,16 +1395,16 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!ctx.is_empty());
-        assert!(!ctx.is_divergent());
-        assert!(!ctx.is_contested());
-        assert!(!ctx.is_decommissioned());
-        assert!(ctx.current_public_key().is_some());
+        assert!(!kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
+        assert!(!kel_verification.is_contested());
+        assert!(!kel_verification.is_decommissioned());
+        assert!(kel_verification.current_public_key().is_some());
 
         // Tip should be the last event
-        assert_eq!(ctx.branch_tips().len(), 1);
+        assert_eq!(kel_verification.branch_tips().len(), 1);
         assert_eq!(
-            ctx.branch_tips()[0].tip.event.said,
+            kel_verification.branch_tips()[0].tip.event.said,
             events.last().unwrap().event.said
         );
     }
@@ -1451,7 +1451,7 @@ mod tests {
         store.save(&prefix, &all_events).await.unwrap();
 
         // Verify with paginated reads — should detect divergence
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -1461,9 +1461,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(2));
-        assert_eq!(ctx.branch_tips().len(), 2);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(2));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
     }
 
     #[tokio::test]
@@ -1482,7 +1482,7 @@ mod tests {
         store.save(&prefix, &[icp, ixn]).await.unwrap();
 
         // Check for an anchor that exists
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -1492,11 +1492,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_said_anchored(&target_anchor));
-        assert!(ctx.anchors_all_saids());
+        assert!(kel_verification.is_said_anchored(&target_anchor));
+        assert!(kel_verification.anchors_all_saids());
 
         // Check for an anchor that doesn't exist
-        let ctx2 = completed_verification(
+        let kel_verification2 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -1506,8 +1506,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!ctx2.is_said_anchored(&missing_anchor));
-        assert!(!ctx2.anchors_all_saids());
+        assert!(!kel_verification2.is_said_anchored(&missing_anchor));
+        assert!(!kel_verification2.anchors_all_saids());
     }
 
     #[tokio::test]
@@ -1749,8 +1749,8 @@ mod tests {
         assert_eq!(deserialized.event.said, icp.event.said);
         assert_eq!(deserialized.event.prefix, icp.event.prefix);
 
-        let ctx = verify(&[deserialized]);
-        assert!(!ctx.is_empty());
+        let kel_verification = verify(&[deserialized]);
+        assert!(!kel_verification.is_empty());
     }
 
     // ==================== KelVerifier — basic verification ====================
@@ -1761,13 +1761,16 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(!ctx.is_empty());
-        assert!(!ctx.is_divergent());
-        assert!(!ctx.is_contested());
-        assert!(!ctx.is_decommissioned());
-        assert!(ctx.current_public_key().is_some());
-        assert_eq!(ctx.branch_tips()[0].tip.event.said, ixn.event.said);
+        let kel_verification = verify(builder.events());
+        assert!(!kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
+        assert!(!kel_verification.is_contested());
+        assert!(!kel_verification.is_decommissioned());
+        assert!(kel_verification.current_public_key().is_some());
+        assert_eq!(
+            kel_verification.branch_tips()[0].tip.event.said,
+            ixn.event.said
+        );
     }
 
     #[tokio::test]
@@ -1778,18 +1781,25 @@ mod tests {
         let rot = builder.rotate().await.unwrap();
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
 
-        let ctx = verify(builder.events());
+        let kel_verification = verify(builder.events());
 
-        assert_eq!(ctx.branch_tips()[0].tip.event.said, ixn2.event.said);
         assert_eq!(
-            ctx.last_establishment_event().unwrap().event.said,
+            kel_verification.branch_tips()[0].tip.event.said,
+            ixn2.event.said
+        );
+        assert_eq!(
+            kel_verification
+                .last_establishment_event()
+                .unwrap()
+                .event
+                .said,
             rot.event.said
         );
 
         let rot_key = rot.event.public_key.as_ref().unwrap();
         let icp_key = icp.event.public_key.as_ref().unwrap();
-        assert_ne!(ctx.current_public_key().unwrap(), icp_key);
-        assert_eq!(ctx.current_public_key().unwrap(), rot_key);
+        assert_ne!(kel_verification.current_public_key().unwrap(), icp_key);
+        assert_eq!(kel_verification.current_public_key().unwrap(), rot_key);
     }
 
     // ==================== KelVerifier — divergence detection ====================
@@ -1808,10 +1818,10 @@ mod tests {
         let mut events = vec![icp, ixn1, ixn2];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(1));
-        assert_eq!(ctx.branch_tips().len(), 2);
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(1));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
     }
 
     #[tokio::test]
@@ -1875,9 +1885,9 @@ mod tests {
         let mut events = vec![icp, ixn1, ixn2];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.current_public_key().is_none());
-        assert!(ctx.last_establishment_event().is_none());
+        let kel_verification = verify(&events);
+        assert!(kel_verification.current_public_key().is_none());
+        assert!(kel_verification.last_establishment_event().is_none());
     }
 
     #[tokio::test]
@@ -1899,11 +1909,11 @@ mod tests {
         let mut events = vec![icp, owner_ixn.clone(), adversary_rot.clone()];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(1));
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(1));
 
-        let tips = ctx.branch_tips();
+        let tips = kel_verification.branch_tips();
         assert_eq!(tips.len(), 2);
         let tip_saids: HashSet<_> = tips.iter().map(|t| t.tip.event.said.as_str()).collect();
         assert!(tip_saids.contains(owner_ixn.event.said.as_str()));
@@ -1918,9 +1928,9 @@ mod tests {
         builder.incept().await.unwrap();
         builder.decommission().await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(ctx.is_decommissioned());
-        assert!(!ctx.is_contested());
+        let kel_verification = verify(builder.events());
+        assert!(kel_verification.is_decommissioned());
+        assert!(!kel_verification.is_contested());
     }
 
     #[tokio::test]
@@ -1936,9 +1946,9 @@ mod tests {
         let mut events = vec![icp, ror, cnt];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_contested());
-        assert!(ctx.is_decommissioned());
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_contested());
+        assert!(kel_verification.is_decommissioned());
     }
 
     #[tokio::test]
@@ -1952,9 +1962,9 @@ mod tests {
         let mut events = vec![icp, ror];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(!ctx.is_contested());
-        assert!(!ctx.is_decommissioned());
+        let kel_verification = verify(&events);
+        assert!(!kel_verification.is_contested());
+        assert!(!kel_verification.is_decommissioned());
     }
 
     // ==================== KelVerifier — anchor checking ====================
@@ -1966,9 +1976,9 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let ctx = verify_with_anchors(builder.events(), [a.clone()]);
-        assert!(ctx.is_said_anchored(&a));
-        assert!(ctx.anchors_all_saids());
+        let kel_verification = verify_with_anchors(builder.events(), [a.clone()]);
+        assert!(kel_verification.is_said_anchored(&a));
+        assert!(kel_verification.anchors_all_saids());
     }
 
     #[tokio::test]
@@ -1979,9 +1989,9 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let ctx = verify_with_anchors(builder.events(), [missing.clone()]);
-        assert!(!ctx.is_said_anchored(&missing));
-        assert!(!ctx.anchors_all_saids());
+        let kel_verification = verify_with_anchors(builder.events(), [missing.clone()]);
+        assert!(!kel_verification.is_said_anchored(&missing));
+        assert!(!kel_verification.anchors_all_saids());
     }
 
     #[tokio::test]
@@ -1990,8 +2000,8 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let ctx = verify_with_anchors(builder.events(), [missing.clone()]);
-        assert!(!ctx.is_said_anchored(&missing));
+        let kel_verification = verify_with_anchors(builder.events(), [missing.clone()]);
+        assert!(!kel_verification.is_said_anchored(&missing));
     }
 
     #[tokio::test]
@@ -2010,10 +2020,10 @@ mod tests {
         events.push(adversary_ixn2);
         sort_events(&mut events);
 
-        let ctx = verify_with_anchors(&events, [a_pre.clone()]);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(2));
-        assert!(ctx.is_said_anchored(&a_pre));
+        let kel_verification = verify_with_anchors(&events, [a_pre.clone()]);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(2));
+        assert!(kel_verification.is_said_anchored(&a_pre));
     }
 
     #[tokio::test]
@@ -2037,14 +2047,15 @@ mod tests {
         events.push(adversary_ixn);
         sort_events(&mut events);
 
-        let ctx = verify_with_anchors(&events, [a_pre.clone(), a_owner.clone(), a_adv.clone()]);
-        assert!(ctx.is_divergent());
+        let kel_verification =
+            verify_with_anchors(&events, [a_pre.clone(), a_owner.clone(), a_adv.clone()]);
+        assert!(kel_verification.is_divergent());
         // Pre-divergence anchor is trusted
-        assert!(ctx.is_said_anchored(&a_pre));
+        assert!(kel_verification.is_said_anchored(&a_pre));
         // Neither anchor at the divergence serial should be trusted
-        assert!(!ctx.is_said_anchored(&a_owner));
-        assert!(!ctx.is_said_anchored(&a_adv));
-        assert!(!ctx.anchors_all_saids());
+        assert!(!kel_verification.is_said_anchored(&a_owner));
+        assert!(!kel_verification.is_said_anchored(&a_adv));
+        assert!(!kel_verification.anchors_all_saids());
     }
 
     #[tokio::test]
@@ -2069,13 +2080,13 @@ mod tests {
         events.push(adv_ixn);
         sort_events(&mut events);
 
-        let ctx = verify_with_anchors(&events, [a_pre.clone(), a_post.clone()]);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(2));
+        let kel_verification = verify_with_anchors(&events, [a_pre.clone(), a_post.clone()]);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(2));
         // Pre-divergence anchor is trusted
-        assert!(ctx.is_said_anchored(&a_pre));
+        assert!(kel_verification.is_said_anchored(&a_pre));
         // Post-divergence anchor (even from owner) is NOT trusted
-        assert!(!ctx.is_said_anchored(&a_post));
+        assert!(!kel_verification.is_said_anchored(&a_post));
     }
 
     #[tokio::test]
@@ -2098,7 +2109,7 @@ mod tests {
         store.save(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events, we have exactly 10
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             5,
@@ -2108,7 +2119,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 9);
+        assert_eq!(kel_verification.branch_tips()[0].tip.event.serial, 9);
     }
 
     #[tokio::test]
@@ -2151,8 +2162,11 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert_eq!(ctx.effective_tail_said(), Some(ixn.event.said.clone()));
+        let kel_verification = verify(builder.events());
+        assert_eq!(
+            kel_verification.effective_tail_said(),
+            Some(ixn.event.said.clone())
+        );
     }
 
     #[tokio::test]
@@ -2167,14 +2181,17 @@ mod tests {
         let mut events = vec![icp, ixn1.clone(), ixn2.clone()];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        let effective = ctx.effective_tail_said().unwrap();
+        let kel_verification = verify(&events);
+        let effective = kel_verification.effective_tail_said().unwrap();
 
         assert_ne!(effective, ixn1.event.said);
         assert_ne!(effective, ixn2.event.said);
 
-        let ctx2 = verify(&events);
-        assert_eq!(ctx.effective_tail_said(), ctx2.effective_tail_said());
+        let kel_verification2 = verify(&events);
+        assert_eq!(
+            kel_verification.effective_tail_said(),
+            kel_verification2.effective_tail_said()
+        );
     }
 
     // ==================== KelVerifier — recovery events ====================
@@ -2185,10 +2202,16 @@ mod tests {
         builder.incept().await.unwrap();
         builder.recover(false).await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(!ctx.is_empty());
-        assert!(!ctx.is_divergent());
-        assert!(ctx.last_establishment_event().unwrap().event.is_recover());
+        let kel_verification = verify(builder.events());
+        assert!(!kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
+        assert!(
+            kel_verification
+                .last_establishment_event()
+                .unwrap()
+                .event
+                .is_recover()
+        );
     }
 
     #[tokio::test]
@@ -2197,11 +2220,12 @@ mod tests {
         builder.incept().await.unwrap();
         builder.rotate_recovery().await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(!ctx.is_empty());
-        assert!(!ctx.is_divergent());
+        let kel_verification = verify(builder.events());
+        assert!(!kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
         assert!(
-            ctx.last_establishment_event()
+            kel_verification
+                .last_establishment_event()
                 .unwrap()
                 .event
                 .reveals_recovery_key()
@@ -2216,17 +2240,23 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn1 = builder.interact(&anchor("a1")).await.unwrap();
 
-        let ctx = verify(&builder.events()[..2]);
-        assert_eq!(ctx.branch_tips()[0].tip.event.said, ixn1.event.said);
+        let kel_verification = verify(&builder.events()[..2]);
+        assert_eq!(
+            kel_verification.branch_tips()[0].tip.event.said,
+            ixn1.event.said
+        );
 
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
 
-        let prefix = ctx.prefix().to_string();
-        let mut verifier = KelVerifier::resume(&prefix, &ctx).unwrap();
+        let prefix = kel_verification.prefix().to_string();
+        let mut verifier = KelVerifier::resume(&prefix, &kel_verification).unwrap();
         verifier.verify_page(slice::from_ref(&ixn2)).unwrap();
-        let ctx2 = verifier.into_verification().unwrap();
+        let kel_verification2 = verifier.into_verification().unwrap();
 
-        assert_eq!(ctx2.branch_tips()[0].tip.event.said, ixn2.event.said);
+        assert_eq!(
+            kel_verification2.branch_tips()[0].tip.event.said,
+            ixn2.event.said
+        );
     }
 
     // ==================== KelVerifier — from_branch_tip ====================
@@ -2249,9 +2279,12 @@ mod tests {
 
         let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip).unwrap();
         verifier.verify_page(slice::from_ref(&owner_ixn2)).unwrap();
-        let ctx = verifier.into_verification().unwrap();
+        let kel_verification = verifier.into_verification().unwrap();
 
-        assert_eq!(ctx.branch_tips()[0].tip.event.said, owner_ixn2.event.said);
+        assert_eq!(
+            kel_verification.branch_tips()[0].tip.event.said,
+            owner_ixn2.event.said
+        );
     }
 
     // ==================== Builder — divergent state ====================
@@ -2280,8 +2313,8 @@ mod tests {
         events.extend(builder2.events()[1..].iter().cloned());
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_divergent());
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_divergent());
 
         let builder3 = KeyEventBuilder::with_events(
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
@@ -2346,7 +2379,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, &events).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -2356,22 +2389,22 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!ctx.is_divergent());
-        assert!(!ctx.is_contested());
-        assert!(!ctx.is_decommissioned());
-        assert_eq!(ctx.branch_tips().len(), 1);
+        assert!(!kel_verification.is_divergent());
+        assert!(!kel_verification.is_contested());
+        assert!(!kel_verification.is_decommissioned());
+        assert_eq!(kel_verification.branch_tips().len(), 1);
         assert_eq!(
-            ctx.branch_tips()[0].tip.event.said,
+            kel_verification.branch_tips()[0].tip.event.said,
             events.last().unwrap().event.said
         );
 
         // Last establishment event should be the last rotation (at serial 500)
-        let last_est = ctx.last_establishment_event().unwrap();
+        let last_est = kel_verification.last_establishment_event().unwrap();
         assert!(last_est.event.is_rotation());
 
         // Key should differ from inception key
         assert_ne!(
-            ctx.current_public_key().unwrap(),
+            kel_verification.current_public_key().unwrap(),
             icp.event.public_key.as_ref().unwrap()
         );
     }
@@ -2418,7 +2451,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, &events).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -2428,9 +2461,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_said_anchored(&early_anchor));
-        assert!(ctx.is_said_anchored(&late_anchor));
-        assert!(ctx.anchors_all_saids());
+        assert!(kel_verification.is_said_anchored(&early_anchor));
+        assert!(kel_verification.is_said_anchored(&late_anchor));
+        assert!(kel_verification.anchors_all_saids());
     }
 
     // ---- Divergence entirely on second page ----
@@ -2463,7 +2496,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, &all_events).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -2473,10 +2506,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(512));
-        assert_eq!(ctx.branch_tips().len(), 2);
-        assert!(ctx.current_public_key().is_none());
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(512));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
+        assert!(kel_verification.current_public_key().is_none());
     }
 
     // ---- Long owner chain with early adversary injection ----
@@ -2509,7 +2542,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, &all_events).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -2519,11 +2552,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(1));
-        assert_eq!(ctx.branch_tips().len(), 2);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(1));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
 
-        let tip_saids: HashSet<_> = ctx
+        let tip_saids: HashSet<_> = kel_verification
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.said.as_str())
@@ -2555,13 +2588,13 @@ mod tests {
         events.push(adv_ixn.clone());
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(1));
-        assert_eq!(ctx.branch_tips().len(), 2);
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(1));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
 
         // Owner branch tip should have the rotation as establishment tip
-        for tip in ctx.branch_tips() {
+        for tip in kel_verification.branch_tips() {
             if tip.tip.event.said == owner_tip.event.said {
                 assert_eq!(
                     tip.establishment_tip.event.said, owner_rot.event.said,
@@ -2597,8 +2630,8 @@ mod tests {
         // Verify pre-recovery divergence
         let mut divergent_events = vec![icp.clone(), owner_ixn.clone(), adv_ixn.clone()];
         sort_events(&mut divergent_events);
-        let ctx = verify(&divergent_events);
-        assert!(ctx.is_divergent());
+        let kel_verification = verify(&divergent_events);
+        assert!(kel_verification.is_divergent());
 
         // Owner recovers
         let rec = owner.recover(false).await.unwrap();
@@ -2606,10 +2639,10 @@ mod tests {
         assert!(rec.event.reveals_recovery_key());
 
         // Verify owner chain including recovery is valid
-        let owner_ctx = verify(owner.events());
-        assert!(!owner_ctx.is_divergent());
+        let owner_kel_verification = verify(owner.events());
+        assert!(!owner_kel_verification.is_divergent());
         assert!(
-            owner_ctx
+            owner_kel_verification
                 .last_establishment_event()
                 .unwrap()
                 .event
@@ -2639,13 +2672,13 @@ mod tests {
         let mut events = vec![icp, owner_ixn, adv_ror, cnt.clone()];
         sort_events(&mut events);
 
-        let ctx = verify(&events);
-        assert!(ctx.is_contested());
-        assert!(ctx.is_decommissioned());
-        assert!(ctx.is_divergent());
+        let kel_verification = verify(&events);
+        assert!(kel_verification.is_contested());
+        assert!(kel_verification.is_decommissioned());
+        assert!(kel_verification.is_divergent());
 
         // Contest event should appear in a branch tip
-        let has_cnt = ctx
+        let has_cnt = kel_verification
             .branch_tips()
             .iter()
             .any(|t| t.tip.event.said == cnt.event.said);
@@ -2661,10 +2694,10 @@ mod tests {
         builder.interact(&anchor("data")).await.unwrap();
         builder.decommission().await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(ctx.is_decommissioned());
-        assert!(!ctx.is_contested());
-        assert!(!ctx.is_divergent());
+        let kel_verification = verify(builder.events());
+        assert!(kel_verification.is_decommissioned());
+        assert!(!kel_verification.is_contested());
+        assert!(!kel_verification.is_divergent());
 
         // Builder should refuse further events
         assert!(builder.interact(&anchor("rejected")).await.is_err());
@@ -2690,25 +2723,25 @@ mod tests {
         assert_eq!(events.len(), 30);
 
         // Verify first 10
-        let ctx1 = verify(&events[..10]);
-        assert_eq!(ctx1.branch_tips()[0].tip.event.serial, 9);
+        let kel_verification1 = verify(&events[..10]);
+        assert_eq!(kel_verification1.branch_tips()[0].tip.event.serial, 9);
 
         // Resume and verify next 10
-        let prefix = ctx1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &ctx1).unwrap();
+        let prefix = kel_verification1.prefix().to_string();
+        let mut v2 = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
         v2.verify_page(&events[10..20]).unwrap();
-        let ctx2 = v2.into_verification().unwrap();
-        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 19);
+        let kel_verification2 = v2.into_verification().unwrap();
+        assert_eq!(kel_verification2.branch_tips()[0].tip.event.serial, 19);
 
         // Resume and verify last 10
-        let mut v3 = KelVerifier::resume(&prefix, &ctx2).unwrap();
+        let mut v3 = KelVerifier::resume(&prefix, &kel_verification2).unwrap();
         v3.verify_page(&events[20..30]).unwrap();
-        let ctx3 = v3.into_verification().unwrap();
-        assert_eq!(ctx3.branch_tips()[0].tip.event.serial, 29);
+        let kel_verification3 = v3.into_verification().unwrap();
+        assert_eq!(kel_verification3.branch_tips()[0].tip.event.serial, 29);
 
         // Final tip should match
         assert_eq!(
-            ctx3.branch_tips()[0].tip.event.said,
+            kel_verification3.branch_tips()[0].tip.event.said,
             events.last().unwrap().event.said
         );
     }
@@ -2728,24 +2761,24 @@ mod tests {
 
         let mut page1 = vec![icp, owner_ixn1, adv_ixn1];
         sort_events(&mut page1);
-        let ctx1 = verify(&page1);
-        assert!(ctx1.is_divergent());
-        assert_eq!(ctx1.diverged_at_serial(), Some(1));
+        let kel_verification1 = verify(&page1);
+        assert!(kel_verification1.is_divergent());
+        assert_eq!(kel_verification1.diverged_at_serial(), Some(1));
 
         // Only the continuing branch extends (1 event per generation after divergence)
         let owner_ixn2 = owner.interact(&anchor("o2")).await.unwrap();
         let page2 = vec![owner_ixn2.clone()];
 
-        let prefix = ctx1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &ctx1).unwrap();
+        let prefix = kel_verification1.prefix().to_string();
+        let mut v2 = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
         v2.verify_page(&page2).unwrap();
-        let ctx2 = v2.into_verification().unwrap();
+        let kel_verification2 = v2.into_verification().unwrap();
 
-        assert!(ctx2.is_divergent());
-        assert_eq!(ctx2.diverged_at_serial(), Some(1));
-        assert_eq!(ctx2.branch_tips().len(), 2);
+        assert!(kel_verification2.is_divergent());
+        assert_eq!(kel_verification2.diverged_at_serial(), Some(1));
+        assert_eq!(kel_verification2.branch_tips().len(), 2);
         // Owner branch advanced to serial 2, adversary stays at serial 1
-        let tip_serials: HashSet<_> = ctx2
+        let tip_serials: HashSet<_> = kel_verification2
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.serial)
@@ -2772,10 +2805,13 @@ mod tests {
 
         let ixn = builder.interact(&anchor("delegated-data")).await.unwrap();
 
-        let ctx = verify(builder.events());
-        assert!(!ctx.is_empty());
-        assert!(!ctx.is_divergent());
-        assert_eq!(ctx.branch_tips()[0].tip.event.said, ixn.event.said);
+        let kel_verification = verify(builder.events());
+        assert!(!kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
+        assert_eq!(
+            kel_verification.branch_tips()[0].tip.event.said,
+            ixn.event.said
+        );
     }
 
     // ---- Effective SAID determinism ----
@@ -2794,18 +2830,18 @@ mod tests {
         // Order 1: a then b
         let mut events1 = vec![icp.clone(), ixn_a.clone(), ixn_b.clone()];
         sort_events(&mut events1);
-        let ctx1 = verify(&events1);
+        let kel_verification1 = verify(&events1);
 
         // Verify it's not just the tip SAID
-        let effective = ctx1.effective_tail_said().unwrap();
+        let effective = kel_verification1.effective_tail_said().unwrap();
         assert_ne!(effective, ixn_a.event.said);
         assert_ne!(effective, ixn_b.event.said);
 
         // Verify determinism: same events, same result
-        let ctx2 = verify(&events1);
+        let kel_verification2 = verify(&events1);
         assert_eq!(
-            ctx1.effective_tail_said(),
-            ctx2.effective_tail_said(),
+            kel_verification1.effective_tail_said(),
+            kel_verification2.effective_tail_said(),
             "Effective SAID must be deterministic"
         );
     }
@@ -2916,7 +2952,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, &all_events).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             7,
@@ -2926,11 +2962,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.diverged_at_serial(), Some(5));
-        assert_eq!(ctx.branch_tips().len(), 2);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.diverged_at_serial(), Some(5));
+        assert_eq!(kel_verification.branch_tips().len(), 2);
         // Owner branch tip at serial 7, adversary at serial 5
-        let tip_serials: HashSet<_> = ctx
+        let tip_serials: HashSet<_> = kel_verification
             .branch_tips()
             .iter()
             .map(|t| t.tip.event.serial)
@@ -2977,7 +3013,7 @@ mod tests {
         store.save(&prefix, &all_events).await.unwrap();
 
         // Verify divergence
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             512,
@@ -2986,18 +3022,18 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(ctx.is_divergent());
-        assert_eq!(ctx.branch_tips().len(), 2);
+        assert!(kel_verification.is_divergent());
+        assert_eq!(kel_verification.branch_tips().len(), 2);
 
         // Owner recovers
         let rec = owner.recover(false).await.unwrap();
         assert!(rec.event.is_recover());
 
         // Verify the owner's chain after recovery is clean
-        let recovered_ctx = verify(owner.events());
-        assert!(!recovered_ctx.is_divergent());
+        let recovered_kel_verification = verify(owner.events());
+        assert!(!recovered_kel_verification.is_divergent());
         assert!(
-            recovered_ctx
+            recovered_kel_verification
                 .last_establishment_event()
                 .unwrap()
                 .event
@@ -3036,10 +3072,16 @@ mod tests {
         // Verify recovery event against owner branch
         let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip).unwrap();
         verifier.verify_page(slice::from_ref(&rec)).unwrap();
-        let ctx = verifier.into_verification().unwrap();
+        let kel_verification = verifier.into_verification().unwrap();
 
-        assert!(!ctx.is_divergent());
-        assert!(ctx.last_establishment_event().unwrap().event.is_recover());
+        assert!(!kel_verification.is_divergent());
+        assert!(
+            kel_verification
+                .last_establishment_event()
+                .unwrap()
+                .event
+                .is_recover()
+        );
     }
 
     // ---- Verification SAID is content-addressable ----
@@ -3054,10 +3096,10 @@ mod tests {
         builder.rotate().await.unwrap();
 
         let events = builder.events().to_vec();
-        let ctx1 = verify(&events);
-        let ctx2 = verify(&events);
+        let kel_verification1 = verify(&events);
+        let kel_verification2 = verify(&events);
 
-        assert_eq!(ctx1.said(), ctx2.said());
+        assert_eq!(kel_verification1.said(), kel_verification2.said());
     }
 
     // ---- Empty KEL produces empty Verification ----
@@ -3065,7 +3107,7 @@ mod tests {
     #[tokio::test]
     async fn test_empty_kel_verification() {
         let store = MemoryStore::new();
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             "ENonexistent_Prefix_________________________",
             512,
@@ -3075,11 +3117,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ctx.is_empty());
-        assert!(!ctx.is_divergent());
-        assert!(!ctx.is_contested());
-        assert!(ctx.current_public_key().is_none());
-        assert!(ctx.effective_tail_said().is_none());
+        assert!(kel_verification.is_empty());
+        assert!(!kel_verification.is_divergent());
+        assert!(!kel_verification.is_contested());
+        assert!(kel_verification.current_public_key().is_none());
+        assert!(kel_verification.effective_tail_said().is_none());
     }
 
     // ---- Rotate recovery (ror) verification ----
@@ -3104,9 +3146,9 @@ mod tests {
             "Recovery key revealed in ror must match inception's recovery_hash commitment"
         );
 
-        let ctx = verify(builder.events());
-        assert!(!ctx.is_divergent());
-        assert!(!ctx.is_contested());
+        let kel_verification = verify(builder.events());
+        assert!(!kel_verification.is_divergent());
+        assert!(!kel_verification.is_contested());
     }
 
     // ---- Verification rejects wrong prefix ----
@@ -3159,7 +3201,7 @@ mod tests {
         let store = MemoryStore::new();
         store.save(&prefix, builder.events()).await.unwrap();
 
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             3, // very small pages
@@ -3169,8 +3211,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!ctx.is_divergent());
-        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 29);
+        assert!(!kel_verification.is_divergent());
+        assert_eq!(kel_verification.branch_tips()[0].tip.event.serial, 29);
     }
 
     // ---- Multi-page with anchor checking and resume combined ----
@@ -3256,7 +3298,7 @@ mod tests {
         builder.interact(&anchor("a2")).await.unwrap();
 
         let source = MemoryKelSource::new(builder.events().to_vec());
-        let ctx = verify_key_events(
+        let kel_verification = verify_key_events(
             &prefix,
             &source,
             KelVerifier::new(&prefix),
@@ -3266,9 +3308,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(ctx.branch_tips().len(), 1);
-        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 2);
-        assert!(!ctx.is_divergent());
+        assert_eq!(kel_verification.branch_tips().len(), 1);
+        assert_eq!(kel_verification.branch_tips()[0].tip.event.serial, 2);
+        assert!(!kel_verification.is_divergent());
     }
 
     #[tokio::test]
@@ -3280,13 +3322,13 @@ mod tests {
         builder.interact(&anchor("a2")).await.unwrap();
 
         let source = MemoryKelSource::new(builder.events().to_vec());
-        let (ctx, events) =
+        let (kel_verification, events) =
             collect_key_events(&prefix, &source, KelVerifier::new(&prefix), 100, 100)
                 .await
                 .unwrap();
 
         assert_eq!(events.len(), 3);
-        assert_eq!(ctx.branch_tips()[0].tip.event.serial, 2);
+        assert_eq!(kel_verification.branch_tips()[0].tip.event.serial, 2);
     }
 
     #[tokio::test]
@@ -3462,7 +3504,7 @@ mod tests {
         store.save(&prefix, builder.events()).await.unwrap();
 
         // Phase 1: verify with anchor check
-        let ctx1 = completed_verification(
+        let kel_verification1 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
             5,
@@ -3471,8 +3513,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(ctx1.is_said_anchored(&anchor1));
-        assert_eq!(ctx1.branch_tips()[0].tip.event.serial, 9);
+        assert!(kel_verification1.is_said_anchored(&anchor1));
+        assert_eq!(kel_verification1.branch_tips()[0].tip.event.serial, 9);
 
         // Phase 2: add more events with a new anchor
         let anchor2 = anchor("phase2-anchor");
@@ -3484,14 +3526,14 @@ mod tests {
                 .unwrap();
         }
 
-        // Resume from ctx1 and check new anchor
-        let new_events = &builder.events()[10..]; // events after ctx1
-        let mut verifier = KelVerifier::resume(&prefix, &ctx1).unwrap();
+        // Resume from kel_verification1 and check new anchor
+        let new_events = &builder.events()[10..]; // events after kel_verification1
+        let mut verifier = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
         verifier.check_anchors(vec![anchor2.clone()]);
         verifier.verify_page(new_events).unwrap();
-        let ctx2 = verifier.into_verification().unwrap();
+        let kel_verification2 = verifier.into_verification().unwrap();
 
-        assert!(ctx2.is_said_anchored(&anchor2));
-        assert_eq!(ctx2.branch_tips()[0].tip.event.serial, 14);
+        assert!(kel_verification2.is_said_anchored(&anchor2));
+        assert_eq!(kel_verification2.branch_tips()[0].tip.event.serial, 14);
     }
 }

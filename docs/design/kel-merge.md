@@ -213,7 +213,7 @@ The KELS service's `submit_events` handler routes submissions through two paths 
 
 Conditions: single tip (non-divergent), submitted events chain from the tip, KEL not contested.
 
-Uses `KelVerifier::resume(prefix, &ctx)` for incremental verification against the verified `KelVerification` token. **No full KEL load** — the `KelVerification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
+Uses `KelVerifier::resume(prefix, &kel_verification)` for incremental verification against the verified `KelVerification` token. **No full KEL load** — the `KelVerification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
 
 ### Full Path (divergence/recovery/overlap)
 

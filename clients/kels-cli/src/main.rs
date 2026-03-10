@@ -522,7 +522,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let source = HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
     let verifier = KelVerifier::new(prefix);
 
-    let (ctx, all_events) = collect_key_events(
+    let (kel_verification, all_events) = collect_key_events(
         prefix,
         &source,
         verifier,
@@ -548,7 +548,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!("  Latest Type: {}", last.event.kind);
         }
 
-        print_kel_status(&ctx, true);
+        print_kel_status(&kel_verification, true);
 
         println!();
         println!("{}", "Events:".yellow().bold());
@@ -595,7 +595,7 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         println!("  Latest Type: {}", last.event.kind);
     }
 
-    print_kel_status(&ctx, false);
+    print_kel_status(&kel_verification, false);
 
     println!();
     println!("{}", "Events:".yellow().bold());
@@ -648,7 +648,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let ctx = kels::completed_verification(
+    let kel_verification = kels::completed_verification(
         &mut kels::StorePageLoader::new(&kel_store),
         prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -657,26 +657,26 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     )
     .await?;
 
-    if ctx.is_empty() {
+    if kel_verification.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
 
-    let event_count = ctx.event_count();
+    let event_count = kel_verification.event_count();
 
     println!("{}", format!("KEL Status: {}", prefix).cyan().bold());
     println!("  Local Events: {}", event_count);
 
-    if let Some(bt) = ctx.branch_tips().first() {
+    if let Some(bt) = kel_verification.branch_tips().first() {
         println!("  Latest SAID:  {}", bt.tip.event.said);
         println!("  Latest Type:  {}", bt.tip.event.kind);
     }
-    if ctx.is_contested() {
+    if kel_verification.is_contested() {
         println!("  Status:       {}", "CONTESTED".red());
-    } else if ctx.is_decommissioned() {
+    } else if kel_verification.is_decommissioned() {
         println!("  Status:       {}", "DECOMMISSIONED".red());
-    } else if ctx.is_divergent() {
+    } else if kel_verification.is_divergent() {
         println!("  Status:       {}", "DIVERGENT".yellow());
-        if let Some(serial) = ctx.diverged_at_serial() {
+        if let Some(serial) = kel_verification.diverged_at_serial() {
             println!("  Diverged At:  s{}", serial);
         }
     } else {

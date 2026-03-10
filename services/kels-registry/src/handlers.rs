@@ -252,7 +252,7 @@ pub async fn federation_rpc(
     )
     .await;
 
-    let ctx = match local_result {
+    let kel_verification = match local_result {
         Ok(v) if !v.is_empty() => v,
         _ => {
             // HTTP fetch during bootstrap (local DB may not have this member's KEL yet)
@@ -279,11 +279,11 @@ pub async fn federation_rpc(
         }
     };
 
-    if ctx.is_divergent() {
+    if kel_verification.is_divergent() {
         return Err(ApiError::unauthorized("Sender KEL is divergent"));
     }
 
-    let current_key = ctx.current_public_key().ok_or_else(|| {
+    let current_key = kel_verification.current_public_key().ok_or_else(|| {
         ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
     })?;
     let public_key = PublicKey::from_qb64(current_key)

@@ -548,7 +548,7 @@ pub async fn verify_peer_anchoring(
 
     // First try from local store
     let mut loader = crate::StorePageLoader::new(store);
-    let ctx = crate::completed_verification(
+    let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
         crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
@@ -557,7 +557,7 @@ pub async fn verify_peer_anchoring(
     )
     .await;
 
-    if let Ok(ref v) = ctx
+    if let Ok(ref v) = kel_verification
         && v.anchors_all_saids()
     {
         return Ok(true);
@@ -568,7 +568,7 @@ pub async fn verify_peer_anchoring(
     sync_member_kel(&peer.authorizing_kel, registry_urls, &sink).await;
 
     let mut loader = crate::StorePageLoader::new(store);
-    let ctx = crate::completed_verification(
+    let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
         crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
@@ -577,7 +577,7 @@ pub async fn verify_peer_anchoring(
     )
     .await?;
 
-    Ok(ctx.anchors_all_saids())
+    Ok(kel_verification.anchors_all_saids())
 }
 
 enum ProposalCandidateRef<'a> {
@@ -715,7 +715,7 @@ async fn verify_anchors_from_store(
 ) -> Result<Option<KelVerification>, KelsError> {
     // First try from local store
     let mut loader = crate::StorePageLoader::new(store);
-    let ctx = crate::completed_verification(
+    let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
         crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
@@ -724,7 +724,7 @@ async fn verify_anchors_from_store(
     )
     .await;
 
-    if let Ok(ref v) = ctx
+    if let Ok(ref v) = kel_verification
         && v.anchors_all_saids()
     {
         return Ok(Some(v.clone()));

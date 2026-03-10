@@ -22,7 +22,7 @@ async fn verify_member_anchoring_from_repo(
     let store = kels::RepositoryKelStore::new(Arc::new(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
     ));
-    let ctx = kels::completed_verification(
+    let kel_verification = kels::completed_verification(
         &mut kels::StorePageLoader::new(&store),
         member_prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -32,7 +32,7 @@ async fn verify_member_anchoring_from_repo(
     .await
     .map_err(|e| format!("Member KEL verification failed: {}", e))?;
 
-    if !ctx.anchors_all_saids() {
+    if !kel_verification.anchors_all_saids() {
         return Err(format!("SAID {} not anchored in member's KEL", said));
     }
 

@@ -354,7 +354,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Re-verify the entire KEL on every submission. We cannot cache KelVerification
         // tokens because the DB cannot be trusted (verification invariant).
-        let ctx = completed_verification(
+        let kel_verification = completed_verification(
             self,
             &prefix,
             MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -368,9 +368,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             "merge_events: prefix={}, submitted={} events, branches={}, contested={}, diverged_at={:?}",
             prefix,
             events.len(),
-            ctx.branch_tips().len(),
-            ctx.is_contested(),
-            ctx.diverged_at_serial(),
+            kel_verification.branch_tips().len(),
+            kel_verification.is_contested(),
+            kel_verification.diverged_at_serial(),
         );
 
         // Validate event structure
@@ -382,16 +382,18 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Route based on verified context
         let first_previous = events[0].event.previous.clone();
-        let is_normal_append = ctx.branch_tips().len() == 1
-            && first_previous.as_deref() == Some(ctx.branch_tips()[0].tip.event.said.as_str())
-            && !ctx.is_contested();
+        let is_normal_append = kel_verification.branch_tips().len() == 1
+            && first_previous.as_deref()
+                == Some(kel_verification.branch_tips()[0].tip.event.said.as_str())
+            && !kel_verification.is_contested();
 
         if is_normal_append {
-            self.handle_normal_append(&ctx, events).await
-        } else if ctx.is_empty() && first_previous.is_none() {
+            self.handle_normal_append(&kel_verification, events).await
+        } else if kel_verification.is_empty() && first_previous.is_none() {
             self.handle_new_kel(events).await
         } else {
-            self.handle_full_path(&ctx, events, &prefix).await
+            self.handle_full_path(&kel_verification, events, &prefix)
+                .await
         }
     }
 
@@ -581,7 +583,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let full_ctx = completed_verification(
+            let full_kel_verification = completed_verification(
                 self,
                 prefix,
                 MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -610,9 +612,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let mut verifier = KelVerifier::resume(prefix, &full_ctx).map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-            })?;
+            let mut verifier =
+                KelVerifier::resume(prefix, &full_kel_verification).map_err(|e| {
+                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+                })?;
             verifier
                 .verify_page(slice::from_ref(first))
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;

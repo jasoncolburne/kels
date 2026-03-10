@@ -269,7 +269,7 @@ async fn check_and_rotate(
     // Consuming: verify full KEL under advisory lock with inline anchor checking
     let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
     let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
-    let ctx = kels::completed_verification(
+    let kel_verification = kels::completed_verification(
         &mut tx,
         prefix,
         kels::MAX_EVENTS_PER_KEL_QUERY as u64,
@@ -278,17 +278,17 @@ async fn check_and_rotate(
     )
     .await?;
 
-    if ctx.is_divergent() {
+    if kel_verification.is_divergent() {
         return Err("SECURITY: Identity KEL has diverged".into());
     }
 
     // Audit full binding chain — alert on any tampering but don't rotate
-    if let Err(e) = audit_binding_chain(&bindings, &ctx) {
+    if let Err(e) = audit_binding_chain(&bindings, &kel_verification) {
         warn!("SECURITY: binding chain integrity check failed: {}", e);
     }
 
     // Only the latest binding's consistency determines rotation
-    let should_rotate = match verify_latest_binding(&bindings, &ctx) {
+    let should_rotate = match verify_latest_binding(&bindings, &kel_verification) {
         Ok(needs_rotation) => needs_rotation,
         Err(e) => {
             warn!(

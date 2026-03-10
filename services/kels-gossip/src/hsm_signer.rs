@@ -186,7 +186,7 @@ impl KelsPeerVerifier {
     async fn public_key_from_key_events(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key for signing
         let source = kels::HttpKelSource::new(&self.kels_url, "/api/kels/kel/{prefix}");
-        let ctx = kels::verify_key_events(
+        let kel_verification = kels::verify_key_events(
             prefix,
             &source,
             kels::KelVerifier::new(prefix),
@@ -198,14 +198,14 @@ impl KelsPeerVerifier {
             GossipError::VerificationFailed(format!("KEL verify for {}: {}", prefix, e))
         })?;
 
-        if ctx.is_divergent() {
+        if kel_verification.is_divergent() {
             return Err(GossipError::VerificationFailed(format!(
                 "KEL for {} is divergent",
                 prefix
             )));
         }
 
-        let qb64_key = ctx.current_public_key().ok_or_else(|| {
+        let qb64_key = kel_verification.current_public_key().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 

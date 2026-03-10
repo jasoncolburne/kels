@@ -115,11 +115,11 @@ impl PeerHistory {
         trusted_prefixes: &HashSet<&'static str>,
         kel_verifications: &[&KelVerification],
     ) -> Result<(), KelsError> {
-        for ctx in kel_verifications {
-            if !trusted_prefixes.contains(ctx.prefix()) {
+        for kel_verification in kel_verifications {
+            if !trusted_prefixes.contains(kel_verification.prefix()) {
                 return Err(KelsError::RegistryFailure(format!(
                     "Could not verify KEL {} as trusted",
-                    ctx.prefix()
+                    kel_verification.prefix()
                 )));
             }
         }
