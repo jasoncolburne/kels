@@ -500,7 +500,6 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 
     // Get current state from builder
     let prefix = builder_guard.prefix().map(|s| s.to_string());
-    let events = builder_guard.events().to_vec();
 
     // Clone the key provider
     #[cfg(all(
@@ -517,10 +516,26 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     )))]
     let key_provider = builder_guard.key_provider().clone();
 
-    // Create new builder with same state but new client, preserving store
-    let new_builder =
-        KeyEventBuilder::with_events(key_provider, Some(client), Some(ctx.store.clone()), events);
-    *builder_guard = new_builder;
+    // Rebuild from store with new client
+    let new_builder = ctx.runtime.block_on(async {
+        KeyEventBuilder::with_dependencies(
+            key_provider,
+            Some(client),
+            Some(ctx.store.clone()),
+            prefix.as_deref(),
+        )
+        .await
+    });
+
+    match new_builder {
+        Ok(b) => {
+            *builder_guard = b;
+        }
+        Err(e) => {
+            set_last_error(&format!("Failed to rebuild builder: {}", e));
+            return -1;
+        }
+    }
 
     // Preserve store owner prefix
     if let Some(p) = prefix {
@@ -796,7 +811,43 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
     };
 
     let recover_result = ctx.runtime.block_on(async {
-        let add_rot = builder_guard.should_add_rot_with_recover().await?;
+        // Verify server KEL to detect if adversary revealed the rotation key
+        let add_rot = if let Some(prefix) = builder_guard.prefix() {
+            let kels_url = match ctx.kels_url.read() {
+                Ok(url) => url.clone(),
+                Err(_) => {
+                    return Err(kels::KelsError::StorageError(
+                        "kels_url lock poisoned".to_string(),
+                    ));
+                }
+            };
+            let source = kels::HttpKelSource::new(&kels_url, "/api/kels/kel/{prefix}");
+            match kels::verify_key_events(
+                prefix,
+                &source,
+                kels::KelVerifier::new(prefix),
+                kels::MAX_EVENTS_PER_KEL_RESPONSE,
+                kels::max_verification_pages(),
+            )
+            .await
+            {
+                Ok(server_verification) => {
+                    let owner_last_est_serial = builder_guard
+                        .last_establishment_event()
+                        .map(|e| e.serial)
+                        .unwrap_or(0);
+                    kels::should_rotate_with_recovery(
+                        &server_verification,
+                        builder_guard.rotation_count(),
+                        owner_last_est_serial,
+                    )
+                }
+                Err(_) => true, // Fail secure
+            }
+        } else {
+            // Fail secure: no prefix = assume rotation needed
+            true
+        };
         builder_guard.recover(add_rot).await
     });
 
@@ -971,32 +1022,21 @@ pub unsafe extern "C" fn kels_status(
         return;
     };
 
-    let events = builder_guard.events();
-
     result.status = KelsStatus::Ok;
 
     if let Some(prefix) = builder_guard.prefix() {
         result.prefix = to_c_string(prefix);
     }
 
-    result.event_count = events.len() as u32;
+    result.event_count = builder_guard.confirmed_count() as u32;
 
     if let Some(said) = builder_guard.last_said() {
         result.latest_said = to_c_string(said);
     }
 
-    if let Some(prefix) = builder_guard.prefix() {
-        let mut verifier = kels::KelVerifier::new(prefix);
-        if verifier.verify_page(events).is_ok()
-            && let Ok(ctx) = verifier.into_verification()
-        {
-            result.is_divergent = ctx.is_divergent();
-            result.is_contested = ctx.is_contested();
-        } else if !events.is_empty() {
-            result.status = KelsStatus::Error;
-            result.error = to_c_string("KEL verification failed");
-            return;
-        }
+    if let Some(v) = builder_guard.kel_verification() {
+        result.is_divergent = v.is_divergent();
+        result.is_contested = v.is_contested();
     }
     result.is_decommissioned = builder_guard.is_decommissioned();
 
@@ -1023,13 +1063,19 @@ pub unsafe extern "C" fn kels_status(
 /// * `prefix` - The KEL prefix to fetch
 ///
 /// # Returns
-/// JSON string of events, or NULL on error. Must be freed with kels_free_string().
+/// JSON string `{"events": [...], "has_more": bool}`, or NULL on error.
+/// Must be freed with kels_free_string().
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
-/// - `prefix` must be a valid C string
+/// - `prefix` must be a valid C string (or NULL for current KEL)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_get_kel(ctx: *mut KelsContext, prefix: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn kels_get_kel(
+    ctx: *mut KelsContext,
+    prefix: *const c_char,
+    limit: u64,
+    offset: u64,
+) -> *mut c_char {
     clear_last_error();
 
     if ctx.is_null() {
@@ -1047,18 +1093,42 @@ pub unsafe extern "C" fn kels_get_kel(ctx: *mut KelsContext, prefix: *const c_ch
     };
 
     // If no prefix specified, use the current KEL
-    let events_to_serialize =
-        if prefix_str.is_none() || prefix_str.as_deref() == builder_guard.prefix() {
-            builder_guard.events()
-        } else {
-            set_last_error("Can only get current KEL from context");
-            return std::ptr::null_mut();
-        };
+    let target_prefix = if prefix_str.is_none() || prefix_str.as_deref() == builder_guard.prefix() {
+        match builder_guard.prefix() {
+            Some(p) => p.to_string(),
+            None => {
+                set_last_error("No KEL prefix available");
+                return std::ptr::null_mut();
+            }
+        }
+    } else {
+        set_last_error("Can only get current KEL from context");
+        return std::ptr::null_mut();
+    };
 
-    match serde_json::to_string(events_to_serialize) {
-        Ok(json) => to_c_string(&json),
+    // Clamp limit to configured page size
+    let limit = limit.min(kels::MAX_EVENTS_PER_KEL_RESPONSE as u64);
+
+    // Load a page of events from store
+    let result = ctx
+        .runtime
+        .block_on(ctx.store.load(&target_prefix, limit, offset));
+
+    match result {
+        Ok((events, has_more)) => {
+            match serde_json::to_string(&serde_json::json!({
+                "events": events,
+                "has_more": has_more,
+            })) {
+                Ok(json) => to_c_string(&json),
+                Err(e) => {
+                    set_last_error(&format!("Failed to serialize KEL: {}", e));
+                    std::ptr::null_mut()
+                }
+            }
+        }
         Err(e) => {
-            set_last_error(&format!("Failed to serialize KEL: {}", e));
+            set_last_error(&format!("Failed to load KEL: {}", e));
             std::ptr::null_mut()
         }
     }
@@ -1371,8 +1441,32 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         )))]
         let adversary_keys = builder_guard.key_provider().clone();
 
-        let events = builder_guard.events().to_vec();
+        let prefix = match builder_guard.prefix() {
+            Some(p) => p.to_string(),
+            None => {
+                set_last_error("No KEL incepted");
+                return -1;
+            }
+        };
         drop(builder_guard);
+
+        // Load events from store for the adversary builder
+        let source = kels::StoreKelSource::new(ctx.store.as_ref());
+        let events = match kels::resolve_key_events(
+            &prefix,
+            &source,
+            kels::MAX_EVENTS_PER_KEL_RESPONSE,
+            kels::max_verification_pages(),
+            None,
+        )
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                set_last_error(&format!("Failed to load KEL for adversary: {}", e));
+                return -1;
+            }
+        };
 
         // Create adversary builder WITH KELS client but NO kel_store
         // Events submit to KELS but don't save locally (simulating adversary)
@@ -1488,7 +1582,7 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
         events.truncate(keep);
 
         // Save back to store
-        if let Err(e) = ctx.store.save(&prefix, &events).await {
+        if let Err(e) = ctx.store.overwrite(&prefix, &events).await {
             set_last_error(&format!("Failed to save truncated KEL: {}", e));
             return -1;
         }
@@ -1521,12 +1615,37 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
         return std::ptr::null_mut();
     };
 
-    let events = builder_guard.events();
+    let prefix = match builder_guard.prefix() {
+        Some(p) => p.to_string(),
+        None => {
+            set_last_error("No KEL prefix available");
+            return std::ptr::null_mut();
+        }
+    };
 
-    match serde_json::to_string_pretty(events) {
-        Ok(json) => to_c_string(&json),
+    // Load events from store
+    let events = ctx.runtime.block_on(async {
+        let source = kels::StoreKelSource::new(ctx.store.as_ref());
+        kels::resolve_key_events(
+            &prefix,
+            &source,
+            kels::MAX_EVENTS_PER_KEL_RESPONSE,
+            kels::max_verification_pages(),
+            None,
+        )
+        .await
+    });
+
+    match events {
+        Ok(evts) => match serde_json::to_string_pretty(&evts) {
+            Ok(json) => to_c_string(&json),
+            Err(e) => {
+                set_last_error(&format!("Failed to serialize KEL: {}", e));
+                std::ptr::null_mut()
+            }
+        },
         Err(e) => {
-            set_last_error(&format!("Failed to serialize KEL: {}", e));
+            set_last_error(&format!("Failed to load KEL: {}", e));
             std::ptr::null_mut()
         }
     }

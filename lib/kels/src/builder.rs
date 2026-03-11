@@ -1,7 +1,5 @@
 //! Key Event Builder
 
-use std::collections::HashSet;
-
 use cesr::{Matter, PublicKey};
 
 use crate::{
@@ -9,15 +7,36 @@ use crate::{
     crypto::KeyProvider,
     error::KelsError,
     store::KelStore,
-    types::{KeyEvent, SignedKeyEvent},
+    types::{KelVerification, KeyEvent, SignedKeyEvent},
 };
+
+/// Determine if recovery should include a rotation based on server verification state.
+///
+/// Two conditions must both hold for an extra rotation to be needed:
+/// 1. The server has more rotations than the owner (adversary revealed a rotation key)
+/// 2. The owner hasn't already rotated past the divergence point (escaping to new keys)
+///
+/// If the KEL diverged and the owner's last establishment event is after the fork,
+/// the adversary only had pre-fork keys and the current rotation key is safe.
+pub fn should_rotate_with_recovery(
+    server_verification: &KelVerification,
+    owner_rotation_count: usize,
+    owner_last_establishment_serial: u64,
+) -> bool {
+    if let Some(div_serial) = server_verification.diverged_at_serial()
+        && owner_last_establishment_serial > div_serial
+    {
+        return false;
+    }
+    server_verification.rotation_count() > owner_rotation_count
+}
 
 pub struct KeyEventBuilder<K: KeyProvider + Clone> {
     key_provider: K,
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
-    events: Vec<SignedKeyEvent>,
-    confirmed_cursor: usize,
+    kel_verification: Option<KelVerification>,
+    pending_events: Vec<SignedKeyEvent>,
 }
 
 impl<K: KeyProvider + Clone> Clone for KeyEventBuilder<K> {
@@ -26,8 +45,8 @@ impl<K: KeyProvider + Clone> Clone for KeyEventBuilder<K> {
             key_provider: self.key_provider.clone(),
             kels_client: self.kels_client.clone(),
             kel_store: self.kel_store.clone(),
-            events: self.events.clone(),
-            confirmed_cursor: self.confirmed_cursor,
+            kel_verification: self.kel_verification.clone(),
+            pending_events: self.pending_events.clone(),
         }
     }
 }
@@ -40,8 +59,8 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
             key_provider,
             kels_client,
             kel_store: None,
-            events: Vec::new(),
-            confirmed_cursor: 0,
+            kel_verification: None,
+            pending_events: Vec::new(),
         }
     }
 
@@ -51,59 +70,87 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         prefix: Option<&str>,
     ) -> Result<Self, KelsError> {
-        let events = match (&kel_store, prefix) {
+        let kel_verification = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
-                let (events, _) = store.load(p, crate::LOAD_ALL, 0).await?;
-                events
+                let verification = crate::completed_verification(
+                    &mut crate::StorePageLoader::new(store.as_ref()),
+                    p,
+                    crate::MAX_EVENTS_PER_KEL_QUERY as u64,
+                    crate::max_verification_pages(),
+                    std::iter::empty::<String>(),
+                )
+                .await?;
+                if verification.is_empty() {
+                    None
+                } else {
+                    Some(verification)
+                }
             }
-            _ => Vec::new(),
+            _ => None,
         };
-        let confirmed_cursor = events.len();
 
         Ok(Self {
             key_provider,
             kels_client,
             kel_store,
-            events,
-            confirmed_cursor,
+            kel_verification,
+            pending_events: Vec::new(),
         })
     }
 
+    #[cfg(any(test, feature = "dev-tools"))]
     pub fn with_events(
         key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
         events: Vec<SignedKeyEvent>,
     ) -> Self {
-        let confirmed_cursor = events.len();
+        // Verify inline to produce KelVerification
+        let kel_verification = if events.is_empty() {
+            None
+        } else {
+            let prefix = events[0].event.prefix.clone();
+            let mut verifier = crate::KelVerifier::new(&prefix);
+            match verifier.verify_page(&events) {
+                Ok(()) => verifier.into_verification().ok(),
+                Err(_) => None,
+            }
+        };
+
         Self {
             key_provider,
             kels_client,
             kel_store,
-            events,
-            confirmed_cursor,
+            kel_verification,
+            pending_events: Vec::new(),
         }
     }
 
     // ==================== Accessors ====================
 
     pub fn confirmed_count(&self) -> usize {
-        self.confirmed_cursor
+        self.kel_verification
+            .as_ref()
+            .map(|v| v.event_count())
+            .unwrap_or(0)
     }
 
     pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
         self.key_provider.current_public_key().await
     }
 
-    pub fn events(&self) -> &[SignedKeyEvent] {
-        &self.events
+    pub fn is_decommissioned(&self) -> bool {
+        if let Some(last) = self.pending_events.last() {
+            return last.event.decommissions();
+        }
+        self.kel_verification
+            .as_ref()
+            .map(|v| v.is_decommissioned())
+            .unwrap_or(false)
     }
 
-    pub fn is_decommissioned(&self) -> bool {
-        self.events
-            .last()
-            .map(|e| e.event.decommissions())
-            .unwrap_or(false)
+    pub fn kel_verification(&self) -> &Option<KelVerification> {
+        &self.kel_verification
     }
 
     pub fn key_provider(&self) -> &K {
@@ -115,27 +162,51 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     }
 
     pub fn last_establishment_event(&self) -> Option<&KeyEvent> {
-        self.events
+        // Check pending events first (most recent)
+        if let Some(e) = self
+            .pending_events
             .iter()
             .rev()
             .find(|e| e.event.is_establishment())
+        {
+            return Some(&e.event);
+        }
+        // Fall back to verification
+        self.kel_verification
+            .as_ref()
+            .and_then(|v| v.last_establishment_event())
             .map(|e| &e.event)
     }
 
     pub fn last_event(&self) -> Option<&KeyEvent> {
-        self.events.last().map(|e| &e.event)
+        if let Some(last) = self.pending_events.last() {
+            return Some(&last.event);
+        }
+        self.kel_verification
+            .as_ref()
+            .and_then(|v| v.branch_tips().first())
+            .map(|bt| &bt.tip.event)
     }
 
     pub fn last_said(&self) -> Option<&str> {
-        self.events.last().map(|e| e.event.said.as_str())
+        if let Some(last) = self.pending_events.last() {
+            return Some(last.event.said.as_str());
+        }
+        self.kel_verification
+            .as_ref()
+            .and_then(|v| v.branch_tips().first())
+            .map(|bt| bt.tip.event.said.as_str())
     }
 
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
-        &self.events[self.confirmed_cursor..]
+        &self.pending_events
     }
 
     pub fn prefix(&self) -> Option<&str> {
-        self.events.first().map(|e| e.event.prefix.as_str())
+        if let Some(first) = self.pending_events.first() {
+            return Some(first.event.prefix.as_str());
+        }
+        self.kel_verification.as_ref().map(|v| v.prefix())
     }
 
     /// Reload the KEL from the store, if one is configured.
@@ -147,72 +218,33 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
             return Ok(());
         };
-        let (events, _) = store.load(&prefix, crate::LOAD_ALL, 0).await?;
-        if !events.is_empty() {
-            self.confirmed_cursor = events.len();
-            self.events = events;
+        let verification = crate::completed_verification(
+            &mut crate::StorePageLoader::new(store.as_ref()),
+            &prefix,
+            crate::MAX_EVENTS_PER_KEL_QUERY as u64,
+            crate::max_verification_pages(),
+            std::iter::empty::<String>(),
+        )
+        .await?;
+        if !verification.is_empty() {
+            self.kel_verification = Some(verification);
+            self.pending_events.clear();
         }
         Ok(())
     }
 
-    /// Check if recovery should include a rotation (rec+rot vs just rec).
-    ///
-    /// Fetches server events, compares with local to detect adversary rotation.
-    /// If the adversary revealed the rotation key, we need to rotate after recovery
-    /// to prevent them from injecting events with the compromised key.
-    pub async fn should_add_rot_with_recover(&self) -> Result<bool, KelsError> {
-        if let Some(client) = &self.kels_client
-            && let Some(prefix) = self.prefix()
-        {
-            // Fetch server events (paginated)
-            let source = crate::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
-            let server_events = crate::resolve_key_events(
-                prefix,
-                &source,
-                crate::MAX_EVENTS_PER_KEL_QUERY,
-                crate::max_verification_pages(),
-                None,
-            )
-            .await?;
-
-            let local_saids: HashSet<&str> = self
-                .events()
-                .iter()
-                .map(|e| e.event.said.as_str())
-                .collect();
-
-            // Events on the server that we don't have locally = adversary events
-            let adversary_events: Vec<_> = server_events
-                .iter()
-                .filter(|e| !local_saids.contains(e.event.said.as_str()))
-                .collect();
-
-            if adversary_events.is_empty() {
-                // No adversary events — not divergent
-                return Ok(false);
-            }
-
-            // Check if owner already rotated (our local events include a rotation
-            // at the same serial range as the adversary events)
-            let adversary_serials: HashSet<u64> =
-                adversary_events.iter().map(|e| e.event.serial).collect();
-            let owner_has_rot = self.events().iter().any(|e| {
-                adversary_serials.contains(&e.event.serial) && e.event.reveals_rotation_key()
-            });
-
-            if owner_has_rot {
-                // Owner already rotated — no need for additional rotation
-                Ok(false)
-            } else {
-                // Check if adversary revealed the rotation key
-                Ok(adversary_events
-                    .iter()
-                    .any(|e| e.event.reveals_rotation_key()))
-            }
-        } else {
-            // Fail secure: no client = assume rotation needed
-            Ok(true)
-        }
+    pub fn rotation_count(&self) -> usize {
+        let verified_count = self
+            .kel_verification
+            .as_ref()
+            .map(|v| v.rotation_count())
+            .unwrap_or(0);
+        let pending_count = self
+            .pending_events
+            .iter()
+            .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
+            .count();
+        verified_count + pending_count
     }
 
     // ==================== Event Operations ====================
@@ -424,50 +456,71 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     async fn add_and_flush(&mut self, signed_events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let has_staged = self.key_provider.has_staged().await;
 
-        let old_length = self.events.len();
-        self.events.extend(signed_events.iter().cloned());
+        let old_pending_len = self.pending_events.len();
+        self.pending_events.extend(signed_events.iter().cloned());
         let flush_result = self.flush().await;
         let accepted = self.was_flush_accepted(&flush_result);
 
-        if let Some(ref store) = self.kel_store
-            && accepted
-            && let Some(prefix) = self.prefix().map(|s| s.to_string())
-            && let Err(e) = store.save(&prefix, &self.events).await
-        {
-            self.events.truncate(old_length);
-            self.rollback(has_staged).await?;
-            return Err(e);
-        }
-
         if accepted {
+            // Append new events to store
+            if let Some(ref store) = self.kel_store
+                && let Some(prefix) = self.prefix().map(|s| s.to_string())
+                && let Err(e) = store.append(&prefix, signed_events).await
+            {
+                self.pending_events.truncate(old_pending_len);
+                self.rollback(has_staged).await?;
+                return Err(e);
+            }
+
+            // Re-verify pending events into kel_verification when connected
+            // (has client or store). Leave events pending for offline builders
+            // so tests and bench can access them.
+            if self.kels_client.is_some() || self.kel_store.is_some() {
+                self.absorb_pending()?;
+            }
             self.commit(has_staged).await?;
         } else {
-            self.events.truncate(old_length);
+            self.pending_events.truncate(old_pending_len);
             self.rollback(has_staged).await?;
         }
 
         flush_result
     }
 
+    /// Verify pending events and merge them into kel_verification.
+    fn absorb_pending(&mut self) -> Result<(), KelsError> {
+        if self.pending_events.is_empty() {
+            return Ok(());
+        }
+
+        let prefix = self.prefix().ok_or(KelsError::NotIncepted)?.to_string();
+
+        let mut verifier = if let Some(ref v) = self.kel_verification {
+            crate::KelVerifier::resume(&prefix, v)?
+        } else {
+            crate::KelVerifier::new(&prefix)
+        };
+
+        verifier.verify_page(&self.pending_events)?;
+        self.kel_verification = Some(verifier.into_verification()?);
+        self.pending_events.clear();
+        Ok(())
+    }
+
     async fn flush(&mut self) -> Result<(), KelsError> {
         let client = match &self.kels_client {
             Some(c) => c.clone(),
             None => {
-                self.confirmed_cursor = self.events.len();
+                // No client — all events are considered confirmed locally
                 return Ok(());
             }
         };
 
-        let pending: Vec<_> = self.pending_events().to_vec();
-        if pending.is_empty() {
+        if self.pending_events.is_empty() {
             return Ok(());
         }
 
-        let response = client.submit_events(&pending).await?;
-
-        if response.applied {
-            self.confirmed_cursor = self.events.len();
-        }
+        let response = client.submit_events(&self.pending_events).await?;
 
         if let Some(diverged_at) = response.diverged_at {
             Err(KelsError::DivergenceDetected {
@@ -486,7 +539,14 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
     // ==================== Private Helpers ====================
 
     async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
-        self.events.last().ok_or(KelsError::NotIncepted)
+        if let Some(last) = self.pending_events.last() {
+            return Ok(last);
+        }
+        self.kel_verification
+            .as_ref()
+            .and_then(|v| v.branch_tips().first())
+            .map(|bt| &bt.tip)
+            .ok_or(KelsError::NotIncepted)
     }
 
     pub fn was_flush_accepted(&self, flush_result: &Result<(), KelsError>) -> bool {

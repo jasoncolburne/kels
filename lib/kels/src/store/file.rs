@@ -1,11 +1,14 @@
-//! File-based KEL storage
+//! File-based KEL storage (newline-delimited JSON)
+
+use std::io::{BufRead, Write};
 
 use async_trait::async_trait;
 
 use super::KelStore;
 use crate::{error::KelsError, types::SignedKeyEvent};
 
-/// File-based KEL store for CLI and desktop apps
+/// File-based KEL store for CLI and desktop apps.
+/// Events are stored as newline-delimited JSON (one JSON object per line).
 pub struct FileKelStore {
     kel_dir: std::path::PathBuf,
     owner_prefix: std::sync::RwLock<Option<String>>,
@@ -35,7 +38,7 @@ impl FileKelStore {
     }
 
     fn kel_path(&self, prefix: &str) -> std::path::PathBuf {
-        self.kel_dir.join(format!("{}.kel.json", prefix))
+        self.kel_dir.join(format!("{}.kel.jsonl", prefix))
     }
     fn owner_tail_path(&self, prefix: &str) -> std::path::PathBuf {
         self.kel_dir.join(format!("{}.owner_tail", prefix))
@@ -63,28 +66,66 @@ impl KelStore for FileKelStore {
         if !path.exists() {
             return Ok((vec![], false));
         }
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        let events: Vec<SignedKeyEvent> = serde_json::from_str(&contents)?;
+        let file =
+            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let reader = std::io::BufReader::new(file);
 
         let start = offset as usize;
-        if start >= events.len() {
-            return Ok((vec![], false));
+        let limit = limit as usize;
+        let mut events = Vec::new();
+        let mut count = 0;
+
+        for line in reader.lines() {
+            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+            if line.is_empty() {
+                continue;
+            }
+            if count < start {
+                count += 1;
+                continue;
+            }
+            if events.len() >= limit {
+                return Ok((events, true));
+            }
+            let event: SignedKeyEvent = serde_json::from_str(&line)?;
+            events.push(event);
+            count += 1;
         }
-        let end = (start + limit as usize).min(events.len());
-        let page = events[start..end].to_vec();
-        let has_more = end < events.len();
-        Ok((page, has_more))
+
+        Ok((events, false))
     }
 
-    async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        use std::io::Write;
+    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let path = self.kel_path(prefix);
-        let contents = serde_json::to_string_pretty(events)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            file.write_all(line.as_bytes())
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            file.write_all(b"\n")
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        }
+        file.sync_all()
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let path = self.kel_path(prefix);
         let mut file =
             std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            file.write_all(line.as_bytes())
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            file.write_all(b"\n")
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        }
         file.sync_all()
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
         Ok(())
@@ -163,34 +204,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_and_load_roundtrip() {
+    async fn test_overwrite_and_load_roundtrip() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
         let (prefix, events) = crate::store::create_test_events().await;
         let event_count = events.len();
 
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
         assert_eq!(loaded.len(), event_count);
     }
 
     #[tokio::test]
-    async fn test_save_creates_json_file() {
+    async fn test_overwrite_creates_jsonl_file() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
         let (prefix, events) = crate::store::create_test_events().await;
 
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
-        let expected_path = temp.path().join(format!("{}.kel.json", prefix));
+        let expected_path = temp.path().join(format!("{}.kel.jsonl", prefix));
         assert!(expected_path.exists());
 
-        // Verify it's valid JSON
+        // Verify each line is valid JSON
         let contents = std::fs::read_to_string(&expected_path).unwrap();
-        let _: Vec<SignedKeyEvent> = serde_json::from_str(&contents).unwrap();
+        for line in contents.lines() {
+            let _: SignedKeyEvent = serde_json::from_str(line).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_append_creates_and_extends() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let (prefix, events) = crate::store::create_test_events().await;
+
+        // Append first event
+        store.append(&prefix, &events[..1]).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        // Append remaining events
+        store.append(&prefix, &events[1..]).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert_eq!(loaded.len(), events.len());
     }
 
     #[tokio::test]
@@ -200,9 +261,9 @@ mod tests {
 
         let (prefix, events) = crate::store::create_test_events().await;
 
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
-        let path = temp.path().join(format!("{}.kel.json", prefix));
+        let path = temp.path().join(format!("{}.kel.jsonl", prefix));
         assert!(path.exists());
 
         store.delete(&prefix).await.unwrap();
@@ -223,9 +284,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        // Write invalid JSON
-        let path = temp.path().join("bad.kel.json");
-        std::fs::write(&path, "not valid json").unwrap();
+        // Write invalid JSONL
+        let path = temp.path().join("bad.kel.jsonl");
+        std::fs::write(&path, "not valid json\n").unwrap();
 
         let result = store.load("bad", crate::LOAD_ALL, 0).await;
         assert!(result.is_err());
@@ -239,8 +300,8 @@ mod tests {
         let (prefix1, events1) = crate::store::create_test_events().await;
         let (prefix2, events2) = crate::store::create_test_events().await;
 
-        store.save(&prefix1, &events1).await.unwrap();
-        store.save(&prefix2, &events2).await.unwrap();
+        store.overwrite(&prefix1, &events1).await.unwrap();
+        store.overwrite(&prefix2, &events2).await.unwrap();
 
         // Both should be loadable independently
         let (loaded1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();

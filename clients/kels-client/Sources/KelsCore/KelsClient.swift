@@ -207,16 +207,19 @@ public final class KelsClient: @unchecked Sendable {
         }
     }
 
-    /// Get the full KEL as JSON
-    /// - Parameter prefix: The KEL prefix
-    /// - Returns: JSON string of events
-    public func getKel(prefix: String? = nil) throws -> String {
+    /// Get a page of KEL events as JSON.
+    /// - Parameters:
+    ///   - prefix: The KEL prefix (nil for current KEL)
+    ///   - limit: Maximum events per page (clamped to server max)
+    ///   - offset: Event offset to start from
+    /// - Returns: JSON string `{"events": [...], "has_more": bool}`
+    public func getKel(prefix: String? = nil, limit: UInt64 = 512, offset: UInt64 = 0) throws -> String {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
-            guard let json = kels_get_kel(ctx, prefix) else {
+            guard let json = kels_get_kel(ctx, prefix, limit, offset) else {
                 let error = Self.getLastError()
                 throw KelsClientError.unknown(error ?? "Failed to get KEL")
             }

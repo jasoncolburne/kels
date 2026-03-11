@@ -40,8 +40,12 @@ pub trait KelStore: Send + Sync {
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
-    /// Save events for a prefix, overwriting any existing ones.
-    async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
+    /// Append events for a prefix (merges with any existing events).
+    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
+
+    /// Overwrite all events for a prefix (truncate + write).
+    /// Only intended for dev-tools use cases (e.g., truncation).
+    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
 
     /// Delete a KEL by prefix. No-op if not found.
     async fn delete(&self, prefix: &str) -> Result<(), KelsError>;
@@ -53,19 +57,19 @@ pub trait KelStore: Send + Sync {
         {
             return Ok(());
         }
-        self.save(prefix, events).await
+        self.append(prefix, events).await
     }
 }
 
 /// Adapter that wraps any `&dyn KelStore` as a `PagedKelSink`.
 ///
-/// Delegates `store_page()` to `KelStore::save()`.
+/// Delegates `store_page()` to `KelStore::append()`.
 pub struct KelStoreSink<'a>(pub &'a (dyn KelStore + Sync));
 
 #[async_trait]
 impl crate::types::PagedKelSink for KelStoreSink<'_> {
     async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        self.0.save(prefix, events).await
+        self.0.append(prefix, events).await
     }
 }
 
@@ -127,7 +131,21 @@ mod tests {
             }
         }
 
-        async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+            if let Ok(mut guard) = self.kels.write() {
+                guard
+                    .entry(prefix.to_string())
+                    .or_default()
+                    .extend(events.iter().cloned());
+            }
+            Ok(())
+        }
+
+        async fn overwrite(
+            &self,
+            prefix: &str,
+            events: &[SignedKeyEvent],
+        ) -> Result<(), KelsError> {
             if let Ok(mut guard) = self.kels.write() {
                 guard.insert(prefix.to_string(), events.to_vec());
             }

@@ -723,7 +723,7 @@ async fn test_submit_decommission_event() {
     let _ = builder.decommission().await.unwrap();
 
     // Get the properly signed decommission event from builder's KEL
-    let events = builder.events();
+    let events = builder.pending_events();
     let signed_dec = events.last().unwrap().clone();
 
     // Submit decommission
@@ -789,7 +789,7 @@ async fn test_submit_recovery_event_requires_dual_signature() {
     let _ = builder.recover(true).await.unwrap();
 
     // Get the properly signed recovery event and strip one signature for testing
-    let events = builder.events();
+    let events = builder.pending_events();
     // Recovery creates a rec event first, then a rot event
     let rec_event = events.iter().find(|e| e.event.is_recover()).unwrap();
     let mut signed_rec = rec_event.clone();
@@ -938,7 +938,7 @@ async fn test_recovery_from_divergence() {
     // Submit recovery from builder A (the legitimate owner).
     // recover(true) creates rec + rot events chaining from builder_a's tip (ixn3_a).
     let _ = builder_a.recover(true).await.unwrap();
-    let all_events = builder_a.events();
+    let all_events = builder_a.pending_events();
     let rec_idx = all_events
         .iter()
         .position(|e| e.event.is_recover())

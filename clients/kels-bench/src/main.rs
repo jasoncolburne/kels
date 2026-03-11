@@ -209,7 +209,7 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
         }
     }
 
-    let response = client.submit_events(builder.events()).await?;
+    let response = client.submit_events(builder.pending_events()).await?;
     if !response.applied {
         anyhow::bail!("Failed to create test KEL: events were not applied");
     }

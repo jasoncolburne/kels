@@ -40,6 +40,7 @@ pub struct KelVerification {
     is_contested: bool,
     diverged_at_serial: Option<u64>,
     event_count: usize,
+    rotation_count: usize,
     anchored_saids: BTreeSet<String>,
     queried_saids: BTreeSet<String>,
 }
@@ -102,6 +103,11 @@ impl KelVerification {
     /// The total number of verified events in the KEL.
     pub fn event_count(&self) -> usize {
         self.event_count
+    }
+
+    /// The number of rotation (rot/ror) events in the verified KEL.
+    pub fn rotation_count(&self) -> usize {
+        self.rotation_count
     }
 
     /// Whether the KEL has been decommissioned.

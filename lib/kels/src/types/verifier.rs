@@ -89,6 +89,8 @@ pub struct KelVerifier {
     is_contested: bool,
     /// Total number of verified events.
     event_count: usize,
+    /// Number of rotation (rot/ror) events seen.
+    rotation_count: usize,
     /// Anchor checking: SAIDs we're looking for.
     queried_saids: BTreeSet<String>,
     /// Anchor checking: SAIDs we've found anchored.
@@ -105,6 +107,7 @@ impl KelVerifier {
             diverged_at_serial: None,
             is_contested: false,
             event_count: 0,
+            rotation_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         }
@@ -131,6 +134,7 @@ impl KelVerifier {
             diverged_at_serial: None,
             is_contested: false,
             event_count: 0,
+            rotation_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         })
@@ -162,6 +166,7 @@ impl KelVerifier {
             diverged_at_serial: kel_verification.diverged_at_serial(),
             is_contested: kel_verification.is_contested(),
             event_count: kel_verification.event_count(),
+            rotation_count: kel_verification.rotation_count(),
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
         })
@@ -236,6 +241,7 @@ impl KelVerifier {
             self.is_contested,
             self.diverged_at_serial,
             self.event_count,
+            self.rotation_count,
             self.anchored_saids,
             self.queried_saids,
         );
@@ -353,6 +359,11 @@ impl KelVerifier {
             // Track contested
             if event.event.is_contest() {
                 self.is_contested = true;
+            }
+
+            // Track rotation count
+            if event.event.reveals_rotation_key() {
+                self.rotation_count += 1;
             }
 
             new_branches.insert(event.event.said.clone(), new_state);
@@ -857,19 +868,22 @@ impl PagedKelSink for NoOpSink {
     }
 }
 
-/// Sink that collects events into a `Vec` — used for verify+collect flows.
+/// Sink that collects events into a `Vec` — used for resolve flows.
 ///
 /// **WARNING:** This entity collects events in an unbounded loop, use with care.
+#[cfg(any(test, feature = "dev-tools"))]
 pub(crate) struct CollectSink {
     events: tokio::sync::Mutex<Vec<SignedKeyEvent>>,
 }
 
+#[cfg(any(test, feature = "dev-tools"))]
 impl Default for CollectSink {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "dev-tools"))]
 impl CollectSink {
     pub fn new() -> Self {
         Self {
@@ -882,6 +896,7 @@ impl CollectSink {
     }
 }
 
+#[cfg(any(test, feature = "dev-tools"))]
 #[async_trait]
 impl PagedKelSink for CollectSink {
     async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
@@ -1171,17 +1186,24 @@ pub async fn verify_key_events(
     verifier.into_verification()
 }
 
-/// Verify + collect: pages through source, verifies, returns events + `KelVerification`.
+/// Verify with callback: pages through source, verifies, calls `on_page` with each
+/// batch of verified events, then returns `KelVerification`.
 ///
-/// **WARNING:** This is an unbounded call, and should be used with care.
-pub async fn collect_key_events(
+/// The callback receives `&[SignedKeyEvent]` for each batch. Batches may be smaller
+/// than `page_size` due to divergence handling. Completion is signaled by the function
+/// returning.
+pub async fn verify_key_events_with<F>(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
     max_pages: usize,
-) -> Result<(KelVerification, Vec<SignedKeyEvent>), KelsError> {
-    let sink = CollectSink::new();
+    on_page: F,
+) -> Result<KelVerification, KelsError>
+where
+    F: FnMut(&[SignedKeyEvent]) + Send,
+{
+    let sink = CallbackSink(std::sync::Mutex::new(on_page));
     let mut verifier = verifier;
     transfer_key_events(
         prefix,
@@ -1193,8 +1215,20 @@ pub async fn collect_key_events(
         None,
     )
     .await?;
-    let kel_verification = verifier.into_verification()?;
-    Ok((kel_verification, sink.into_events().await))
+    verifier.into_verification()
+}
+
+/// Sink that invokes a callback for each batch of events.
+struct CallbackSink<F: FnMut(&[SignedKeyEvent]) + Send>(std::sync::Mutex<F>);
+
+#[async_trait]
+impl<F: FnMut(&[SignedKeyEvent]) + Send> PagedKelSink for CallbackSink<F> {
+    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        if let Ok(mut f) = self.0.lock() {
+            (f)(events);
+        }
+        Ok(())
+    }
 }
 
 /// Forward without verification: pages through source, sends to sink.
@@ -1216,6 +1250,7 @@ pub async fn forward_key_events(
 /// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 ///
 /// **WARNING:** This is an unbounded call, and should be used with care.
+#[cfg(any(test, feature = "dev-tools"))]
 pub async fn resolve_key_events(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
@@ -1345,7 +1380,21 @@ mod tests {
             }
         }
 
-        async fn save(
+        async fn append(
+            &self,
+            prefix: &str,
+            events: &[SignedKeyEvent],
+        ) -> Result<(), crate::error::KelsError> {
+            self.kels
+                .write()
+                .unwrap()
+                .entry(prefix.to_string())
+                .or_default()
+                .extend(events.iter().cloned());
+            Ok(())
+        }
+
+        async fn overwrite(
             &self,
             prefix: &str,
             events: &[SignedKeyEvent],
@@ -1382,7 +1431,7 @@ mod tests {
 
         // Save to MemoryStore
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         // Verify with small page size to force multiple pages
         let kel_verification = completed_verification(
@@ -1448,7 +1497,7 @@ mod tests {
 
         // Save to store
         let store = MemoryStore::new();
-        store.save(&prefix, &all_events).await.unwrap();
+        store.overwrite(&prefix, &all_events).await.unwrap();
 
         // Verify with paginated reads — should detect divergence
         let kel_verification = completed_verification(
@@ -1479,7 +1528,7 @@ mod tests {
         let ixn = builder.interact(&target_anchor).await.unwrap();
 
         let store = MemoryStore::new();
-        store.save(&prefix, &[icp, ixn]).await.unwrap();
+        store.overwrite(&prefix, &[icp, ixn]).await.unwrap();
 
         // Check for an anchor that exists
         let kel_verification = completed_verification(
@@ -1527,7 +1576,7 @@ mod tests {
         }
 
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events max, but we have 21
         let result = completed_verification(
@@ -1725,7 +1774,7 @@ mod tests {
             SoftwareKeyProvider::with_all_keys(current_key, next_key, recovery_key),
             None,
             None,
-            builder.events().to_vec(),
+            builder.pending_events().to_vec(),
         );
 
         assert_eq!(builder2.last_event().unwrap().said, ixn2.event.said);
@@ -1761,7 +1810,7 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(!kel_verification.is_empty());
         assert!(!kel_verification.is_divergent());
         assert!(!kel_verification.is_contested());
@@ -1781,7 +1830,7 @@ mod tests {
         let rot = builder.rotate().await.unwrap();
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
 
         assert_eq!(
             kel_verification.branch_tips()[0].tip.event.said,
@@ -1928,7 +1977,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.decommission().await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(kel_verification.is_decommissioned());
         assert!(!kel_verification.is_contested());
     }
@@ -1976,7 +2025,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.events(), [a.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [a.clone()]);
         assert!(kel_verification.is_said_anchored(&a));
         assert!(kel_verification.anchors_all_saids());
     }
@@ -1989,7 +2038,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.events(), [missing.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [missing.clone()]);
         assert!(!kel_verification.is_said_anchored(&missing));
         assert!(!kel_verification.anchors_all_saids());
     }
@@ -2000,7 +2049,7 @@ mod tests {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         builder.incept().await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.events(), [missing.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [missing.clone()]);
         assert!(!kel_verification.is_said_anchored(&missing));
     }
 
@@ -2016,7 +2065,7 @@ mod tests {
         owner.interact(&anchor("owner-gen2")).await.unwrap();
         let adversary_ixn2 = adversary.interact(&anchor("adv-gen2")).await.unwrap();
 
-        let mut events = owner.events().to_vec();
+        let mut events = owner.pending_events().to_vec();
         events.push(adversary_ixn2);
         sort_events(&mut events);
 
@@ -2043,7 +2092,7 @@ mod tests {
         owner.interact(&a_owner).await.unwrap();
         let adversary_ixn = adversary.interact(&a_adv).await.unwrap();
 
-        let mut events = owner.events().to_vec();
+        let mut events = owner.pending_events().to_vec();
         events.push(adversary_ixn);
         sort_events(&mut events);
 
@@ -2076,7 +2125,7 @@ mod tests {
         // serial 3: owner extends with the anchor we care about
         owner.interact(&a_post).await.unwrap();
 
-        let mut events = owner.events().to_vec();
+        let mut events = owner.pending_events().to_vec();
         events.push(adv_ixn);
         sort_events(&mut events);
 
@@ -2106,7 +2155,7 @@ mod tests {
         }
 
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events, we have exactly 10
         let kel_verification = completed_verification(
@@ -2139,7 +2188,7 @@ mod tests {
         }
 
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         // Page size 5, max 2 pages = 10 events, we have 11
         let result = completed_verification(
@@ -2162,7 +2211,7 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert_eq!(
             kel_verification.effective_tail_said(),
             Some(ixn.event.said.clone())
@@ -2202,7 +2251,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.recover(false).await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(!kel_verification.is_empty());
         assert!(!kel_verification.is_divergent());
         assert!(
@@ -2220,7 +2269,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.rotate_recovery().await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(!kel_verification.is_empty());
         assert!(!kel_verification.is_divergent());
         assert!(
@@ -2240,7 +2289,7 @@ mod tests {
         builder.incept().await.unwrap();
         let ixn1 = builder.interact(&anchor("a1")).await.unwrap();
 
-        let kel_verification = verify(&builder.events()[..2]);
+        let kel_verification = verify(&builder.pending_events()[..2]);
         assert_eq!(
             kel_verification.branch_tips()[0].tip.event.said,
             ixn1.event.said
@@ -2309,8 +2358,8 @@ mod tests {
         );
         builder2.interact(&anchor("a2")).await.unwrap();
 
-        let mut events = builder1.events().to_vec();
-        events.extend(builder2.events()[1..].iter().cloned());
+        let mut events = builder1.pending_events().to_vec();
+        events.extend(builder2.pending_events().iter().cloned());
         sort_events(&mut events);
 
         let kel_verification = verify(&events);
@@ -2373,11 +2422,11 @@ mod tests {
             }
         }
 
-        let events = builder.events().to_vec();
+        let events = builder.pending_events().to_vec();
         assert_eq!(events.len(), 600);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -2445,11 +2494,11 @@ mod tests {
             }
         }
 
-        let events = builder.events().to_vec();
+        let events = builder.pending_events().to_vec();
         assert!(events.len() > 512);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &events).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -2489,12 +2538,12 @@ mod tests {
         assert_eq!(owner_ixn.event.serial, 512);
         assert_eq!(adv_ixn.event.serial, 512);
 
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn);
         sort_events(&mut all_events);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &all_events).await.unwrap();
+        store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -2534,13 +2583,13 @@ mod tests {
         let adv_ixn = adversary.interact(&anchor("adversary-1")).await.unwrap();
         assert_eq!(adv_ixn.event.serial, 1);
 
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn.clone());
         sort_events(&mut all_events);
         assert_eq!(all_events.len(), 1025);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &all_events).await.unwrap();
+        store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -2584,7 +2633,7 @@ mod tests {
         // Adversary branch: single event at serial 1 (shorter branch invariant)
         let adv_ixn = adversary.interact(&anchor("adv-1")).await.unwrap();
 
-        let mut events = owner.events().to_vec();
+        let mut events = owner.pending_events().to_vec();
         events.push(adv_ixn.clone());
         sort_events(&mut events);
 
@@ -2639,7 +2688,7 @@ mod tests {
         assert!(rec.event.reveals_recovery_key());
 
         // Verify owner chain including recovery is valid
-        let owner_kel_verification = verify(owner.events());
+        let owner_kel_verification = verify(owner.pending_events());
         assert!(!owner_kel_verification.is_divergent());
         assert!(
             owner_kel_verification
@@ -2694,7 +2743,7 @@ mod tests {
         builder.interact(&anchor("data")).await.unwrap();
         builder.decommission().await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(kel_verification.is_decommissioned());
         assert!(!kel_verification.is_contested());
         assert!(!kel_verification.is_divergent());
@@ -2719,7 +2768,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let events = builder.events().to_vec();
+        let events = builder.pending_events().to_vec();
         assert_eq!(events.len(), 30);
 
         // Verify first 10
@@ -2805,7 +2854,7 @@ mod tests {
 
         let ixn = builder.interact(&anchor("delegated-data")).await.unwrap();
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(!kel_verification.is_empty());
         assert!(!kel_verification.is_divergent());
         assert_eq!(
@@ -2870,8 +2919,8 @@ mod tests {
         b1.interact(&anchor("b1-s2")).await.unwrap();
         b2.interact(&anchor("b2-s2")).await.unwrap();
 
-        let mut all = b1.events().to_vec();
-        all.extend(b2.events()[1..].iter().cloned());
+        let mut all = b1.pending_events().to_vec();
+        all.extend(b2.pending_events()[1..].iter().cloned());
         sort_events(&mut all);
         // [icp@0, a1@1, b1@1, a2@2, b2@2]
         assert_eq!(all.len(), 5);
@@ -2943,14 +2992,14 @@ mod tests {
         // Adversary has just 1 event at serial 5 (shorter branch invariant)
         b2.interact(&anchor("b2-0")).await.unwrap();
 
-        let mut all_events = b1.events().to_vec();
-        all_events.push(b2.events()[5].clone());
+        let mut all_events = b1.pending_events().to_vec();
+        all_events.push(b2.pending_events()[5].clone());
         sort_events(&mut all_events);
         // 5 linear + 2 at serial 5 + 1 at serial 6 + 1 at serial 7 = 9
         assert_eq!(all_events.len(), 9);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &all_events).await.unwrap();
+        store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -2998,19 +3047,19 @@ mod tests {
             SoftwareKeyProvider::with_all_keys(ck, nk, rk),
             None,
             None,
-            owner.events().to_vec(),
+            owner.pending_events().to_vec(),
         );
         let owner_ixn2 = owner.interact(&anchor("data-4")).await.unwrap();
         let adv_ixn = adversary.interact(&anchor("adversary")).await.unwrap();
         assert_eq!(owner_ixn2.event.serial, adv_ixn.event.serial);
 
         // Store divergent state
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn.clone());
         sort_events(&mut all_events);
 
         let store = MemoryStore::new();
-        store.save(&prefix, &all_events).await.unwrap();
+        store.overwrite(&prefix, &all_events).await.unwrap();
 
         // Verify divergence
         let kel_verification = completed_verification(
@@ -3030,7 +3079,7 @@ mod tests {
         assert!(rec.event.is_recover());
 
         // Verify the owner's chain after recovery is clean
-        let recovered_kel_verification = verify(owner.events());
+        let recovered_kel_verification = verify(owner.pending_events());
         assert!(!recovered_kel_verification.is_divergent());
         assert!(
             recovered_kel_verification
@@ -3095,7 +3144,7 @@ mod tests {
         builder.interact(&anchor("a")).await.unwrap();
         builder.rotate().await.unwrap();
 
-        let events = builder.events().to_vec();
+        let events = builder.pending_events().to_vec();
         let kel_verification1 = verify(&events);
         let kel_verification2 = verify(&events);
 
@@ -3146,7 +3195,7 @@ mod tests {
             "Recovery key revealed in ror must match inception's recovery_hash commitment"
         );
 
-        let kel_verification = verify(builder.events());
+        let kel_verification = verify(builder.pending_events());
         assert!(!kel_verification.is_divergent());
         assert!(!kel_verification.is_contested());
     }
@@ -3159,7 +3208,7 @@ mod tests {
         builder.incept().await.unwrap();
 
         let mut verifier = KelVerifier::new("EWrongPrefix____________________________________");
-        let result = verifier.verify_page(builder.events());
+        let result = verifier.verify_page(builder.pending_events());
         assert!(result.is_err());
     }
 
@@ -3172,7 +3221,7 @@ mod tests {
         builder.interact(&anchor("a")).await.unwrap();
         builder.interact(&anchor("b")).await.unwrap();
 
-        let events = builder.events().to_vec();
+        let events = builder.pending_events().to_vec();
         // Skip serial 1, feed serial 0 then serial 2
         let prefix = events[0].event.prefix.clone();
         let mut verifier = KelVerifier::new(&prefix);
@@ -3199,7 +3248,10 @@ mod tests {
         }
 
         let store = MemoryStore::new();
-        store.save(&prefix, builder.events()).await.unwrap();
+        store
+            .overwrite(&prefix, builder.pending_events())
+            .await
+            .unwrap();
 
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
@@ -3297,7 +3349,7 @@ mod tests {
         builder.interact(&anchor("a1")).await.unwrap();
         builder.interact(&anchor("a2")).await.unwrap();
 
-        let source = MemoryKelSource::new(builder.events().to_vec());
+        let source = MemoryKelSource::new(builder.pending_events().to_vec());
         let kel_verification = verify_key_events(
             &prefix,
             &source,
@@ -3314,31 +3366,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_collect_key_events_linear() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        builder.interact(&anchor("a1")).await.unwrap();
-        builder.interact(&anchor("a2")).await.unwrap();
-
-        let source = MemoryKelSource::new(builder.events().to_vec());
-        let (kel_verification, events) =
-            collect_key_events(&prefix, &source, KelVerifier::new(&prefix), 100, 100)
-                .await
-                .unwrap();
-
-        assert_eq!(events.len(), 3);
-        assert_eq!(kel_verification.branch_tips()[0].tip.event.serial, 2);
-    }
-
-    #[tokio::test]
     async fn test_resolve_key_events_linear() {
         let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         builder.interact(&anchor("a1")).await.unwrap();
 
-        let source = MemoryKelSource::new(builder.events().to_vec());
+        let source = MemoryKelSource::new(builder.pending_events().to_vec());
         let events = resolve_key_events(&prefix, &source, 100, 100, None)
             .await
             .unwrap();
@@ -3353,7 +3387,7 @@ mod tests {
         let prefix = icp.event.prefix.clone();
         builder.interact(&anchor("a1")).await.unwrap();
 
-        let source = MemoryKelSource::new(builder.events().to_vec());
+        let source = MemoryKelSource::new(builder.pending_events().to_vec());
         let sink = CollectSink::new();
         forward_key_events(&prefix, &source, &sink, 100, 100, None)
             .await
@@ -3384,7 +3418,7 @@ mod tests {
         owner.interact(&anchor("o5")).await.unwrap();
 
         // Combine and sort (DB ordering: serial ASC, kind sort_priority ASC, said ASC)
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(a1.clone());
         sort_events(&mut all_events);
 
@@ -3419,7 +3453,7 @@ mod tests {
         owner.interact(&anchor("o2")).await.unwrap();
         owner.interact(&anchor("o3")).await.unwrap();
 
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(a1.clone());
         sort_events(&mut all_events);
 
@@ -3449,7 +3483,7 @@ mod tests {
         let a1 = adversary.interact(&anchor("adversary")).await.unwrap();
         owner.interact(&anchor("o2")).await.unwrap();
 
-        let mut all_events = owner.events().to_vec();
+        let mut all_events = owner.pending_events().to_vec();
         all_events.push(a1.clone());
         sort_events(&mut all_events);
 
@@ -3475,7 +3509,7 @@ mod tests {
         }
 
         // Only allow 2 pages of 3 events — should get 6 events, not all 11
-        let source = MemoryKelSource::new(builder.events().to_vec());
+        let source = MemoryKelSource::new(builder.pending_events().to_vec());
         let events = resolve_key_events(&prefix, &source, 3, 2, None)
             .await
             .unwrap();
@@ -3501,7 +3535,10 @@ mod tests {
         }
 
         let store = MemoryStore::new();
-        store.save(&prefix, builder.events()).await.unwrap();
+        store
+            .overwrite(&prefix, builder.pending_events())
+            .await
+            .unwrap();
 
         // Phase 1: verify with anchor check
         let kel_verification1 = completed_verification(
@@ -3527,7 +3564,7 @@ mod tests {
         }
 
         // Resume from kel_verification1 and check new anchor
-        let new_events = &builder.events()[10..]; // events after kel_verification1
+        let new_events = &builder.pending_events()[10..]; // events after kel_verification1
         let mut verifier = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
         verifier.check_anchors(vec![anchor2.clone()]);
         verifier.verify_page(new_events).unwrap();

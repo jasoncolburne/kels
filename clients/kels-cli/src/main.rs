@@ -12,7 +12,7 @@ use kels::EventKind;
 use kels::{
     FileKelStore, HttpKelSource, KelStore, KelVerification, KelVerifier, KelsClient,
     KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig, collect_key_events, max_verification_pages,
+    SoftwareProviderConfig, max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -302,16 +302,22 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     let client = create_client(cli).await?;
     let key_provider = SoftwareKeyProvider::new();
 
-    let mut builder =
-        KeyEventBuilder::with_dependencies(key_provider, Some(client), None, None).await?;
+    // Pass a kel_store to the builder so add_and_flush saves automatically
+    let kel_dir = kel_dir(cli)?;
+    let kel_store = FileKelStore::new(&kel_dir).context("Failed to create KEL store")?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        key_provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        None,
+    )
+    .await?;
 
     let icp = builder.incept().await.context("Inception failed")?;
 
-    // Save to the correct prefix directory
+    // Save keys to the correct prefix directory
     let config = provider_config(cli, &icp.event.prefix)?;
     config.save_provider(builder.key_provider()).await?;
-    let kel_store = create_kel_store(cli, &icp.event.prefix)?;
-    kel_store.save(&icp.event.prefix, builder.events()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
     println!("  Prefix: {}", icp.event.prefix.cyan());
@@ -426,13 +432,32 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
-        Some(client),
+        Some(client.clone()),
         Some(std::sync::Arc::new(kel_store)),
         Some(prefix),
     )
     .await?;
 
-    let add_rot = builder.should_add_rot_with_recover().await?;
+    // Verify server KEL to detect if adversary revealed the rotation key
+    let source = kels::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+    let server_verification = kels::verify_key_events(
+        prefix,
+        &source,
+        KelVerifier::new(prefix),
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+    let owner_last_est_serial = builder
+        .last_establishment_event()
+        .map(|e| e.serial)
+        .unwrap_or(0);
+    let add_rot = kels::should_rotate_with_recovery(
+        &server_verification,
+        builder.rotation_count(),
+        owner_last_est_serial,
+    );
     let rec = builder.recover(add_rot).await.context("Recovery failed")?;
     config.save_provider(builder.key_provider()).await?;
 
@@ -517,52 +542,55 @@ fn print_kel_status(kel_verification: &KelVerification, verbose: bool) {
     }
 }
 
+fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
+    println!();
+    println!("{}", format!("KEL: {}", prefix).cyan().bold());
+    println!("  Events: {}", kel_verification.event_count());
+
+    if let Some(tip) = kel_verification.branch_tips().last() {
+        println!("  Latest SAID: {}", tip.tip.event.said);
+        println!("  Latest Type: {}", tip.tip.event.kind);
+    }
+}
+
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
     let source = HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
-    let verifier = KelVerifier::new(prefix);
 
-    let (kel_verification, all_events) = collect_key_events(
+    let msg = if audit {
+        format!("Fetching KEL {} with audit records...", prefix)
+    } else {
+        format!("Fetching KEL {}...", prefix)
+    };
+    println!("{}", msg.green());
+
+    // Verify and print events in a single pass
+    let kel_verification = kels::verify_key_events_with(
         prefix,
         &source,
-        verifier,
+        KelVerifier::new(prefix),
         MAX_EVENTS_PER_KEL_RESPONSE,
         max_verification_pages(),
+        |events| {
+            for signed_event in events {
+                let event = &signed_event.event;
+                println!(
+                    "  [{}] {} - {}",
+                    event.serial,
+                    event.kind.as_str().to_uppercase(),
+                    &event.said[..16]
+                );
+            }
+        },
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;
 
+    print_kel_summary(prefix, &kel_verification);
+    print_kel_status(&kel_verification, !audit);
+
     if audit {
-        println!(
-            "{}",
-            format!("Fetching KEL {} with audit records...", prefix).green()
-        );
         let audit_records = client.fetch_kel_audit(prefix).await?;
-
-        println!();
-        println!("{}", format!("KEL: {}", prefix).cyan().bold());
-        println!("  Events: {}", all_events.len());
-
-        if let Some(last) = all_events.last() {
-            println!("  Latest SAID: {}", last.event.said);
-            println!("  Latest Type: {}", last.event.kind);
-        }
-
-        print_kel_status(&kel_verification, true);
-
-        println!();
-        println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in all_events.iter().enumerate() {
-            let event = &signed_event.event;
-            println!(
-                "  [{}] {} - {}",
-                i,
-                event.kind.as_str().to_uppercase(),
-                &event.said[..16]
-            );
-        }
-
-        // Print audit records
         if !audit_records.is_empty() {
             println!();
             println!("{}", "Audit Records:".yellow().bold());
@@ -580,33 +608,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!();
             println!("{}", "Audit Records: (none)".yellow());
         }
-
-        return Ok(());
-    }
-
-    println!("{}", format!("Fetching KEL {}...", prefix).green());
-
-    println!();
-    println!("{}", format!("KEL: {}", prefix).cyan().bold());
-    println!("  Events: {}", all_events.len());
-
-    if let Some(last) = all_events.last() {
-        println!("  Latest SAID: {}", last.event.said);
-        println!("  Latest Type: {}", last.event.kind);
-    }
-
-    print_kel_status(&kel_verification, false);
-
-    println!();
-    println!("{}", "Events:".yellow().bold());
-    for (i, signed_event) in all_events.iter().enumerate() {
-        let event = &signed_event.event;
-        println!(
-            "  [{}] {} - {}",
-            i,
-            event.kind.as_str().to_uppercase(),
-            &event.said[..16]
-        );
     }
 
     Ok(())
@@ -627,7 +628,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
 
-        if path.extension().is_some_and(|e| e == "json")
+        if path.extension().is_some_and(|e| e == "jsonl")
             && let Some(stem) = path.file_stem()
             && let Some(prefix) = stem.to_str()
         {
@@ -818,7 +819,7 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     }
 
     events.truncate(count);
-    kel_store.save(prefix, &events).await?;
+    kel_store.overwrite(prefix, &events).await?;
 
     println!(
         "{}",

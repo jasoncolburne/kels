@@ -7,6 +7,7 @@ mod node;
 mod peer;
 mod raft;
 mod sync;
+#[allow(clippy::too_many_arguments)]
 mod verification;
 mod verifier;
 

@@ -31,7 +31,12 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         self.repo.get_signed_history(prefix, limit, offset).await
     }
 
-    async fn save(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.repo.save_with_merge(prefix, events).await?;
+        Ok(())
+    }
+
+    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         self.repo.save_with_merge(prefix, events).await?;
         Ok(())
     }
@@ -44,6 +49,6 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 #[async_trait]
 impl<R: SignedEventRepository + 'static> PagedKelSink for RepositoryKelStore<R> {
     async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        self.save(prefix, events).await
+        self.append(prefix, events).await
     }
 }

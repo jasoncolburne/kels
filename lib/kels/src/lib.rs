@@ -62,7 +62,7 @@ pub use crypto::HardwareProviderConfig;
 #[cfg(feature = "secure-enclave")]
 pub use hardware::HardwareKeyProvider;
 
-pub use builder::KeyEventBuilder;
+pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,
@@ -85,11 +85,14 @@ pub use types::{
     ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory,
     RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest, StoreKelSource,
-    StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events, collect_key_events,
-    completed_verification, compute_approval_threshold, compute_rotation_hash, forward_key_events,
-    generate_nonce, hash_tip_saids, resolve_key_events, truncate_incomplete_generation,
-    validate_timestamp, verify_key_events,
+    StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events, completed_verification,
+    compute_approval_threshold, compute_rotation_hash, forward_key_events, generate_nonce,
+    hash_tip_saids, truncate_incomplete_generation, validate_timestamp, verify_key_events,
+    verify_key_events_with,
 };
+
+#[cfg(any(test, feature = "dev-tools"))]
+pub use types::resolve_key_events;
 
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.

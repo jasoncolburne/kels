@@ -341,11 +341,7 @@ pub(crate) async fn perform_kel_operation(
 
     let (event, event_kind, rotation_number, updates_signing_keys) = match operation {
         ManageKelOperation::Rotate { mode } => {
-            let rotation_count = builder
-                .events()
-                .iter()
-                .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
-                .count();
+            let rotation_count = builder.rotation_count();
 
             let actual_mode = match mode {
                 RotateMode::Scheduled => {
@@ -373,7 +369,44 @@ pub(crate) async fn perform_kel_operation(
             (event, kind, Some(rotation_count + 1), true)
         }
         ManageKelOperation::Recover => {
-            let add_rot = builder.should_add_rot_with_recover().await?;
+            // Determine if adversary revealed rotation key by checking the server's
+            // verification state. The identity service uses its forward_url to reach
+            // the colocated KELS service.
+            let add_rot = if let Some(ref forward_url) = state.forward_url
+                && let Some(prefix) = builder.prefix()
+            {
+                let source = kels::HttpKelSource::new(
+                    forward_url,
+                    &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
+                );
+                match kels::verify_key_events(
+                    prefix,
+                    &source,
+                    kels::KelVerifier::new(prefix),
+                    kels::MAX_EVENTS_PER_KEL_QUERY,
+                    kels::max_verification_pages(),
+                )
+                .await
+                {
+                    Ok(server_verification) => {
+                        let owner_last_est_serial = builder
+                            .last_establishment_event()
+                            .map(|e| e.serial)
+                            .unwrap_or(0);
+                        kels::should_rotate_with_recovery(
+                            &server_verification,
+                            builder.rotation_count(),
+                            owner_last_est_serial,
+                        )
+                    }
+                    Err(e) => {
+                        warn!("Failed to verify server KEL for recovery decision: {}", e);
+                        true // Fail secure
+                    }
+                }
+            } else {
+                true // Fail secure: no forward URL
+            };
             let event = builder.recover(add_rot).await?;
             (event, "rec", None, true)
         }
