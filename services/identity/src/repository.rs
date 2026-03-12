@@ -143,7 +143,7 @@ impl LockedKelTransaction {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
-        let clamped_limit = limit.min(i64::MAX as u64 - 1);
+        let clamped_limit = limit.min(kels::MAX_EVENTS_PER_KEL_QUERY as u64);
         let query = Query::<KeyEvent>::for_table(KeyEventRepository::TABLE_NAME)
             .eq("prefix", &self.prefix)
             .order_by("serial", Order::Asc)
