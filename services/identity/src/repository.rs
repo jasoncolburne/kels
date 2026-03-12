@@ -1,10 +1,8 @@
 //! PostgreSQL Repository for Identity Service
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 
-use kels::{EventKind, KeyEvent};
+use kels::KeyEvent;
 use libkels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
@@ -143,48 +141,16 @@ impl LockedKelTransaction {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
-        let clamped_limit = limit.min(kels::MAX_EVENTS_PER_KEL_QUERY as u64);
-        let query = Query::<KeyEvent>::for_table(KeyEventRepository::TABLE_NAME)
-            .eq("prefix", &self.prefix)
-            .order_by("serial", Order::Asc)
-            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
-            .order_by("said", Order::Asc)
-            .limit(clamped_limit + 1)
-            .offset(offset);
-        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let has_more = events.len() > clamped_limit as usize;
-        if has_more {
-            events.pop();
-        }
-
-        if events.is_empty() {
-            return Ok((vec![], false));
-        }
-
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-        let sig_query =
-            Query::<kels::EventSignature>::for_table(KeyEventRepository::SIGNATURES_TABLE_NAME)
-                .r#in("event_said", saids);
-        let signatures: Vec<kels::EventSignature> = self.tx.fetch(sig_query).await?;
-        let mut sig_map: HashMap<String, Vec<kels::EventSignature>> = HashMap::new();
-        for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
-        }
-
-        let mut result = Vec::with_capacity(events.len());
-        for event in events {
-            let sigs = sig_map.get(&event.said).ok_or_else(|| {
-                StorageError::StorageError(format!("No signatures found for event {}", event.said))
-            })?;
-            let sig_pairs: Vec<(String, String)> = sigs
-                .iter()
-                .map(|s| (s.public_key.clone(), s.signature.clone()))
-                .collect();
-            result.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
-        }
-
-        Ok((result, has_more))
+        kels::load_signed_history(
+            &mut self.tx,
+            KeyEventRepository::TABLE_NAME,
+            KeyEventRepository::SIGNATURES_TABLE_NAME,
+            &self.prefix,
+            limit,
+            offset,
+        )
+        .await
+        .map_err(|e| StorageError::StorageError(e.to_string()))
     }
 
     pub async fn commit(self) -> Result<(), StorageError> {

@@ -157,47 +157,21 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 limit: u64,
                 offset: u64,
             ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
-                use verifiable_storage_postgres::QueryExecutor;
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
-                // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
-                let clamped_limit = limit.min(i64::MAX as u64 - 1);
-                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", prefix)
-                    .order_by("serial", verifiable_storage_postgres::Order::Asc)
-                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
-                    .order_by("said", verifiable_storage_postgres::Order::Asc)
-                    .limit(clamped_limit + 1)
-                    .offset(offset);
-                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
-
-                let has_more = events.len() > clamped_limit as usize;
-                if has_more {
-                    events.pop();
-                }
-
-                if events.is_empty() {
-                    return Ok((vec![], false));
-                }
-
-                let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
-                let signatures = self.get_signatures_by_saids(&saids).await?;
-
-                let mut signed_events = Vec::with_capacity(events.len());
-                for event in events {
-                    let sigs = signatures.get(&event.said).ok_or_else(|| {
-                        verifiable_storage::StorageError::StorageError(format!(
-                            "No signatures found for event {}",
-                            event.said
-                        ))
-                    })?;
-                    let sig_pairs: Vec<(String, String)> = sigs
-                        .iter()
-                        .map(|s| (s.public_key.clone(), s.signature.clone()))
-                        .collect();
-                    signed_events.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
-                }
-
-                Ok((signed_events, has_more))
+                let mut tx = self.pool.begin_transaction().await?;
+                let result = kels::load_signed_history(
+                    &mut tx,
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    prefix,
+                    limit,
+                    offset,
+                )
+                .await
+                .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+                tx.commit().await?;
+                Ok(result)
             }
 
             /// Get signed events after a given SAID (delta fetch — the since event itself is not returned).
@@ -232,7 +206,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 // After `retain()` removes at most 1 event (the since event), we check
                 // `events.len() > limit` to detect has_more, then truncate to `limit`.
                 // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
-                let clamped_limit = limit.min(i64::MAX as u64 - 2);
+                let clamped_limit = limit.min(kels::MAX_EVENTS_PER_KEL_QUERY as u64);
                 let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .gte_scalar_subquery("serial", subquery)
@@ -248,7 +222,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 let has_more = events.len() > clamped_limit as usize;
                 if has_more {
-                    events.truncate(limit as usize);
+                    events.truncate(clamped_limit as usize);
                 }
 
                 if events.is_empty() {

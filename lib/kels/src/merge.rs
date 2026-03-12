@@ -17,7 +17,8 @@ use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecuto
 use crate::{
     BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier,
     KelsAuditRecord, KelsError, KeyEvent, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEvent,
-    completed_verification, max_verification_pages, types::PageLoader,
+    completed_verification, load_signed_history, max_verification_pages,
+    repository::zip_events_with_signatures, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -36,25 +37,6 @@ impl MergeOutcome {
             tip_said: None,
         }
     }
-}
-
-/// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
-fn zip_events_with_signatures(
-    events: Vec<KeyEvent>,
-    sig_map: &HashMap<String, Vec<EventSignature>>,
-) -> Result<Vec<SignedKeyEvent>, KelsError> {
-    let mut result = Vec::with_capacity(events.len());
-    for event in events {
-        let sigs = sig_map.get(&event.said).ok_or_else(|| {
-            KelsError::StorageError(format!("No signatures found for event {}", event.said))
-        })?;
-        let sig_pairs: Vec<(String, String)> = sigs
-            .iter()
-            .map(|s| (s.public_key.clone(), s.signature.clone()))
-            .collect();
-        result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
-    }
-    Ok(result)
 }
 
 /// Transaction wrapper for KEL merge operations.
@@ -134,7 +116,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         since_serial: u64,
         limit: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let clamped_limit = limit.min(i64::MAX as u64 - 1);
+        let clamped_limit = limit.min(crate::MAX_EVENTS_PER_KEL_QUERY as u64);
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .gte("serial", since_serial)
@@ -265,27 +247,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let clamped_limit = limit.min(i64::MAX as u64 - 1);
-        let query = Query::<KeyEvent>::for_table(self.events_table)
-            .eq("prefix", &self.prefix)
-            .order_by("serial", Order::Asc)
-            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
-            .order_by("said", Order::Asc)
-            .limit(clamped_limit + 1)
-            .offset(offset);
-        let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
-
-        let has_more = events.len() > clamped_limit as usize;
-        if has_more {
-            events.pop();
-        }
-
-        if events.is_empty() {
-            return Ok((vec![], false));
-        }
-
-        let result = self.assemble_signed_events(events).await?;
-        Ok((result, has_more))
+        load_signed_history(
+            &mut self.tx,
+            self.events_table,
+            self.signatures_table,
+            &self.prefix,
+            limit,
+            offset,
+        )
+        .await
     }
 
     /// Commit the transaction, releasing the advisory lock.
