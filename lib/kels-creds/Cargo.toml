@@ -1,0 +1,44 @@
+[package]
+name = "kels-creds"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS credential framework - issuance, compaction, disclosure, and verification"
+
+[lib]
+name = "kels_creds"
+path = "src/lib.rs"
+
+[dependencies]
+# Core KELS library for KEL verification
+kels = { path = "../kels", package = "libkels" }
+
+# Local CESR library for cryptographic operations
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# Verifiable storage traits and derive macros
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# SAID computation
+blake3 = "1.5"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Error handling
+thiserror = "1"
+
+# Async traits
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
