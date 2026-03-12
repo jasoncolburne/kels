@@ -8,10 +8,10 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
-use kels::EventKind;
+use kels::{EventKind, KelStore};
 use kels::{
-    FileKelStore, HttpKelSource, KelStore, KelVerification, KelVerifier, KelsClient,
-    KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
+    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, max_verification_pages,
 };
 
