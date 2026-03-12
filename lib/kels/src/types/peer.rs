@@ -8,7 +8,7 @@ use cesr::{Matter, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
-use super::Kel;
+use super::KelVerification;
 use crate::KelsError;
 
 /// Validate that a timestamp is within the acceptable window.
@@ -38,22 +38,18 @@ pub struct SignedRequest<T> {
 }
 
 impl<T: Serialize> SignedRequest<T> {
-    /// Verify the request signature against the current public key from a KEL.
+    /// Verify the request signature against a verified KEL context.
     ///
-    /// Extracts the public key from the last establishment event, serializes the
-    /// payload to JSON, and verifies the CESR-encoded signature.
-    pub fn verify_signature(&self, kel: &Kel) -> Result<(), KelsError> {
-        if kel.find_divergence().is_some() {
+    /// Uses the current public key from the `KelVerification` (proof-of-verification token).
+    /// Fails secure if the KEL is divergent (no unambiguous key).
+    pub fn verify_signature(&self, kel_verification: &KelVerification) -> Result<(), KelsError> {
+        if kel_verification.is_divergent() {
             return Err(KelsError::Divergent);
         }
 
-        let establishment = kel
-            .last_establishment_event()
-            .ok_or_else(|| KelsError::VerificationFailed("No establishment event in KEL".into()))?;
-
-        let public_key_qb64 = establishment.event.public_key.as_ref().ok_or_else(|| {
-            KelsError::VerificationFailed("No public key in establishment event".into())
-        })?;
+        let public_key_qb64 = kel_verification
+            .current_public_key()
+            .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
 
         let public_key = PublicKey::from_qb64(public_key_qb64)
             .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
@@ -113,20 +109,25 @@ pub struct PeerHistory {
 }
 
 impl PeerHistory {
-    pub fn verify(
+    /// Verify peer records against verified KEL contexts.
+    pub fn verify_with_contexts(
         &self,
         trusted_prefixes: &HashSet<&'static str>,
-        kels: &[&Kel],
+        kel_verifications: &[&KelVerification],
     ) -> Result<(), KelsError> {
-        for kel in kels {
-            if !kel.verify_prefix(trusted_prefixes) {
+        for kel_verification in kel_verifications {
+            if !trusted_prefixes.contains(kel_verification.prefix()) {
                 return Err(KelsError::RegistryFailure(format!(
                     "Could not verify KEL {} as trusted",
-                    kel.prefix().unwrap_or("unknown")
+                    kel_verification.prefix()
                 )));
             }
         }
 
+        self.verify_records()
+    }
+
+    fn verify_records(&self) -> Result<(), KelsError> {
         let mut last_said: Option<String> = None;
         for (i, peer_record) in self.records.iter().enumerate() {
             peer_record.verify()?;
@@ -366,6 +367,14 @@ pub trait ProposalWithVotesMethods {
 
         let proposal_prefix = self.history().history_prefix();
 
+        let Some(inception) = self.history().inception() else {
+            return Err(KelsError::RegistryFailure(format!(
+                "Proposal {} has no inception record",
+                proposal_prefix
+            )));
+        };
+        let expires_at = inception.expires_at();
+
         for vote in self.proposal_votes() {
             vote.verify_said()?;
 
@@ -373,6 +382,13 @@ pub trait ProposalWithVotesMethods {
                 return Err(KelsError::RegistryFailure(format!(
                     "Vote {} references proposal {} but chain prefix is {}",
                     vote.said, vote.proposal, proposal_prefix
+                )));
+            }
+
+            if vote.voted_at > *expires_at {
+                return Err(KelsError::RegistryFailure(format!(
+                    "Vote {} cast after proposal {} expired",
+                    vote.said, proposal_prefix
                 )));
             }
         }
@@ -691,8 +707,6 @@ impl ProposalWithVotesMethods for RemovalWithVotes {
 pub struct CompletedProposalsResponse {
     pub additions: Vec<AdditionWithVotes>,
     pub removals: Vec<RemovalWithVotes>,
-    pub member_prefixes: Vec<String>,
-    pub approval_threshold: usize,
 }
 
 #[cfg(test)]
@@ -832,16 +846,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
-        use crate::{Kel, KeyEventBuilder, SoftwareKeyProvider};
+        use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
+        use cesr::{Digest, Matter};
 
         let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
         let icp = builder1.incept().await.unwrap();
+        let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
-        let ixn1 = builder1.interact("anchor1").await.unwrap();
-        let ixn2 = builder2.interact("anchor2").await.unwrap();
+        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
+        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let ixn1 = builder1.interact(&anchor1).await.unwrap();
+        let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
-        let kel = Kel::from_events(vec![icp, ixn1, ixn2], true).unwrap();
-        assert!(kel.find_divergence().is_some());
+        // Sort events the way the DB would: serial ASC, kind sort_priority ASC, said ASC
+        let mut events = vec![icp, ixn1, ixn2];
+        events.sort_by(|a, b| {
+            a.event
+                .serial
+                .cmp(&b.event.serial)
+                .then(
+                    a.event
+                        .kind
+                        .sort_priority()
+                        .cmp(&b.event.kind.sort_priority()),
+                )
+                .then(a.event.said.cmp(&b.event.said))
+        });
+
+        let mut verifier = KelVerifier::new(&prefix);
+        verifier.verify_page(&events).unwrap();
+        let kel_verification = verifier.into_verification().unwrap();
+        assert!(kel_verification.is_divergent());
 
         let signed = SignedRequest {
             payload: "test".to_string(),
@@ -849,7 +884,7 @@ mod tests {
             signature: "test_sig".to_string(),
         };
 
-        let result = signed.verify_signature(&kel);
+        let result = signed.verify_signature(&kel_verification);
         assert!(
             matches!(result, Err(crate::KelsError::Divergent)),
             "Expected Divergent error, got: {:?}",

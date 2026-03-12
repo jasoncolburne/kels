@@ -17,6 +17,17 @@ spec:
         app: kels-gossip
     spec:
       initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "Waiting for postgres...";
+                sleep 2;
+              done;
+              echo "PostgreSQL is ready!";
         - name: wait-for-kels
           image: busybox:1.36
           command:
@@ -74,6 +85,8 @@ spec:
               value: "${var.gossip.httpListenHost}"
             - name: HTTP_LISTEN_PORT
               value: "${var.gossip.httpPort}"
+            - name: DATABASE_URL
+              value: "${var.gossipDatabaseUrl}"
             - name: RUST_LOG
               value: "${var.rustLogLevel}"
             - name: NODE_ID

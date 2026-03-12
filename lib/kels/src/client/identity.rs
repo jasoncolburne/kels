@@ -4,12 +4,63 @@ use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::{Kel, KelsError};
+use crate::{KelsError, SignedKeyEventPage};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct IdentityInfo {
-    prefix: String,
+pub struct IdentityInfo {
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityStatus {
+    pub initialized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_said: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_key_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum RotateMode {
+    #[default]
+    Scheduled,
+    Standard,
+    Recovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum ManageKelOperation {
+    Rotate {
+        #[serde(default)]
+        mode: RotateMode,
+    },
+    Recover,
+    Contest,
+    Decommission,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageKelRequest {
+    pub prefix: String,
+    pub operation: ManageKelOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageKelResponse {
+    pub prefix: String,
+    pub said: String,
+    pub event_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation_number: Option<usize>,
+    pub current_key_handle: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,9 +116,18 @@ pub struct IdentityClient {
 impl IdentityClient {
     pub fn new(base_url: &str) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
             base_url: base_url.trim_end_matches('/').to_string(),
         }
+    }
+
+    /// The base URL of the identity service.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     async fn request_error(&self, response: reqwest::Response) -> KelsError {
@@ -87,6 +147,12 @@ impl IdentityClient {
         Ok(response.json().await?)
     }
 
+    pub async fn get_status(&self) -> Result<IdentityStatus, KelsError> {
+        let url = format!("{}/api/identity/status", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        self.parse_response(response).await
+    }
+
     pub async fn get_prefix(&self) -> Result<String, KelsError> {
         let url = format!("{}/api/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
@@ -94,8 +160,15 @@ impl IdentityClient {
         Ok(info.prefix)
     }
 
-    pub async fn get_kel(&self) -> Result<Kel, KelsError> {
-        let url = format!("{}/api/identity/kel", self.base_url);
+    pub async fn get_key_events(
+        &self,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<SignedKeyEventPage, KelsError> {
+        let mut url = format!("{}/api/identity/kel?limit={}", self.base_url, limit);
+        if let Some(since) = since {
+            url.push_str(&format!("&since={}", since));
+        }
         let response = self.client.get(&url).send().await?;
         self.parse_response(response).await
     }
@@ -131,6 +204,29 @@ impl IdentityClient {
             .send()
             .await?;
 
+        self.parse_response(response).await
+    }
+
+    /// Manage the identity KEL (rotate, recover, contest, decommission).
+    /// Signs the request internally.
+    pub async fn manage_kel(
+        &self,
+        request: &ManageKelRequest,
+    ) -> Result<ManageKelResponse, KelsError> {
+        let prefix = self.get_prefix().await?;
+
+        let payload_json = serde_json::to_string(request)
+            .map_err(|e| KelsError::SigningFailed(format!("Failed to serialize request: {}", e)))?;
+        let sign_result = self.sign(&payload_json).await?;
+
+        let signed = crate::SignedRequest {
+            payload: request.clone(),
+            peer_prefix: prefix,
+            signature: sign_result.signature,
+        };
+
+        let url = format!("{}/api/identity/kel/manage", self.base_url);
+        let response = self.client.post(&url).json(&signed).send().await?;
         self.parse_response(response).await
     }
 

@@ -56,7 +56,7 @@ providers:
     environments: [registry-a, registry-b, registry-c, registry-d, node-a, node-b, node-c, node-d, node-e, node-f]
     namespace:
       name: ${environment.namespace}
-    setupIngressController: nginx
+    setupIngressController: traefik
     defaultHostname: ${environment.namespace}.kels
     buildMode: local-docker
 
@@ -71,15 +71,12 @@ variables:
   redis:
     host: redis
     port: 6379
+    kelsUrl: "redis://kels:${var.redis.kelsPassword}@${var.redis.host}:${var.redis.port}"
     kelsPassword: "kels-redis-pass"
     kelsPasswordHash: "7420117681f7f1de993fd5e0080a464e0232d4db1620e273623148f0ba8ac9d3"
+    gossipUrl: "redis://gossip:${var.redis.gossipPassword}@${var.redis.host}:${var.redis.port}"
     gossipPassword: "gossip-redis-pass"
     gossipPasswordHash: "94f18ec001065c2ae1a41d4d2b3bd0cddd76105264833e267336ab8cd1cff0d3"
-    registryPassword: "registry-redis-pass"
-    registryPasswordHash: "77255fc724b574d56ab8e61e31d2596ae013f8ed93aa1562e2c2fa7941a89204"
-    kelsUrl: "redis://kels:${var.redis.kelsPassword}@${var.redis.host}:${var.redis.port}"
-    gossipUrl: "redis://gossip:${var.redis.gossipPassword}@${var.redis.host}:${var.redis.port}"
-    registryUrl: "redis://registry:${var.redis.registryPassword}@${var.redis.host}:${var.redis.port}"
   kels:
     replicas: 2
     host: kels

@@ -8,8 +8,8 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// - `SIGNATURES_TABLE_NAME` constant
 /// - `create_with_signatures(item, signatures)` for storing events with signatures
 /// - `get_signatures_by_saids(saids)` for batch signature retrieval
-/// - `get_signed_history(prefix)` for getting all signed events
-/// - `get_kel(prefix)` for getting the full KEL
+/// - `get_signed_history(prefix, limit, offset)` for getting paginated signed events
+/// - `save_with_merge(prefix, events)` for full merge with verification and divergence handling
 ///
 /// Also generates `SignedEventRepository` trait implementation.
 ///
@@ -18,13 +18,14 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// ## Attributes
 ///
 /// - `signatures_table`: The signatures table name (required)
+/// - `audit_table`: Optional audit table name for archiving adversary events during recovery
 ///
 /// ## Example
 ///
 /// ```text
 /// #[derive(Stored, SignedEvents)]
 /// #[stored(item_type = KeyEvent, table = "kels_key_events")]
-/// #[signed_events(signatures_table = "kels_key_event_signatures")]
+/// #[signed_events(signatures_table = "kels_key_event_signatures", audit_table = "kels_audit_records")]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
 /// }
@@ -42,6 +43,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         .expect("No #[signed_events(...)] attribute found");
 
     let mut signatures_table: Option<String> = None;
+    let mut audit_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -51,6 +53,12 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     signatures_table = Some(s.value());
                 }
+            } else if meta.path.is_ident("audit_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    audit_table = Some(s.value());
+                }
             }
             Ok(())
         })
@@ -58,6 +66,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let signatures_table =
         signatures_table.expect("Missing signatures_table in #[signed_events(...)]");
+
+    let audit_table_expr = match &audit_table {
+        Some(table) => quote! { Some(#table) },
+        None => quote! { None },
+    };
 
     // Generate the methods
     let methods = quote! {
@@ -133,15 +146,89 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 self.pool.fetch_optional(query).await
             }
 
-            /// Get the full signed history for a prefix.
+            /// Get a paginated page of signed events for a prefix.
+            ///
+            /// Returns `(events, has_more)` — fetches `limit + 1` rows and pops the extra
+            /// to determine whether more pages exist.
+            /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
             pub async fn get_signed_history(
                 &self,
                 prefix: &str,
-            ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
-                use verifiable_storage::ChainedRepository;
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
-                let events =
-                    <Self as verifiable_storage::ChainedRepository<kels::KeyEvent>>::get_history(self, prefix).await?;
+                let mut tx = self.pool.begin_transaction().await?;
+                let result = kels::load_signed_history(
+                    &mut tx,
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    prefix,
+                    limit,
+                    offset,
+                )
+                .await
+                .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+                tx.commit().await?;
+                Ok(result)
+            }
+
+            /// Get signed events after a given SAID (delta fetch — the since event itself is not returned).
+            ///
+            /// Uses a scalar subquery to find the serial of the since event, then fetches
+            /// events with `serial >= that serial`, filtering out the since event itself.
+            /// Returns `(events, has_more)` using the limit+2 pop pattern.
+            /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
+            pub async fn get_signed_history_since(
+                &self,
+                prefix: &str,
+                since_said: &str,
+                limit: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+                use verifiable_storage_postgres::QueryExecutor;
+
+                let subquery = verifiable_storage::ScalarSubquery::new(
+                    Self::TABLE_NAME,
+                    "serial",
+                    vec![verifiable_storage::Filter::Eq(
+                        "said".to_string(),
+                        verifiable_storage::Value::String(since_said.to_string()),
+                    )],
+                );
+
+                // Fetch limit + 2 to account for two sentinel events:
+                //   +1: the since event itself — included by `>= serial` but filtered
+                //       out by `retain()` below (we need `>=` not `>` to catch divergent
+                //       events at the same serial as the since event)
+                //   +1: the has_more sentinel — if we get more than `limit` events after
+                //       filtering, there are additional pages
+                // After `retain()` removes at most 1 event (the since event), we check
+                // `events.len() > limit` to detect has_more, then truncate to `limit`.
+                // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
+                let clamped_limit = limit.min(kels::MAX_EVENTS_PER_KEL_QUERY as u64);
+                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .gte_scalar_subquery("serial", subquery)
+                    .order_by("serial", verifiable_storage_postgres::Order::Asc)
+                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
+                    .order_by("said", verifiable_storage_postgres::Order::Asc)
+                    .limit(clamped_limit + 2);
+                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+
+                // Filter out the since event itself (we want events *after* it,
+                // but we need >= its serial to include divergent events at the same serial)
+                events.retain(|e| e.said != since_said);
+
+                let has_more = events.len() > clamped_limit as usize;
+                if has_more {
+                    events.truncate(clamped_limit as usize);
+                }
+
+                if events.is_empty() {
+                    return Ok((vec![], false));
+                }
+
                 let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
                 let signatures = self.get_signatures_by_saids(&saids).await?;
 
@@ -160,17 +247,47 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     signed_events.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
                 }
 
-                Ok(signed_events)
+                Ok((signed_events, has_more))
             }
 
-            /// Get the full KEL for a prefix as a Kel struct.
-            pub async fn get_kel(
+            /// Compute the effective SAID for a prefix by finding tip events (events with no successor).
+            ///
+            /// Uses a NOT EXISTS subquery to find tips directly in SQL rather than loading
+            /// all events into memory. Returns the tip SAID for non-divergent KELs, or a
+            /// deterministic hash of sorted tip SAIDs for divergent KELs.
+            pub async fn compute_prefix_effective_said(
                 &self,
                 prefix: &str,
-            ) -> Result<kels::Kel, verifiable_storage::StorageError> {
-                let signed_events = self.get_signed_history(prefix).await?;
-                kels::Kel::from_events(signed_events, false)
-                    .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))
+            ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
+                use verifiable_storage_postgres::QueryExecutor;
+
+                let query = verifiable_storage::ColumnQuery::new(Self::TABLE_NAME, "said")
+                    .filter(verifiable_storage::Filter::Eq(
+                        "prefix".to_string(),
+                        verifiable_storage::Value::String(prefix.to_string()),
+                    ))
+                    .filter(verifiable_storage::Filter::NotExists(verifiable_storage::CorrelatedSubquery::new(
+                        Self::TABLE_NAME,
+                        "_cs",
+                        Self::TABLE_NAME,
+                        vec![("previous".to_string(), "said".to_string())],
+                        vec![verifiable_storage::Filter::Eq(
+                            "_cs.prefix".to_string(),
+                            verifiable_storage::Value::String(prefix.to_string()),
+                        )],
+                    )))
+                    .order(verifiable_storage_postgres::Order::Asc);
+
+                let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
+
+                match tip_saids.len() {
+                    0 => Ok(None),
+                    1 => Ok(Some((tip_saids.into_iter().next().unwrap_or_default(), false))),
+                    _ => {
+                        let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
+                        Ok(Some((kels::hash_tip_saids(&refs), true)))
+                    }
+                }
             }
 
             /// Store multiple items with their signatures in a single transaction.
@@ -213,14 +330,55 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 Ok(())
             }
+
+            /// Save signed events with full merge (verification, divergence detection, recovery).
+            /// Uses an advisory lock on the prefix to serialize operations.
+            pub async fn save_with_merge(
+                &self,
+                prefix: &str,
+                events: &[kels::SignedKeyEvent],
+            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
+                if events.is_empty() {
+                    return Ok(kels::MergeOutcome::empty());
+                }
+
+                let mut tx = self.pool.begin_transaction().await?;
+                tx.acquire_advisory_lock(prefix).await?;
+
+                let mut merge_tx = kels::MergeTransaction::new(
+                    tx,
+                    prefix.to_string(),
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    #audit_table_expr,
+                );
+
+                match merge_tx.merge_events(events).await {
+                    Ok(outcome) => {
+                        merge_tx.commit().await?;
+                        Ok(outcome)
+                    }
+                    Err(e) => {
+                        let _ = merge_tx.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
         }
     };
 
     let trait_impl = quote! {
         #[async_trait::async_trait]
         impl kels::SignedEventRepository for #repo_name {
-            async fn get_kel(&self, prefix: &str) -> Result<kels::Kel, kels::KelsError> {
-                #repo_name::get_kel(self, prefix)
+            async fn get_signed_history(
+                &self,
+                prefix: &str,
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                #repo_name::get_signed_history(self, prefix, limit, offset)
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
@@ -252,12 +410,61 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }
+
+            async fn save_with_merge(
+                &self,
+                prefix: &str,
+                events: &[kels::SignedKeyEvent],
+            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                #repo_name::save_with_merge(self, prefix, events).await
+            }
+        }
+    };
+
+    let kel_server_impl = quote! {
+        #[async_trait::async_trait]
+        impl kels::KelServer for #repo_name {
+            async fn load_page(
+                &self,
+                prefix: &str,
+                limit: u64,
+                offset: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                self.get_signed_history(prefix, limit, offset)
+                    .await
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn load_page_since(
+                &self,
+                prefix: &str,
+                since_said: &str,
+                limit: u64,
+            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+                self.get_signed_history_since(prefix, since_said, limit)
+                    .await
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels::KelsError> {
+                self.compute_prefix_effective_said(prefix)
+                    .await
+                    .map(|opt| opt.map(|(said, _)| said))
+                    .map_err(kels::KelsError::from)
+            }
+
+            async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels::KelsError> {
+                use verifiable_storage::ChainedRepository;
+                let event: Option<kels::KeyEvent> = self.get_by_said(said).await.map_err(kels::KelsError::from)?;
+                Ok(event.map(|e| e.prefix))
+            }
         }
     };
 
     let expanded = quote! {
         #methods
         #trait_impl
+        #kel_server_impl
     };
 
     TokenStream::from(expanded)

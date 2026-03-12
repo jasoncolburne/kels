@@ -3,13 +3,41 @@
 use std::{
     collections::HashMap,
     io::{self, Cursor},
+    iter,
     sync::Arc,
 };
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Kel, KelMergeResult, Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
+use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
+
+/// Verify a SAID is anchored in a member's KEL stored in the MemberKelRepository.
+/// Consuming: paginated read + verification + inline anchor check.
+async fn verify_member_anchoring_from_repo(
+    repo: &crate::raft_store::MemberKelRepository,
+    said: &str,
+    member_prefix: &str,
+) -> Result<(), String> {
+    let store = kels::RepositoryKelStore::new(Arc::new(
+        crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
+    ));
+    let kel_verification = kels::completed_verification(
+        &mut kels::StorePageLoader::new(&store),
+        member_prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        iter::once(said.to_string()),
+    )
+    .await
+    .map_err(|e| format!("Member KEL verification failed: {}", e))?;
+
+    if !kel_verification.anchors_all_saids() {
+        return Err(format!("SAID {} not anchored in member's KEL", said));
+    }
+
+    Ok(())
+}
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StoredMembership,
@@ -46,41 +74,12 @@ pub struct StateMachineData {
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID
     pub votes: HashMap<String, Vote>,
-    /// Federation member KELs (replicated via Raft consensus)
-    pub member_kels: HashMap<String, Kel>,
 }
 
 impl StateMachineData {
     /// Create a new state machine.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Get a member KEL by prefix.
-    pub fn member_kel(&self, prefix: &str) -> Option<&Kel> {
-        self.member_kels.get(prefix)
-    }
-
-    /// Get all member KELs.
-    pub fn all_member_kels(&self) -> HashMap<String, Kel> {
-        self.member_kels.clone()
-    }
-
-    /// Verify a SAID is anchored in a member's KEL (no lock acquisition).
-    /// Caller is responsible for checking membership via config.is_member() first.
-    pub fn verify_member_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
-        let kel = self
-            .member_kel(member_prefix)
-            .ok_or_else(|| format!("Member KEL not in Raft state: {}", member_prefix))?;
-
-        kel.verify(true)
-            .map_err(|e| format!("Member KEL verification failed: {}", e))?;
-
-        if !kel.contains_anchor(said) {
-            return Err(format!("SAID {} not anchored in member's KEL", said));
-        }
-
-        Ok(())
     }
 
     /// Get active peers.
@@ -404,74 +403,6 @@ impl StateMachineData {
                     FederationResponse::ProposalWithdrawn(proposal_id)
                 }
             }
-            FederationRequest::SubmitKeyEvents(events) => {
-                if events.is_empty() {
-                    return FederationResponse::KeyEventsRejected("Empty events list".to_string());
-                }
-
-                let prefix = events[0].event.prefix.clone();
-
-                // Reject mixed prefixes
-                if events.iter().any(|e| e.event.prefix != prefix) {
-                    return FederationResponse::KeyEventsRejected(
-                        "Mixed prefixes in events".to_string(),
-                    );
-                }
-
-                let kel = self.member_kels.entry(prefix.clone()).or_default();
-
-                if kel.events().is_empty() {
-                    // First submission: create from events
-                    match Kel::from_events(events, false) {
-                        Ok(new_kel) => {
-                            let count = new_kel.events().len();
-                            *kel = new_kel;
-                            FederationResponse::KeyEventsAccepted {
-                                prefix,
-                                new_count: count,
-                            }
-                        }
-                        Err(e) => FederationResponse::KeyEventsRejected(format!(
-                            "KEL creation failed: {}",
-                            e
-                        )),
-                    }
-                } else {
-                    // Merge into existing KEL
-                    match kel.merge(events) {
-                        Ok((_removed, added, result)) => match result {
-                            KelMergeResult::Accepted => FederationResponse::KeyEventsAccepted {
-                                prefix,
-                                new_count: added.len(),
-                            },
-                            KelMergeResult::Diverged
-                            | KelMergeResult::Protected
-                            | KelMergeResult::Contested => {
-                                tracing::error!(
-                                    "SECURITY: member KEL divergence detected for {}: {:?}",
-                                    prefix,
-                                    result
-                                );
-                                FederationResponse::KeyEventsRejected(format!(
-                                    "Member KEL security event: {:?}",
-                                    result
-                                ))
-                            }
-                            KelMergeResult::Recovered => FederationResponse::KeyEventsAccepted {
-                                prefix,
-                                new_count: added.len(),
-                            },
-                            KelMergeResult::Rejected => FederationResponse::KeyEventsRejected(
-                                "Events rejected by KEL merge".to_string(),
-                            ),
-                        },
-                        Err(e) => FederationResponse::KeyEventsRejected(format!(
-                            "KEL merge failed: {}",
-                            e
-                        )),
-                    }
-                }
-            }
             FederationRequest::VotePeer { proposal_id, vote } => {
                 let voter = vote.voter.clone();
                 let approve = vote.approve;
@@ -653,7 +584,6 @@ impl StateMachineData {
             pending_removal_proposals: self.pending_removal_proposals.values().cloned().collect(),
             completed_removal_proposals: self.completed_removal_proposals.clone(),
             votes: self.votes.values().cloned().collect(),
-            member_kels: self.member_kels.clone(),
         }
     }
 
@@ -706,9 +636,8 @@ impl StateMachineData {
             .into_iter()
             .map(|v| (v.said.clone(), v))
             .collect();
-        self.member_kels = snapshot.member_kels;
         info!(
-            "Restored {} active peers, {} inactive peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes, {} member KELs from snapshot",
+            "Restored {} active peers, {} inactive peers, {} pending addition proposals, {} completed additions, {} pending removal proposals, {} completed removals, {} votes from snapshot",
             self.active_peers.len(),
             self.inactive_peers.len(),
             self.pending_addition_proposals.len(),
@@ -716,7 +645,6 @@ impl StateMachineData {
             self.pending_removal_proposals.len(),
             self.completed_removal_proposals.len(),
             self.votes.len(),
-            self.member_kels.len()
         );
     }
 }
@@ -727,6 +655,10 @@ pub struct StateMachineStore {
     inner: Arc<Mutex<StateMachineData>>,
     /// Federation config
     config: FederationConfig,
+    /// Optional PostgreSQL-backed member KEL store for durable persistence
+    member_kel_repo: Option<crate::raft_store::MemberKelRepository>,
+    /// Identity service URL for fetching own KEL
+    identity_url: Option<String>,
 }
 
 impl StateMachineStore {
@@ -735,7 +667,26 @@ impl StateMachineStore {
         Self {
             inner: Arc::new(Mutex::new(StateMachineData::default())),
             config,
+            member_kel_repo: None,
+            identity_url: None,
         }
+    }
+
+    /// Set the member KEL repository for durable persistence.
+    pub fn with_member_kel_repo(mut self, repo: crate::raft_store::MemberKelRepository) -> Self {
+        self.member_kel_repo = Some(repo);
+        self
+    }
+
+    /// Set the identity service URL for fetching own KEL.
+    pub fn with_identity_url(mut self, url: String) -> Self {
+        self.identity_url = Some(url);
+        self
+    }
+
+    /// Get a reference to the member KEL repository if configured.
+    pub fn member_kel_repo(&self) -> Option<&crate::raft_store::MemberKelRepository> {
+        self.member_kel_repo.as_ref()
     }
 
     /// Get access to the inner data.
@@ -743,12 +694,31 @@ impl StateMachineStore {
         &self.inner
     }
 
+    /// Read a member's KEL page from the MemberKelRepository (DB).
+    /// Does NOT acquire the inner lock.
+    pub async fn read_member_kel_page(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<kels::SignedKeyEventPage, String> {
+        let repo = self
+            .member_kel_repo
+            .as_ref()
+            .ok_or_else(|| "Member KEL repository not configured".to_string())?;
+
+        let (events, has_more) = repo
+            .get_signed_history(prefix, limit, offset)
+            .await
+            .map_err(|e| format!("Failed to read member KEL: {}", e))?;
+
+        Ok(kels::SignedKeyEventPage { events, has_more })
+    }
+
     /// Verify a SAID is anchored in a federation member's KEL.
-    /// This proves the member signed/authorized the data with the given SAID.
-    /// Uses Raft-replicated member KELs as the single source of truth.
-    ///
-    /// Acquires self.inner lock — do NOT call from apply() or other lock holders.
-    pub async fn verify_member_anchoring_with_lock(
+    /// Consuming: reads from MemberKelRepository (DB), verifies with KelVerifier,
+    /// checks anchor inline. Does NOT acquire the inner lock.
+    pub async fn verify_member_anchoring(
         &self,
         said: &str,
         member_prefix: &str,
@@ -757,8 +727,12 @@ impl StateMachineStore {
             return Err(format!("Unknown member: {}", member_prefix));
         }
 
-        let sm = self.inner.lock().await;
-        sm.verify_member_anchoring(said, member_prefix)
+        let repo = self
+            .member_kel_repo
+            .as_ref()
+            .ok_or_else(|| "Member KEL repository not configured".to_string())?;
+
+        verify_member_anchoring_from_repo(repo, said, member_prefix).await
     }
 }
 
@@ -803,13 +777,14 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         Ok((sm.last_applied_log, sm.last_membership.clone()))
     }
 
-    /// Acquires self.inner lock. Use sm.verify_member_anchoring(), not self.verify_member_anchoring_with_lock().
+    /// Acquires self.inner lock.
     async fn apply<S>(&mut self, mut entries: S) -> Result<(), io::Error>
     where
         S: futures::Stream<Item = Result<EntryResponder<TypeConfig>, io::Error>>
             + OptionalSend
             + Unpin,
     {
+        let repo = self.member_kel_repo.as_ref();
         let mut sm = self.inner.lock().await;
 
         while let Some(entry_result) = entries.next().await {
@@ -848,9 +823,17 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                             && &vote.voter == voter
                                             && vote.approve
                                             && vote.verify_said().is_ok()
-                                            && sm
-                                                .verify_member_anchoring(&vote.said, &vote.voter)
-                                                .is_ok()
+                                            && verify_member_anchoring_from_repo(
+                                                repo.ok_or_else(|| {
+                                                    io::Error::other(
+                                                        "Member KEL repository not configured",
+                                                    )
+                                                })?,
+                                                &vote.said,
+                                                &vote.voter,
+                                            )
+                                            .await
+                                            .is_ok()
                                         {
                                             verified_voters.insert(voter.clone());
                                         }
@@ -902,9 +885,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
 
                         // Verify SAID is anchored in authorizing member's KEL
-                        if sm
-                            .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
-                            .is_err()
+                        if verify_member_anchoring_from_repo(
+                            repo.ok_or_else(|| {
+                                io::Error::other("Member KEL repository not configured")
+                            })?,
+                            &peer.said,
+                            &peer.authorizing_kel,
+                        )
+                        .await
+                        .is_err()
                         {
                             warn!(
                                 peer_prefix = %peer.peer_prefix,
@@ -948,9 +937,17 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                         && vote.approve
                                         && member_prefixes.contains(vote.voter.as_str())
                                         && vote.verify_said().is_ok()
-                                        && sm
-                                            .verify_member_anchoring(&vote.said, &vote.voter)
-                                            .is_ok()
+                                        && verify_member_anchoring_from_repo(
+                                            repo.ok_or_else(|| {
+                                                io::Error::other(
+                                                    "Member KEL repository not configured",
+                                                )
+                                            })?,
+                                            &vote.said,
+                                            &vote.voter,
+                                        )
+                                        .await
+                                        .is_ok()
                                     {
                                         verified_voters.insert(vote.voter.clone());
                                     }
@@ -1001,9 +998,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         }
 
                         // Verify deactivated peer SAID is anchored in authorizing member's KEL
-                        if sm
-                            .verify_member_anchoring(&peer.said, &peer.authorizing_kel)
-                            .is_err()
+                        if verify_member_anchoring_from_repo(
+                            repo.ok_or_else(|| {
+                                io::Error::other("Member KEL repository not configured")
+                            })?,
+                            &peer.said,
+                            &peer.authorizing_kel,
+                        )
+                        .await
+                        .is_err()
                         {
                             warn!(
                                 peer_prefix = %peer.peer_prefix,
@@ -1081,31 +1084,21 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        if let Err(e) = sm.verify_member_anchoring(&vote.said, &vote.voter) {
+                        if let Err(e) = verify_member_anchoring_from_repo(
+                            repo.ok_or_else(|| {
+                                io::Error::other("Member KEL repository not configured")
+                            })?,
+                            &vote.said,
+                            &vote.voter,
+                        )
+                        .await
+                        {
                             warn!(voter = %vote.voter, error = %e, "Vote not anchored - rejecting");
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(e));
                             }
                             continue;
                         }
-                    }
-
-                    // Verify SubmitKeyEvents is from a trusted member
-                    if let FederationRequest::SubmitKeyEvents(ref events) = request
-                        && let Some(first) = events.first()
-                        && !self.config.is_trusted_prefix(&first.event.prefix)
-                    {
-                        warn!(
-                            prefix = %first.event.prefix,
-                            "SubmitKeyEvents from non-member prefix - rejecting"
-                        );
-                        if let Some(r) = responder {
-                            r.send(FederationResponse::KeyEventsRejected(format!(
-                                "Not a trusted member: {}",
-                                first.event.prefix
-                            )));
-                        }
-                        continue;
                     }
 
                     // Verify addition proposal threshold floor and anchoring
@@ -1130,7 +1123,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        if let Err(e) = sm.verify_member_anchoring(&prop.said, &prop.proposer) {
+                        if let Err(e) = verify_member_anchoring_from_repo(
+                            repo.ok_or_else(|| {
+                                io::Error::other("Member KEL repository not configured")
+                            })?,
+                            &prop.said,
+                            &prop.proposer,
+                        )
+                        .await
+                        {
                             warn!(proposer = %prop.proposer, error = %e, "Addition proposal not anchored - rejecting");
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(e));
@@ -1158,7 +1159,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             continue;
                         }
 
-                        if let Err(e) = sm.verify_member_anchoring(&prop.said, &prop.proposer) {
+                        if let Err(e) = verify_member_anchoring_from_repo(
+                            repo.ok_or_else(|| {
+                                io::Error::other("Member KEL repository not configured")
+                            })?,
+                            &prop.said,
+                            &prop.proposer,
+                        )
+                        .await
+                        {
                             warn!(proposer = %prop.proposer, error = %e, "Removal proposal not anchored - rejecting");
                             if let Some(r) = responder {
                                 r.send(FederationResponse::NotAuthorized(e));
@@ -1248,29 +1257,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             );
         }
         core_snapshot.pending_removal_proposals = valid_removal_proposals;
-
-        // Verify all member KELs before restoring
-        let original_kel_count = core_snapshot.member_kels.len();
-        core_snapshot
-            .member_kels
-            .retain(|prefix, kel| match kel.verify(true) {
-                Ok(_) => true,
-                Err(e) => {
-                    warn!(
-                        prefix = %prefix,
-                        error = %e,
-                        "Member KEL verification failed during snapshot restore - skipping"
-                    );
-                    false
-                }
-            });
-        let removed_kel_count = original_kel_count - core_snapshot.member_kels.len();
-        if removed_kel_count > 0 {
-            warn!(
-                removed = removed_kel_count,
-                "Removed member KELs with invalid chains during snapshot restore"
-            );
-        }
 
         let mut sm = self.inner.lock().await;
         sm.restore(core_snapshot, meta);

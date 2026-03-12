@@ -13,7 +13,7 @@ spec:
       args: ["trap 'exit 0' SIGTERM; sleep infinity & wait $!"]
       resources:
         requests:
-          cpu: 500m
+          cpu: 50m
           memory: 256Mi
         limits:
           cpu: 8000m

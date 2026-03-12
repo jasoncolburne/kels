@@ -27,7 +27,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 NODE_A_URL="http://${NODE_A_KELS_HOST:-kels}"
 NODE_B_FQDN_URL="http://kels.kels-node-b.svc.cluster.local"
 REDIS_HOST="${NODE_A_REDIS_HOST:-redis}"
-RESYNC_WAIT="${RESYNC_WAIT:-30}"
+RESYNC_WAIT="${RESYNC_WAIT:-90}"
 STALE_PREFIX_KEY="kels:anti_entropy:stale"
 STATE_FILE="/tmp/resync-test-state"
 
@@ -250,6 +250,7 @@ if [ "$MODE" = "verify" ]; then
     echo "Polling up to ${RESYNC_WAIT}s for anti-entropy to resolve stale entries..."
 
     RESYNC_RESOLVED=false
+    EVENTS_ARRIVED=false
     for i in $(seq 1 "$RESYNC_WAIT"); do
         NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
         STALE_SIZE=$(stale_count)
@@ -257,6 +258,10 @@ if [ "$MODE" = "verify" ]; then
             echo "  Anti-entropy resolved after ${i}s"
             RESYNC_RESOLVED=true
             break
+        fi
+        if [ "$NODE_A_COUNT" = "3" ] && [ "$EVENTS_ARRIVED" = "false" ]; then
+            echo "  Events arrived after ${i}s, waiting for stale hash to drain..."
+            EVENTS_ARRIVED=true
         fi
         sleep 1
     done

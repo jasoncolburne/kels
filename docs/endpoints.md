@@ -23,23 +23,24 @@ Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network i
 
 ## Identity Service
 
-HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The rotate endpoint requires a signed request.
+HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The manage endpoint requires a signed request (the `IdentityClient` handles signing internally).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check probe |
 | GET | `/api/identity` | None | Get registry prefix |
-| GET | `/api/identity/kel` | None | Get full registry KEL (fresh from DB) |
+| GET | `/api/identity/kel` | None | Get registry KEL (paginated; `?limit=N&since=SAID`); returns `SignedKeyEventPage {events, hasMore}` |
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
-| POST | `/api/identity/rotate` | **Signed request (own KEL)** | Perform key rotation (standard, recovery, or scheduled); updates in-memory builder |
+| GET | `/api/identity/status` | None | Get identity status (initialized, prefix, last SAID, current key handle) |
+| POST | `/api/identity/kel/manage` | **Signed request (own KEL)** | Manage KEL (rotate, recover, contest, decommission); updates in-memory builder |
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL is read fresh from DB on each request (captures externally anchored events)
+- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 512) and `?since=SAID` for delta fetch
 - Sign returns qb64-encoded signature + public key
-- Rotate accepts `SignedRequest<RotateRequest>` — signature verified against own KEL. Mode can be `standard` (signing key), `recovery` (recovery key), or `scheduled` (auto-selects based on rotation count). All rotations go through `perform_rotation()` which updates the builder's key provider in-place, keeping the server in sync. Also called internally by the auto-rotation loop (every 30 days).
+- Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
 
 ## KELS Service
@@ -50,47 +51,46 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check (checks `kels:gossip:ready` in Redis) |
-| POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL) |
-| GET | `/api/kels/kel/:prefix` | None | Get KEL for prefix; `?audit=true` bypasses cache, `?since=SAID` for delta sync |
+| POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL); max 512 events per request |
+| GET | `/api/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-512, default 512); returns `SignedKeyEventPage {events, hasMore}` |
+| GET | `/api/kels/kel/:prefix/audit` | None | Get audit records for prefix (recovery/contest archives) |
+| GET | `/api/kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 | GET | `/api/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
-| POST | `/api/kels/kels` | None | Batch fetch KELs for multiple prefixes (max 50); `prefixes` is a map of prefix → optional since SAID for delta sync |
 | POST | `/api/kels/prefixes` | **Signed request** | List prefix states (paginated) for P2P sync |
 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires ECDSA signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` uses Redis cache with pub/sub invalidation; falls back to DB on miss. The `?since=SAID` parameter returns only events after the given SAID. If the SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty array is returned. This allows divergent KELs to be correctly recognized as in-sync without requiring a full fetch.
-- Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `RecoveryProtected`, `RateLimited`, `InternalError`
+- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 512 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-512, default 512). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
+- `get_kel_audit` returns `Vec<KelsAuditRecord>` — archived events from recovery/contest operations, separate from the paginated KEL endpoint.
+- `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
+- KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
+- `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
+- `KELS_MAX_VERIFICATION_PAGES` environment variable (default 512) controls maximum pagination loops for callers fetching large KELs.
+- Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
 
 ## KELS Registry Service
 
-Peer allowlist management, node registration, federation consensus. Requires a federation of at least 3 registries for peer management (peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
+Peer allowlist management and federation consensus. Requires a federation of at least 3 registries for peer management (peer approval requires a minimum of 3 votes). Standalone mode is used during bootstrap to generate the registry's identity before federation is configured.
 
 ### Standalone Mode
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
-| GET | `/api/registry-kel` | None | Get this registry's KEL (from identity service) |
 
 ### Federation Mode
 
 All standalone endpoints plus:
-
-#### Node Management (rate-limited)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/nodes/register` | **Signed + allowlisted** | Register a gossip node (peer_prefix must match allowlist entry) |
-| POST | `/api/nodes/deregister` | **Signed + allowlisted** | Deregister a node |
-| POST | `/api/nodes/status` | **Signed + allowlisted** | Update node status (Bootstrapping/Ready/Unhealthy) |
 
 #### Peer Discovery
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/peers` | None | List peers (from Raft state machine) |
-| GET | `/api/registry-kels` | None | Get all federation member KELs (for HA — any registry serves all) |
+| POST | `/api/member-kels/events` | **Trusted prefix** | Submit member key events (push model); fans out to other members only when prefix matches the receiving node's own prefix; rate-limited per prefix and IP |
+| GET | `/api/member-kels/kel/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
+| GET | `/api/member-kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 
 #### Federation Protocol
 
@@ -99,7 +99,7 @@ All standalone endpoints plus:
 | POST | `/api/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/federation/proposals` | None | Completed proposals with votes (for independent verification) |
-| POST | `/api/federation/key-events` | **Federation member** | Submit member KEL events to Raft (verifies prefix is trusted member) |
+| GET | `/api/federation/proposals/:id` | None | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 
 #### Admin API
 
@@ -107,16 +107,14 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | POST | `/api/admin/addition-proposals` | **Federation member + KEL anchoring** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | POST | `/api/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| POST | `/api/admin/proposals/:id` | **Signed admin request** | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
 | POST | `/api/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
 
 **Notes:**
-- Node management endpoints: `verify_and_authorize()` validates ECDSA signature, checks peer_prefix in DB allowlist, verifies `active=true`, and enforces node_id matches the peer's authorized node_id
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
-- Admin query API: `verify_admin_request()` validates `SignedRequest<AdminRequest>` against the node's own identity KEL — requires HSM-backed signing via the identity service
 - Proposal endpoint verifies: SAID integrity (`verify()`), full chain integrity for withdrawals (`AdditionHistory::verify()` / `RemovalHistory::verify()`), proposer is federation member, each record's SAID anchored in proposer's KEL
 - Vote endpoint verifies: vote SAID integrity (`verify_said()`), proposal chain not withdrawn, voter is federation member, vote SAID anchored in voter's KEL
 - Withdrawals: POST a v1 `PeerAdditionProposal` with `withdrawn_at` set; only allowed before any votes are cast
+- Member KEL submit: events are pushed directly via `POST /api/member-kels/events`. Propagation is determined internally — the receiver fans out only when the submitted prefix matches its own prefix (i.e., identity pushed to the local registry). Events for other members' prefixes are stored without further fan-out. Per-prefix and per-IP rate limited.
 
 ## KELS Gossip Service
 
@@ -142,7 +140,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/kels/prefixes` | **Signed request** | Fetch paginated prefix list for bootstrap (calls peer's KELS service) |
-| POST | `/api/kels/kels` | None | Batch fetch KELs from peer for bootstrap (calls peer's KELS service) |
+| GET | `/api/kels/kel/:prefix` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); paginated via `forward_key_events` |
 
 **Notes:**
 - Transport: Three-DH P-256 key exchange (ee + se + es) + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers
@@ -153,7 +151,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Method | Where Used | Mechanism |
 |--------|-----------|-----------|
-| **Signed request** | Node registration, prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
+| **Signed request** | Prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Signed admin request** | Admin API | SignedRequest<AdminRequest> verified against own identity KEL |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |

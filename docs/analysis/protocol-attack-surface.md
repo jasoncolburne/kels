@@ -89,12 +89,12 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Recovery Race
 
 **Attack:** Adversary (who also has the recovery key) races the owner to submit `rec` first.
-- **Mitigation:** If the adversary submits a recovery-revealing event, the merge protocol returns `Protected` for non-contest submissions before the revealing event. The owner must `cnt` (contest) instead, which permanently freezes the KEL. This is the correct security outcome — it prevents an attacker with the recovery key from winning a recovery race.
+- **Mitigation:** If the adversary submits a recovery-revealing event, the merge protocol returns `ContestRequired` for non-contest submissions. The owner must `cnt` (contest) instead, which permanently freezes the KEL. This is the correct security outcome — it prevents an attacker with the recovery key from winning a recovery race.
 
 ### Re-divergence After Recovery
 
 **Attack:** After the owner recovers, adversary re-submits events at the same generation to re-diverge.
-- **Mitigation:** Recovery protection — once a recovery-revealing event exists in a divergent branch, divergence before that event is rejected with `Protected` (only `cnt` is allowed through). This is an important security invariant that prevents recovery battles.
+- **Mitigation:** Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (only `cnt` is allowed through). This is an important security invariant that prevents recovery battles.
 
 ### Contested KEL Bypass
 
@@ -108,20 +108,20 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 
 ## KEL Verification Bypass Attempts
 
-### Forward Pass Bypass
+### Verification Bypass
 
 **Attack:** Submit events that pass structure verification but have broken cryptographic properties.
-- **Mitigation:** KEL verification is two-phase. Phase 1 (forward pass) checks structure, chaining, and SAID integrity. Phase 2 (backward pass) walks from each tail backward, verifying pre-rotation commitments, recovery key commitments, and all signatures. Both phases must pass.
+- **Mitigation:** `KelVerifier` performs all checks in a single forward pass — structure, chaining, SAID integrity, pre-rotation commitments, recovery key commitments, and signature verification are all validated as each event is processed. There is no separate backward pass; forward commitments (rotation hash, recovery hash) are tracked per-branch and verified when the next establishment event reveals the committed key.
 
 ### Pre-rotation Commitment Violation
 
 **Attack:** Submit a rotation event whose public key doesn't match the rotation hash committed in the previous establishment event.
-- **Mitigation:** The backward pass explicitly verifies `rotation_hash` commitments — `compute_rotation_hash(future_event.public_key)` must equal the committed `rotation_hash`. Violations are rejected.
+- **Mitigation:** The verifier tracks `pending_rotation_hash` per branch and verifies `compute_rotation_hash(event.public_key)` matches the committed hash when processing each establishment event. Violations are rejected.
 
 ### Recovery Key Commitment Violation
 
 **Attack:** Submit a recovery event with a recovery key that doesn't match the committed recovery hash.
-- **Mitigation:** Same mechanism as rotation — `recovery_hash` is verified against the revealed recovery key. Violations are rejected.
+- **Mitigation:** Same mechanism as rotation — `pending_recovery_hash` is tracked per branch and verified against the revealed recovery key when processing recovery-revealing events. Violations are rejected.
 
 ## Client-Side Attacks
 
@@ -173,7 +173,7 @@ If the latest binding verification fails, rotation is triggered immediately — 
 
 ### Rotation Execution
 
-All rotations — automatic and admin-initiated — go through a single `perform_rotation` code path:
+All KEL operations — automatic and admin-initiated — go through a single `perform_kel_operation` code path:
 1. The builder's KEL is reloaded from the database
 2. The rotation event (`rot` or `ror`) is created and signed via the HSM
 3. The builder's key provider is updated in-place with the new key handles
@@ -187,7 +187,15 @@ This ensures the server's in-memory signing state is always consistent with the 
 - **Bounded exposure window:** A compromised signing key is useful for at most 30 days before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
 - **Recovery key freshness:** Recovery keys rotate every ~90 days, limiting the window for recovery key compromise.
 - **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
-- **Authenticated rotation endpoint:** The `POST /api/identity/rotate` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized rotation triggers.
+- **Authenticated management endpoint:** The `POST /api/identity/kel/manage` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized KEL operations.
+
+## DB Compromise + Key Compromise
+
+If an adversary compromises both a KELS node's database and a signing key, they could remove legitimate events and replace them with their own in the database. On an unreplicated node, this is a problem — the adversary's events would be served as if they were legitimate.
+
+However, with a full backbone deployment (recommended), any sync operation with other nodes will surface the conflicting events as divergence across the gossip mesh. The legitimate events exist on other nodes and will be gossiped back. Recovery proceeds as usual via the `rec` event, and the divergence alerts operators to investigate the compromised node.
+
+**Mitigation:** Deploy with replication (multiple KELS nodes behind a gossip mesh). The gossip protocol's anti-entropy loop will detect and reconcile inconsistencies. Single-node deployments accept this risk.
 
 ## Summary of Residual Risks
 

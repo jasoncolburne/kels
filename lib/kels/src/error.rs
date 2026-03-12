@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
-    #[error("Key not found: {0}")]
-    KeyNotFound(String),
+    #[error("Event not found: {0}")]
+    EventNotFound(String),
 
     #[error("No current key available")]
     NoCurrentKey,
@@ -103,8 +103,8 @@ pub enum KelsError {
     #[error("Contested KEL: {0}")]
     ContestedKel(String),
 
-    #[error("Recovery protected: adversary used recovery key")]
-    RecoveryProtected,
+    #[error("Contest required: recovery key revealed")]
+    ContestRequired,
 
     #[error("KEL diverged at: {0}")]
     Diverged(String),
@@ -114,9 +114,6 @@ pub enum KelsError {
 
     #[error("KEL frozen and requires recovery")]
     Frozen,
-
-    #[error("KEL recovery key revealed, contest required")]
-    ContestRequired,
 
     #[error("Invalid serial: {0}")]
     InvalidSerial(String),
@@ -135,6 +132,9 @@ pub enum KelsError {
 
     #[error("Hardware error: {0}")]
     HardwareError(String),
+
+    #[error("HSM key not found: {0}")]
+    HsmKeyNotFound(String),
 
     #[error("No ready nodes available in registry")]
     NoReadyNodes,
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = KelsError::KeyNotFound("test_key".to_string());
+        let err = KelsError::EventNotFound("test_key".to_string());
         assert!(err.to_string().contains("test_key"));
 
         let err = KelsError::NoCurrentKey;
@@ -234,11 +234,10 @@ mod tests {
             KelsError::CacheError("cache error".to_string()),
             KelsError::StorageError("storage error".to_string()),
             KelsError::ContestedKel("contested".to_string()),
-            KelsError::RecoveryProtected,
+            KelsError::ContestRequired,
             KelsError::Diverged("diverged".to_string()),
             KelsError::Divergent,
             KelsError::Frozen,
-            KelsError::ContestRequired,
             KelsError::InvalidSerial("bad serial".to_string()),
             KelsError::InvalidSaid("bad said".to_string()),
             KelsError::InvalidPrefix("bad prefix".to_string()),

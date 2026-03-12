@@ -34,7 +34,6 @@ disabled: ${var.envType != "registry"}
 
 dependencies:
   - build.kels-registry
-  - deploy.redis
   - deploy.postgres
   - deploy.identity
   - run.federation-read-prefix
@@ -42,7 +41,6 @@ dependencies:
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
-  redisUrl: "${var.redis.registryUrl}"
   identityUrl: ${var.identity.url}
   federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
   federationUrls: ${actions.run.federation-read-member-urls.outputs.log}

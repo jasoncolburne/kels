@@ -2,19 +2,24 @@
 
 mod error;
 mod events;
-mod kel;
+mod federation;
 mod node;
 mod peer;
 mod raft;
 mod sync;
+#[allow(clippy::too_many_arguments)]
+mod verification;
+mod verifier;
 
 pub use error::*;
 pub use events::*;
-pub use kel::*;
+pub use federation::*;
 pub use node::*;
 pub use peer::*;
 pub use raft::*;
 pub use sync::*;
+pub use verification::*;
+pub use verifier::*;
 
 #[cfg(test)]
 mod tests {
@@ -990,32 +995,11 @@ mod tests {
         assert!(event.validate_structure().is_ok());
     }
 
-    // ==================== NodeInfo tests ====================
-
-    #[test]
-    fn test_node_info_from_registration() {
-        let reg = NodeRegistration {
-            node_id: "node1".to_string(),
-            node_type: NodeType::Kels,
-            kels_url: "http://localhost:8080".to_string(),
-            gossip_addr: "127.0.0.1:9000".to_string(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat: chrono::Utc::now(),
-            status: NodeStatus::Ready,
-        };
-
-        let info: NodeInfo = reg.into();
-        assert_eq!(info.node_id, "node1");
-        assert_eq!(info.kels_url, "http://localhost:8080");
-        assert_eq!(info.status, NodeStatus::Ready);
-        assert!(info.latency_ms.is_none());
-    }
-
     // ==================== BatchSubmitResponse tests ====================
 
     #[test]
     fn test_batch_submit_response_applied() {
-        let response = BatchSubmitResponse {
+        let response = SubmitEventsResponse {
             applied: true,
             diverged_at: None,
         };
@@ -1025,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_batch_submit_response_diverged() {
-        let response = BatchSubmitResponse {
+        let response = SubmitEventsResponse {
             applied: false,
             diverged_at: Some(5),
         };

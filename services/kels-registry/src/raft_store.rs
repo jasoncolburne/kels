@@ -1,10 +1,11 @@
-//! PostgreSQL-backed storage for Raft consensus state
+//! PostgreSQL-backed storage for Raft consensus state and member KELs
 //!
 //! Uses verifiable-storage patterns with SelfAddressed entities.
 
 use verifiable_storage_postgres::{PgPool, Stored};
 
-use kels::{RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
+use kels::{KeyEvent, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
+use libkels_derive::SignedEvents;
 
 /// PostgreSQL-backed Raft vote repository
 #[derive(Clone, Stored)]
@@ -31,5 +32,13 @@ pub struct RaftStateRepository {
 #[derive(Clone, Stored)]
 #[stored(item_type = RaftLogAuditRecord, table = "raft_log_audit", chained = false)]
 pub struct RaftLogAuditRepository {
+    pub pool: PgPool,
+}
+
+/// PostgreSQL-backed member KEL repository (federation member key events)
+#[derive(Clone, Stored, SignedEvents)]
+#[stored(item_type = KeyEvent, table = "member_key_events", version_field = "serial")]
+#[signed_events(signatures_table = "member_key_event_signatures")]
+pub struct MemberKelRepository {
     pub pool: PgPool,
 }

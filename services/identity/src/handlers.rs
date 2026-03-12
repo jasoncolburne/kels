@@ -1,16 +1,20 @@
 //! Identity Service REST API Handlers
 
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 use tokio::sync::RwLock;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use kels::{Kel, KelsError, KeyEventBuilder};
+use kels::{
+    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
+    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, RepositoryKelStore,
+    SignedKeyEventPage,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -45,50 +49,17 @@ pub struct SignResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IdentityInfo {
-    pub prefix: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum RotateMode {
-    #[default]
-    Scheduled,
-    Standard,
-    Recovery,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RotateRequest {
-    #[serde(default)]
-    pub mode: RotateMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RotateResponse {
-    pub prefix: String,
-    pub said: String,
-    pub mode: String,
-    pub rotation_number: usize,
-    pub current_key_handle: String,
-    pub next_key_handle: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_key_handle: Option<String>,
 }
 
 pub struct AppState {
     pub repo: Arc<IdentityRepository>,
     pub builder: RwLock<KeyEventBuilder<HsmKeyProvider>>,
     pub kel_repo: Arc<KeyEventRepository>,
-    pub kels_url: Option<String>,
+    pub forward_url: Option<String>,
+    pub forward_path_prefix: String,
+    pub http_client: reqwest::Client,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -143,20 +114,97 @@ pub async fn get_identity(
     }))
 }
 
-/// Fetches fresh from the database to include events anchored by other processes.
-pub async fn get_kel(State(state): State<Arc<AppState>>) -> Result<Json<Kel>, ApiError> {
+pub async fn get_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<kels::IdentityStatus>, ApiError> {
+    let builder = state.builder.read().await;
+    let prefix = match builder.prefix() {
+        Some(p) => p.to_string(),
+        None => {
+            return Ok(Json(kels::IdentityStatus {
+                initialized: false,
+                prefix: None,
+                last_said: None,
+                current_key_handle: None,
+            }));
+        }
+    };
+
+    let binding = state
+        .repo
+        .hsm_bindings
+        .get_latest_by_kel_prefix(&prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get HSM binding: {}", e)))?;
+
+    let authority = state
+        .repo
+        .authority
+        .get_by_name(crate::repository::AUTHORITY_IDENTITY_NAME)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get authority: {}", e)))?;
+
+    let last_said = authority.map(|a| a.last_said);
+
+    Ok(Json(kels::IdentityStatus {
+        initialized: true,
+        prefix: Some(prefix),
+        last_said,
+        current_key_handle: binding.as_ref().map(|b| b.current_key_handle.clone()),
+    }))
+}
+
+/// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
+pub async fn get_key_events(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<KeyEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    let kel = state
-        .kel_repo
-        .get_kel(prefix)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+    let limit = query
+        .limit
+        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
+        .min(MAX_EVENTS_PER_KEL_RESPONSE) as u64;
 
-    Ok(Json(kel))
+    let page = kels::serve_kel_page(
+        state.kel_repo.as_ref(),
+        prefix,
+        query.since.as_deref(),
+        limit,
+    )
+    .await?;
+
+    Ok(Json(page))
+}
+
+/// Best-effort forward KEL events to the colocated service (KELS or registry).
+pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
+    let forward_url = match state.forward_url.as_ref() {
+        Some(url) => url,
+        None => return,
+    };
+
+    let kel_store = RepositoryKelStore::new(state.kel_repo.clone());
+    let source = kels::StoreKelSource::new(&kel_store);
+    let client = KelsClient::with_path_prefix(forward_url, &state.forward_path_prefix);
+    let sink = client.as_kel_sink();
+
+    match kels::forward_key_events(
+        prefix,
+        &source,
+        &sink,
+        MAX_EVENTS_PER_KEL_QUERY,
+        kels::max_verification_pages(),
+        None,
+    )
+    .await
+    {
+        Ok(_) => tracing::debug!("Forwarded KEL to {}", forward_url),
+        Err(e) => tracing::warn!("Failed to forward KEL to {}: {}", forward_url, e),
+    }
 }
 
 /// The RwLock on builder ensures only one anchor operation runs at a time.
@@ -172,16 +220,27 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
+    let prefix = builder
+        .prefix()
+        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
+        .to_string();
+
     let ixn = builder
         .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
+
+    // Release write lock before forwarding
+    drop(builder);
 
     tracing::info!(
         "Anchored {} in identity KEL at {}",
         request.said,
         ixn.event.said,
     );
+
+    // Best-effort forward to colocated service
+    forward_kel(&state, &prefix).await;
 
     Ok(Json(AnchorResponse {
         event_said: ixn.event.said,
@@ -259,10 +318,10 @@ pub async fn ecdh(
     }))
 }
 
-pub async fn rotate(
+pub async fn manage_kel(
     State(state): State<Arc<AppState>>,
-    Json(signed): Json<kels::SignedRequest<RotateRequest>>,
-) -> Result<Json<RotateResponse>, ApiError> {
+    Json(signed): Json<kels::SignedRequest<ManageKelRequest>>,
+) -> Result<Json<ManageKelResponse>, ApiError> {
     let prefix = {
         let builder = state.builder.read().await;
         builder
@@ -271,22 +330,49 @@ pub async fn rotate(
             .to_string()
     };
 
-    let kel = state
-        .kel_repo
-        .get_kel(&prefix)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch KEL: {}", e)))?;
+    if signed.payload.prefix != prefix {
+        return Err(ApiError::bad_request(format!(
+            "Prefix mismatch: request has {}, identity has {}",
+            signed.payload.prefix, prefix
+        )));
+    }
 
-    kel.verify(false)
-        .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
+    // Consuming: verify full KEL under advisory lock (paginated)
+    let mut tx = state
+        .kel_repo
+        .begin_locked_transaction(&prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
+
+    let kel_verification = kels::completed_verification(
+        &mut tx,
+        &prefix,
+        MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        iter::empty(),
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
     signed
-        .verify_signature(&kel)
+        .verify_signature(&kel_verification)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
-    let response = crate::server::perform_rotation(&state, signed.payload.mode)
+    // Release advisory lock. This creates a brief window where the lock is not held,
+    // but the gap is safe:
+    // - The signature check above only answers "was this request signed by a valid key?"
+    //   which doesn't go stale even if the KEL changes.
+    // - perform_kel_operation re-verifies new events against the current KEL state via
+    //   save_with_merge (which acquires its own advisory lock).
+    // - The builder's RwLock serializes perform_kel_operation calls within the process.
+    // - The identity service is the sole writer to its own prefix.
+    tx.commit()
         .await
-        .map_err(|e| ApiError::internal(format!("Rotation failed: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
+
+    let response = crate::server::perform_kel_operation(&state, &signed.payload.operation)
+        .await
+        .map_err(|e| ApiError::internal(format!("Operation failed: {}", e)))?;
 
     Ok(Json(response))
 }
@@ -377,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_api_error_from_kels_key_not_found() {
-        let kels_err = KelsError::KeyNotFound("test-key".to_string());
+        let kels_err = KelsError::EventNotFound("test-key".to_string());
         let api_err: ApiError = kels_err.into();
         assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(api_err.1.error.contains("test-key"));

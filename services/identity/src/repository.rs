@@ -1,9 +1,11 @@
 //! PostgreSQL Repository for Identity Service
 
+use async_trait::async_trait;
+
 use kels::KeyEvent;
 use libkels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
+use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
 /// Maps KEL state to HSM key handles. Updated only on establishment events (icp, rot).
@@ -107,6 +109,67 @@ impl AuthorityRepository {
 #[signed_events(signatures_table = "identity_key_event_signatures")]
 pub struct KeyEventRepository {
     pub pool: PgPool,
+}
+
+impl KeyEventRepository {
+    /// Begin a transaction with an advisory lock on a KEL prefix.
+    /// Lock is held until the transaction is committed or rolled back.
+    pub async fn begin_locked_transaction(
+        &self,
+        prefix: &str,
+    ) -> Result<LockedKelTransaction, StorageError> {
+        let mut tx = self.pool.begin_transaction().await?;
+        tx.acquire_advisory_lock(prefix).await?;
+        Ok(LockedKelTransaction {
+            tx,
+            prefix: prefix.to_string(),
+        })
+    }
+}
+
+/// Transaction with advisory lock on a KEL prefix.
+/// Reads from this transaction see a consistent snapshot under the lock.
+pub struct LockedKelTransaction {
+    tx: <PgPool as QueryExecutor>::Transaction,
+    prefix: String,
+}
+
+impl LockedKelTransaction {
+    /// Load a page of signed events within the locked transaction.
+    pub async fn load(
+        &mut self,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
+        kels::load_signed_history(
+            &mut self.tx,
+            KeyEventRepository::TABLE_NAME,
+            KeyEventRepository::SIGNATURES_TABLE_NAME,
+            &self.prefix,
+            limit,
+            offset,
+        )
+        .await
+        .map_err(|e| StorageError::StorageError(e.to_string()))
+    }
+
+    pub async fn commit(self) -> Result<(), StorageError> {
+        self.tx.commit().await
+    }
+}
+
+#[async_trait]
+impl kels::PageLoader for LockedKelTransaction {
+    async fn load_page(
+        &mut self,
+        _prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+        self.load(limit, offset)
+            .await
+            .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+    }
 }
 
 #[derive(Stored)]

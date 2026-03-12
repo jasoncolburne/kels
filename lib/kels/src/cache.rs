@@ -23,7 +23,12 @@ use tokio::sync::RwLock;
 
 use redis::{AsyncCommands, aio::ConnectionManager};
 
-use crate::{KelsError, SignedKeyEvent};
+use crate::{KelsError, MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEvent};
+
+/// Maximum number of events in a KEL that will be cached. KELs larger than this
+/// are served directly from DB on each request. Derives from the response page
+/// size so that cached KELs can be returned as a single complete response.
+pub const MAX_CACHED_KEL_EVENTS: usize = MAX_EVENTS_PER_KEL_RESPONSE;
 
 const LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
 const PUBSUB_CHANNEL: &str = "kel_updates";
@@ -353,9 +358,10 @@ impl ServerKelCache {
         Ok(())
     }
 
-    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement)
+    /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement).
+    /// Skips caching for KELs larger than MAX_CACHED_KEL_EVENTS.
     pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        if events.is_empty() {
+        if events.is_empty() || events.len() > MAX_CACHED_KEL_EVENTS {
             return Ok(());
         }
 
@@ -414,8 +420,6 @@ impl ServerKelCache {
     }
 
     /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
-    ///
-    /// Called when `store()` fails to prevent stale data from persisting until TTL.
     pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let redis_key = self.redis_key(prefix);

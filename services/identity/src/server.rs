@@ -8,15 +8,15 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use kels::{
-    KelStore, KelsClient, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal,
-};
+use kels::{KelStore, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal};
 use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
 
+use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
+
 use crate::{
-    handlers::{self, AppState, RotateMode, RotateResponse},
+    handlers::{self, AppState},
     hsm::{HsmClient, HsmKeyProvider},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
@@ -25,11 +25,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/identity", get(handlers::get_identity))
-        .route("/api/identity/kel", get(handlers::get_kel))
+        .route("/api/identity/status", get(handlers::get_status))
         .route("/api/identity/anchor", post(handlers::anchor))
-        .route("/api/identity/sign", post(handlers::sign))
         .route("/api/identity/ecdh", post(handlers::ecdh))
-        .route("/api/identity/rotate", post(handlers::rotate))
+        .route("/api/identity/kel", get(handlers::get_key_events))
+        .route("/api/identity/kel/manage", post(handlers::manage_kel))
+        .route("/api/identity/sign", post(handlers::sign))
         .with_state(state)
 }
 
@@ -39,7 +40,16 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
-    let kels_url = std::env::var("KELS_URL").ok().filter(|u| !u.is_empty());
+    let forward_url = std::env::var("KEL_FORWARD_URL")
+        .ok()
+        .filter(|u| !u.is_empty());
+    let forward_path_prefix =
+        std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/kels".to_string());
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
     info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)
@@ -99,6 +109,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .await
         .map_err(|e| format!("Failed to create builder: {}", e))?
     } else {
+        // No eager push to registry needed — identity starts before registry,
+        // and registry pulls all member KELs via sync_all_member_kels on startup.
         info!("No existing identity - auto-incepting");
 
         let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
@@ -172,7 +184,9 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
         kel_repo,
-        kels_url,
+        forward_url,
+        forward_path_prefix,
+        http_client,
     });
 
     let rotation_state = state.clone();
@@ -252,18 +266,29 @@ async fn check_and_rotate(
         return Err("No HSM bindings found".into());
     }
 
-    let kel = state.kel_repo.get_kel(prefix).await?;
+    // Consuming: verify full KEL under advisory lock with inline anchor checking
+    let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
+    let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
+    let kel_verification = kels::completed_verification(
+        &mut tx,
+        prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        binding_saids,
+    )
+    .await?;
 
-    // Verify KEL integrity
-    kel.verify(false)?;
+    if kel_verification.is_divergent() {
+        return Err("SECURITY: Identity KEL has diverged".into());
+    }
 
     // Audit full binding chain — alert on any tampering but don't rotate
-    if let Err(e) = audit_binding_chain(&bindings, &kel) {
+    if let Err(e) = audit_binding_chain(&bindings, &kel_verification) {
         warn!("SECURITY: binding chain integrity check failed: {}", e);
     }
 
     // Only the latest binding's consistency determines rotation
-    let should_rotate = match verify_latest_binding(&bindings, &kel) {
+    let should_rotate = match verify_latest_binding(&bindings, &kel_verification) {
         Ok(needs_rotation) => needs_rotation,
         Err(e) => {
             warn!(
@@ -274,31 +299,20 @@ async fn check_and_rotate(
         }
     };
 
+    // Release advisory lock. The brief gap before perform_kel_operation re-acquires
+    // is safe: the verification result (rotation check, binding audit) doesn't go stale
+    // because save_with_merge independently re-verifies new events against the current
+    // KEL state. The builder's RwLock serializes callers, and this service is the sole
+    // writer to its own prefix.
+    tx.commit().await?;
+
     if should_rotate {
         info!("Triggering scheduled rotation");
-        perform_rotation(state, RotateMode::Scheduled).await?;
 
-        // Submit updated KEL to local KELS service if configured
-        if let Some(kels_url) = state.kels_url.as_ref() {
-            let builder = state.builder.read().await;
-            let events = builder.events().to_vec();
-            drop(builder);
-
-            if !events.is_empty() {
-                let client = KelsClient::new(kels_url);
-                match client.submit_events(&events).await {
-                    Ok(resp) if resp.applied => {
-                        info!("Submitted rotated KEL to KELS service");
-                    }
-                    Ok(_) => {
-                        warn!("KELS service rejected updated KEL");
-                    }
-                    Err(e) => {
-                        warn!("Failed to submit KEL to KELS: {}", e);
-                    }
-                }
-            }
-        }
+        let op = ManageKelOperation::Rotate {
+            mode: RotateMode::Scheduled,
+        };
+        perform_kel_operation(state, &op).await?;
 
         return Ok(true);
     }
@@ -306,15 +320,15 @@ async fn check_and_rotate(
     Ok(false)
 }
 
-/// Perform a key rotation and update the in-memory builder.
+/// Perform a KEL management operation and update the in-memory builder.
 ///
-/// This is the single source of truth for all rotations — called by both the
-/// HTTP handler and the auto-rotation loop. The builder's key provider is
+/// This is the single source of truth for all KEL operations — called by both
+/// the HTTP handler and the auto-rotation loop. The builder's key provider is
 /// updated in-place, so no rebuild is needed.
-pub(crate) async fn perform_rotation(
+pub(crate) async fn perform_kel_operation(
     state: &Arc<AppState>,
-    requested_mode: RotateMode,
-) -> Result<RotateResponse, Box<dyn std::error::Error + Send + Sync>> {
+    operation: &ManageKelOperation,
+) -> Result<ManageKelResponse, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = state.builder.write().await;
 
     // Reload to pick up any external changes
@@ -325,75 +339,139 @@ pub(crate) async fn perform_rotation(
 
     let prefix = builder.prefix().ok_or("Builder has no prefix")?.to_string();
 
-    // Determine actual mode
-    let rotation_count = builder
-        .events()
-        .iter()
-        .filter(|e| e.event.is_rotation() || e.event.is_recovery_rotation())
-        .count();
+    if builder.last_said().is_none() {
+        return Err("KEL is empty".into());
+    }
 
-    let actual_mode = match requested_mode {
-        RotateMode::Scheduled => {
-            if rotation_count % 3 == 2 {
-                RotateMode::Recovery
+    let (event, event_kind, rotation_number, updates_signing_keys) = match operation {
+        ManageKelOperation::Rotate { mode } => {
+            let rotation_count = builder.rotation_count();
+
+            let actual_mode = match mode {
+                RotateMode::Scheduled => {
+                    if rotation_count % 3 == 2 {
+                        RotateMode::Recovery
+                    } else {
+                        RotateMode::Standard
+                    }
+                }
+                other => other.clone(),
+            };
+
+            let event = match actual_mode {
+                RotateMode::Standard => builder.rotate().await?,
+                RotateMode::Recovery => builder.rotate_recovery().await?,
+                RotateMode::Scheduled => unreachable!(),
+            };
+
+            let kind = if actual_mode == RotateMode::Recovery {
+                "ror"
             } else {
-                RotateMode::Standard
-            }
+                "rot"
+            };
+
+            (event, kind, Some(rotation_count + 1), true)
         }
-        other => other,
+        ManageKelOperation::Recover => {
+            // Determine if adversary revealed rotation key by checking the server's
+            // verification state. The identity service uses its forward_url to reach
+            // the colocated KELS service.
+            let add_rot = if let Some(ref forward_url) = state.forward_url
+                && let Some(prefix) = builder.prefix()
+            {
+                let source = kels::HttpKelSource::new(
+                    forward_url,
+                    &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
+                );
+                match kels::verify_key_events(
+                    prefix,
+                    &source,
+                    kels::KelVerifier::new(prefix),
+                    kels::MAX_EVENTS_PER_KEL_QUERY,
+                    kels::max_verification_pages(),
+                )
+                .await
+                {
+                    Ok(server_verification) => {
+                        let owner_last_est_serial = builder
+                            .last_establishment_event()
+                            .map(|e| e.serial)
+                            .unwrap_or(0);
+                        kels::should_rotate_with_recovery(
+                            &server_verification,
+                            builder.rotation_count(),
+                            owner_last_est_serial,
+                        )
+                    }
+                    Err(e) => {
+                        warn!("Failed to verify server KEL for recovery decision: {}", e);
+                        true // Fail secure
+                    }
+                }
+            } else {
+                true // Fail secure: no forward URL
+            };
+            let event = builder.recover(add_rot).await?;
+            (event, "rec", None, true)
+        }
+        ManageKelOperation::Contest => {
+            let event = builder.contest().await?;
+            (event, "cnt", None, false)
+        }
+        ManageKelOperation::Decommission => {
+            if builder.is_decommissioned() {
+                return Err("Identity is already decommissioned".into());
+            }
+            let event = builder.decommission().await?;
+            (event, "dec", None, false)
+        }
     };
 
-    // Perform the rotation
-    let event = match actual_mode {
-        RotateMode::Standard => builder.rotate().await?,
-        RotateMode::Recovery => builder.rotate_recovery().await?,
-        RotateMode::Scheduled => unreachable!(),
-    };
-
-    // Get updated handles
+    // Get current handles
     let current_handle = builder
         .key_provider()
         .current_handle()
         .await
-        .ok_or("No current handle after rotation")?;
+        .ok_or("No current handle")?;
     let next_handle = builder
         .key_provider()
         .next_handle()
         .await
-        .ok_or("No next handle after rotation")?;
+        .ok_or("No next handle")?;
 
-    // Get latest binding and chain it
-    let mut binding = state
-        .repo
-        .hsm_bindings
-        .get_latest_by_kel_prefix(&prefix)
-        .await?
-        .ok_or("HSM binding not found")?;
+    // Update HSM binding if signing keys changed
+    if updates_signing_keys {
+        let mut binding = state
+            .repo
+            .hsm_bindings
+            .get_latest_by_kel_prefix(&prefix)
+            .await?
+            .ok_or("HSM binding not found")?;
 
-    binding.current_key_handle = current_handle.clone();
-    binding.next_key_handle = next_handle.clone();
-    binding.signing_generation = builder.key_provider().signing_generation().await;
+        binding.current_key_handle = current_handle.clone();
+        binding.next_key_handle = next_handle.clone();
+        binding.signing_generation = builder.key_provider().signing_generation().await;
 
-    let mut recovery_handle_response = None;
-    if actual_mode == RotateMode::Recovery {
-        let recovery_handle = builder
-            .key_provider()
-            .recovery_handle()
+        // Recovery key changes on ROR and REC
+        if event_kind == "ror" || event_kind == "rec" {
+            let recovery_handle = builder
+                .key_provider()
+                .recovery_handle()
+                .await
+                .ok_or("No recovery handle")?;
+            binding.recovery_key_handle = recovery_handle;
+            binding.recovery_generation = builder.key_provider().recovery_generation().await;
+        }
+
+        binding.increment()?;
+        builder.interact(&binding.said).await?;
+        state
+            .repo
+            .hsm_bindings
+            .insert(binding)
             .await
-            .ok_or("No recovery handle after rotation")?;
-        binding.recovery_key_handle = recovery_handle.clone();
-        binding.recovery_generation = builder.key_provider().recovery_generation().await;
-        recovery_handle_response = Some(recovery_handle);
+            .map_err(|e| format!("Failed to insert binding: {}", e))?;
     }
-
-    binding.increment()?;
-    builder.interact(&binding.said).await?;
-    state
-        .repo
-        .hsm_bindings
-        .insert(binding)
-        .await
-        .map_err(|e| format!("Failed to insert binding: {}", e))?;
 
     // Update authority
     let mut authority = state
@@ -410,25 +488,23 @@ pub(crate) async fn perform_rotation(
         .await
         .map_err(|e| format!("Failed to update authority: {}", e))?;
 
-    let mode_str = match actual_mode {
-        RotateMode::Standard => "standard",
-        RotateMode::Recovery => "recovery",
-        RotateMode::Scheduled => unreachable!(),
-    };
-
     info!(
-        "Rotation completed: mode={}, said={}",
-        mode_str, event.event.said
+        "KEL operation completed: kind={}, said={}",
+        event_kind, event.event.said
     );
 
-    Ok(RotateResponse {
+    // Release write lock before forwarding
+    drop(builder);
+
+    // Best-effort forward KEL to colocated service if configured
+    handlers::forward_kel(state, &prefix).await;
+
+    Ok(ManageKelResponse {
         prefix,
         said: event.event.said,
-        mode: mode_str.to_string(),
-        rotation_number: rotation_count + 1,
+        event_kind: event_kind.to_string(),
+        rotation_number,
         current_key_handle: current_handle,
-        next_key_handle: next_handle,
-        recovery_key_handle: recovery_handle_response,
     })
 }
 
@@ -437,9 +513,9 @@ pub(crate) async fn perform_rotation(
 /// be fixed by rotating, so triggering rotation here would loop forever.
 fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
-    kel: &kels::Kel,
+    kel_verification: &kels::KelVerification,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if kel.find_divergence().is_some() {
+    if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -472,8 +548,7 @@ fn audit_binding_chain(
         }
     }
 
-    let binding_saids: Vec<&str> = bindings.iter().map(|b| b.said.as_str()).collect();
-    if !kel.contains_anchors(&binding_saids) {
+    if !kel_verification.anchors_all_saids() {
         return Err("Not all binding SAIDs are anchored in KEL".into());
     }
 
@@ -484,9 +559,9 @@ fn audit_binding_chain(
 /// actively wrong with the current key state and defensive rotation is warranted.
 fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
-    kel: &kels::Kel,
+    kel_verification: &kels::KelVerification,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if kel.find_divergence().is_some() {
+    if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
         return Err("SECURITY: Identity KEL has diverged".into());
     }
@@ -503,7 +578,7 @@ fn verify_latest_binding(
         }
     }
 
-    if !kel.contains_anchor(&latest.said) {
+    if !kel_verification.is_said_anchored(&latest.said) {
         return Err("Latest binding SAID not anchored in KEL".into());
     }
 

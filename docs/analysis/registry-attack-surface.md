@@ -90,7 +90,7 @@ If an attacker gains access to the HSM service:
 ### ~~Localhost Bypass~~
 
 ~~**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.~~
-- **Mitigated:** Admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's own identity KEL. Requires HSM-backed signing via the identity service — network position is no longer sufficient for access.
+- **Mitigated:** Admin write endpoints (proposals, votes) use KEL anchoring — you need the actual signing key to create a valid record. The proposal query endpoint is now at `GET /api/federation/proposals/:id` (unauthenticated, alongside the proposals listing).
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
@@ -104,10 +104,11 @@ These endpoints have no authentication and return potentially sensitive informat
 | Endpoint | Risk | Justification |
 |----------|------|---------------|
 | `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
-| `GET /api/registry-kel` | Exposes full KEL history | KELs are public by design — verifiability requires availability |
-| `GET /api/registry-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
+| `GET /api/member-kels/:prefix` | Exposes a member's full KEL history | KELs are public by design — verifiability requires availability |
+| `POST /api/member-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
 | `GET /api/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
 | `GET /api/federation/proposals` | Exposes completed proposals and votes | Required for independent verification by gossip nodes |
+| `GET /api/federation/proposals/:id` | Exposes a specific proposal with votes | Same data available via proposals listing; needed by admin CLI |
 | `POST /api/kels/events` | Accepts event submissions from anyone | Events are cryptographically validated (signatures checked against KEL) |
 | `GET /api/kels/kel/:prefix` | Exposes any stored KEL | KELs are public; this is the data-plane read path |
 
@@ -127,7 +128,7 @@ These are intentionally public. The security model relies on cryptographic verif
 
 ## Summary of Residual Risks
 
-1. ~~**Admin API lacks authentication beyond localhost check**~~ — mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL
+1. ~~**Admin API lacks authentication beyond localhost check**~~ — mitigated: admin write endpoints use KEL anchoring; read-only proposal query is unauthenticated (data is public)
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist refresh flood**~~ — mitigated: `retry_once!` limits refresh to one attempt per unknown peer; subsequent connections use the cached allowlist
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
@@ -147,9 +148,9 @@ No application-level rate limiting exists on any endpoint. The allowlist pending
 
 ### ~~Admin API authentication (addresses residual risk 1)~~
 
-~~The admin API relies solely on `is_localhost()` for access control.~~ Mitigated: admin query endpoints now use `SignedRequest<AdminRequest>` verified against the node's identity KEL via HSM-backed signing. Proposal and vote endpoints use KEL anchoring (SAID anchored in proposer/voter KEL) as the security mechanism.
+~~The admin API relies solely on `is_localhost()` for access control.~~ Mitigated: proposal and vote endpoints use KEL anchoring (SAID anchored in proposer/voter KEL) as the security mechanism. The proposal query endpoint is unauthenticated since proposal data is already public.
 
-- [x] Replace `is_localhost()` with `SignedRequest<AdminRequest>` verification against the node's own identity KEL
+- [x] Replace `is_localhost()` with KEL anchoring for write endpoints; proposal query is read-only and unauthenticated
 
 ### ~~TLS between services (addresses residual risk 5)~~
 

@@ -3,11 +3,8 @@
 //! Handles:
 //! - Subscribing to Redis for local KEL updates
 //! - Broadcasting announcements to gossip network
-//! - Processing incoming announcements and fetching missing KELs via HTTP
+//! - Processing incoming announcements via `forward_key_events` (streaming, divergence-aware)
 //! - Delta-based sync (fetch only events after local state) with full-fetch fallback
-//! - Recovery-aware audit fetch: when delta fails due to recovery, fetches archived
-//!   adversary events and submits them in stages so merge() resolves divergence correctly
-//! - Event partitioning: separates adversary and recovery branches for proper merge ordering
 
 use std::{
     collections::HashMap,
@@ -17,8 +14,8 @@ use std::{
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use futures::StreamExt;
-use kels::{Kel, KelsClient, KelsError, MAX_EVENTS_PER_SUBMISSION, RegistrySigner, SignedKeyEvent};
+use futures::{StreamExt, future::join_all};
+use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, PeerSigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -177,101 +174,6 @@ impl SyncHandler {
         }
     }
 
-    /// Partition events into two branches based on content analysis.
-    /// Returns (adversary_branch, recovery_branch) where the recovery branch contains
-    /// events that reveal recovery keys (rec/cnt/ror/dec). The adversary branch should
-    /// be submitted first to establish divergence context, then the recovery branch.
-    fn partition_events(events: Vec<SignedKeyEvent>) -> (Vec<SignedKeyEvent>, Vec<SignedKeyEvent>) {
-        if events.len() <= 1 {
-            return (events, vec![]);
-        }
-
-        let saids: std::collections::HashSet<String> =
-            events.iter().map(|e| e.event.said.clone()).collect();
-
-        // An event is a "root" if its previous is not in this batch
-        let roots: Vec<_> = events
-            .iter()
-            .filter(|e| {
-                e.event
-                    .previous
-                    .as_ref()
-                    .map(|p| !saids.contains(p))
-                    .unwrap_or(true)
-            })
-            .collect();
-
-        // If 0 or 1 roots, everything is one chain — no partitioning needed
-        if roots.len() <= 1 {
-            return (events, vec![]);
-        }
-
-        // Multiple roots: build chains from each root
-        let children: HashMap<String, Vec<&SignedKeyEvent>> = {
-            let mut map: HashMap<String, Vec<&SignedKeyEvent>> = HashMap::new();
-            for e in &events {
-                if let Some(prev) = &e.event.previous {
-                    map.entry(prev.clone()).or_default().push(e);
-                }
-            }
-            map
-        };
-
-        // Walk each chain and check if it contains recovery-revealing events.
-        // Prefer contest roots as "recovery" (submitted second) since contest
-        // requires divergence to already be established by the first batch.
-        let mut recovery_root_said: Option<String> = None;
-        let mut contest_root_said: Option<String> = None;
-        for root in &roots {
-            let mut has_recovery = root.event.reveals_recovery_key();
-            let mut stack: Vec<&str> = vec![root.event.said.as_str()];
-            while let Some(current) = stack.pop() {
-                if let Some(kids) = children.get(current) {
-                    for next in kids {
-                        if next.event.reveals_recovery_key() {
-                            has_recovery = true;
-                        }
-                        stack.push(&next.event.said);
-                    }
-                }
-            }
-            if has_recovery {
-                if root.event.is_contest() && contest_root_said.is_none() {
-                    contest_root_said = Some(root.event.said.clone());
-                } else if recovery_root_said.is_none() {
-                    recovery_root_said = Some(root.event.said.clone());
-                }
-            }
-        }
-        let recovery_root_said = contest_root_said.or(recovery_root_said);
-
-        // If no recovery branch found, fall back to returning everything as one batch
-        let Some(recovery_root) = recovery_root_said else {
-            return (events, vec![]);
-        };
-
-        // Collect the recovery chain's SAIDs (DFS to follow all sub-branches)
-        let mut recovery_saids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        recovery_saids.insert(recovery_root.clone());
-        let mut stack: Vec<&str> = vec![recovery_root.as_str()];
-        while let Some(current) = stack.pop() {
-            if let Some(kids) = children.get(current) {
-                for next in kids {
-                    recovery_saids.insert(next.event.said.clone());
-                    stack.push(&next.event.said);
-                }
-            }
-        }
-
-        // Adversary events first, recovery events second
-        let (recovery, adversary): (Vec<_>, Vec<_>) = events
-            .into_iter()
-            .partition(|e| recovery_saids.contains(&e.event.said));
-
-        (adversary, recovery)
-    }
-
     /// Get all peer KELS URLs from the allowlist
     async fn get_peer_kels_urls(&self) -> Vec<(String, String)> {
         let guard = self.allowlist.read().await;
@@ -303,8 +205,9 @@ impl SyncHandler {
 
     /// Handle an announcement from a peer.
     ///
-    /// Tries the origin peer first (the node that stored the event), then
-    /// falls back to other peers in the allowlist.
+    /// Uses `forward_key_events` to stream events page-at-a-time from a remote
+    /// peer to local KELS. Delta fetch when possible, full fetch on fallback.
+    /// Tries the origin peer first, then falls back to other peers.
     async fn handle_announcement(
         &mut self,
         announcement: KelAnnouncement,
@@ -351,7 +254,8 @@ impl SyncHandler {
             }
         }
 
-        let mut fetched_events = None;
+        let max_pages = kels::max_verification_pages();
+        let local_sink = self.kels_client.as_kel_sink();
 
         for (peer_prefix, kels_url) in &peers {
             // Per-peer rate limiting
@@ -376,207 +280,68 @@ impl SyncHandler {
                 }
             }
 
-            let remote_client = KelsClient::new(kels_url);
+            let remote_source = KelsClient::new(kels_url).as_kel_source();
 
-            // Fetch events via HTTP — delta when possible, full otherwise
-            let events = if let Some(ref effective_said) = local_effective_said {
-                // Delta fetch: only events after our local state
-                match remote_client.fetch_kel_since(prefix, effective_said).await {
-                    Ok(events) => events,
-                    Err(KelsError::KeyNotFound(_)) => {
-                        // Since SAID was removed by recovery/contest on remote.
-                        // Fetch with audit to get archived adversary events.
-                        info!(
-                            "Since SAID not found on remote (likely recovery). Fetching with audit for {}",
-                            prefix
-                        );
-                        match remote_client.fetch_kel_with_audit(prefix).await {
-                            Ok(response) => {
-                                let clean_chain = response.events;
-                                let archived_events = response
-                                    .audit_records
-                                    .as_ref()
-                                    .and_then(|records| records.last())
-                                    .and_then(|record| match record.as_signed_key_events() {
-                                        Ok(events) if !events.is_empty() => {
-                                            info!(
-                                                "Got {} archived adversary events for {}",
-                                                events.len(),
-                                                prefix
-                                            );
-                                            Some(events)
-                                        }
-                                        Ok(_) => None,
-                                        Err(e) => {
-                                            warn!("Failed to deserialize audit events: {}", e);
-                                            None
-                                        }
-                                    })
-                                    .unwrap_or_default();
-
-                                if archived_events.is_empty() {
-                                    // No audit data — fall through to normal submission
-                                    clean_chain
-                                } else {
-                                    // Recovery with archived events: multi-step submission
-                                    let tip_said = clean_chain.last().map(|e| e.event.said.clone());
-
-                                    // Mark recently stored BEFORE submission
-                                    if let Some(ref said) = tip_said {
-                                        let key = format!("{}:{}", prefix, said);
-                                        self.recently_stored
-                                            .write()
-                                            .await
-                                            .insert(key, Instant::now());
-                                    }
-
-                                    // Step 1: Submit archived adversary events
-                                    let _ = self.submit_events_to_kels(&archived_events).await;
-
-                                    // Step 2+3: Split clean chain at first recovery-revealing event.
-                                    let applied = if let Some(idx) = clean_chain
-                                        .iter()
-                                        .position(|e| e.event.reveals_recovery_key())
-                                        && idx > 0
-                                    {
-                                        let _ =
-                                            self.submit_events_to_kels(&clean_chain[..idx]).await;
-                                        let recovery_applied =
-                                            self.submit_events_to_kels(&clean_chain[idx..]).await?;
-                                        if !recovery_applied {
-                                            self.submit_events_to_kels(&clean_chain).await?
-                                        } else {
-                                            recovery_applied
-                                        }
-                                    } else {
-                                        self.submit_events_to_kels(&clean_chain).await?
-                                    };
-
-                                    if applied {
-                                        self.refresh_local_effective_said(prefix).await;
-                                    }
-                                    return Ok(());
-                                }
-                            }
-                            Err(KelsError::KeyNotFound(_)) => {
-                                warn!("KEL not found on remote for {}", prefix);
-                                continue;
-                            }
-                            Err(e) => {
-                                warn!("Failed to fetch KEL with audit from {}: {}", kels_url, e);
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Delta fetch failed from {} for {}: {}. Falling back to full fetch.",
-                            kels_url, prefix, e
-                        );
-                        match remote_client.get_kel(prefix).await {
-                            Ok(kel) => kel.events().to_vec(),
-                            Err(KelsError::KeyNotFound(_)) => {
-                                warn!("KEL not found on remote for {}", prefix);
-                                continue;
-                            }
-                            Err(e) => {
-                                warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                                continue;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // No local state — fetch full KEL
-                match remote_client.get_kel(prefix).await {
-                    Ok(kel) => kel.events().to_vec(),
-                    Err(KelsError::KeyNotFound(_)) => {
-                        warn!("KEL not found on remote for {}", prefix);
-                        continue;
-                    }
-                    Err(e) => {
-                        warn!("Failed to fetch KEL from {}: {}", kels_url, e);
-                        continue;
-                    }
-                }
-            };
-
-            if events.is_empty() {
-                continue;
-            }
-
-            info!(
-                "Fetched {} events for prefix {} from {}",
-                events.len(),
-                prefix,
-                kels_url
-            );
-
-            fetched_events = Some((events, kels_url.clone()));
-            break;
-        }
-
-        let Some((events, kels_url)) = fetched_events else {
-            // No peer had the events — record as stale for anti-entropy repair
-            self.record_stale(prefix, &announcement.origin).await;
-            return Ok(());
-        };
-
-        // Mark as recently stored BEFORE submitting to KELS to prevent Redis feedback loop.
-        let said = events.last().map(|e| e.event.said.clone());
-        if let Some(ref said) = said {
-            let key = format!("{}:{}", prefix, said);
+            // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+            let key = format!("{}:{}", prefix, remote_effective_said);
             self.recently_stored
                 .write()
                 .await
                 .insert(key, Instant::now());
-        }
 
-        // For large event sets (e.g. full KEL fetch), use divergence-aware chunked seeding
-        let has_recovery = events.iter().any(|e| e.event.is_recover());
-        let applied = if events.len() > MAX_EVENTS_PER_SUBMISSION {
-            self.submit_events_seeding(events, MAX_EVENTS_PER_SUBMISSION)
-                .await?
-        } else {
-            // Partition events by content: adversary branch first, recovery branch second.
-            let (adversary_events, recovery_events) = Self::partition_events(events);
+            // Forward events: delta with fallback to full fetch.
+            // transfer_key_events handles divergence-aware ordering (streaming).
+            let result = forward_with_fallback(
+                prefix,
+                &remote_source,
+                &local_sink,
+                local_effective_said.as_deref(),
+                max_pages,
+            )
+            .await;
 
-            let initially_applied = if recovery_events.is_empty() {
-                self.submit_events_to_kels(&adversary_events).await?
-            } else if adversary_events.is_empty() {
-                self.submit_events_to_kels(&recovery_events).await?
-            } else {
-                let _ = self.submit_events_to_kels(&adversary_events).await;
-                self.submit_events_to_kels(&recovery_events).await?
-            };
-
-            // If recovery events were rejected, retry with the full remote KEL
-            if !initially_applied && has_recovery {
-                info!(
-                    "Recovery not applied for {} — retrying with full KEL from {}",
-                    prefix, kels_url
-                );
-                let remote_client = KelsClient::new(&kels_url);
-                match remote_client.get_kel(prefix).await {
-                    Ok(full_kel) => self
-                        .submit_events_to_kels(full_kel.events())
-                        .await
-                        .unwrap_or(false),
-                    Err(e) => {
-                        warn!("Failed to fetch full KEL for retry: {}", e);
-                        self.record_stale(prefix, &announcement.origin).await;
-                        false
+            match result {
+                Ok(()) => {
+                    self.refresh_local_effective_said(prefix).await;
+                    let new_said = self.local_saids.get(prefix).cloned();
+                    if new_said != local_effective_said {
+                        info!("Forwarded events for prefix {} from {}", prefix, kels_url);
+                        return Ok(());
                     }
+                    // Forward succeeded but no new events — this peer has
+                    // the same state as us. Record as stale so AE retries
+                    // systematically from all peers later.
+                    debug!(
+                        "Forward from {} succeeded but no state change for {}",
+                        kels_url, prefix
+                    );
+                    self.record_stale(prefix, &announcement.origin).await;
+                    return Ok(());
                 }
-            } else {
-                initially_applied
+                Err(KelsError::EventNotFound(_)) => {
+                    warn!("KEL not found on remote {} for {}", kels_url, prefix);
+                    continue;
+                }
+                Err(KelsError::ContestedKel(_)) => {
+                    debug!("KEL {} is already contested locally, skipping sync", prefix);
+                    return Ok(());
+                }
+                Err(KelsError::ContestRequired) => {
+                    debug!(
+                        "KEL {} requires contest, cannot accept forwarded events from {}",
+                        prefix, kels_url
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
+                    continue;
+                }
             }
-        };
-
-        if applied {
-            self.refresh_local_effective_said(prefix).await;
         }
 
+        // No peer had the events — record as stale for anti-entropy repair
+        self.record_stale(prefix, &announcement.origin).await;
         Ok(())
     }
 
@@ -593,226 +358,34 @@ impl SyncHandler {
             return Ok(Some(said.clone()));
         }
 
-        // Fetch from KELS and compute effective tail SAID
-        let kel = self.fetch_local_kel(prefix).await?;
-        if let Some(effective) = kel.effective_tail_said() {
-            self.local_saids
-                .insert(prefix.to_string(), effective.clone());
-            Ok(Some(effective))
-        } else {
-            Ok(None)
+        // Resolving: fetch from KELS and compute effective tail SAID
+        let effective = self
+            .fetch_local_effective_said(prefix)
+            .await?
+            .map(|(said, _)| said);
+        if let Some(ref said) = effective {
+            self.local_saids.insert(prefix.to_string(), said.clone());
         }
+        Ok(effective)
     }
 
     /// Re-fetch effective tail SAID from local KELS and update cache.
     async fn refresh_local_effective_said(&mut self, prefix: &str) {
-        if let Ok(kel) = self.fetch_local_kel(prefix).await
-            && let Some(effective) = kel.effective_tail_said()
-        {
+        if let Ok(Some((effective, _))) = self.fetch_local_effective_said(prefix).await {
             self.local_saids.insert(prefix.to_string(), effective);
         }
     }
 
-    /// Fetch a KEL from local KELS using the client library
-    async fn fetch_local_kel(&self, prefix: &str) -> Result<Kel, SyncError> {
-        match self.kels_client.get_kel(prefix).await {
-            Ok(kel) => Ok(kel),
-            Err(KelsError::KeyNotFound(_)) => Ok(Kel::default()),
-            Err(e) => Err(SyncError::Kels(e)),
-        }
-    }
-
-    /// Partition events for chunked seeding of a potentially divergent KEL.
-    ///
-    /// Detects fork points (multiple events sharing the same `previous`) and
-    /// separates events into:
-    /// - primary_chain: one complete branch, submitted first to keep the KEL linear
-    /// - deferred_events: the other branch(es) at each fork point, submitted last
-    /// - recovery_events: rec/cnt events and their continuations, submitted after deferred
-    ///
-    /// We pick the longer branch as primary (more data stays accessible during seeding).
-    /// No identity attribution — either branch could belong to either party.
-    fn partition_for_seeding(
-        events: Vec<SignedKeyEvent>,
-    ) -> (
-        Vec<SignedKeyEvent>,
-        Vec<SignedKeyEvent>,
-        Vec<SignedKeyEvent>,
-    ) {
-        if events.is_empty() {
-            return (vec![], vec![], vec![]);
-        }
-
-        // Build previous → children map
-        let mut children: HashMap<String, Vec<String>> = HashMap::new();
-        let said_to_event: HashMap<String, &SignedKeyEvent> =
-            events.iter().map(|e| (e.event.said.clone(), e)).collect();
-
-        for e in &events {
-            if let Some(prev) = &e.event.previous {
-                children
-                    .entry(prev.clone())
-                    .or_default()
-                    .push(e.event.said.clone());
-            }
-        }
-
-        // Find fork points: previous values with >1 child
-        let fork_points: Vec<String> = children
-            .iter()
-            .filter(|(_, kids)| kids.len() > 1)
-            .map(|(prev, _)| prev.clone())
-            .collect();
-
-        // No forks → everything is primary
-        if fork_points.is_empty() {
-            return (events, vec![], vec![]);
-        }
-
-        // For each fork point, walk branches to determine length and detect recovery
-        let mut deferred_saids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut recovery_saids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        for fork_prev in &fork_points {
-            let kids = match children.get(fork_prev) {
-                Some(k) => k,
-                None => continue,
-            };
-
-            // Walk each branch from this fork point
-            let mut branches: Vec<(Vec<String>, bool)> = Vec::new(); // (saids, has_recovery)
-            for kid_said in kids {
-                let mut chain = vec![kid_said.clone()];
-                let mut has_recovery = said_to_event
-                    .get(kid_said)
-                    .map(|e| e.event.reveals_recovery_key())
-                    .unwrap_or(false);
-
-                let mut dfs_stack: Vec<String> = vec![kid_said.clone()];
-                while let Some(current) = dfs_stack.pop() {
-                    if let Some(next_kids) = children.get(&current) {
-                        for next in next_kids {
-                            chain.push(next.clone());
-                            if let Some(e) = said_to_event.get(next)
-                                && e.event.reveals_recovery_key()
-                            {
-                                has_recovery = true;
-                            }
-                            dfs_stack.push(next.clone());
-                        }
-                    }
-                }
-                branches.push((chain, has_recovery));
-            }
-
-            // Sort by length descending — longest branch becomes primary
-            branches.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-
-            // First (longest) branch is primary; rest are deferred or recovery
-            for (i, (chain, has_recovery)) in branches.into_iter().enumerate() {
-                if i == 0 {
-                    // Primary branch — check if it has recovery events
-                    if has_recovery {
-                        // Extract recovery events from the primary chain
-                        for (idx, said) in chain.iter().enumerate() {
-                            if let Some(e) = said_to_event.get(said)
-                                && e.event.reveals_recovery_key()
-                            {
-                                // This and all subsequent events go to recovery
-                                for recovery_said in &chain[idx..] {
-                                    recovery_saids.insert(recovery_said.clone());
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                // Non-primary branches
-                if has_recovery {
-                    for said in chain {
-                        recovery_saids.insert(said);
-                    }
-                } else {
-                    for said in chain {
-                        deferred_saids.insert(said);
-                    }
-                }
-            }
-        }
-
-        // Partition events into three buckets maintaining original order
-        let mut primary = Vec::new();
-        let mut deferred = Vec::new();
-        let mut recovery = Vec::new();
-
-        for event in events {
-            if recovery_saids.contains(&event.event.said) {
-                recovery.push(event);
-            } else if deferred_saids.contains(&event.event.said) {
-                deferred.push(event);
-            } else {
-                primary.push(event);
-            }
-        }
-
-        (primary, deferred, recovery)
-    }
-
-    /// Submit events for seeding using divergence-aware chunking.
-    ///
-    /// Partitions events to ensure the primary chain is submitted linearly first,
-    /// then deferred fork events, then recovery events.
-    async fn submit_events_seeding(
+    /// Resolving: fetch effective tail SAID and divergence flag from local KELS service.
+    /// A wrong answer just triggers an unnecessary sync (which itself verifies).
+    async fn fetch_local_effective_said(
         &self,
-        events: Vec<SignedKeyEvent>,
-        max_events: usize,
-    ) -> Result<bool, SyncError> {
-        let (primary_chain, deferred, recovery) = Self::partition_for_seeding(events);
-
-        // 1. Submit primary chain in chunks (KEL stays linear)
-        for chunk in primary_chain.chunks(max_events) {
-            self.submit_events_to_kels(chunk).await?;
-        }
-
-        // 2. Submit deferred fork events (causes divergence/freeze)
-        if !deferred.is_empty() {
-            let _ = self.submit_events_to_kels(&deferred).await;
-        }
-
-        // 3. Submit recovery events if present (resolves divergence)
-        if !recovery.is_empty() {
-            return self.submit_events_to_kels(&recovery).await;
-        }
-
-        Ok(true)
-    }
-
-    /// Submit events to local KELS using the client library.
-    /// Returns true if events were applied (new events stored).
-    async fn submit_events_to_kels(&self, events: &[SignedKeyEvent]) -> Result<bool, SyncError> {
-        match self.kels_client.submit_events(events).await {
-            Ok(result) => {
-                if result.applied {
-                    info!("Events applied by local KELS");
-                    Ok(true)
-                } else {
-                    warn!(
-                        "Events not applied by local KELS: diverged_at={:?}",
-                        result.diverged_at
-                    );
-                    Ok(false)
-                }
-            }
-            Err(KelsError::ContestedKel(msg)) => {
-                warn!("KEL is contested: {}", msg);
-                Ok(false)
-            }
-            Err(e) => Err(SyncError::Kels(e)),
-        }
+        prefix: &str,
+    ) -> Result<Option<(String, bool)>, SyncError> {
+        self.kels_client
+            .fetch_effective_said(prefix)
+            .await
+            .map_err(SyncError::Kels)
     }
 }
 
@@ -847,6 +420,51 @@ pub async fn run_sync_handler(
 
     warn!("Event receiver closed");
     Ok(())
+}
+
+/// Forward events from a remote source to a local sink with delta-with-fallback.
+///
+/// Tries delta fetch first (using `since`), falls back to full fetch on
+/// `EventNotFound` (remote may have recovered, removing the since SAID).
+async fn forward_with_fallback(
+    prefix: &str,
+    source: &kels::HttpKelSource,
+    sink: &kels::HttpKelSink,
+    since: Option<&str>,
+    max_pages: usize,
+) -> Result<(), KelsError> {
+    if let Some(since_said) = since {
+        match kels::forward_key_events(
+            prefix,
+            source,
+            sink,
+            MAX_EVENTS_PER_KEL_RESPONSE,
+            max_pages,
+            Some(since_said),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(KelsError::EventNotFound(_)) => {
+                info!(
+                    "Since SAID not found on remote for {} (likely recovery). Falling back to full fetch.",
+                    prefix
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Full fetch (no since cursor)
+    kels::forward_key_events(
+        prefix,
+        source,
+        sink,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_pages,
+        None,
+    )
+    .await
 }
 
 /// Record a stale prefix for anti-entropy repair.
@@ -994,30 +612,10 @@ async fn clear_seen_saids(redis: &redis::aio::ConnectionManager, kel_prefix: &st
     debug!("Cleared seen SAIDs for prefix {}", kel_prefix);
 }
 
-/// Fetch events from `source`, using delta fetch with full-fetch fallback.
-/// Returns `None` on failure (caller should handle).
-async fn fetch_events_delta(
-    source: &KelsClient,
-    prefix: &str,
-    since: Option<&str>,
-) -> Option<Vec<SignedKeyEvent>> {
-    if let Some(since_effective_said) = since
-        && let Ok(events) = source.fetch_kel_since(prefix, since_effective_said).await
-    {
-        return Some(events);
-    }
-    match source.get_kel(prefix).await {
-        Ok(kel) => Some(kel.events().to_vec()),
-        Err(_) => None,
-    }
-}
-
 /// Result of submitting fetched events to a KELS node.
-enum RepairResult {
-    /// Events applied successfully.
-    Repaired(usize),
-    /// Submission revealed divergence — prefix should be tracked as divergent.
-    Diverged,
+pub(crate) enum RepairResult {
+    /// Events applied successfully (includes divergence — events were still stored).
+    Repaired,
     /// KEL is contested — no further action possible.
     Contested,
     /// Submission or fetch failed — prefix should be re-queued as stale.
@@ -1026,24 +624,27 @@ enum RepairResult {
     NoOp,
 }
 
-/// Fetch events from `source` (delta with fallback) and submit to `dest`.
-async fn sync_prefix(
+/// Forward events from `source` to `dest` using delta-with-fallback streaming.
+pub(crate) async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
     prefix: &str,
     since: Option<&str>,
 ) -> RepairResult {
-    let events = match fetch_events_delta(source, prefix, since).await {
-        Some(events) if !events.is_empty() => events,
-        Some(_) => return RepairResult::NoOp,
-        None => return RepairResult::Failed,
-    };
+    let remote_source = source.as_kel_source();
+    let local_sink = dest.as_kel_sink();
 
-    let count = events.len();
-    match dest.submit_events(&events).await {
-        Ok(result) if result.applied => RepairResult::Repaired(count),
-        Ok(result) if result.diverged_at.is_some() => RepairResult::Diverged,
-        Ok(_) => RepairResult::NoOp,
+    match forward_with_fallback(
+        prefix,
+        &remote_source,
+        &local_sink,
+        since,
+        kels::max_verification_pages(),
+    )
+    .await
+    {
+        Ok(()) => RepairResult::Repaired,
+        Err(KelsError::EventNotFound(_)) => RepairResult::NoOp,
         Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
         Err(_) => RepairResult::Failed,
     }
@@ -1092,7 +693,7 @@ pub async fn run_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
     local_kels_url: String,
-    signer: Arc<dyn RegistrySigner>,
+    signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
     let local_client = KelsClient::new(&local_kels_url);
@@ -1127,85 +728,99 @@ pub async fn run_anti_entropy_loop(
                 stale_entries.len()
             );
 
-            // Group stale prefixes by peer URL with local since SAIDs
-            let mut peer_groups: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+            // For each stale prefix, query effective SAIDs from peers to find
+            // who has a different (newer) state, then sync only from those peers.
+            // Parallelized across prefixes.
+            let mut tasks = Vec::new();
             for (kel_prefix, source_node_prefix) in &stale_entries {
-                let kels_url = peers
-                    .iter()
-                    .find(|(pp, _)| pp == source_node_prefix)
-                    .or_else(|| peers.first())
-                    .map(|(_, url)| url.clone());
-                let Some(kels_url) = kels_url else {
+                // Build ordered peer list: source peer first, then others
+                let mut ordered_peers: Vec<(String, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                    ordered_peers.push(source.clone());
+                }
+                for peer in &peers {
+                    if peer.0 != *source_node_prefix {
+                        ordered_peers.push(peer.clone());
+                    }
+                }
+                if ordered_peers.is_empty() {
                     continue;
-                };
-                let local_said = local_client
-                    .get_kel(kel_prefix)
-                    .await
-                    .ok()
-                    .and_then(|kel| kel.effective_tail_said());
-                peer_groups
-                    .entry(kels_url)
-                    .or_default()
-                    .push((kel_prefix.clone(), local_said));
+                }
+
+                let local = local_client.clone();
+                let prefix = kel_prefix.clone();
+                let source = source_node_prefix.clone();
+                tasks.push(async move {
+                    let local_said = local
+                        .fetch_effective_said(&prefix)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(s, _)| s);
+
+                    // Query each peer's effective SAID and sync from peers
+                    // that have a different state than local.
+                    let mut any_peer_differs = false;
+                    for (_, kels_url) in &ordered_peers {
+                        let remote = KelsClient::new(kels_url);
+                        let remote_said = remote
+                            .fetch_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+
+                        if remote_said == local_said {
+                            continue;
+                        }
+                        any_peer_differs = true;
+
+                        let result =
+                            sync_prefix(&remote, &local, &prefix, local_said.as_deref()).await;
+                        if matches!(result, RepairResult::Contested) {
+                            return (prefix, source, RepairResult::Contested);
+                        }
+
+                        // Check if local state actually changed
+                        let new_said = local
+                            .fetch_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+                        if new_said != local_said {
+                            return (prefix, source, RepairResult::Repaired);
+                        }
+                    }
+
+                    if any_peer_differs {
+                        // Peers had different state but sync didn't help — re-queue
+                        (prefix, source, RepairResult::Failed)
+                    } else {
+                        // All peers agree on same state — nothing to repair
+                        (prefix, source, RepairResult::NoOp)
+                    }
+                });
             }
 
-            // Batch fetch from each peer and process results
-            for (kels_url, prefix_group) in &peer_groups {
-                let remote_client = KelsClient::new(kels_url);
-                let request: HashMap<String, Option<String>> = prefix_group
-                    .iter()
-                    .map(|(p, s)| (p.clone(), s.clone()))
-                    .collect();
-
-                let events_map = match remote_client.fetch_kels(&request).await {
-                    Ok(map) => map,
-                    Err(e) => {
-                        warn!("Anti-entropy: batch fetch failed from {}: {}", kels_url, e);
-                        for (prefix, _) in prefix_group {
-                            warn!("Anti-entropy: failed to repair stale prefix {}", prefix);
-                        }
-                        continue;
+            for (kel_prefix, source_node_prefix, result) in join_all(tasks).await {
+                match result {
+                    RepairResult::Repaired => {
+                        info!("Anti-entropy: repaired {}", kel_prefix);
+                        clear_seen_saids(redis.as_ref(), &kel_prefix).await;
                     }
-                };
-
-                for (kel_prefix, _since) in prefix_group {
-                    let result = match events_map.get(kel_prefix) {
-                        Some(events) if !events.is_empty() => {
-                            let count = events.len();
-                            match local_client.submit_events(events).await {
-                                Ok(r) if r.applied => RepairResult::Repaired(count),
-                                Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
-                                Ok(_) => RepairResult::NoOp,
-                                Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
-                                Err(_) => RepairResult::Failed,
-                            }
-                        }
-                        _ => RepairResult::NoOp,
-                    };
-
-                    match result {
-                        RepairResult::Repaired(n) => {
-                            info!("Anti-entropy: repaired {} ({} events)", kel_prefix, n);
-                            clear_seen_saids(redis.as_ref(), kel_prefix).await;
-                        }
-                        RepairResult::Diverged => {
-                            // No action — Phase 2 will handle via seen SAIDs when
-                            // it next samples this prefix.
-                        }
-                        RepairResult::Contested => {
-                            warn!("Anti-entropy: KEL contested for {}", kel_prefix);
-                        }
-                        RepairResult::Failed => {
-                            // Don't re-add — Phase 2 will rediscover if still needed.
-                            // Re-adding causes a hot retry loop when the source peer
-                            // is unreachable.
-                            warn!("Anti-entropy: failed to repair stale prefix {}", kel_prefix);
-                        }
-                        RepairResult::NoOp => {}
+                    RepairResult::Contested => {
+                        warn!("Anti-entropy: KEL contested for {}", kel_prefix);
+                    }
+                    RepairResult::Failed => {
+                        warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
+                        record_stale_prefix(redis.as_ref(), &kel_prefix, &source_node_prefix).await;
+                    }
+                    RepairResult::NoOp => {
+                        debug!("Anti-entropy: all peers agree on state for {}", kel_prefix);
                     }
                 }
             }
-            continue; // skip Phase 2 when we had stale entries
         }
 
         // Phase 2: Random sampling
@@ -1259,59 +874,56 @@ pub async fn run_anti_entropy_loop(
             if has_seen_said(redis.as_ref(), &state.prefix, &state.said).await {
                 continue;
             }
-            let local_kel = local_client.get_kel(&state.prefix).await.ok();
-            to_fetch.push((state, local_kel));
+            // Resolving: fetch local effective SAID and divergence flag for delta comparison
+            let (local_said, local_divergent) = match local_client
+                .fetch_effective_said(&state.prefix)
+                .await
+                .ok()
+                .flatten()
+            {
+                Some((said, divergent)) => (Some(said), Some(divergent)),
+                None => (None, None),
+            };
+            to_fetch.push((state, local_said, local_divergent));
         }
 
-        // Batch fetch from remote and process results
+        // Sync each mismatched prefix concurrently via forward_key_events
         if !to_fetch.is_empty() {
-            let request: HashMap<String, Option<String>> = to_fetch
+            let tasks: Vec<_> = to_fetch
                 .iter()
-                .map(|(state, local_kel)| {
-                    let since = local_kel.as_ref().and_then(|kel| kel.effective_tail_said());
-                    (state.prefix.clone(), since)
+                .map(|(state, local_said, local_divergent)| {
+                    let remote = remote_client.clone();
+                    let local = local_client.clone();
+                    let prefix = state.prefix.clone();
+                    let remote_said = state.said.clone();
+                    let since = local_said.clone();
+                    let divergent = *local_divergent;
+                    async move {
+                        let result = sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
+                        (prefix, remote_said, divergent, result)
+                    }
                 })
                 .collect();
 
-            let events_map = remote_client.fetch_kels(&request).await.unwrap_or_default();
-
-            for (state, local_kel) in &to_fetch {
-                let result = match events_map.get(&state.prefix) {
-                    Some(events) if !events.is_empty() => {
-                        let count = events.len();
-                        match local_client.submit_events(events).await {
-                            Ok(r) if r.applied => RepairResult::Repaired(count),
-                            Ok(r) if r.diverged_at.is_some() => RepairResult::Diverged,
-                            Ok(_) => RepairResult::NoOp,
-                            Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
-                            Err(_) => RepairResult::Failed,
-                        }
-                    }
-                    _ => RepairResult::Failed,
-                };
-
+            for (prefix, remote_said, local_divergent, result) in join_all(tasks).await {
                 match result {
-                    RepairResult::Repaired(n) => {
-                        info!(
-                            "Anti-entropy: repaired {} from remote ({n} events)",
-                            state.prefix
-                        );
-                        clear_seen_saids(redis.as_ref(), &state.prefix).await;
-                    }
-                    RepairResult::Diverged => {
-                        record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
+                    RepairResult::Repaired => {
+                        info!("Anti-entropy: repaired {} from remote", prefix);
+                        clear_seen_saids(redis.as_ref(), &prefix).await;
                     }
                     RepairResult::Failed => {
-                        // Three-way divergence: local KEL is already divergent and
-                        // merge rejected the 3rd branch from the remote peer.
-                        let local_is_divergent = local_kel
-                            .as_ref()
-                            .map(|kel| kel.find_divergence().is_some())
-                            .unwrap_or(false);
-                        if local_is_divergent {
-                            record_seen_said(redis.as_ref(), &state.prefix, &state.said).await;
+                        // Resolving: check if local KEL is already divergent (three-way).
+                        // Only suppress retries when we know the local KEL is divergent,
+                        // indicating a three-way divergence scenario.
+                        if local_divergent == Some(true) {
+                            // Local KEL is divergent and merge failed — likely three-way
+                            // divergence (nodes hold different adversary branch pairs). Record
+                            // the remote's SAID as seen to stop retrying. This is a resolving
+                            // heuristic: a wrong guess either causes an unnecessary retry or
+                            // skips one sync cycle — neither is a security issue.
+                            record_seen_said(redis.as_ref(), &prefix, &remote_said).await;
                         } else {
-                            record_stale_prefix(redis.as_ref(), &state.prefix, &peer_prefix).await;
+                            record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
                         }
                     }
                     _ => {}
@@ -1330,13 +942,15 @@ pub async fn run_anti_entropy_loop(
                 continue;
             }
 
+            // Resolving: get remote effective SAID for delta push
             let since = remote_client
-                .get_kel(&state.prefix)
+                .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
-                .and_then(|kel| kel.effective_tail_said());
+                .flatten()
+                .map(|(said, _)| said);
 
-            match sync_prefix(
+            if let RepairResult::Repaired = sync_prefix(
                 &local_client,
                 &remote_client,
                 &state.prefix,
@@ -1344,18 +958,7 @@ pub async fn run_anti_entropy_loop(
             )
             .await
             {
-                RepairResult::Repaired(n) => {
-                    info!(
-                        "Anti-entropy: pushed {} to remote ({n} events)",
-                        state.prefix
-                    );
-                }
-                RepairResult::Diverged => {
-                    if let Some(&remote_said) = remote_map.get(state.prefix.as_str()) {
-                        record_seen_said(redis.as_ref(), &state.prefix, remote_said).await;
-                    }
-                }
-                _ => {}
+                info!("Anti-entropy: pushed {} to remote", state.prefix);
             }
         }
     }
@@ -1366,12 +969,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::RwLock;
-
-    use kels::{EventKind, KeyEvent};
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
 
     fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
@@ -1384,31 +981,6 @@ mod tests {
     #[test]
     fn test_max_fetches_per_peer_per_minute_constant() {
         assert_eq!(MAX_FETCHES_PER_PEER_PER_MINUTE, 8192);
-    }
-
-    /// Create a minimal SignedKeyEvent for testing partition logic.
-    /// Uses the `said` as a simple identifier and `previous` for chain linking.
-    fn make_event(said: &str, previous: Option<&str>, kind: EventKind) -> SignedKeyEvent {
-        SignedKeyEvent {
-            event: KeyEvent {
-                said: said.to_string(),
-                prefix: "test-prefix".to_string(),
-                previous: previous.map(|s| s.to_string()),
-                serial: 0,
-                public_key: None,
-                rotation_hash: None,
-                recovery_key: if kind.reveals_recovery_key() {
-                    Some("recovery-key".to_string())
-                } else {
-                    None
-                },
-                recovery_hash: None,
-                kind,
-                anchor: None,
-                delegating_prefix: None,
-            },
-            signatures: vec![],
-        }
     }
 
     #[test]
@@ -1490,517 +1062,5 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-    }
-
-    // --- partition_events tests ---
-
-    #[test]
-    fn test_partition_events_empty() {
-        let (adversary, recovery) = SyncHandler::partition_events(vec![]);
-        assert!(adversary.is_empty());
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_events_single_event() {
-        let events = vec![make_event("icp1", None, EventKind::Icp)];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 1);
-        assert_eq!(adversary[0].event.said, "icp1");
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_events_linear_chain_no_recovery() {
-        // A simple chain: icp → rot → ixn — no partitioning needed
-        let events = vec![
-            make_event("icp1", None, EventKind::Icp),
-            make_event("rot1", Some("icp1"), EventKind::Rot),
-            make_event("ixn1", Some("rot1"), EventKind::Ixn),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 3);
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_events_linear_chain_with_recovery() {
-        // A single chain with recovery: icp → ixn → rec → rot
-        // Single root — cannot partition, returns everything as adversary
-        let events = vec![
-            make_event("icp1", None, EventKind::Icp),
-            make_event("ixn1", Some("icp1"), EventKind::Ixn),
-            make_event("rec1", Some("ixn1"), EventKind::Rec),
-            make_event("rot1", Some("rec1"), EventKind::Rot),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 4);
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_events_two_branches_recovery_detected() {
-        // Two branches from a shared ancestor (not in batch):
-        // Branch 1 (adversary): adv1 → adv2 (previous "shared" not in batch)
-        // Branch 2 (recovery):  rec1 → rot1 (previous "shared" not in batch)
-        let events = vec![
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("adv2", Some("adv1"), EventKind::Ixn),
-            make_event("rec1", Some("shared"), EventKind::Rec),
-            make_event("rot1", Some("rec1"), EventKind::Rot),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        // Recovery branch has rec1 and rot1
-        assert_eq!(recovery.len(), 2);
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(recovery_saids.contains(&"rec1"));
-        assert!(recovery_saids.contains(&"rot1"));
-        // Adversary branch has adv1 and adv2
-        assert_eq!(adversary.len(), 2);
-        let adversary_saids: Vec<_> = adversary.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(adversary_saids.contains(&"adv1"));
-        assert!(adversary_saids.contains(&"adv2"));
-    }
-
-    #[test]
-    fn test_partition_events_two_branches_contest_detected() {
-        // Contest event (cnt) also reveals recovery key
-        let events = vec![
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("cnt1", Some("shared"), EventKind::Cnt),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 1);
-        assert_eq!(adversary[0].event.said, "adv1");
-        assert_eq!(recovery.len(), 1);
-        assert_eq!(recovery[0].event.said, "cnt1");
-    }
-
-    #[test]
-    fn test_partition_events_two_branches_no_recovery_in_either() {
-        // Two branches but neither has recovery events — returns all as adversary
-        let events = vec![
-            make_event("ixn1", Some("shared"), EventKind::Ixn),
-            make_event("ixn2", Some("shared"), EventKind::Ixn),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 2);
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_events_recovery_branch_with_pre_recovery_events() {
-        // Recovery branch: ixn1 → rec1 → rot1 (ixn before recovery)
-        // Adversary branch: adv1 → adv2 → adv3
-        // Both branch from "shared" (not in batch)
-        let events = vec![
-            make_event("ixn1", Some("shared"), EventKind::Ixn),
-            make_event("rec1", Some("ixn1"), EventKind::Rec),
-            make_event("rot1", Some("rec1"), EventKind::Rot),
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("adv2", Some("adv1"), EventKind::Ixn),
-            make_event("adv3", Some("adv2"), EventKind::Ixn),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        // Recovery chain includes ixn1, rec1, rot1 (the whole chain from the recovery root)
-        assert_eq!(recovery.len(), 3);
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(recovery_saids.contains(&"ixn1"));
-        assert!(recovery_saids.contains(&"rec1"));
-        assert!(recovery_saids.contains(&"rot1"));
-        // Adversary chain
-        assert_eq!(adversary.len(), 3);
-        let adversary_saids: Vec<_> = adversary.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(adversary_saids.contains(&"adv1"));
-        assert!(adversary_saids.contains(&"adv2"));
-        assert!(adversary_saids.contains(&"adv3"));
-    }
-
-    #[test]
-    fn test_partition_events_decommission_detected_as_recovery() {
-        // Decommission (dec) also reveals recovery key
-        let events = vec![
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("dec1", Some("shared"), EventKind::Dec),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 1);
-        assert_eq!(adversary[0].event.said, "adv1");
-        assert_eq!(recovery.len(), 1);
-        assert_eq!(recovery[0].event.said, "dec1");
-    }
-
-    #[test]
-    fn test_partition_events_single_root_shared_by_both_branches() {
-        // Both branches descend from icp (which IS in the batch) → single root
-        // partition_events cannot split these — returns all as adversary
-        let events = vec![
-            make_event("icp1", None, EventKind::Icp),
-            make_event("ixn1", Some("icp1"), EventKind::Ixn),
-            make_event("rec1", Some("ixn1"), EventKind::Rec),
-            make_event("adv1", Some("icp1"), EventKind::Ixn),
-            make_event("adv2", Some("adv1"), EventKind::Ixn),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        // Single root (icp1) — cannot partition
-        assert_eq!(adversary.len(), 5);
-        assert!(recovery.is_empty());
-    }
-
-    // --- partition_for_seeding tests ---
-
-    #[test]
-    fn test_partition_for_seeding_empty() {
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(vec![]);
-        assert!(primary.is_empty());
-        assert!(deferred.is_empty());
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_for_seeding_linear_kel_no_divergence() {
-        // Linear chain: icp → ixn1 → ixn2 → ixn3
-        let events = vec![
-            make_event("icp", None, EventKind::Icp),
-            make_event("ixn1", Some("icp"), EventKind::Ixn),
-            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
-            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
-        ];
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-        assert_eq!(primary.len(), 4);
-        assert!(deferred.is_empty());
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_for_seeding_divergent_kel_two_chunks() {
-        // Primary chain: icp → ixn1 → ixn2 → ixn3 → ixn4 → ixn5 → ixn6 → ixn7 → ixn8
-        // Fork event:                          fork_ixn3 (previous = ixn2, same gen as ixn3)
-        let events = vec![
-            make_event("icp", None, EventKind::Icp),
-            make_event("ixn1", Some("icp"), EventKind::Ixn),
-            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
-            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
-            make_event("ixn4", Some("ixn3"), EventKind::Ixn),
-            make_event("ixn5", Some("ixn4"), EventKind::Ixn),
-            make_event("ixn6", Some("ixn5"), EventKind::Ixn),
-            make_event("ixn7", Some("ixn6"), EventKind::Ixn),
-            make_event("ixn8", Some("ixn7"), EventKind::Ixn),
-            make_event("fork_ixn3", Some("ixn2"), EventKind::Ixn),
-        ];
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-
-        // Primary should have 9 events (the longer branch)
-        assert_eq!(primary.len(), 9);
-        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(primary_saids.contains(&"icp"));
-        assert!(primary_saids.contains(&"ixn3"));
-        assert!(primary_saids.contains(&"ixn8"));
-
-        // Deferred should have 1 event (the fork)
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].event.said, "fork_ixn3");
-
-        // No recovery
-        assert!(recovery.is_empty());
-    }
-
-    #[test]
-    fn test_partition_for_seeding_divergent_with_recovery() {
-        // Primary chain (10 events):
-        //   icp → ixn1 → ixn2 → ixn3 → ixn4 → ixn5 → ixn6 → ixn7 → ixn8 → ixn9
-        // Fork event: fork_ixn3 (previous = ixn2)
-        // Recovery: rec10 (previous = ixn9) → ixn11 → ixn12
-        let events = vec![
-            make_event("icp", None, EventKind::Icp),
-            make_event("ixn1", Some("icp"), EventKind::Ixn),
-            make_event("ixn2", Some("ixn1"), EventKind::Ixn),
-            make_event("ixn3", Some("ixn2"), EventKind::Ixn),
-            make_event("ixn4", Some("ixn3"), EventKind::Ixn),
-            make_event("ixn5", Some("ixn4"), EventKind::Ixn),
-            make_event("ixn6", Some("ixn5"), EventKind::Ixn),
-            make_event("ixn7", Some("ixn6"), EventKind::Ixn),
-            make_event("ixn8", Some("ixn7"), EventKind::Ixn),
-            make_event("ixn9", Some("ixn8"), EventKind::Ixn),
-            make_event("fork_ixn3", Some("ixn2"), EventKind::Ixn),
-            make_event("rec10", Some("ixn9"), EventKind::Rec),
-            make_event("ixn11", Some("rec10"), EventKind::Ixn),
-            make_event("ixn12", Some("ixn11"), EventKind::Ixn),
-        ];
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-
-        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
-        assert_eq!(primary.len(), 10);
-        assert!(primary_saids.contains(&"icp"));
-        assert!(primary_saids.contains(&"ixn9"));
-        assert!(!primary_saids.contains(&"rec10"));
-
-        // Deferred: fork event
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].event.said, "fork_ixn3");
-
-        // Recovery: rec10 → ixn11 → ixn12
-        assert_eq!(recovery.len(), 3);
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(recovery_saids.contains(&"rec10"));
-        assert!(recovery_saids.contains(&"ixn11"));
-        assert!(recovery_saids.contains(&"ixn12"));
-    }
-
-    #[test]
-    fn test_partition_for_seeding_deferred_branch_is_longer() {
-        let events = vec![
-            make_event("b1", Some("shared"), EventKind::Ixn),
-            make_event("a1", Some("shared"), EventKind::Ixn),
-            make_event("a2", Some("a1"), EventKind::Ixn),
-            make_event("a3", Some("a2"), EventKind::Ixn),
-        ];
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-
-        // The longer branch (a1→a2→a3) should be primary
-        assert_eq!(primary.len(), 3);
-        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(primary_saids.contains(&"a1"));
-        assert!(primary_saids.contains(&"a2"));
-        assert!(primary_saids.contains(&"a3"));
-
-        // The shorter branch (b1) should be deferred
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].event.said, "b1");
-
-        assert!(recovery.is_empty());
-    }
-
-    // --- DFS traversal tests ---
-
-    #[test]
-    fn test_partition_events_detects_recovery_on_non_first_sub_branch() {
-        let events = vec![
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("adv2", Some("adv1"), EventKind::Ixn),
-            make_event("rec_root", Some("shared"), EventKind::Ixn),
-            make_event("fork_a", Some("rec_root"), EventKind::Ixn),
-            make_event("fork_b", Some("fork_a"), EventKind::Ixn),
-            make_event("fork_c", Some("fork_a"), EventKind::Rec),
-        ];
-        let (_adversary, recovery) = SyncHandler::partition_events(events);
-        assert!(
-            !recovery.is_empty(),
-            "recovery on non-first sub-branch must be detected"
-        );
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(recovery_saids.contains(&"rec_root"));
-        assert!(recovery_saids.contains(&"fork_c"));
-    }
-
-    #[test]
-    fn test_partition_events_collects_all_sub_branches_of_recovery_root() {
-        let events = vec![
-            make_event("adv1", Some("shared"), EventKind::Ixn),
-            make_event("rec1", Some("shared"), EventKind::Rec),
-            make_event("sub_a", Some("rec1"), EventKind::Ixn),
-            make_event("sub_b", Some("rec1"), EventKind::Ixn),
-        ];
-        let (adversary, recovery) = SyncHandler::partition_events(events);
-        assert_eq!(adversary.len(), 1);
-        assert_eq!(adversary[0].event.said, "adv1");
-        assert_eq!(recovery.len(), 3);
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(recovery_saids.contains(&"rec1"));
-        assert!(recovery_saids.contains(&"sub_a"));
-        assert!(recovery_saids.contains(&"sub_b"));
-    }
-
-    #[test]
-    fn test_partition_for_seeding_counts_all_sub_branch_descendants() {
-        let events = vec![
-            make_event("a1", Some("shared"), EventKind::Ixn),
-            make_event("a2", Some("a1"), EventKind::Ixn),
-            make_event("a3", Some("a1"), EventKind::Ixn),
-            make_event("a4", Some("a1"), EventKind::Ixn),
-            make_event("b1", Some("shared"), EventKind::Ixn),
-            make_event("b2", Some("b1"), EventKind::Ixn),
-            make_event("b3", Some("b2"), EventKind::Ixn),
-        ];
-        let (primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-        let primary_saids: Vec<_> = primary.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(
-            primary_saids.contains(&"a1"),
-            "branch with more total descendants should be primary"
-        );
-        let deferred_saids: Vec<_> = deferred.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(deferred_saids.contains(&"b1"));
-        assert!(deferred_saids.contains(&"b2"));
-        assert!(deferred_saids.contains(&"b3"));
-        assert!(recovery.is_empty());
-    }
-
-    // ==================== Anti-Entropy Tests ====================
-
-    #[test]
-    fn test_stale_prefix_key_constant() {
-        assert_eq!(STALE_PREFIX_KEY, "kels:anti_entropy:stale");
-    }
-
-    // Mock signer for testing fetch_prefixes
-    struct MockSigner;
-
-    #[async_trait::async_trait]
-    impl kels::RegistrySigner for MockSigner {
-        async fn sign(&self, _data: &[u8]) -> Result<kels::SignResult, KelsError> {
-            Ok(kels::SignResult {
-                signature: "0BAAAA_mock_signature".to_string(),
-                peer_prefix: "EMockPeerPrefix_____________________________".to_string(),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn test_fetch_prefixes_success() {
-        let mock_server = MockServer::start().await;
-
-        let response_body = kels::PrefixListResponse {
-            prefixes: vec![
-                kels::PrefixState {
-                    prefix: "Eprefix_a___________________________________".to_string(),
-                    said: "Esaid_a_____________________________________".to_string(),
-                },
-                kels::PrefixState {
-                    prefix: "Eprefix_b___________________________________".to_string(),
-                    said: "Esaid_b_____________________________________".to_string(),
-                },
-            ],
-            next_cursor: None,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/kels/prefixes"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsClient::new(&mock_server.uri());
-        let signer = MockSigner;
-
-        let result = client
-            .fetch_prefixes(
-                &signer,
-                Some("Ecursor_____________________________________"),
-                100,
-            )
-            .await;
-
-        assert!(result.is_ok());
-        let page = result.unwrap();
-        assert_eq!(page.prefixes.len(), 2);
-        assert_eq!(
-            page.prefixes[0].prefix,
-            "Eprefix_a___________________________________"
-        );
-        assert_eq!(
-            page.prefixes[1].prefix,
-            "Eprefix_b___________________________________"
-        );
-        assert!(page.next_cursor.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_fetch_prefixes_with_pagination() {
-        let mock_server = MockServer::start().await;
-
-        let response_body = kels::PrefixListResponse {
-            prefixes: vec![kels::PrefixState {
-                prefix: "Eprefix_c___________________________________".to_string(),
-                said: "Esaid_c_____________________________________".to_string(),
-            }],
-            next_cursor: Some("Enext_cursor________________________________".to_string()),
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/kels/prefixes"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsClient::new(&mock_server.uri());
-        let signer = MockSigner;
-
-        let result = client.fetch_prefixes(&signer, None, 1).await;
-
-        assert!(result.is_ok());
-        let page = result.unwrap();
-        assert_eq!(page.prefixes.len(), 1);
-        assert_eq!(
-            page.next_cursor,
-            Some("Enext_cursor________________________________".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_fetch_prefixes_server_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/kels/prefixes"))
-            .respond_with(
-                ResponseTemplate::new(500).set_body_json(kels::ErrorResponse {
-                    error: "Internal Server Error".to_string(),
-                    code: kels::ErrorCode::InternalError,
-                }),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsClient::new(&mock_server.uri());
-        let signer = MockSigner;
-
-        let result = client.fetch_prefixes(&signer, None, 100).await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_fetch_prefixes_empty_response() {
-        let mock_server = MockServer::start().await;
-
-        let response_body = kels::PrefixListResponse {
-            prefixes: vec![],
-            next_cursor: None,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/kels/prefixes"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-            .mount(&mock_server)
-            .await;
-
-        let client = KelsClient::new(&mock_server.uri());
-        let signer = MockSigner;
-
-        let result = client.fetch_prefixes(&signer, None, 100).await;
-
-        assert!(result.is_ok());
-        let page = result.unwrap();
-        assert!(page.prefixes.is_empty());
-        assert!(page.next_cursor.is_none());
-    }
-
-    #[test]
-    fn test_partition_for_seeding_recovery_on_non_first_sub_branch() {
-        let events = vec![
-            make_event("a1", Some("shared"), EventKind::Ixn),
-            make_event("a2", Some("a1"), EventKind::Ixn),
-            make_event("a3", Some("a2"), EventKind::Ixn),
-            make_event("a4", Some("a2"), EventKind::Rec),
-            make_event("b1", Some("shared"), EventKind::Ixn),
-        ];
-        let (_primary, deferred, recovery) = SyncHandler::partition_for_seeding(events);
-        let recovery_saids: Vec<_> = recovery.iter().map(|e| e.event.said.as_str()).collect();
-        assert!(
-            recovery_saids.contains(&"a4"),
-            "recovery on non-first sub-branch must be detected"
-        );
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].event.said, "b1");
     }
 }

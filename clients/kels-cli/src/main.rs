@@ -1,17 +1,18 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::path::PathBuf;
+use std::{iter, path::PathBuf};
 
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
 use kels::EventKind;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KeyEventBuilder, MultiRegistryClient, NodeStatus,
-    ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    FileKelStore, HttpKelSource, KelStore, KelVerification, KelVerifier, KelsClient,
+    KeyEventBuilder, MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig, max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -206,14 +207,17 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
     if cli.auto_select {
         let registry_urls = parse_registry_urls(&cli.registry);
         if registry_urls.is_empty() {
-            return Err(anyhow::anyhow!("No registry URLs provided"));
+            return Err(anyhow!("No registry URLs provided"));
         }
 
-        let mut registry_client = MultiRegistryClient::new(registry_urls);
-        let nodes = registry_client
-            .nodes_sorted_by_latency(&cli.registry)
-            .await
-            .context("Failed to discover nodes from registry")?;
+        let store = create_kel_store(cli, "registry-discovery")?;
+        let nodes = kels::nodes_sorted_by_latency(
+            &registry_urls,
+            std::time::Duration::from_secs(2),
+            &store,
+        )
+        .await
+        .context("Failed to discover nodes from registry")?;
 
         println!("{}", "Node Latencies:".cyan());
         for node in &nodes {
@@ -232,7 +236,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
 
         let url = match nodes.first() {
             Some(n) => n.kels_url.clone(),
-            None => return Err(anyhow::anyhow!("Failed to find kels url of fastest node")),
+            None => return Err(anyhow!("Failed to find kels url of fastest node")),
         };
         Ok(KelsClient::new(&url))
     } else {
@@ -250,7 +254,7 @@ fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
 async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     let registry_urls = parse_registry_urls(&cli.registry);
     if registry_urls.is_empty() {
-        return Err(anyhow::anyhow!("No registry URLs provided"));
+        return Err(anyhow!("No registry URLs provided"));
     }
 
     println!(
@@ -258,10 +262,10 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let mut registry_client = MultiRegistryClient::new(registry_urls);
-    let nodes = registry_client
-        .nodes_sorted_by_latency(&cli.registry)
-        .await?;
+    let store = create_kel_store(cli, "registry-discovery")?;
+    let nodes =
+        kels::nodes_sorted_by_latency(&registry_urls, std::time::Duration::from_secs(2), &store)
+            .await?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes registered.".yellow());
@@ -298,16 +302,22 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     let client = create_client(cli).await?;
     let key_provider = SoftwareKeyProvider::new();
 
-    let mut builder =
-        KeyEventBuilder::with_dependencies(key_provider, Some(client), None, None).await?;
+    // Pass a kel_store to the builder so add_and_flush saves automatically
+    let kel_dir = kel_dir(cli)?;
+    let kel_store = FileKelStore::new(&kel_dir).context("Failed to create KEL store")?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        key_provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        None,
+    )
+    .await?;
 
     let icp = builder.incept().await.context("Inception failed")?;
 
-    // Save to the correct prefix directory
+    // Save keys to the correct prefix directory
     let config = provider_config(cli, &icp.event.prefix)?;
     config.save_provider(builder.key_provider()).await?;
-    let kel_store = create_kel_store(cli, &icp.event.prefix)?;
-    kel_store.save(builder.kel()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
     println!("  Prefix: {}", icp.event.prefix.cyan());
@@ -348,7 +358,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         }) => {
             // Keys were committed internally - save them before returning error
             config.save_provider(builder.key_provider()).await?;
-            Err(anyhow::anyhow!(
+            Err(anyhow!(
                 "Divergence detected at: {}, submission_accepted: true",
                 diverged_at
             ))
@@ -422,13 +432,32 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
-        Some(client),
+        Some(client.clone()),
         Some(std::sync::Arc::new(kel_store)),
         Some(prefix),
     )
     .await?;
 
-    let add_rot = builder.should_add_rot_with_recover().await?;
+    // Verify server KEL to detect if adversary revealed the rotation key
+    let source = kels::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+    let server_verification = kels::verify_key_events(
+        prefix,
+        &source,
+        KelVerifier::new(prefix),
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+    let owner_last_est_serial = builder
+        .last_establishment_event()
+        .map(|e| e.serial)
+        .unwrap_or(0);
+    let add_rot = kels::should_rotate_with_recovery(
+        &server_verification,
+        builder.rotation_count(),
+        owner_last_est_serial,
+    );
     let rec = builder.recover(add_rot).await.context("Recovery failed")?;
     config.save_provider(builder.key_provider()).await?;
 
@@ -498,56 +527,71 @@ async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
+fn print_kel_status(kel_verification: &KelVerification, verbose: bool) {
+    if verbose {
+        println!("  Verified: Yes");
+    }
+    if kel_verification.is_contested() {
+        println!("  Status: {}", "CONTESTED".red());
+    } else if kel_verification.is_decommissioned() {
+        println!("  Status: {}", "DECOMMISSIONED".red());
+    } else if kel_verification.is_divergent() {
+        println!("  Status: {}", "DIVERGENT".yellow());
+    } else {
+        println!("  Status: {}", "OK".green());
+    }
+}
+
+fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
+    println!();
+    println!("{}", format!("KEL: {}", prefix).cyan().bold());
+    println!("  Events: {}", kel_verification.event_count());
+
+    if let Some(tip) = kel_verification.branch_tips().last() {
+        println!("  Latest SAID: {}", tip.tip.event.said);
+        println!("  Latest Type: {}", tip.tip.event.kind);
+    }
+}
+
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
+    let source = HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+
+    let msg = if audit {
+        format!("Fetching KEL {} with audit records...", prefix)
+    } else {
+        format!("Fetching KEL {}...", prefix)
+    };
+    println!("{}", msg.green());
+
+    // Verify and print events in a single pass
+    let kel_verification = kels::verify_key_events_with(
+        prefix,
+        &source,
+        KelVerifier::new(prefix),
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+        |events| {
+            for signed_event in events {
+                let event = &signed_event.event;
+                println!(
+                    "  [{}] {} - {}",
+                    event.serial,
+                    event.kind.as_str().to_uppercase(),
+                    &event.said[..16]
+                );
+            }
+        },
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+
+    print_kel_summary(prefix, &kel_verification);
+    print_kel_status(&kel_verification, !audit);
 
     if audit {
-        println!(
-            "{}",
-            format!("Fetching KEL {} with audit records...", prefix).green()
-        );
-        let response = client.fetch_kel_with_audit(prefix).await?;
-
-        println!();
-        println!("{}", format!("KEL: {}", prefix).cyan().bold());
-        println!("  Events: {}", response.events.len());
-        let kel = kels::Kel::from_events(response.events.clone(), true)?;
-
-        if let Some(last) = kel.last() {
-            println!("  Latest SAID: {}", last.event.said);
-            println!("  Latest Type: {}", last.event.kind);
-        }
-
-        match kel.verify(true) {
-            Ok(_) => println!("Verified: Yes"),
-            Err(e) => println!("Verified: {}", e),
-        }
-
-        // Check contested/decommissioned first since they take precedence over divergent
-        if kel.is_contested() {
-            println!("  Status: {}", "CONTESTED".red());
-        } else if kel.is_decommissioned() {
-            println!("  Status: {}", "DECOMMISSIONED".red());
-        } else if kel.find_divergence().is_some() {
-            println!("  Status: {}", "DIVERGENT".yellow());
-        } else {
-            println!("  Status: {}", "OK".green());
-        }
-
-        println!();
-        println!("{}", "Events:".yellow().bold());
-        for (i, signed_event) in response.events.iter().enumerate() {
-            let event = &signed_event.event;
-            println!(
-                "  [{}] {} - {}",
-                i,
-                event.kind.as_str().to_uppercase(),
-                &event.said[..16]
-            );
-        }
-
-        // Print audit records
-        if let Some(audit_records) = &response.audit_records {
+        let audit_records = client.fetch_kel_audit(prefix).await?;
+        if !audit_records.is_empty() {
             println!();
             println!("{}", "Audit Records:".yellow().bold());
             for (i, record) in audit_records.iter().enumerate() {
@@ -564,40 +608,6 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!();
             println!("{}", "Audit Records: (none)".yellow());
         }
-
-        return Ok(());
-    }
-
-    println!("{}", format!("Fetching KEL {}...", prefix).green());
-    let kel = client.get_kel(prefix).await?;
-
-    println!();
-    println!("{}", format!("KEL: {}", prefix).cyan().bold());
-    println!("  Events: {}", kel.len());
-
-    if let Some(last) = kel.last() {
-        println!("  Latest SAID: {}", last.event.said);
-        println!("  Latest Type: {}", last.event.kind);
-    }
-    if kel.is_contested() {
-        println!("  Status: {}", "CONTESTED".red());
-    } else if kel.is_decommissioned() {
-        println!("  Status: {}", "DECOMMISSIONED".red());
-    } else if kel.find_divergence().is_some() {
-        println!("  Status: {}", "DIVERGENT".yellow());
-    } else {
-        println!("  Status: {}", "OK".green());
-    }
-    println!();
-    println!("{}", "Events:".yellow().bold());
-    for (i, signed_event) in kel.events().iter().enumerate() {
-        let event = &signed_event.event;
-        println!(
-            "  [{}] {} - {}",
-            i,
-            event.kind.as_str().to_uppercase(),
-            &event.said[..16]
-        );
     }
 
     Ok(())
@@ -618,7 +628,7 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
 
-        if path.extension().is_some_and(|e| e == "json")
+        if path.extension().is_some_and(|e| e == "jsonl")
             && let Some(stem) = path.file_stem()
             && let Some(prefix) = stem.to_str()
         {
@@ -639,25 +649,37 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let kel_verification = kels::completed_verification(
+        &mut kels::StorePageLoader::new(&kel_store),
+        prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        iter::empty(),
+    )
+    .await?;
+
+    if kel_verification.is_empty() {
+        return Err(anyhow!("KEL not found locally: {}", prefix));
+    }
+
+    let event_count = kel_verification.event_count();
 
     println!("{}", format!("KEL Status: {}", prefix).cyan().bold());
-    println!("  Local Events: {}", kel.len());
+    println!("  Local Events: {}", event_count);
 
-    if let Some(last) = kel.last() {
-        println!("  Latest SAID:  {}", last.event.said);
-        println!("  Latest Type:  {}", last.event.kind);
+    if let Some(bt) = kel_verification.branch_tips().first() {
+        println!("  Latest SAID:  {}", bt.tip.event.said);
+        println!("  Latest Type:  {}", bt.tip.event.kind);
     }
-    if kel.is_contested() {
+    if kel_verification.is_contested() {
         println!("  Status:       {}", "CONTESTED".red());
-    } else if kel.is_decommissioned() {
+    } else if kel_verification.is_decommissioned() {
         println!("  Status:       {}", "DECOMMISSIONED".red());
-    } else if let Some(div) = kel.find_divergence() {
+    } else if kel_verification.is_divergent() {
         println!("  Status:       {}", "DIVERGENT".yellow());
-        println!("  Diverged At:  g{}", div.diverged_at_generation);
+        if let Some(serial) = kel_verification.diverged_at_serial() {
+            println!("  Diverged At:  s{}", serial);
+        }
     } else {
         println!("  Status:       {}", "OK".green());
     }
@@ -774,19 +796,30 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     );
 
     let kel_store = create_kel_store(cli, prefix)?;
+    let source = kels::StoreKelSource::new(&kel_store);
 
-    let mut kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
-
-    if count >= kel.len() {
-        println!("KEL already has {} events, nothing to truncate.", kel.len());
+    let mut events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+    if events.is_empty() {
+        return Err(anyhow!("KEL not found locally: {}", prefix));
+    }
+    if count >= events.len() {
+        println!(
+            "KEL already has {} events, nothing to truncate.",
+            events.len()
+        );
         return Ok(());
     }
 
-    kel.truncate(count);
-    kel_store.save(&kel).await?;
+    events.truncate(count);
+    kel_store.overwrite(prefix, &events).await?;
 
     println!(
         "{}",
@@ -799,13 +832,22 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 #[cfg(feature = "dev-tools")]
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
+    let source = kels::StoreKelSource::new(&kel_store);
+    let all_events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
 
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    if all_events.is_empty() {
+        return Err(anyhow!("KEL not found locally: {}", prefix));
+    }
 
-    let json = serde_json::to_string_pretty(kel.events())?;
+    let json = serde_json::to_string_pretty(&all_events)?;
     println!("{}", json);
 
     Ok(())
@@ -820,12 +862,21 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
             .bold()
     );
 
-    // Load the local KEL to get the chain state
+    // Load the local KEL to get the chain state (dev-tools, not production)
     let kel_store = create_kel_store(cli, prefix)?;
-    let kel = kel_store
-        .load(prefix)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("KEL not found locally: {}", prefix))?;
+    let source = kels::StoreKelSource::new(&kel_store);
+    let events = kels::resolve_key_events(
+        prefix,
+        &source,
+        MAX_EVENTS_PER_KEL_RESPONSE,
+        max_verification_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+    if events.is_empty() {
+        return Err(anyhow!("KEL not found locally: {}", prefix));
+    }
 
     // Load the key provider (adversary has the same keys as owner)
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
@@ -848,21 +899,14 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     // Create adversary builder WITH KELS client but NO kel_store
     // Events submit to KELS but don't save locally (simulating adversary)
     let client = create_client(cli).await?;
-    let mut builder = KeyEventBuilder::with_kel(key_provider, Some(client), None, kel)?;
+    let mut builder = KeyEventBuilder::with_events(key_provider, Some(client), None, events);
 
     let mut saids = Vec::new();
-    let mut counter = 0u32;
 
     for kind in &event_kinds {
         let signed = match kind {
             EventKind::Ixn => {
-                // Generate a realistic 44-char SAID-like anchor
-                let anchor = format!(
-                    "EAdversaryAnchor{}{}",
-                    counter,
-                    "_".repeat(44 - 16 - counter.to_string().len())
-                );
-                counter += 1;
+                let anchor = kels::generate_nonce();
                 builder.interact(&anchor).await?
             }
             EventKind::Rot => builder.rotate().await?,

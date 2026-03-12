@@ -52,8 +52,10 @@ spec:
               value: "${var.identityDatabaseUrl}"
             - name: HSM_URL
               value: "${var.hsm.url}"
-            - name: KELS_URL
-              value: "${var.envType == 'registry' ? '' : var.kels.url}"
+            - name: KEL_FORWARD_URL
+              value: "${var.kelForwardUrl}"
+            - name: KEL_FORWARD_PATH_PREFIX
+              value: "${var.kelForwardPathPrefix}"
           livenessProbe:
             httpGet:
               path: /health
@@ -68,7 +70,7 @@ spec:
             periodSeconds: 5
           resources:
             requests:
-              cpu: 100m
+              cpu: 25m
               memory: 128Mi
             limits:
               cpu: 500m

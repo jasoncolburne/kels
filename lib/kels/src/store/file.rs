@@ -1,14 +1,14 @@
-//! File-based KEL storage
+//! File-based KEL storage (newline-delimited JSON)
+
+use std::io::{BufRead, Write};
 
 use async_trait::async_trait;
 
 use super::KelStore;
-use crate::{
-    error::KelsError,
-    types::{Kel, SignedKeyEvent},
-};
+use crate::{error::KelsError, types::SignedKeyEvent};
 
-/// File-based KEL store for CLI and desktop apps
+/// File-based KEL store for CLI and desktop apps.
+/// Events are stored as newline-delimited JSON (one JSON object per line).
 pub struct FileKelStore {
     kel_dir: std::path::PathBuf,
     owner_prefix: std::sync::RwLock<Option<String>>,
@@ -38,7 +38,7 @@ impl FileKelStore {
     }
 
     fn kel_path(&self, prefix: &str) -> std::path::PathBuf {
-        self.kel_dir.join(format!("{}.kel.json", prefix))
+        self.kel_dir.join(format!("{}.kel.jsonl", prefix))
     }
     fn owner_tail_path(&self, prefix: &str) -> std::path::PathBuf {
         self.kel_dir.join(format!("{}.owner_tail", prefix))
@@ -56,28 +56,76 @@ impl KelStore for FileKelStore {
         }
     }
 
-    async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
+    async fn load(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         let path = self.kel_path(prefix);
         if !path.exists() {
-            return Ok(None);
+            return Ok((vec![], false));
         }
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        let events: Vec<SignedKeyEvent> = serde_json::from_str(&contents)?;
-        Ok(Some(Kel::from_events(events, true)?))
+        let file =
+            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let reader = std::io::BufReader::new(file);
+
+        let start = offset as usize;
+        let limit = limit as usize;
+        let mut events = Vec::new();
+        let mut count = 0;
+
+        for line in reader.lines() {
+            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+            if line.is_empty() {
+                continue;
+            }
+            if count < start {
+                count += 1;
+                continue;
+            }
+            if events.len() >= limit {
+                return Ok((events, true));
+            }
+            let event: SignedKeyEvent = serde_json::from_str(&line)?;
+            events.push(event);
+            count += 1;
+        }
+
+        Ok((events, false))
     }
 
-    async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
-        use std::io::Write;
-        let prefix = kel
-            .prefix()
-            .ok_or_else(|| KelsError::InvalidKel("KEL has no prefix".to_string()))?;
+    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let path = self.kel_path(prefix);
-        let contents = serde_json::to_string_pretty(kel.events())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            file.write_all(line.as_bytes())
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            file.write_all(b"\n")
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        }
+        file.sync_all()
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let path = self.kel_path(prefix);
         let mut file =
             std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            file.write_all(line.as_bytes())
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            file.write_all(b"\n")
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        }
         file.sync_all()
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
         Ok(())
@@ -101,13 +149,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{SoftwareKeyProvider, builder::KeyEventBuilder};
-
-    async fn create_test_kel() -> Kel {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
-        let icp = builder.incept().await.unwrap();
-        Kel::from_events(vec![icp], true).unwrap()
-    }
 
     #[test]
     fn test_new_creates_directory() {
@@ -153,45 +194,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_nonexistent_returns_none() {
+    async fn test_load_nonexistent_returns_empty() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let result = store.load("nonexistent").await.unwrap();
-        assert!(result.is_none());
+        let (events, has_more) = store.load("nonexistent", crate::LOAD_ALL, 0).await.unwrap();
+        assert!(events.is_empty());
+        assert!(!has_more);
     }
 
     #[tokio::test]
-    async fn test_save_and_load_roundtrip() {
+    async fn test_overwrite_and_load_roundtrip() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = crate::store::create_test_events().await;
+        let event_count = events.len();
 
-        store.save(&kel).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
-        let loaded = store.load(&prefix).await.unwrap().unwrap();
-        assert_eq!(loaded.len(), kel.len());
-        assert_eq!(loaded.prefix(), kel.prefix());
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert_eq!(loaded.len(), event_count);
     }
 
     #[tokio::test]
-    async fn test_save_creates_json_file() {
+    async fn test_overwrite_creates_jsonl_file() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = crate::store::create_test_events().await;
 
-        store.save(&kel).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
-        let expected_path = temp.path().join(format!("{}.kel.json", prefix));
+        let expected_path = temp.path().join(format!("{}.kel.jsonl", prefix));
         assert!(expected_path.exists());
 
-        // Verify it's valid JSON
+        // Verify each line is valid JSON
         let contents = std::fs::read_to_string(&expected_path).unwrap();
-        let _: Vec<SignedKeyEvent> = serde_json::from_str(&contents).unwrap();
+        for line in contents.lines() {
+            let _: SignedKeyEvent = serde_json::from_str(line).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_append_creates_and_extends() {
+        let temp = TempDir::new().unwrap();
+        let store = FileKelStore::new(temp.path()).unwrap();
+
+        let (prefix, events) = crate::store::create_test_events().await;
+
+        // Append first event
+        store.append(&prefix, &events[..1]).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        // Append remaining events
+        store.append(&prefix, &events[1..]).await.unwrap();
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert_eq!(loaded.len(), events.len());
     }
 
     #[tokio::test]
@@ -199,12 +259,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = crate::store::create_test_events().await;
 
-        store.save(&kel).await.unwrap();
+        store.overwrite(&prefix, &events).await.unwrap();
 
-        let path = temp.path().join(format!("{}.kel.json", prefix));
+        let path = temp.path().join(format!("{}.kel.jsonl", prefix));
         assert!(path.exists());
 
         store.delete(&prefix).await.unwrap();
@@ -225,11 +284,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        // Write invalid JSON
-        let path = temp.path().join("bad.kel.json");
-        std::fs::write(&path, "not valid json").unwrap();
+        // Write invalid JSONL
+        let path = temp.path().join("bad.kel.jsonl");
+        std::fs::write(&path, "not valid json\n").unwrap();
 
-        let result = store.load("bad").await;
+        let result = store.load("bad", crate::LOAD_ALL, 0).await;
         assert!(result.is_err());
     }
 
@@ -238,25 +297,25 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel1 = create_test_kel().await;
-        let kel2 = create_test_kel().await;
-        let prefix1 = kel1.prefix().unwrap().to_string();
-        let prefix2 = kel2.prefix().unwrap().to_string();
+        let (prefix1, events1) = crate::store::create_test_events().await;
+        let (prefix2, events2) = crate::store::create_test_events().await;
 
-        store.save(&kel1).await.unwrap();
-        store.save(&kel2).await.unwrap();
+        store.overwrite(&prefix1, &events1).await.unwrap();
+        store.overwrite(&prefix2, &events2).await.unwrap();
 
         // Both should be loadable independently
-        let loaded1 = store.load(&prefix1).await.unwrap().unwrap();
-        let loaded2 = store.load(&prefix2).await.unwrap().unwrap();
+        let (loaded1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();
+        let (loaded2, _) = store.load(&prefix2, crate::LOAD_ALL, 0).await.unwrap();
 
-        assert_eq!(loaded1.prefix(), kel1.prefix());
-        assert_eq!(loaded2.prefix(), kel2.prefix());
+        assert!(!loaded1.is_empty());
+        assert!(!loaded2.is_empty());
 
         // Delete one shouldn't affect the other
         store.delete(&prefix1).await.unwrap();
-        assert!(store.load(&prefix1).await.unwrap().is_none());
-        assert!(store.load(&prefix2).await.unwrap().is_some());
+        let (e1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();
+        let (e2, _) = store.load(&prefix2, crate::LOAD_ALL, 0).await.unwrap();
+        assert!(e1.is_empty());
+        assert!(!e2.is_empty());
     }
 
     #[tokio::test]
@@ -264,18 +323,17 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = crate::store::create_test_events().await;
 
         // Set this KEL's prefix as the owner
         store.set_owner_prefix(Some(&prefix));
 
         // Cache should skip saving because it's the owner's KEL
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
         // KEL should NOT be saved
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_none());
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert!(loaded.is_empty());
     }
 
     #[tokio::test]
@@ -283,17 +341,16 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let kel = create_test_kel().await;
-        let prefix = kel.prefix().unwrap().to_string();
+        let (prefix, events) = crate::store::create_test_events().await;
 
         // Set a different owner prefix
         store.set_owner_prefix(Some("different_prefix"));
 
         // Cache should save because it's not the owner's KEL
-        store.cache(&kel).await.unwrap();
+        store.cache(&prefix, &events).await.unwrap();
 
         // KEL should be saved
-        let loaded = store.load(&prefix).await.unwrap();
-        assert!(loaded.is_some());
+        let (loaded, _) = store.load(&prefix, crate::LOAD_ALL, 0).await.unwrap();
+        assert!(!loaded.is_empty());
     }
 }

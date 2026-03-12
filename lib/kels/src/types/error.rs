@@ -12,7 +12,7 @@ pub enum ErrorCode {
     Frozen,
     Unauthorized,
     Gone,
-    RecoveryProtected,
+    ContestRequired,
     RateLimited,
     InternalError,
 }

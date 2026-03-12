@@ -108,18 +108,81 @@ kel_exists_on_node() {
     [ "$http_code" = "200" ]
 }
 
+# Fetch all events for a prefix, paginating through all pages.
+# Outputs a JSON array of all signed events.
+# No max-page guard — test scripts run against known-good servers with finite KELs.
+fetch_all_events() {
+    local url="$1"
+    local prefix="$2"
+    local all_events="[]"
+    local since=""
+
+    while true; do
+        local query_url="$url/api/kels/kel/$prefix"
+        if [ -n "$since" ]; then
+            query_url="${query_url}?since=${since}"
+        fi
+
+        local resp
+        resp=$(curl -s -f "$query_url" 2>/dev/null) || break
+
+        local events has_more
+        events=$(echo "$resp" | jq '.events')
+        has_more=$(echo "$resp" | jq '.hasMore')
+
+        if [ "$(echo "$events" | jq 'length')" -eq 0 ]; then
+            break
+        fi
+
+        all_events=$(echo "$all_events" "$events" | jq -s '.[0] + .[1]')
+
+        if [ "$has_more" != "true" ]; then
+            break
+        fi
+
+        since=$(echo "$events" | jq -r '.[-1].event.said')
+    done
+
+    echo "$all_events"
+}
+
 get_event_count() {
     local url="$1"
     local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo 0; return; }
-    echo "$resp" | jq 'if type == "array" then length else 0 end'
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq 'length'
+}
+
+# Wait for a KEL to propagate to all given node URLs.
+# Usage: wait_for_propagation PREFIX TIMEOUT URL1 URL2 ...
+wait_for_propagation() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+
+    for url in "${urls[@]}"; do
+        local converged=false
+        for attempt in $(seq 1 "$timeout"); do
+            if kel_exists_on_node "$url" "$prefix"; then
+                converged=true
+                break
+            fi
+            sleep 1
+        done
+        if [ "$converged" != "true" ]; then
+            echo -e "${RED}KEL $prefix did not propagate to $url within ${timeout}s${NC}"
+            return 1
+        fi
+    done
+    return 0
 }
 
 get_latest_said() {
     local url="$1"
     local prefix="$2"
-    local resp
-    resp=$(curl -s -f "$url/api/kels/kel/$prefix" 2>/dev/null) || { echo ""; return; }
-    echo "$resp" | jq -r 'if type == "array" then sort_by(.event.version) | .[-1].event.said // empty else empty end'
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq -r 'sort_by(.event.serial) | .[-1].event.said // empty'
 }

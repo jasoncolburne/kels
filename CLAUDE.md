@@ -6,7 +6,14 @@
 - Make targets exist for all cargo commands (`make fmt`, `make clippy`, `make test`, etc.).
 - `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
 - `make coverage` produces per-file coverage with `cargo-llvm-cov`.
-- Dependency crates live at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`.
+- Dependency crates live at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`, and we may modify them.
+- After substantial changes, verify the full deployment pipeline:
+  1. Deployment — services start and pass health checks
+  2. Federation — registries form Raft cluster, member KELs sync
+  3. Voting — peer proposals, multi-party votes, approval threshold
+  4. Gossip network — peers connect, mesh forms, events propagate
+  5. Adversarial tests — divergence, recovery, contest, decommission
+  6. Gossip tests — anti-entropy, delta sync, bootstrap
 
 ## Code Style
 
@@ -41,6 +48,7 @@ Never import inline within function bodies.
 - No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
 - This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
+- Never hardcode event kind strings (`"icp"`, `"kels/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 
 ## Core Concepts
 
@@ -78,7 +86,7 @@ When conflicting events exist at the same serial number in a KEL (e.g., from com
 
 ### Effective SAID
 
-A single identifier representing the current state of a KEL, including divergent KELs. For non-divergent KELs, this is the tip event's SAID. For divergent KELs (multiple branch tips), this is a deterministic Blake3 hash of the sorted tip SAIDs (`hash_tip_saids`). Used for delta sync: when a `?since=<said>` query doesn't match a real event SAID, the server computes the effective SAID — if it matches, both sides have the same divergent state and no sync is needed. Also used by anti-entropy to compare prefix states across nodes.
+A single identifier representing the current state of a KEL, including divergent KELs. For non-divergent KELs, this is the tip event's SAID. For divergent KELs (multiple branch tips), this is a deterministic Blake3 hash of the sorted tip SAIDs (`hash_tip_saids`). Used for delta sync and anti-entropy comparison across nodes.
 
 ### Merge Results
 
@@ -87,23 +95,23 @@ When events are submitted, the KEL merge produces one of:
 - **Recovered** — divergence was resolved by a recovery event
 - **Contested** — adversary revealed recovery key, KEL permanently frozen
 - **Diverged** — conflicting events detected, awaiting recovery
-- **Rejected** — events failed validation
-- **Protected** — adversary used recovery key; owner should contest
+- **RecoverRequired** — KEL is divergent, submit recovery to resolve
+- **ContestRequired** — recovery key revealed, submit contest to freeze
 
 ## Architecture
 
 ### Services
 
-- **kels** — Core KEL service. Stores and serves KELs via REST API. Handles event submission with cryptographic verification, advisory locking per prefix, rate limiting, nonce deduplication, and pre-serialized caching via Redis.
-- **kels-gossip** — Gossip and federation service. Syncs KELs between peers using a custom gossip protocol (HyParView + PlumTree). Handles bootstrap sync, peer discovery, and allowlist management.
-- **kels-registry** — Registry service. Manages peer lifecycle via OpenRaft consensus. Handles multi-party voting for peer addition/removal. Federates state across registries.
+- **kels** — Core KEL service. REST API for event submission and KEL retrieval.
+- **kels-gossip** — Gossip service. Syncs KELs between peers (HyParView + PlumTree). See `docs/gossip.md`.
+- **kels-registry** — Registry service. Peer lifecycle via OpenRaft consensus. See `docs/registry.md`.
 - **identity** — Identity service. Manages the registry's own KEL and signing keys.
 - **hsm** — Hardware security module interface for key storage and signing operations.
 
 ### Libraries
 
 - **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library. HyParView membership + PlumTree broadcast over TCP with three-DH (ee + se + es) P-256 + AES-GCM-256 encryption. Uses 44-char CESR-encoded NodePrefix identities.
+- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with three-DH P-256 + AES-GCM-256).
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
 
@@ -113,66 +121,45 @@ When events are submitted, the KEL merge produces one of:
 - **kels-bench** — Benchmarking tool.
 - **kels-client** — Swift client (iOS/macOS).
 
-### Gossip
+### Event Transfer Helpers
 
-All peers are equal participants in the gossip mesh. HyParView maintains the mesh overlay and PlumTree handles epidemic broadcast to all connected nodes, deduplicating by message ID. When a node receives an announcement for an unfamiliar SAID, it fetches the missing events from any peer in the allowlist that has the event.
+All multi-page event transfers use the `transfer_key_events` infrastructure in `lib/kels/src/types/verifier.rs`. Never use single-page `fetch_key_events` in loops or accumulate unbounded events in memory — use these helpers instead.
 
-### Federation
+**Traits:**
+- **`PagedKelSource`** — paginated event source (e.g., HTTP endpoint, local DB).
+- **`PagedKelSink`** — paginated event destination.
 
-Registries form a federated network using OpenRaft consensus for peer management. Adding a peer requires multi-party approval: one registry proposes, then a threshold of registries vote to approve. Registry prefixes are compiled into a trust anchor at build time via `TRUSTED_REGISTRY_PREFIXES`.
+**Implementations:**
+- **`HttpKelSource`** / **`HttpKelSink`** — HTTP-based source/sink. Create from `KelsClient` via `as_kel_source()` / `as_kel_sink()`.
+- **`StoreKelSource`** — wraps a `KelStore` (local DB) as a `PagedKelSource`.
+- **`RepositoryKelStore`** — wraps a repository as a `PagedKelSink` for DB writes.
 
-### Bootstrap Sync
+**Transfer functions** (all page-at-a-time, divergence-aware, memory-bounded):
+- **`transfer_key_events`** — Core (private). Pages through source, optionally verifies via `KelVerifier`, sends to sink. Handles divergence-aware ordering across page boundaries (held-back events, deferred fork identification, composite SAID cursors).
+- **`forward_key_events`** — Forward without verification. Use for serving/forwarding between services. Supports `since` for delta fetch.
+- **`verify_key_events`** — Verify only (discards events). Returns `Verification` token. Use for consuming (security decisions) when you don't need the events.
+- **`completed_verification`** — Verify only (offset-based `PageLoader`). Returns `Verification` token. Alternative to `verify_key_events` for DB-backed sources.
+- **`benchmark_key_events`** — Pages through source, discards events. For performance testing. Supports `since`.
 
-When a gossip node starts:
-1. **Authorization check** — is this peer in the allowlist?
-2. **If NOT authorized** — loop: preload KELs from Ready peers via HTTP, sleep, recheck
-3. **Once authorized** — discover peers, start gossip swarm
-4. **If Ready peers exist** — wait for first `PeerConnected`, resync to catch events missed during transition
-5. **If no Ready peers** — skip resync (first/only node)
-6. **Mark ready**
+**Collecting functions** (accumulate into memory — only use in true clients like CLI, never in services):
+- **`collect_key_events`** — Verify + collect. Returns `(Verification, Vec<SignedKeyEvent>)`.
+- **`resolve_key_events`** — Collect without verification. Bounded by `max_pages` but accumulates all events. Supports `since`.
 
-The resync step is critical: events occurring between the last preload and joining gossip would otherwise be missed. Bootstrap supports delta fetching via `since` SAID per prefix to avoid re-fetching events the node already has.
+### Verification Invariant
 
-An **anti-entropy loop** (default every 10s) provides background repair: Phase 1 retries known-stale prefixes (tracked in Redis), Phase 2 randomly samples prefix pages against a peer to detect and reconcile silent divergence. Previously-attempted remote effective SAIDs are tracked per-prefix in Redis to avoid infinite retry loops when nodes hold different adversary branch pairs (three-way divergence). New remote states (e.g., after recovery) are retried, and successful syncs clear the tracking.
+The DB cannot be trusted. All operations on KEL data fall into three categories:
 
-### Security Model
-
-- **Fail secure** — restrictive defaults when state is unknown
-- **Advisory locks** — per-prefix PostgreSQL advisory locks serialize all operations on a prefix
-- **Dual signatures** — recovery events (`rec`, `ror`, `dec`, `cnt`) require signatures from both current and recovery keys
-- **Forward commitments** — rotation hash commits to next key before revelation
-- **Rate limiting** — 32 submissions per prefix per minute (fixed window, theoretical max 64 across window boundary)
-- **Nonce deduplication** — prevents replay of signed requests within a 60-second window
-- **Signed peer requests** — prefix listing requires signed requests with timestamp validation and peer verification
-- **Peer allowlist** — gossip peers must be in the allowlist (cached in Redis, refreshed from registry)
-- **Three-DH handshake** — gossip uses ee (forward secrecy), se via HSM (static authentication), and es locally (mutual authentication), with session keys derived from all three secrets via BLAKE3
-- **Contested KELs** — if an adversary reveals the recovery key, the KEL is permanently frozen
-- **Audit records** — recovery operations log removed events for forensic review
-
-### Data Verification Rules
-
-All recorded/persisted data MUST be KEL-backed and verified independently before use. Verification happens at different layers:
-
-- **At ingestion/caching time** — Full verification of the entire trust chain. For peer data: verify peer record chain (SAIDs, prefixes), proposal DAG (SAIDs, chain integrity), vote anchoring in registry KELs, and the peer's own KEL structure. Use existing helpers (`fetch_all_verified_peers()`, `verify_peers_response()`, `verify_peer_votes()`). Never cache or persist data that hasn't been fully verified.
-- **At connection/request time** — Verify the signature on signed requests against the peer's current public key from their KEL (already verified and cached). This is a handshake — ephemeral, no anchoring needed.
-- **At KEL refresh time** — When re-fetching a peer's KEL, verify the KEL structure before updating the cached version.
-- **Never leave verification as a TODO** — If you write code that ingests external data without verification, that is a security vulnerability. Implement verification inline or flag it immediately.
-- **Ephemeral data is the only exception** — Handshakes and transient protocol messages don't need anchoring. Everything else does.
+1. **Serving** — returning data to a client/peer. No verification needed; the receiver verifies.
+2. **Consuming** — using data for security decisions. Requires a `Verification` token, obtainable only via `KelVerifier::into_verification()`. The type system enforces this.
+3. **Resolving** — comparing state to decide whether to sync. Wrong answers trigger unnecessary syncs (which verify), not security holes.
 
 ### Storage
 
-Events are stored in PostgreSQL via the `verifiable-storage` framework:
-- `Stored` derive macro generates CRUD operations, table mappings, and query builders
-- `SignedEvents` derive macro generates signature table operations
-- `Chained` trait provides `derive_prefix`, `derive_said`, `increment`, `verify_prefix`, `verify_said`
-- `SelfAddressed` trait provides content-addressable storage via SAID
-- Transactional operations use `KelTransaction` which wraps a PG transaction with advisory lock
-- Pre-serialized JSON cache in Redis avoids re-serialization on reads
-- Redis pub/sub for cache invalidation across instances
-- Patterns:
-    - An identity creates verifiable data (eg for centralized storage/sharing):
-        1. No request type is required, the full record is requried to verify the SAID/chain anyway - so send it (full record, or a vec/map of them etc) AS the payload
-        2. Creator must create()/increment() and anchor the record by SAID in their KEL
-    - An end verifier queries verifiable data (to consume or derive new values from):
-        1. No response type is required, the full record is requried to verify the SAID/chain - so send it (full record, or vec/map of them) AS the payload
-        2. Verifier must verify the structure of the record(s) (verify() - verifies said or said+prefix), versions increment by 1 (if applicable), verify the chain of records (if applicable), and verify anchoring
+Events are stored in PostgreSQL via the `verifiable-storage` framework (`Stored`, `SignedEvents`, `Chained`, `SelfAddressed` derive macros). Transactional operations use `KelTransaction` (PG transaction + advisory lock).
+
+- All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events. The CASE expression uses `EventKind::sort_priority_mapping()`.
+- `MAX_EVENTS_PER_KEL_QUERY` (512) — page size for database queries and HTTP responses.
+- Pre-serialized JSON cache in Redis for KELs ≤ 512 events; Redis pub/sub for cache invalidation.
+- Verifiable data patterns:
+    - Creator sends full records as the payload (no wrapper types) and anchors by SAID in their KEL.
+    - Verifier receives full records, verifies structure (SAID/prefix), chain integrity, and anchoring.

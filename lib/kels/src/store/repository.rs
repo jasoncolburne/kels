@@ -3,7 +3,11 @@
 use async_trait::async_trait;
 
 use super::KelStore;
-use crate::{error::KelsError, repository::SignedEventRepository, types::Kel};
+use crate::{
+    error::KelsError,
+    repository::SignedEventRepository,
+    types::{PagedKelSink, SignedKeyEvent},
+};
 
 /// Wraps a SignedEventRepository to provide KelStore functionality.
 pub struct RepositoryKelStore<R: SignedEventRepository> {
@@ -18,40 +22,33 @@ impl<R: SignedEventRepository> RepositoryKelStore<R> {
 
 #[async_trait]
 impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
-    async fn load(&self, prefix: &str) -> Result<Option<Kel>, KelsError> {
-        let kel = self.repo.get_kel(prefix).await?;
-        if kel.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(kel))
-        }
+    async fn load(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        self.repo.get_signed_history(prefix, limit, offset).await
     }
 
-    async fn save(&self, kel: &Kel) -> Result<(), KelsError> {
-        // Collect new events that need to be saved
-        let mut new_events = Vec::new();
-        for signed_event in kel.events() {
-            if self
-                .repo
-                .get_signature_by_said(&signed_event.event.said)
-                .await?
-                .is_none()
-            {
-                if signed_event.signatures.is_empty() {
-                    return Err(KelsError::NoCurrentKey);
-                }
-                new_events.push((signed_event.event.clone(), signed_event.event_signatures()));
-            }
-        }
+    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.repo.save_with_merge(prefix, events).await?;
+        Ok(())
+    }
 
-        // Save all new events in a single transaction for atomicity
-        if !new_events.is_empty() {
-            self.repo.create_batch_with_signatures(new_events).await?;
-        }
+    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.repo.save_with_merge(prefix, events).await?;
         Ok(())
     }
 
     async fn delete(&self, _prefix: &str) -> Result<(), KelsError> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<R: SignedEventRepository + 'static> PagedKelSink for RepositoryKelStore<R> {
+    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        self.append(prefix, events).await
     }
 }
