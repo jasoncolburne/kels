@@ -299,7 +299,11 @@ async fn check_and_rotate(
         }
     };
 
-    // Release advisory lock — perform_kel_operation acquires its own via save_with_merge
+    // Release advisory lock. The brief gap before perform_kel_operation re-acquires
+    // is safe: the verification result (rotation check, binding audit) doesn't go stale
+    // because save_with_merge independently re-verifies new events against the current
+    // KEL state. The builder's RwLock serializes callers, and this service is the sole
+    // writer to its own prefix.
     tx.commit().await?;
 
     if should_rotate {

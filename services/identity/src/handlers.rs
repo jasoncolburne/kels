@@ -358,7 +358,14 @@ pub async fn manage_kel(
         .verify_signature(&kel_verification)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
-    // Release advisory lock — perform_operation acquires its own via save_with_merge
+    // Release advisory lock. This creates a brief window where the lock is not held,
+    // but the gap is safe:
+    // - The signature check above only answers "was this request signed by a valid key?"
+    //   which doesn't go stale even if the KEL changes.
+    // - perform_kel_operation re-verifies new events against the current KEL state via
+    //   save_with_merge (which acquires its own advisory lock).
+    // - The builder's RwLock serializes perform_kel_operation calls within the process.
+    // - The identity service is the sole writer to its own prefix.
     tx.commit()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit: {}", e)))?;
