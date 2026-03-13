@@ -15,7 +15,7 @@ pub mod store;
 pub mod verification;
 
 pub use compaction::{compact, expand_all, expand_field};
-pub use credential::{Compactable, Credential, CredentialValue};
+pub use credential::{Compactable, Credential};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
 pub use error::CredentialError;

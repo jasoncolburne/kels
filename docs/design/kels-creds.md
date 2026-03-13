@@ -41,17 +41,9 @@ pub struct Credential<T: Claims> {
 
 The `said` is computed over the fully compacted canonical form — all nested `SelfAddressed` fields replaced by their SAIDs, then the credential's own SAID derived. This means a verifier can always recover the credential SAID from any disclosure state by compacting back down.
 
-### CredentialValue
+### Untyped Operations
 
-Runtime representation using `serde_json::Value`. Used for disclosure and verification when the concrete type `T` is not available (e.g., verifier doesn't have the issuer's Rust types).
-
-```rust
-pub struct CredentialValue {
-    inner: serde_json::Value,  // always a JSON object with "said" field
-}
-```
-
-Operations on `CredentialValue`: compact, expand, disclose (apply DSL), verify structure, extract SAID.
+Disclosure and verification operate on `serde_json::Value` directly — no wrapper type needed. The verifier doesn't need the issuer's Rust types; they work with raw JSON objects that have a `"said"` field.
 
 ### CredentialSchema
 
@@ -273,7 +265,7 @@ pub enum PathToken {
 // -.* parses to CompactRecursive(vec![])
 
 pub fn parse_disclosure(expr: &str) -> Result<Vec<PathToken>, CredentialError>;
-pub async fn apply_disclosure(credential: &mut CredentialValue, tokens: &[PathToken], sad_store: &dyn SADStore) -> Result<(), CredentialError>;
+pub async fn apply_disclosure(said: &str, tokens: &[PathToken], sad_store: &dyn SADStore) -> Result<serde_json::Value, CredentialError>;
 ```
 
 ## Issuance Flow
@@ -353,7 +345,7 @@ pub struct CredentialVerification {
 
 /// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
 pub async fn verify_credential(
-    credential: &CredentialValue,
+    credential: &serde_json::Value,
     sad_store: &dyn SADStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError>;
@@ -435,7 +427,7 @@ lib/kels-creds/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── credential.rs       # Compactable<T>, Credential<T>, CredentialValue, Claims trait
+    ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait
     ├── schema.rs           # CredentialSchema, SchemaField, validation
     ├── edge.rs             # Edge, Edges types
     ├── rule.rs             # Rule, Rules types

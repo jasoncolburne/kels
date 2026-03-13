@@ -127,75 +127,10 @@ impl<T: Claims> Credential<T> {
     }
 }
 
-/// Runtime representation of a credential using `serde_json::Value`.
-/// Used for disclosure and verification when the concrete type `T` is not available.
-#[derive(Debug, Clone)]
-pub struct CredentialValue {
-    inner: serde_json::Value,
-}
-
-impl CredentialValue {
-    /// Wrap a JSON value as a CredentialValue.
-    pub fn from_value(value: serde_json::Value) -> Result<Self, CredentialError> {
-        if !value.is_object() {
-            return Err(CredentialError::InvalidCredential(
-                "credential must be a JSON object".to_string(),
-            ));
-        }
-        if value.get("said").is_none() {
-            return Err(CredentialError::InvalidCredential(
-                "credential must have a 'said' field".to_string(),
-            ));
-        }
-        Ok(Self { inner: value })
-    }
-
-    /// Create from a typed Credential by serializing to Value.
-    pub fn from_credential<T: Claims>(credential: &Credential<T>) -> Result<Self, CredentialError> {
-        let value = serde_json::to_value(credential)?;
-        Self::from_value(value)
-    }
-
-    /// Get the credential's SAID.
-    pub fn said(&self) -> Option<&str> {
-        self.inner.get("said").and_then(|v| v.as_str())
-    }
-
-    /// Get the credential's issuer prefix.
-    pub fn issuer(&self) -> Option<&str> {
-        self.inner.get("issuer").and_then(|v| v.as_str())
-    }
-
-    /// Get the credential's subject prefix.
-    pub fn subject(&self) -> Option<&str> {
-        self.inner.get("subject").and_then(|v| v.as_str())
-    }
-
-    /// Check if this credential is marked irrevocable.
-    pub fn is_irrevocable(&self) -> bool {
-        self.inner
-            .get("irrevocable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    }
-
-    /// Get a reference to the inner Value.
-    pub fn inner(&self) -> &serde_json::Value {
-        &self.inner
-    }
-
-    /// Get a mutable reference to the inner Value.
-    pub fn inner_mut(&mut self) -> &mut serde_json::Value {
-        &mut self.inner
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-
-    use serde_json::json;
 
     use crate::schema::SchemaField;
     use crate::store::InMemorySADStore;
@@ -268,55 +203,6 @@ mod tests {
         let (compact1, _) = cred.compact().unwrap();
         let (compact2, _) = cred.compact().unwrap();
         assert_eq!(compact1.said, compact2.said);
-    }
-
-    #[tokio::test]
-    async fn test_credential_value_from_credential() {
-        let (cred, _) = test_credential().await;
-        let cv = CredentialValue::from_credential(&cred).unwrap();
-
-        assert_eq!(cv.said(), Some(cred.said.as_str()));
-        assert_eq!(
-            cv.issuer(),
-            Some("EIssuer123456789012345678901234567890abcde")
-        );
-        assert_eq!(
-            cv.subject(),
-            Some("ESubject23456789012345678901234567890abcde")
-        );
-    }
-
-    #[test]
-    fn test_credential_value_from_invalid() {
-        assert!(CredentialValue::from_value(json!("string")).is_err());
-        assert!(CredentialValue::from_value(json!({"no_said": true})).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_credential_value_irrevocable() {
-        let store = InMemorySADStore::new();
-        let (cred, _) = Credential::create(
-            test_schema(),
-            "EIssuer123456789012345678901234567890abcde".to_string(),
-            None,
-            test_claims(),
-            None,
-            None,
-            Some(true),
-            &store,
-        )
-        .await
-        .unwrap();
-
-        let cv = CredentialValue::from_credential(&cred).unwrap();
-        assert!(cv.is_irrevocable());
-    }
-
-    #[tokio::test]
-    async fn test_credential_value_not_irrevocable() {
-        let (cred, _) = test_credential().await;
-        let cv = CredentialValue::from_credential(&cred).unwrap();
-        assert!(!cv.is_irrevocable());
     }
 
     #[tokio::test]
