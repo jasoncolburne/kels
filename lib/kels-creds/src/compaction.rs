@@ -221,6 +221,11 @@ mod tests {
         let chunks = compact(&mut value).unwrap();
         assert_eq!(chunks.len(), 3);
         assert!(value.is_string());
+
+        for (said, chunk) in chunks {
+            let chunk_said = chunk.get("said").unwrap().as_str().unwrap();
+            assert_eq!(chunk_said, said);
+        }
     }
 
     #[test]
