@@ -5,12 +5,13 @@ use kels::{
     verify_key_events,
 };
 
-use crate::compaction::compact;
+use verifiable_storage::compact_value;
+
 use crate::credential::CredentialValue;
 use crate::error::CredentialError;
 use crate::revocation::revocation_hash;
 use crate::schema::{CredentialSchema, validate_claims};
-use crate::store::CredentialStore;
+use crate::store::ChunkStore;
 
 /// The result of verifying a credential, including edge verifications.
 #[derive(Debug, Clone)]
@@ -40,7 +41,7 @@ struct CredentialAnchor {
 /// 3. Per-credential structural checks, anchoring, revocation, and edge verification
 pub fn verify_credential<'a>(
     credential: &'a CredentialValue,
-    credential_store: &'a dyn CredentialStore,
+    chunk_store: &'a dyn ChunkStore,
     kel_store: &'a dyn KelStore,
 ) -> std::pin::Pin<
     Box<
@@ -52,7 +53,7 @@ pub fn verify_credential<'a>(
     Box::pin(async move {
         // Phase 1: Collect all credential anchors from the graph
         let mut anchors: Vec<CredentialAnchor> = Vec::new();
-        collect_anchors(credential, credential_store, &mut anchors).await?;
+        collect_anchors(credential, chunk_store, &mut anchors).await?;
 
         // Phase 2: Batch KEL verification — one per unique issuer
         let mut kel_verifications: HashMap<String, KelVerification> = HashMap::new();
@@ -103,7 +104,7 @@ pub fn verify_credential<'a>(
             credential,
             &anchors,
             &kel_verifications,
-            credential_store,
+            chunk_store,
             kel_store,
         )
         .await
@@ -113,7 +114,7 @@ pub fn verify_credential<'a>(
 /// Walk the credential graph, collecting anchors for all credentials.
 fn collect_anchors<'a>(
     credential: &'a CredentialValue,
-    credential_store: &'a dyn CredentialStore,
+    chunk_store: &'a dyn ChunkStore,
     anchors: &'a mut Vec<CredentialAnchor>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
@@ -162,9 +163,10 @@ fn collect_anchors<'a>(
                     None => continue,
                 };
 
-                // Look up the referenced credential from the store
-                if let Some((ref_cred, _)) = credential_store.get_credential(cred_said).await? {
-                    collect_anchors(&ref_cred, credential_store, anchors).await?;
+                // Look up the referenced credential from the chunk store
+                if let Some(ref_value) = chunk_store.get_chunk(cred_said).await? {
+                    let ref_cred = CredentialValue::from_value(ref_value)?;
+                    collect_anchors(&ref_cred, chunk_store, anchors).await?;
                 }
             }
         }
@@ -178,7 +180,7 @@ async fn build_verification(
     credential: &CredentialValue,
     anchors: &[CredentialAnchor],
     kel_verifications: &HashMap<String, KelVerification>,
-    credential_store: &dyn CredentialStore,
+    chunk_store: &dyn ChunkStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError> {
     let said = credential
@@ -193,13 +195,10 @@ async fn build_verification(
 
     // Structural check: compact to canonical form and verify SAID
     let mut compacted = credential.inner().clone();
-    compact(&mut compacted)?;
-    let compacted_said = compacted
-        .get("said")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            CredentialError::VerificationError("compacted credential missing SAID".to_string())
-        })?;
+    compact_value(&mut compacted, &mut std::collections::HashMap::new())?;
+    let compacted_said = compacted.as_str().ok_or_else(|| {
+        CredentialError::VerificationError("compacted credential missing SAID".to_string())
+    })?;
 
     if compacted_said != said {
         return Err(CredentialError::VerificationError(format!(
@@ -252,10 +251,12 @@ async fn build_verification(
                 None => continue,
             };
 
-            if let Some((ref_cred, _)) = credential_store.get_credential(cred_said).await? {
+            if let Some(ref_value) = chunk_store.get_chunk(cred_said).await? {
+                let ref_cred = CredentialValue::from_value(ref_value)?;
+
                 // Recursively verify the edge credential
                 let edge_verification =
-                    verify_credential(&ref_cred, credential_store, kel_store).await?;
+                    verify_credential(&ref_cred, chunk_store, kel_store).await?;
 
                 // Check edge constraints
                 let edge_schema = edge_obj.get("schema").and_then(|v| v.as_str());

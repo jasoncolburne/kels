@@ -1,4 +1,8 @@
-use crate::compaction::{compact_inner, expand_all};
+use std::collections::HashMap;
+
+use verifiable_storage::{compact_value, compute_said_from_value};
+
+use crate::compaction::expand_all;
 use crate::credential::CredentialValue;
 use crate::error::CredentialError;
 use crate::store::ChunkStore;
@@ -104,7 +108,7 @@ pub async fn apply_disclosure(
     chunk_store: &dyn ChunkStore,
 ) -> Result<(), CredentialError> {
     // Start fully compacted
-    compact_inner(credential.inner_mut(), true)?;
+    compact_credential(credential)?;
 
     for token in tokens {
         match token {
@@ -112,7 +116,7 @@ pub async fn apply_disclosure(
                 expand_all(credential.inner_mut(), chunk_store).await?;
             }
             PathToken::CompactRecursive(path) if path.is_empty() => {
-                compact_inner(credential.inner_mut(), true)?;
+                compact_credential(credential)?;
             }
             PathToken::Expand(path) => {
                 expand_at_path(credential.inner_mut(), path, chunk_store, false).await?;
@@ -180,16 +184,39 @@ fn compact_at_path(
     // Only compact if the field is an object with a "said" field
     if child.is_object() && child.get("said").is_some() {
         if recursive {
-            compact_inner(child, false)?;
+            compact_value(child, &mut HashMap::new())?;
         } else {
             // Compact just this field — compute its SAID and replace with string
             // But don't recurse into children first
-            let said = crate::compaction::compute_said_from_value(child)?;
+            let said = compute_said_from_value(child)?;
             *child = serde_json::Value::String(said);
         }
     }
     // If it's already a string (compacted) or doesn't have "said", nothing to do
 
+    Ok(())
+}
+
+/// Compact a credential value in place. After this call, the credential is in
+/// canonical compact form (one layer of keys/values, nested fields replaced by SAIDs).
+fn compact_credential(credential: &mut CredentialValue) -> Result<(), CredentialError> {
+    let mut accumulator = HashMap::new();
+    compact_value(credential.inner_mut(), &mut accumulator)?;
+    // inner is now a SAID string — restore the compacted object from the accumulator
+    let said = credential
+        .inner()
+        .as_str()
+        .ok_or_else(|| {
+            CredentialError::CompactionError("compact did not produce a SAID string".to_string())
+        })?
+        .to_string();
+    let compacted = accumulator
+        .get(&said)
+        .ok_or_else(|| {
+            CredentialError::CompactionError("compacted credential not in accumulator".to_string())
+        })?
+        .clone();
+    *credential.inner_mut() = compacted;
     Ok(())
 }
 
@@ -340,158 +367,83 @@ mod tests {
 
     // -- apply_disclosure tests --
 
-    async fn setup_store_with_chunks(chunks: Vec<(&str, serde_json::Value)>) -> InMemoryChunkStore {
+    /// Compact a value and return (root_said, chunks). The compacted root object
+    /// is in the chunks keyed by root_said.
+    fn compact_and_collect(
+        value: &mut serde_json::Value,
+    ) -> (String, std::collections::HashMap<String, serde_json::Value>) {
+        let chunks = compact(value).unwrap();
+        let said = value.as_str().unwrap().to_string();
+        (said, chunks)
+    }
+
+    /// Build a store from all chunks in the accumulator.
+    async fn store_from_chunks(
+        chunks: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> InMemoryChunkStore {
         let store = InMemoryChunkStore::new();
-        for (said, value) in chunks {
-            store.store_chunk(said, &value).await.unwrap();
-        }
+        store.store_chunks(chunks).await.unwrap();
         store
     }
 
-    fn make_test_credential() -> (serde_json::Value, serde_json::Value, serde_json::Value) {
-        let schema = json!({
+    fn make_test_credential() -> serde_json::Value {
+        json!({
             "said": "",
-            "name": "TestSchema",
-            "version": "1.0"
-        });
-
-        let claims = json!({
-            "said": "",
-            "name": "Alice",
-            "age": 30
-        });
-
-        let credential = json!({
-            "said": "",
-            "schema": schema,
+            "schema": {
+                "said": "",
+                "name": "TestSchema",
+                "version": "1.0"
+            },
             "issuer": "EIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
-            "claims": claims,
-        });
-
-        (credential, schema, claims)
+            "claims": {
+                "said": "",
+                "name": "Alice",
+                "age": 30
+            },
+        })
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_expand_all() {
-        let (mut credential, schema, claims) = make_test_credential();
+        let mut credential = make_test_credential();
+        let (root_said, chunks) = compact_and_collect(&mut credential);
+        let store = store_from_chunks(&chunks).await;
 
-        // Compact to get SAIDs
-        let mut schema_copy = schema.clone();
-        compact(&mut schema_copy).unwrap();
-        let schema_said = schema_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let mut claims_copy = claims.clone();
-        compact(&mut claims_copy).unwrap();
-        let claims_said = claims_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        compact(&mut credential).unwrap();
-
-        // Store the expanded chunks
-        let store = setup_store_with_chunks(vec![
-            (&schema_said, schema_copy),
-            (&claims_said, claims_copy),
-        ])
-        .await;
-
-        let mut cv = CredentialValue::from_value(credential).unwrap();
+        let root = chunks.get(&root_said).unwrap().clone();
+        let mut cv = CredentialValue::from_value(root).unwrap();
         let tokens = parse_disclosure(".*").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 
-        // Schema and claims should be expanded (objects, not strings)
         assert!(cv.inner().get("schema").unwrap().is_object());
         assert!(cv.inner().get("claims").unwrap().is_object());
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_selective() {
-        let (mut credential, schema, claims) = make_test_credential();
+        let mut credential = make_test_credential();
+        let (root_said, chunks) = compact_and_collect(&mut credential);
+        let store = store_from_chunks(&chunks).await;
 
-        let mut schema_copy = schema.clone();
-        compact(&mut schema_copy).unwrap();
-        let schema_said = schema_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let mut claims_copy = claims.clone();
-        compact(&mut claims_copy).unwrap();
-        let claims_said = claims_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        compact(&mut credential).unwrap();
-
-        let store = setup_store_with_chunks(vec![
-            (&schema_said, schema_copy),
-            (&claims_said, claims_copy),
-        ])
-        .await;
-
-        let mut cv = CredentialValue::from_value(credential).unwrap();
+        let root = chunks.get(&root_said).unwrap().clone();
+        let mut cv = CredentialValue::from_value(root).unwrap();
         let tokens = parse_disclosure("schema").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 
-        // Schema should be expanded
         assert!(cv.inner().get("schema").unwrap().is_object());
-        // Claims should still be compacted (string)
         assert!(cv.inner().get("claims").unwrap().is_string());
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_expand_then_compact() {
-        let (mut credential, schema, claims) = make_test_credential();
+        let mut credential = make_test_credential();
+        let (root_said, chunks) = compact_and_collect(&mut credential);
+        let store = store_from_chunks(&chunks).await;
 
-        let mut schema_copy = schema.clone();
-        compact(&mut schema_copy).unwrap();
-        let schema_said = schema_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
+        let root = chunks.get(&root_said).unwrap().clone();
+        let original_said = root.get("said").unwrap().as_str().unwrap().to_string();
+        let mut cv = CredentialValue::from_value(root).unwrap();
 
-        let mut claims_copy = claims.clone();
-        compact(&mut claims_copy).unwrap();
-        let claims_said = claims_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        compact(&mut credential).unwrap();
-        let original_said = credential
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let store = setup_store_with_chunks(vec![
-            (&schema_said, schema_copy),
-            (&claims_said, claims_copy),
-        ])
-        .await;
-
-        let mut cv = CredentialValue::from_value(credential).unwrap();
-
-        // Expand all, then compact all — SAID should be preserved
         let tokens = parse_disclosure(".* -.*").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 
@@ -503,72 +455,46 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_disclosure_empty_expression() {
-        let (mut credential, _, _) = make_test_credential();
-        compact(&mut credential).unwrap();
+        let mut credential = make_test_credential();
+        let (root_said, chunks) = compact_and_collect(&mut credential);
+
+        let root = chunks.get(&root_said).unwrap().clone();
+        let original_said = root.get("said").unwrap().as_str().unwrap().to_string();
+        let mut cv = CredentialValue::from_value(root).unwrap();
 
         let store = InMemoryChunkStore::new();
-        let mut cv = CredentialValue::from_value(credential.clone()).unwrap();
         let tokens = parse_disclosure("").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 
-        // Should still be compacted (no tokens to apply)
         assert_eq!(
             cv.inner().get("said").unwrap().as_str().unwrap(),
-            credential.get("said").unwrap().as_str().unwrap()
+            original_said
         );
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_nested_recursive() {
-        // Build a credential with nested compactable objects
-        let inner = json!({
-            "said": "",
-            "deep": "data"
-        });
-        let claims = json!({
-            "said": "",
-            "name": "Alice",
-            "address": inner
-        });
         let mut credential = json!({
-            "said": "",
+            "said": "ECredential",
             "schema": "ESchemaPlaceholder123456789012345678901234",
             "issuer": "EIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
-            "claims": claims.clone(),
+            "claims": {
+                "said": "EClaims",
+                "name": "Alice",
+                "address": {
+                    "said": "EAddress",
+                    "deep": "data"
+                }
+            },
         });
 
-        // Compact to get all SAIDs
-        let mut inner_copy = inner.clone();
-        compact(&mut inner_copy).unwrap();
-        let inner_said = inner_copy
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
+        let (root_said, chunks) = compact_and_collect(&mut credential);
+        let store = store_from_chunks(&chunks).await;
 
-        let mut claims_with_compacted_inner = claims.clone();
-        compact(&mut claims_with_compacted_inner).unwrap();
-        let claims_said = claims_with_compacted_inner
-            .get("said")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
+        let root = chunks.get(&root_said).unwrap().clone();
+        let mut cv = CredentialValue::from_value(root).unwrap();
 
-        compact(&mut credential).unwrap();
-
-        // Store chunks: claims (with inner compacted) and inner
-        let store = setup_store_with_chunks(vec![
-            (&claims_said, claims_with_compacted_inner),
-            (&inner_said, inner_copy),
-        ])
-        .await;
-
-        let mut cv = CredentialValue::from_value(credential).unwrap();
-
-        // claims.* should expand claims AND its nested address
         let tokens = parse_disclosure("claims.*").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 

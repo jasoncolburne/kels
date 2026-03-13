@@ -1,77 +1,19 @@
-use cesr::{Digest, Matter};
+use std::collections::HashMap;
+
+use verifiable_storage::compact_value;
 
 use crate::error::CredentialError;
 use crate::store::ChunkStore;
 
-const SAID_PLACEHOLDER: &str = "############################################";
-
-/// Compute a SAID from a serde_json::Value.
-/// Sets the "said" field to placeholder, serializes, blake3 hashes, CESR encodes.
-pub fn compute_said_from_value(value: &serde_json::Value) -> Result<String, CredentialError> {
-    let mut work = value.clone();
-    let obj = work.as_object_mut().ok_or_else(|| {
-        CredentialError::CompactionError("value must be an object to compute SAID".to_string())
-    })?;
-
-    obj.insert(
-        "said".to_string(),
-        serde_json::Value::String(SAID_PLACEHOLDER.to_string()),
-    );
-
-    let bytes = serde_json::to_vec(&work)?;
-    Ok(Digest::blake3_256(&bytes).qb64())
-}
-
-/// Compact a JSON value bottom-up, depth-first.
-///
-/// Walks the tree in post-order. At each object node with a "said" field:
-/// 1. Recursively compact all children first
-/// 2. Derive the node's SAID over its current form (children are now SAIDs)
-/// 3. Replace the object with its SAID string in the parent
-///
-/// The root object keeps its structure with a computed "said" field —
-/// it is not itself replaced by a SAID string.
-pub fn compact(value: &mut serde_json::Value) -> Result<(), CredentialError> {
-    compact_inner(value, /* is_root */ true)
-}
-
-pub(crate) fn compact_inner(
+/// Compact a JSON value bottom-up, depth-first. Delegates to `compact_value` from
+/// verifiable-storage. Returns extracted chunks keyed by SAID. After this call,
+/// `value` is a SAID string (all nodes including root are replaced).
+pub fn compact(
     value: &mut serde_json::Value,
-    is_root: bool,
-) -> Result<(), CredentialError> {
-    if let Some(obj) = value.as_object_mut() {
-        // Collect keys that need recursive compaction
-        let keys: Vec<String> = obj.keys().cloned().collect();
-        for key in &keys {
-            if key == "said" {
-                continue;
-            }
-            if let Some(child) = obj.get_mut(key) {
-                compact_inner(child, false)?;
-            }
-        }
-
-        // If this object has a "said" field, compute its SAID
-        if obj.contains_key("said") {
-            let said = compute_said_from_value(value)?;
-            if is_root {
-                // Root: keep structure, set said field
-                let obj = value
-                    .as_object_mut()
-                    .ok_or_else(|| CredentialError::CompactionError("lost root".to_string()))?;
-                obj.insert("said".to_string(), serde_json::Value::String(said));
-            } else {
-                // Non-root: replace entire object with SAID string
-                *value = serde_json::Value::String(said);
-            }
-        }
-    } else if let Some(arr) = value.as_array_mut() {
-        for elem in arr.iter_mut() {
-            compact_inner(elem, false)?;
-        }
-    }
-
-    Ok(())
+) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
+    let mut accumulator = HashMap::new();
+    compact_value(value, &mut accumulator)?;
+    Ok(accumulator)
 }
 
 /// Replace a compacted SAID string at a path with a full object, verifying the SAID matches.
@@ -97,32 +39,22 @@ pub fn expand_field(
     })?;
 
     // Verify the expanded object's SAID matches
-    let expanded_said = if let Some(said) = expanded.get("said").and_then(|s| s.as_str()) {
-        // If the object has a said field, verify by computing SAID of the compacted form
-        let mut compacted_copy = expanded.clone();
-        compact_inner(&mut compacted_copy, false)?;
-        let computed = compacted_copy.as_str().ok_or_else(|| {
-            CredentialError::ExpansionError("compaction did not produce a SAID string".to_string())
-        })?;
-        if computed != current_said {
-            return Err(CredentialError::ExpansionError(format!(
-                "SAID mismatch: expected {}, got {} (from said field {})",
-                current_said, computed, said
-            )));
-        }
-        computed.to_string()
-    } else {
+    if expanded.get("said").and_then(|s| s.as_str()).is_none() {
         return Err(CredentialError::ExpansionError(format!(
             "expanded value has no 'said' field for '{}'",
             last
         )));
-    };
+    }
 
-    // Verify match
-    if expanded_said != current_said {
+    let mut compacted_copy = expanded.clone();
+    compact_value(&mut compacted_copy, &mut HashMap::new())?;
+    let computed = compacted_copy.as_str().ok_or_else(|| {
+        CredentialError::ExpansionError("compaction did not produce a SAID string".to_string())
+    })?;
+    if computed != current_said {
         return Err(CredentialError::ExpansionError(format!(
             "SAID mismatch for '{}': expected {}, got {}",
-            last, current_said, expanded_said
+            last, current_said, computed
         )));
     }
 
@@ -195,6 +127,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    use verifiable_storage::compute_said_from_value;
+
     #[test]
     fn test_compute_said_from_value() {
         let value = json!({
@@ -209,7 +143,6 @@ mod tests {
     fn test_compute_said_deterministic() {
         let v1 = json!({"said": "", "name": "test"});
         let v2 = json!({"said": "different", "name": "test"});
-        // Both should produce the same SAID since the said field is replaced with placeholder
         assert_eq!(
             compute_said_from_value(&v1).unwrap(),
             compute_said_from_value(&v2).unwrap()
@@ -223,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_flat_object() {
+    fn test_compact_replaces_with_said() {
         let mut value = json!({
             "said": "",
             "name": "root",
@@ -233,17 +166,17 @@ mod tests {
             }
         });
 
-        compact(&mut value).unwrap();
+        let chunks = compact(&mut value).unwrap();
 
-        // Root should still be an object with computed said
-        assert!(value.is_object());
-        let said = value.get("said").unwrap().as_str().unwrap();
-        assert_eq!(said.len(), 44);
+        // Root is replaced with a SAID string
+        assert!(value.is_string());
+        assert_eq!(value.as_str().unwrap().len(), 44);
 
-        // Child should be replaced by its SAID string
-        let child = value.get("child").unwrap();
-        assert!(child.is_string());
-        assert_eq!(child.as_str().unwrap().len(), 44);
+        // Both root and child are in the accumulator
+        assert_eq!(chunks.len(), 2);
+        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        assert!(root.is_object());
+        assert!(root.get("child").unwrap().is_string());
     }
 
     #[test]
@@ -252,10 +185,10 @@ mod tests {
             "name": "no said field"
         });
 
-        // Should succeed without modification (no said field to derive)
-        compact(&mut value).unwrap();
+        let chunks = compact(&mut value).unwrap();
         assert!(value.is_object());
         assert!(value.get("said").is_none());
+        assert!(chunks.is_empty());
     }
 
     #[test]
@@ -271,13 +204,9 @@ mod tests {
             }
         });
 
-        compact(&mut value).unwrap();
-
-        // Root should be an object
-        assert!(value.is_object());
-        // level1 should be a SAID string (since it's not root)
-        let level1 = value.get("level1").unwrap();
-        assert!(level1.is_string());
+        let chunks = compact(&mut value).unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert!(value.is_string());
     }
 
     #[test]
@@ -291,14 +220,15 @@ mod tests {
             }
         });
 
-        compact(&mut value).unwrap();
-        let said1 = value.get("said").unwrap().as_str().unwrap().to_string();
+        let chunks1 = compact(&mut value).unwrap();
+        let said1 = value.as_str().unwrap().to_string();
 
-        // Compacting again should produce the same result
-        compact(&mut value).unwrap();
-        let said2 = value.get("said").unwrap().as_str().unwrap().to_string();
+        let chunks2 = compact(&mut value).unwrap();
+        let said2 = value.as_str().unwrap().to_string();
 
         assert_eq!(said1, said2);
+        assert!(chunks2.is_empty());
+        assert_eq!(chunks1.len(), 2);
     }
 
     #[test]
@@ -314,37 +244,38 @@ mod tests {
             "child": child_obj.clone()
         });
 
-        // First compact to get child's SAID
-        let mut child_for_said = child_obj.clone();
-        compact(&mut child_for_said).unwrap();
+        let chunks = compact(&mut value).unwrap();
+        let root_said = value.as_str().unwrap().to_string();
 
-        compact(&mut value).unwrap();
-        let said_after_compact = value.get("said").unwrap().as_str().unwrap().to_string();
+        let mut root = chunks.get(&root_said).unwrap().clone();
+        expand_field(&mut root, &["child"], child_obj).unwrap();
 
-        // Expand child back
-        expand_field(&mut value, &["child"], child_obj).unwrap();
+        let chunks2 = compact(&mut root).unwrap();
+        let root_said2 = root.as_str().unwrap().to_string();
 
-        // Re-compact should produce the same SAID
-        compact(&mut value).unwrap();
-        let said_after_roundtrip = value.get("said").unwrap().as_str().unwrap().to_string();
-
-        assert_eq!(said_after_compact, said_after_roundtrip);
+        assert_eq!(root_said, root_said2);
+        assert_eq!(chunks.len(), chunks2.len());
     }
 
     #[test]
     fn test_expand_field_said_mismatch() {
         let mut value = json!({
             "said": "",
-            "child": "EAbc1234567890123456789012345678901234567890"
+            "child": {
+                "said": "",
+                "data": "original"
+            }
         });
+
+        let chunks = compact(&mut value).unwrap();
+        let mut root = chunks.get(value.as_str().unwrap()).unwrap().clone();
 
         let wrong_expanded = json!({
             "said": "",
             "data": "wrong content"
         });
 
-        // Should fail because the expanded object's SAID won't match
-        assert!(expand_field(&mut value, &["child"], wrong_expanded).is_err());
+        assert!(expand_field(&mut root, &["child"], wrong_expanded).is_err());
     }
 
     #[test]
@@ -359,7 +290,6 @@ mod tests {
             "data": "something"
         });
 
-        // Should fail because the field is not a SAID string
         assert!(expand_field(&mut value, &["child"], expanded).is_err());
     }
 
@@ -371,7 +301,6 @@ mod tests {
 
     #[test]
     fn test_said_agreement_with_typed() {
-        // Verify that compute_said_from_value agrees with the typed SelfAddressed derive
         use std::collections::BTreeMap;
 
         use crate::schema::{CredentialSchema, SchemaField};
@@ -387,11 +316,8 @@ mod tests {
         )
         .unwrap();
 
-        // Serialize the typed schema to a Value and compute SAID
         let value = serde_json::to_value(&schema).unwrap();
         let value_said = compute_said_from_value(&value).unwrap();
-
-        // Should match the typed SAID
         assert_eq!(schema.said, value_said);
     }
 
@@ -405,13 +331,15 @@ mod tests {
             ]
         });
 
-        compact(&mut value).unwrap();
+        let chunks = compact(&mut value).unwrap();
 
-        // Array items with said fields should be compacted to SAID strings
-        let items = value.get("items").unwrap().as_array().unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert!(value.is_string());
+
+        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        let items = root.get("items").unwrap().as_array().unwrap();
         assert!(items[0].is_string());
         assert!(items[1].is_string());
-        // Different data should produce different SAIDs
         assert_ne!(items[0].as_str().unwrap(), items[1].as_str().unwrap());
     }
 }
