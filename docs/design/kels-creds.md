@@ -1,6 +1,6 @@
 # kels-creds: Credential Framework Design
 
-A purely computational library for issuing, compacting, selectively disclosing, and verifying credentials anchored in KELs. Defines a storage trait (`ChunkStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `ChunkStore` as content-addressable chunks keyed by SAID.
+A purely computational library for issuing, compacting, selectively disclosing, and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `SADStore` as content-addressable chunks keyed by SAID.
 
 ## Core Types
 
@@ -142,13 +142,13 @@ pub struct Rules {
 }
 ```
 
-### ChunkStore
+### SADStore
 
 Content-addressable store for all SelfAddressed JSON data (credentials, schemas, claims, edges, rules, etc.), keyed by SAID. The single source of truth for all credential data. Batch operations are the required trait methods; single-item convenience methods are provided as defaults.
 
 ```rust
 #[async_trait]
-pub trait ChunkStore: Send + Sync {
+pub trait SADStore: Send + Sync {
     async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError>;
     async fn get_chunks(&self, saids: &HashSet<String>) -> Result<HashMap<String, Value>, CredentialError>;
 
@@ -158,7 +158,7 @@ pub trait ChunkStore: Send + Sync {
 }
 ```
 
-An `InMemoryChunkStore` (HashMap-based) is provided for tests, CLI tools, and lightweight use cases.
+An `InMemorySADStore` (HashMap-based) is provided for tests, CLI tools, and lightweight use cases.
 
 ## Compaction and Expansion
 
@@ -199,7 +199,7 @@ Each SAID is a function of its compacted children — a leaf object's SAID is ov
 **Expand:**
 Expansion requires the caller to supply the full objects. The library provides:
 - `expand_field(path, value)` — replace a SAID string at `path` with the full object, verify the object's SAID matches
-- `expand_all(chunk_store)` — expand all compacted fields using a `ChunkStore` for lookup
+- `expand_all(sad_store)` — expand all compacted fields using a `SADStore` for lookup
 
 **Invariant:** A credential's SAID is always computed over the fully compacted canonical form. From any disclosure state, `compact()` recovers the canonical form and its SAID. Expanding fields then re-compacting must produce the same SAID.
 
@@ -273,21 +273,21 @@ pub enum PathToken {
 // -.* parses to CompactRecursive(vec![])
 
 pub fn parse_disclosure(expr: &str) -> Result<Vec<PathToken>, CredentialError>;
-pub async fn apply_disclosure(credential: &mut CredentialValue, tokens: &[PathToken], chunk_store: &dyn ChunkStore) -> Result<(), CredentialError>;
+pub async fn apply_disclosure(credential: &mut CredentialValue, tokens: &[PathToken], sad_store: &dyn SADStore) -> Result<(), CredentialError>;
 ```
 
 ## Issuance Flow
 
-1. Issuer constructs `Credential<T>` via `Credential::create()`, which takes a `&dyn ChunkStore` and stores all compacted chunks automatically
+1. Issuer constructs `Credential<T>` via `Credential::create()`, which takes a `&dyn SADStore` and stores all compacted chunks automatically
 2. Inner `SelfAddressed` fields (`claims`, `schema`, and if present, `edges` and `rules`) have their SAIDs derived
-3. Credential is compacted to canonical form (all nested fields replaced by SAIDs), then the credential's SAID is computed over this compact form. All chunks (including the compacted credential itself) are stored in the `ChunkStore`
+3. Credential is compacted to canonical form (all nested fields replaced by SAIDs), then the credential's SAID is computed over this compact form. All chunks (including the compacted credential itself) are stored in the `SADStore`
 4. `create()` returns `(Credential<T>, String)` — the expanded credential with its SAID set, plus the SAID
 5. Issuer creates an `ixn` event anchoring the credential SAID
 6. Credential delivered to holder (out of band)
 
 ```rust
 // Issuance
-let (credential, said) = Credential::create(schema, issuer, subject, claims, edges, rules, irrevocable, &chunk_store).await?;
+let (credential, said) = Credential::create(schema, issuer, subject, claims, edges, rules, irrevocable, &sad_store).await?;
 builder.interact(&said)?;  // anchor in KEL
 ```
 
@@ -326,11 +326,11 @@ Verification combines structural checks with KEL-anchored trust. Anchoring in th
 
 ### Batched KEL Verification
 
-Before any structural checks, the verifier walks the entire credential graph (top-level credential + all edge credentials from the `ChunkStore`) to collect every `(issuer_prefix, credential_said, revocation_hash)` tuple. These are grouped by issuer prefix, and a single `verify_key_events` call is made per unique issuer with all that issuer's SAIDs and revocation hashes registered via `check_anchors`. This avoids redundant KEL walks when multiple credentials share an issuer.
+Before any structural checks, the verifier walks the entire credential graph (top-level credential + all edge credentials from the `SADStore`) to collect every `(issuer_prefix, credential_said, revocation_hash)` tuple. These are grouped by issuer prefix, and a single `verify_key_events` call is made per unique issuer with all that issuer's SAIDs and revocation hashes registered via `check_anchors`. This avoids redundant KEL walks when multiple credentials share an issuer.
 
 ### Steps
 
-1. **Collect anchors** — Walk the credential tree, pulling `issuer`, `said`, and (unless irrevocable) `revocation_hash` from each credential. Look up edge credentials from `ChunkStore` by SAID. Group by issuer prefix.
+1. **Collect anchors** — Walk the credential tree, pulling `issuer`, `said`, and (unless irrevocable) `revocation_hash` from each credential. Look up edge credentials from `SADStore` by SAID. Group by issuer prefix.
 2. **Batch KEL verification** — One `verify_key_events` per unique issuer on the `KelStore`, with all anchors for that issuer registered via `check_anchors`. Store the resulting `KelVerification` per issuer.
 3. **Structure** — For each credential, compact to canonical form, verify `said` matches
 4. **Schema** — If schema is expanded, validate `claims` conforms to schema fields
@@ -354,22 +354,22 @@ pub struct CredentialVerification {
 /// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
 pub async fn verify_credential(
     credential: &CredentialValue,
-    chunk_store: &dyn ChunkStore,
+    sad_store: &dyn SADStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
-Verification is fully self-contained — it verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `ChunkStore`, and recurses. The caller does not need to pre-verify any KELs.
+Verification is fully self-contained — it verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `SADStore`, and recurses. The caller does not need to pre-verify any KELs.
 
 ### Credential Graph Structure
 
-A credential with edges forms a DAG rooted at the top-level credential, with edges pointing to other credentials, ultimately tracing back to KEL inception events. All credential data lives in the `ChunkStore` — edge credentials are looked up by their SAID. Insertion order doesn't matter since the store is content-addressable.
+A credential with edges forms a DAG rooted at the top-level credential, with edges pointing to other credentials, ultimately tracing back to KEL inception events. All credential data lives in the `SADStore` — edge credentials are looked up by their SAID. Insertion order doesn't matter since the store is content-addressable.
 
 ## Edge / Chaining Verification
 
 When an edge is expanded and includes a `credential` SAID:
 
-1. Look up the referenced credential from `ChunkStore` by SAID
+1. Look up the referenced credential from `SADStore` by SAID
 2. If the edge has a `schema`, verify the referenced credential's schema SAID matches
 3. If the edge has an `issuer`, verify the referenced credential's issuer matches
 4. If `delegated` is `true`, verify the referenced credential's issuer's `KelVerification.delegating_prefix()` matches `edge.issuer` — i.e., the edge's issuer is the delegating authority, and the actual credential issuer is one of its delegates
@@ -439,7 +439,7 @@ lib/kels-creds/
     ├── schema.rs           # CredentialSchema, SchemaField, validation
     ├── edge.rs             # Edge, Edges types
     ├── rule.rs             # Rule, Rules types
-    ├── store.rs            # ChunkStore trait + InMemoryChunkStore
+    ├── store.rs            # SADStore trait + InMemorySADStore
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact, expand, round-trip
     ├── verification.rs     # verify_credential, CredentialVerification

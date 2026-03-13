@@ -9,7 +9,7 @@ use crate::edge::Edges;
 use crate::error::CredentialError;
 use crate::rule::Rules;
 use crate::schema::CredentialSchema;
-use crate::store::ChunkStore;
+use crate::store::SADStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -71,7 +71,7 @@ impl<T: Claims> Credential<T> {
         edges: Option<Edges>,
         rules: Option<Rules>,
         irrevocable: Option<bool>,
-        store: &dyn ChunkStore,
+        store: &dyn SADStore,
     ) -> Result<(Self, String), CredentialError> {
         schema.derive_said()?;
         claims.derive_said()?;
@@ -198,7 +198,7 @@ mod tests {
     use serde_json::json;
 
     use crate::schema::SchemaField;
-    use crate::store::InMemoryChunkStore;
+    use crate::store::InMemorySADStore;
 
     /// A simple claims type for testing.
     #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -228,7 +228,7 @@ mod tests {
     }
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
-        let store = InMemoryChunkStore::new();
+        let store = InMemorySADStore::new();
         Credential::create(
             test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_credential_value_irrevocable() {
-        let store = InMemoryChunkStore::new();
+        let store = InMemorySADStore::new();
         let (cred, _) = Credential::create(
             test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
@@ -335,7 +335,7 @@ mod tests {
         edges_map.insert("license".to_string(), edge);
         let edges = Edges::new_validated(edges_map).unwrap();
 
-        let store = InMemoryChunkStore::new();
+        let store = InMemorySADStore::new();
         let (cred, _) = Credential::create(
             test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
@@ -365,7 +365,7 @@ mod tests {
         rules_map.insert("terms".to_string(), rule);
         let rules = Rules::new_validated(rules_map).unwrap();
 
-        let store = InMemoryChunkStore::new();
+        let store = InMemorySADStore::new();
         let (cred, _) = Credential::create(
             test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use verifiable_storage::compact_value;
 
 use crate::error::CredentialError;
-use crate::store::ChunkStore;
+use crate::store::SADStore;
 
 /// Compact a JSON value bottom-up, depth-first. Delegates to `compact_value` from
 /// verifiable-storage. Returns extracted chunks keyed by SAID. After this call,
@@ -62,12 +62,12 @@ pub fn expand_field(
     Ok(())
 }
 
-/// Expand all compacted SAID strings in a value by looking them up in the chunk store.
-/// Walks the tree and replaces any string value that resolves in the chunk store
+/// Expand all compacted SAID strings in a value by looking them up in the SAD store.
+/// Walks the tree and replaces any string value that resolves in the SAD store
 /// with the full object. Recurses into expanded objects to expand nested SAIDs.
 pub fn expand_all<'a>(
     value: &'a mut serde_json::Value,
-    chunk_store: &'a dyn ChunkStore,
+    sad_store: &'a dyn SADStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
         if let Some(obj) = value.as_object_mut() {
@@ -78,28 +78,28 @@ pub fn expand_all<'a>(
                 }
                 if let Some(child) = obj.get(&key)
                     && let Some(said) = child.as_str()
-                    && let Some(expanded) = chunk_store.get_chunk(said).await?
+                    && let Some(expanded) = sad_store.get_chunk(said).await?
                 {
                     obj.insert(key.clone(), expanded);
                     if let Some(child) = obj.get_mut(&key) {
-                        expand_all(child, chunk_store).await?;
+                        expand_all(child, sad_store).await?;
                     }
                     continue;
                 }
                 if let Some(child) = obj.get_mut(&key) {
-                    expand_all(child, chunk_store).await?;
+                    expand_all(child, sad_store).await?;
                 }
             }
         } else if let Some(arr) = value.as_array_mut() {
             for elem in arr.iter_mut() {
                 if let Some(said) = elem.as_str().map(|s| s.to_string())
-                    && let Some(expanded) = chunk_store.get_chunk(&said).await?
+                    && let Some(expanded) = sad_store.get_chunk(&said).await?
                 {
                     *elem = expanded;
-                    expand_all(elem, chunk_store).await?;
+                    expand_all(elem, sad_store).await?;
                     continue;
                 }
-                expand_all(elem, chunk_store).await?;
+                expand_all(elem, sad_store).await?;
             }
         }
 

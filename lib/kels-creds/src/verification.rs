@@ -11,7 +11,7 @@ use crate::credential::CredentialValue;
 use crate::error::CredentialError;
 use crate::revocation::revocation_hash;
 use crate::schema::{CredentialSchema, validate_claims};
-use crate::store::ChunkStore;
+use crate::store::SADStore;
 
 /// The result of verifying a credential, including edge verifications.
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ struct CredentialAnchor {
 /// 3. Per-credential structural checks, anchoring, revocation, and edge verification
 pub fn verify_credential<'a>(
     credential: &'a CredentialValue,
-    chunk_store: &'a dyn ChunkStore,
+    sad_store: &'a dyn SADStore,
     kel_store: &'a dyn KelStore,
 ) -> std::pin::Pin<
     Box<
@@ -53,7 +53,7 @@ pub fn verify_credential<'a>(
     Box::pin(async move {
         // Phase 1: Collect all credential anchors from the graph
         let mut anchors: Vec<CredentialAnchor> = Vec::new();
-        collect_anchors(credential, chunk_store, &mut anchors).await?;
+        collect_anchors(credential, sad_store, &mut anchors).await?;
 
         // Phase 2: Batch KEL verification — one per unique issuer
         let mut kel_verifications: HashMap<String, KelVerification> = HashMap::new();
@@ -104,7 +104,7 @@ pub fn verify_credential<'a>(
             credential,
             &anchors,
             &kel_verifications,
-            chunk_store,
+            sad_store,
             kel_store,
         )
         .await
@@ -114,7 +114,7 @@ pub fn verify_credential<'a>(
 /// Walk the credential graph, collecting anchors for all credentials.
 fn collect_anchors<'a>(
     credential: &'a CredentialValue,
-    chunk_store: &'a dyn ChunkStore,
+    sad_store: &'a dyn SADStore,
     anchors: &'a mut Vec<CredentialAnchor>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
@@ -163,10 +163,10 @@ fn collect_anchors<'a>(
                     None => continue,
                 };
 
-                // Look up the referenced credential from the chunk store
-                if let Some(ref_value) = chunk_store.get_chunk(cred_said).await? {
+                // Look up the referenced credential from the SAD store
+                if let Some(ref_value) = sad_store.get_chunk(cred_said).await? {
                     let ref_cred = CredentialValue::from_value(ref_value)?;
-                    collect_anchors(&ref_cred, chunk_store, anchors).await?;
+                    collect_anchors(&ref_cred, sad_store, anchors).await?;
                 }
             }
         }
@@ -180,7 +180,7 @@ async fn build_verification(
     credential: &CredentialValue,
     anchors: &[CredentialAnchor],
     kel_verifications: &HashMap<String, KelVerification>,
-    chunk_store: &dyn ChunkStore,
+    sad_store: &dyn SADStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError> {
     let said = credential
@@ -251,12 +251,11 @@ async fn build_verification(
                 None => continue,
             };
 
-            if let Some(ref_value) = chunk_store.get_chunk(cred_said).await? {
+            if let Some(ref_value) = sad_store.get_chunk(cred_said).await? {
                 let ref_cred = CredentialValue::from_value(ref_value)?;
 
                 // Recursively verify the edge credential
-                let edge_verification =
-                    verify_credential(&ref_cred, chunk_store, kel_store).await?;
+                let edge_verification = verify_credential(&ref_cred, sad_store, kel_store).await?;
 
                 // Check edge constraints
                 let edge_schema = edge_obj.get("schema").and_then(|v| v.as_str());

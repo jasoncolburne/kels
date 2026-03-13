@@ -5,7 +5,7 @@ use verifiable_storage::{compact_value, compute_said_from_value};
 use crate::compaction::expand_all;
 use crate::credential::CredentialValue;
 use crate::error::CredentialError;
-use crate::store::ChunkStore;
+use crate::store::SADStore;
 
 /// AST node for the disclosure path DSL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,14 +98,14 @@ fn parse_token(raw: &str) -> Result<PathToken, CredentialError> {
 ///
 /// 1. Starts by compacting the credential to canonical form
 /// 2. Applies tokens left-to-right:
-///    - Expand: look up SAID in chunk_store, replace with full object
+///    - Expand: look up SAID in SAD store, replace with full object
 ///    - ExpandRecursive: expand and recursively expand all children
 ///    - Compact: replace object at path with its SAID
 ///    - CompactRecursive: compact object and all children
 pub async fn apply_disclosure(
     credential: &mut CredentialValue,
     tokens: &[PathToken],
-    chunk_store: &dyn ChunkStore,
+    sad_store: &dyn SADStore,
 ) -> Result<(), CredentialError> {
     // Start fully compacted
     compact_credential(credential)?;
@@ -113,16 +113,16 @@ pub async fn apply_disclosure(
     for token in tokens {
         match token {
             PathToken::ExpandRecursive(path) if path.is_empty() => {
-                expand_all(credential.inner_mut(), chunk_store).await?;
+                expand_all(credential.inner_mut(), sad_store).await?;
             }
             PathToken::CompactRecursive(path) if path.is_empty() => {
                 compact_credential(credential)?;
             }
             PathToken::Expand(path) => {
-                expand_at_path(credential.inner_mut(), path, chunk_store, false).await?;
+                expand_at_path(credential.inner_mut(), path, sad_store, false).await?;
             }
             PathToken::ExpandRecursive(path) => {
-                expand_at_path(credential.inner_mut(), path, chunk_store, true).await?;
+                expand_at_path(credential.inner_mut(), path, sad_store, true).await?;
             }
             PathToken::Compact(path) => {
                 compact_at_path(credential.inner_mut(), path, false)?;
@@ -140,7 +140,7 @@ pub async fn apply_disclosure(
 async fn expand_at_path(
     value: &mut serde_json::Value,
     path: &[String],
-    chunk_store: &dyn ChunkStore,
+    sad_store: &dyn SADStore,
     recursive: bool,
 ) -> Result<(), CredentialError> {
     let (parent, last) = navigate_to_field(value, path)?;
@@ -151,18 +151,18 @@ async fn expand_at_path(
 
     if let Some(said) = current.as_str() {
         // Field is compacted (SAID string) — look it up
-        let expanded = chunk_store.get_chunk(said).await?.ok_or_else(|| {
+        let expanded = sad_store.get_chunk(said).await?.ok_or_else(|| {
             CredentialError::ExpansionError(format!("chunk not found in store for SAID: {}", said))
         })?;
         parent.insert(last.to_string(), expanded);
 
         if recursive && let Some(child) = parent.get_mut(last) {
-            expand_all(child, chunk_store).await?;
+            expand_all(child, sad_store).await?;
         }
     } else if recursive {
         // Field is already expanded — recursively expand its children
         if let Some(child) = parent.get_mut(last) {
-            expand_all(child, chunk_store).await?;
+            expand_all(child, sad_store).await?;
         }
     }
 
@@ -254,7 +254,7 @@ mod tests {
     use serde_json::json;
 
     use crate::compaction::compact;
-    use crate::store::InMemoryChunkStore;
+    use crate::store::InMemorySADStore;
 
     // -- parse_disclosure tests --
 
@@ -380,8 +380,8 @@ mod tests {
     /// Build a store from all chunks in the accumulator.
     async fn store_from_chunks(
         chunks: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> InMemoryChunkStore {
-        let store = InMemoryChunkStore::new();
+    ) -> InMemorySADStore {
+        let store = InMemorySADStore::new();
         store.store_chunks(chunks).await.unwrap();
         store
     }
@@ -462,7 +462,7 @@ mod tests {
         let original_said = root.get("said").unwrap().as_str().unwrap().to_string();
         let mut cv = CredentialValue::from_value(root).unwrap();
 
-        let store = InMemoryChunkStore::new();
+        let store = InMemorySADStore::new();
         let tokens = parse_disclosure("").unwrap();
         apply_disclosure(&mut cv, &tokens, &store).await.unwrap();
 

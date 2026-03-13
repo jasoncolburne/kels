@@ -9,7 +9,7 @@ use crate::error::CredentialError;
 /// Content-addressable store for any SelfAddressed JSON chunk, keyed by SAID.
 /// Used by compaction, expansion, and the disclosure DSL.
 #[async_trait]
-pub trait ChunkStore: Send + Sync {
+pub trait SADStore: Send + Sync {
     async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError>;
 
     async fn get_chunks(
@@ -29,13 +29,13 @@ pub trait ChunkStore: Send + Sync {
     }
 }
 
-/// In-memory HashMap-based implementation of `ChunkStore`.
+/// In-memory HashMap-based implementation of `SADStore`.
 /// Useful for tests, CLI tools, and lightweight use cases.
-pub struct InMemoryChunkStore {
+pub struct InMemorySADStore {
     chunks: Mutex<HashMap<String, Value>>,
 }
 
-impl InMemoryChunkStore {
+impl InMemorySADStore {
     pub fn new() -> Self {
         Self {
             chunks: Mutex::new(HashMap::new()),
@@ -43,14 +43,14 @@ impl InMemoryChunkStore {
     }
 }
 
-impl Default for InMemoryChunkStore {
+impl Default for InMemorySADStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl ChunkStore for InMemoryChunkStore {
+impl SADStore for InMemorySADStore {
     async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError> {
         let mut store = self
             .chunks
@@ -80,8 +80,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_in_memory_chunk_store_roundtrip() {
-        let store = InMemoryChunkStore::new();
+    async fn test_in_memory_sad_store_roundtrip() {
+        let store = InMemorySADStore::new();
         let value = serde_json::json!({"said": "EAbc", "data": "test"});
 
         store.store_chunk("EAbc", &value).await.unwrap();
@@ -90,15 +90,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_chunk_store_missing() {
-        let store = InMemoryChunkStore::new();
+    async fn test_in_memory_sad_store_missing() {
+        let store = InMemorySADStore::new();
         let result = store.get_chunk("nonexistent").await.unwrap();
         assert_eq!(result, None);
     }
 
     #[tokio::test]
-    async fn test_in_memory_chunk_store_overwrite() {
-        let store = InMemoryChunkStore::new();
+    async fn test_in_memory_sad_store_overwrite() {
+        let store = InMemorySADStore::new();
         let v1 = serde_json::json!({"said": "EAbc", "data": "first"});
         let v2 = serde_json::json!({"said": "EAbc", "data": "second"});
 
@@ -110,8 +110,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_chunk_store_batch() {
-        let store = InMemoryChunkStore::new();
+    async fn test_in_memory_sad_store_batch() {
+        let store = InMemorySADStore::new();
         let mut map = HashMap::new();
         map.insert(
             "EA".to_string(),
