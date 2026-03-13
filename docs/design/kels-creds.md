@@ -345,13 +345,13 @@ pub struct CredentialVerification {
 
 /// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
 pub async fn verify_credential(
-    credential: &serde_json::Value,
+    said: &str,
     sad_store: &dyn SADStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
-Verification is fully self-contained — it verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `SADStore`, and recurses. The caller does not need to pre-verify any KELs.
+Verification is fully self-contained — it looks up the credential from `SADStore` by SAID, verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `SADStore`, and recurses. The caller does not need to pre-verify any KELs or supply credential values directly.
 
 ### Credential Graph Structure
 

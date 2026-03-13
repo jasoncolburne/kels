@@ -16,6 +16,20 @@ pub fn compact(
     Ok(accumulator)
 }
 
+/// Compact a slice of credential values and store all resulting chunks in a single batch.
+pub async fn store_credentials(
+    values: &[serde_json::Value],
+    sad_store: &dyn SADStore,
+) -> Result<(), CredentialError> {
+    let mut all_chunks = HashMap::new();
+    for value in values {
+        let mut value = value.clone();
+        let chunks = compact(&mut value)?;
+        all_chunks.extend(chunks);
+    }
+    sad_store.store_chunks(&all_chunks).await
+}
+
 /// Replace a compacted SAID string at a path with a full object, verifying the SAID matches.
 pub fn expand_field(
     value: &mut serde_json::Value,

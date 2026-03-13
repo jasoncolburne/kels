@@ -14,7 +14,7 @@ pub mod schema;
 pub mod store;
 pub mod verification;
 
-pub use compaction::{compact, expand_all, expand_field};
+pub use compaction::{compact, expand_all, expand_field, store_credentials};
 pub use credential::{Compactable, Credential};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
