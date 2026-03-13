@@ -1,30 +1,41 @@
 # kels-creds: Credential Framework Design
 
-A purely computational library for issuing, compacting, selectively disclosing, and verifying credentials anchored in KELs. Defines storage traits (`ChunkStore`, `CredentialStore`) but provides only in-memory implementations — production storage is the caller's responsibility.
+A purely computational library for issuing, compacting, selectively disclosing, and verifying credentials anchored in KELs. Defines a storage trait (`ChunkStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `ChunkStore` as content-addressable chunks keyed by SAID.
 
 ## Core Types
 
-### Credential\<T\>
+### Compactable\<T\>
 
-Typed credential for issuance. `T` is the claims payload (must be `Serialize + Deserialize + SelfAddressed`).
+A generic enum representing a field that can be either fully expanded or compacted to its SAID string. Uses `#[serde(untagged)]` so a SAID serializes as a bare JSON string and an expanded value serializes as its object form.
 
 ```rust
-#[derive(SelfAddressed)]
-pub struct Credential<T: Serialize + DeserializeOwned + SelfAddressed> {
-    #[said]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Compactable<T> {
+    Said(String),
+    Expanded(T),
+}
+```
+
+This enables `Credential<T>` to hold fields in either state at the type level, including for the generic claims type `T` which cannot otherwise be swapped for a string.
+
+### Credential\<T\>
+
+Typed credential for issuance. `T` is the claims payload (must satisfy the `Claims` trait alias: `Serialize + DeserializeOwned + SelfAddressed + Clone`). Fields that are `SelfAddressed` use `Compactable<T>` to represent either the expanded object or a compacted SAID string.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "T: Claims")]
+pub struct Credential<T: Claims> {
     pub said: String,
-    pub schema: CredentialSchema,       // compactable
-    pub issuer: String,                 // issuer prefix
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,        // subject prefix (if issued privately)
-    pub issued_at: String,              // RFC 3339
-    pub claims: T,                      // compactable (must be SelfAddressed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub irrevocable: Option<bool>,      // Some(true) = cannot be revoked
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edges: Option<Edges>,           // compactable, labeled, each compactable
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rules: Option<Rules>,           // compactable, labeled, each compactable
+    pub schema: Compactable<CredentialSchema>,
+    pub issuer: String,
+    pub subject: Option<String>,
+    pub issued_at: StorageDatetime,
+    pub claims: Compactable<T>,
+    pub irrevocable: Option<bool>,
+    pub edges: Option<Compactable<Edges>>,
+    pub rules: Option<Compactable<Rules>>,
 }
 ```
 
@@ -133,46 +144,29 @@ pub struct Rules {
 
 ### ChunkStore
 
-Content-addressable store for any SelfAddressed JSON chunk (schema, claims, edge, rule, credential, etc.), keyed by SAID. Used by `expand_all` and the disclosure DSL to look up compacted fields.
+Content-addressable store for all SelfAddressed JSON data (credentials, schemas, claims, edges, rules, etc.), keyed by SAID. The single source of truth for all credential data. Batch operations are the required trait methods; single-item convenience methods are provided as defaults.
 
 ```rust
 #[async_trait]
 pub trait ChunkStore: Send + Sync {
-    async fn store_chunk(&self, said: &str, value: &serde_json::Value) -> Result<(), CredentialError>;
-    async fn get_chunk(&self, said: &str) -> Result<Option<serde_json::Value>, CredentialError>;
+    async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError>;
+    async fn get_chunks(&self, saids: &HashSet<String>) -> Result<HashMap<String, Value>, CredentialError>;
+
+    // Default convenience methods (delegate to batch operations)
+    async fn get_chunk(&self, said: &str) -> Result<Option<Value>, CredentialError>;
+    async fn store_chunk(&self, said: &str, value: &Value) -> Result<(), CredentialError>;
 }
 ```
 
 An `InMemoryChunkStore` (HashMap-based) is provided for tests, CLI tools, and lightweight use cases.
 
-### CredentialStore
-
-Verified credential storage. Only accepts credentials that have been through `verify_credential`. A revoked credential is still a valid verification result — revocation status is recorded, not rejected.
-
-```rust
-#[async_trait]
-pub trait CredentialStore: Send + Sync {
-    async fn store_credential(
-        &self,
-        credential: &CredentialValue,
-        verification: &CredentialVerification,
-    ) -> Result<(), CredentialError>;
-    async fn get_credential(
-        &self,
-        said: &str,
-    ) -> Result<Option<(CredentialValue, CredentialVerification)>, CredentialError>;
-}
-```
-
-An `InMemoryCredentialStore` (HashMap-based) is provided for tests, CLI tools, and lightweight use cases.
-
 ## Compaction and Expansion
 
 ### States
 
-Any `SelfAddressed` field within a credential can be in one of two states:
+Any `SelfAddressed` field within a credential can be in one of two states, represented at the type level by `Compactable<T>`:
 
-**Expanded** — the full object is present, including its `said` field:
+**Expanded** (`Compactable::Expanded(T)`) — the full object is present, including its `said` field:
 ```json
 {
   "address": {
@@ -183,7 +177,7 @@ Any `SelfAddressed` field within a credential can be in one of two states:
 }
 ```
 
-**Compacted** — replaced by its SAID string:
+**Compacted** (`Compactable::Said(String)`) — replaced by its SAID string:
 ```json
 {
   "address": "EAbc..."
@@ -284,16 +278,17 @@ pub async fn apply_disclosure(credential: &mut CredentialValue, tokens: &[PathTo
 
 ## Issuance Flow
 
-1. Issuer constructs `Credential<T>` with all fields populated (fully expanded), optionally setting `irrevocable: Some(true)` for credentials that cannot be revoked
+1. Issuer constructs `Credential<T>` via `Credential::create()`, which takes a `&dyn ChunkStore` and stores all compacted chunks automatically
 2. Inner `SelfAddressed` fields (`claims`, `schema`, and if present, `edges` and `rules`) have their SAIDs derived
-3. Credential is compacted to canonical form (all nested fields replaced by SAIDs), then `credential.derive_said()` computes the SAID over this compact form (derive_said is called by create(), part of the verifiable-storage crate. for the location of this crate, consult CLAUDE.md)
-4. Issuer creates an `ixn` event anchoring the credential SAID
-5. Credential delivered to holder (out of band)
+3. Credential is compacted to canonical form (all nested fields replaced by SAIDs), then the credential's SAID is computed over this compact form. All chunks (including the compacted credential itself) are stored in the `ChunkStore`
+4. `create()` returns `(Credential<T>, String)` — the expanded credential with its SAID set, plus the SAID
+5. Issuer creates an `ixn` event anchoring the credential SAID
+6. Credential delivered to holder (out of band)
 
 ```rust
 // Issuance
-let credential = Credential::create(schema, issuer, subject, claims, edges, rules)?;
-builder.interact(&credential.said)?;  // anchor in KEL
+let (credential, said) = Credential::create(schema, issuer, subject, claims, edges, rules, irrevocable, &chunk_store).await?;
+builder.interact(&said)?;  // anchor in KEL
 ```
 
 ## Revocation
@@ -331,11 +326,11 @@ Verification combines structural checks with KEL-anchored trust. Anchoring in th
 
 ### Batched KEL Verification
 
-Before any structural checks, the verifier walks the entire credential graph (top-level credential + all edge credentials from the `CredentialStore`) to collect every `(issuer_prefix, credential_said, revocation_hash)` tuple. These are grouped by issuer prefix, and a single `verify_key_events` call is made per unique issuer with all that issuer's SAIDs and revocation hashes registered via `check_anchors`. This avoids redundant KEL walks when multiple credentials share an issuer.
+Before any structural checks, the verifier walks the entire credential graph (top-level credential + all edge credentials from the `ChunkStore`) to collect every `(issuer_prefix, credential_said, revocation_hash)` tuple. These are grouped by issuer prefix, and a single `verify_key_events` call is made per unique issuer with all that issuer's SAIDs and revocation hashes registered via `check_anchors`. This avoids redundant KEL walks when multiple credentials share an issuer.
 
 ### Steps
 
-1. **Collect anchors** — Walk the credential tree, pulling `issuer`, `said`, and (unless irrevocable) `revocation_hash` from each credential. Look up edge credentials from `CredentialStore`. Group by issuer prefix.
+1. **Collect anchors** — Walk the credential tree, pulling `issuer`, `said`, and (unless irrevocable) `revocation_hash` from each credential. Look up edge credentials from `ChunkStore` by SAID. Group by issuer prefix.
 2. **Batch KEL verification** — One `verify_key_events` per unique issuer on the `KelStore`, with all anchors for that issuer registered via `check_anchors`. Store the resulting `KelVerification` per issuer.
 3. **Structure** — For each credential, compact to canonical form, verify `said` matches
 4. **Schema** — If schema is expanded, validate `claims` conforms to schema fields
@@ -359,22 +354,22 @@ pub struct CredentialVerification {
 /// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
 pub async fn verify_credential(
     credential: &CredentialValue,
-    credential_store: &dyn CredentialStore,
+    chunk_store: &dyn ChunkStore,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
-Verification is fully self-contained — it verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `CredentialStore`, and recurses. The caller does not need to pre-verify any KELs.
+Verification is fully self-contained — it verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `ChunkStore`, and recurses. The caller does not need to pre-verify any KELs.
 
 ### Credential Graph Structure
 
-A credential with edges forms a DAG rooted at the top-level credential, with edges pointing to other credentials, ultimately tracing back to KEL inception events. When storing credentials in the `CredentialStore`, insertion order matters — edge credentials (leaves) must be stored before the credentials that reference them (parents), building from the KEL end inward. The `CredentialStore` can then resolve the full graph during verification by following edges from root to leaves.
+A credential with edges forms a DAG rooted at the top-level credential, with edges pointing to other credentials, ultimately tracing back to KEL inception events. All credential data lives in the `ChunkStore` — edge credentials are looked up by their SAID. Insertion order doesn't matter since the store is content-addressable.
 
 ## Edge / Chaining Verification
 
 When an edge is expanded and includes a `credential` SAID:
 
-1. Look up the referenced credential from `CredentialStore`
+1. Look up the referenced credential from `ChunkStore` by SAID
 2. If the edge has a `schema`, verify the referenced credential's schema SAID matches
 3. If the edge has an `issuer`, verify the referenced credential's issuer matches
 4. If `delegated` is `true`, verify the referenced credential's issuer's `KelVerification.delegating_prefix()` matches `edge.issuer` — i.e., the edge's issuer is the delegating authority, and the actual credential issuer is one of its delegates
@@ -440,18 +435,18 @@ lib/kels-creds/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── credential.rs       # Credential<T>, CredentialValue
+    ├── credential.rs       # Compactable<T>, Credential<T>, CredentialValue, Claims trait
     ├── schema.rs           # CredentialSchema, SchemaField, validation
     ├── edge.rs             # Edge, Edges types
     ├── rule.rs             # Rule, Rules types
-    ├── store.rs            # ChunkStore, CredentialStore traits + in-memory impls
+    ├── store.rs            # ChunkStore trait + InMemoryChunkStore
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact, expand, round-trip
     ├── verification.rs     # verify_credential, CredentialVerification
-    ├── revocation.rs       # revocation_hash, revocation checks
+    ├── revocation.rs       # revocation_hash
     └── error.rs            # CredentialError
 ```
 
-Dependencies: `kels` (core types, `KelVerification`, `Digest`), `serde`, `serde_json`, `verifiable-storage` (`SelfAddressed` derive).
+Dependencies: `kels` (core types, `KelVerification`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compact_value`), `serde`, `serde_json`, `async-trait`.
 
 FFI bindings added to existing `lib/kels-ffi/src/lib.rs` — no separate FFI crate.
