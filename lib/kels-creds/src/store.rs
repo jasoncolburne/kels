@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -32,13 +32,13 @@ pub trait SADStore: Send + Sync {
 /// In-memory HashMap-based implementation of `SADStore`.
 /// Useful for tests, CLI tools, and lightweight use cases.
 pub struct InMemorySADStore {
-    chunks: Mutex<HashMap<String, Value>>,
+    chunks: RwLock<HashMap<String, Value>>,
 }
 
 impl InMemorySADStore {
     pub fn new() -> Self {
         Self {
-            chunks: Mutex::new(HashMap::new()),
+            chunks: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -54,7 +54,7 @@ impl SADStore for InMemorySADStore {
     async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError> {
         let mut store = self
             .chunks
-            .lock()
+            .write()
             .map_err(|e| CredentialError::StorageError(format!("lock poisoned: {}", e)))?;
         store.extend(chunks.iter().map(|(k, v)| (k.to_owned(), v.to_owned())));
         Ok(())
@@ -66,7 +66,7 @@ impl SADStore for InMemorySADStore {
     ) -> Result<HashMap<String, Value>, CredentialError> {
         let store = self
             .chunks
-            .lock()
+            .read()
             .map_err(|e| CredentialError::StorageError(format!("lock poisoned: {}", e)))?;
         Ok(saids
             .iter()

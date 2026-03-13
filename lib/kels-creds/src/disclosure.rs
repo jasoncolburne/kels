@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use verifiable_storage::{compact_value, compute_said_from_value};
+use verifiable_storage::compact_value;
 
 use crate::compaction::expand_all;
 use crate::error::CredentialError;
@@ -128,11 +128,8 @@ pub async fn apply_disclosure(
             PathToken::ExpandRecursive(path) => {
                 expand_at_path(&mut value, path, sad_store, true).await?;
             }
-            PathToken::Compact(path) => {
-                compact_at_path(&mut value, path, false)?;
-            }
-            PathToken::CompactRecursive(path) => {
-                compact_at_path(&mut value, path, true)?;
+            PathToken::Compact(path) | PathToken::CompactRecursive(path) => {
+                compact_at_path(&mut value, path)?;
             }
         }
     }
@@ -173,12 +170,9 @@ async fn expand_at_path(
     Ok(())
 }
 
-/// Compact a field at the given path. If `recursive`, compact all children first.
-fn compact_at_path(
-    value: &mut serde_json::Value,
-    path: &[String],
-    recursive: bool,
-) -> Result<(), CredentialError> {
+/// Compact a field at the given path to its canonical SAID string.
+/// Children are always compacted first to ensure the correct canonical SAID.
+fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> Result<(), CredentialError> {
     let (parent, last) = navigate_to_field(value, path)?;
 
     let child = parent
@@ -187,14 +181,8 @@ fn compact_at_path(
 
     // Only compact if the field is an object with a "said" field
     if child.is_object() && child.get("said").is_some() {
-        if recursive {
-            compact_value(child, &mut HashMap::new())?;
-        } else {
-            // Compact just this field — compute its SAID and replace with string
-            // But don't recurse into children first
-            let said = compute_said_from_value(child)?;
-            *child = serde_json::Value::String(said);
-        }
+        // Always compact children first to derive the canonical SAID.
+        compact_value(child, &mut HashMap::new())?;
     }
     // If it's already a string (compacted) or doesn't have "said", nothing to do
 
@@ -462,7 +450,14 @@ mod tests {
                 "name": "Alice",
                 "address": {
                     "said": "EAddress",
-                    "deep": "data"
+                    "deep": "data",
+                    "skipped": {
+                        "data": "more",
+                        "included": {
+                            "said": "EIncluded",
+                            "deepest": "foo"
+                        }
+                    }
                 }
             },
         });
@@ -478,5 +473,21 @@ mod tests {
         let address = claims_val.get("address").unwrap();
         assert!(address.is_object());
         assert_eq!(address.get("deep").unwrap().as_str().unwrap(), "data");
+        let skipped = address.get("skipped").unwrap();
+        assert!(skipped.is_object());
+        let included = skipped.get("included").unwrap();
+        assert!(included.is_object());
+        assert_eq!(included.get("deepest").unwrap().as_str().unwrap(), "foo");
+
+        let tokens = parse_disclosure("claims claims.address").unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let claims_val = value.get("claims").unwrap();
+        assert!(claims_val.is_object());
+        let address = claims_val.get("address").unwrap();
+        assert!(address.is_object());
+        let skipped = address.get("skipped").unwrap();
+        assert!(skipped.is_object());
+        let included = skipped.get("included").unwrap();
+        assert!(included.is_string());
     }
 }

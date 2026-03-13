@@ -20,9 +20,6 @@ cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = fa
 # Verifiable storage traits and derive macros
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
-# SAID computation
-blake3 = "1.5"
-
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

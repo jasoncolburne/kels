@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use kels::{
     KelStore, KelVerification, KelVerifier, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource,
@@ -11,6 +11,10 @@ use crate::error::CredentialError;
 use crate::revocation::revocation_hash;
 use crate::schema::{CredentialSchema, validate_claims};
 use crate::store::SADStore;
+
+/// Maximum recursion depth for credential graph traversal. Bounds stack usage
+/// for deeply chained edge credentials.
+const MAX_CREDENTIAL_DEPTH: usize = 32;
 
 /// The result of verifying a credential, including edge verifications.
 #[derive(Debug, Clone)]
@@ -58,7 +62,15 @@ pub fn verify_credential<'a>(
 
         // Phase 1: Collect all credential anchors from the graph
         let mut anchors: Vec<CredentialAnchor> = Vec::new();
-        collect_anchors(&credential, sad_store, &mut anchors).await?;
+        let mut visited: HashSet<String> = HashSet::new();
+        collect_anchors(
+            &credential,
+            sad_store,
+            &mut anchors,
+            &mut visited,
+            MAX_CREDENTIAL_DEPTH,
+        )
+        .await?;
 
         // Phase 2: Batch KEL verification — one per unique issuer
         let mut kel_verifications: HashMap<String, KelVerification> = HashMap::new();
@@ -110,24 +122,40 @@ pub fn verify_credential<'a>(
             &anchors,
             &kel_verifications,
             sad_store,
-            kel_store,
+            MAX_CREDENTIAL_DEPTH,
         )
         .await
     })
 }
 
 /// Walk the credential graph, collecting anchors for all credentials.
+/// Tracks visited SAIDs to detect cycles and enforces a depth limit.
 fn collect_anchors<'a>(
     credential: &'a serde_json::Value,
     sad_store: &'a dyn SADStore,
     anchors: &'a mut Vec<CredentialAnchor>,
+    visited: &'a mut HashSet<String>,
+    remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
+        if remaining_depth == 0 {
+            return Err(CredentialError::VerificationError(
+                "maximum credential graph depth exceeded".to_string(),
+            ));
+        }
+
         let said = credential
             .get("said")
             .and_then(|v| v.as_str())
             .ok_or_else(|| CredentialError::InvalidCredential("missing SAID".to_string()))?
             .to_string();
+
+        if !visited.insert(said.clone()) {
+            return Err(CredentialError::VerificationError(format!(
+                "circular edge reference detected: credential {} already visited",
+                said
+            )));
+        }
 
         let issuer = credential
             .get("issuer")
@@ -172,7 +200,8 @@ fn collect_anchors<'a>(
                 };
 
                 if let Some(ref_value) = sad_store.get_chunk(cred_said).await? {
-                    collect_anchors(&ref_value, sad_store, anchors).await?;
+                    collect_anchors(&ref_value, sad_store, anchors, visited, remaining_depth - 1)
+                        .await?;
                 }
             }
         }
@@ -182,157 +211,179 @@ fn collect_anchors<'a>(
 }
 
 /// Build the verification result tree from collected anchors and KEL verifications.
-async fn build_verification(
-    credential: &serde_json::Value,
-    anchors: &[CredentialAnchor],
-    kel_verifications: &HashMap<String, KelVerification>,
-    sad_store: &dyn SADStore,
-    kel_store: &dyn KelStore,
-) -> Result<CredentialVerification, CredentialError> {
-    let said = credential
-        .get("said")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CredentialError::InvalidCredential("missing SAID".to_string()))?
-        .to_string();
+fn build_verification<'a>(
+    credential: &'a serde_json::Value,
+    anchors: &'a [CredentialAnchor],
+    kel_verifications: &'a HashMap<String, KelVerification>,
+    sad_store: &'a dyn SADStore,
+    remaining_depth: usize,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<CredentialVerification, CredentialError>>
+            + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move {
+        if remaining_depth == 0 {
+            return Err(CredentialError::VerificationError(
+                "maximum credential graph depth exceeded".to_string(),
+            ));
+        }
 
-    let issuer = credential
-        .get("issuer")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CredentialError::InvalidCredential("missing issuer".to_string()))?
-        .to_string();
+        let said = credential
+            .get("said")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CredentialError::InvalidCredential("missing SAID".to_string()))?
+            .to_string();
 
-    // Structural check: compact to canonical form and verify SAID
-    let mut compacted = credential.clone();
-    compact_value(&mut compacted, &mut std::collections::HashMap::new())?;
-    let compacted_said = compacted.as_str().ok_or_else(|| {
-        CredentialError::VerificationError("compacted credential missing SAID".to_string())
-    })?;
+        let issuer = credential
+            .get("issuer")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CredentialError::InvalidCredential("missing issuer".to_string()))?
+            .to_string();
 
-    if compacted_said != said {
-        return Err(CredentialError::VerificationError(format!(
-            "SAID mismatch: credential has {}, canonical form produces {}",
-            said, compacted_said
-        )));
-    }
+        // Structural check: compact to canonical form and verify SAID
+        let mut compacted = credential.clone();
+        compact_value(&mut compacted, &mut std::collections::HashMap::new())?;
+        let compacted_said = compacted.as_str().ok_or_else(|| {
+            CredentialError::VerificationError("compacted credential missing SAID".to_string())
+        })?;
 
-    // Schema validation (if schema is expanded)
-    let schema_valid = validate_schema_if_expanded(credential);
+        if compacted_said != said {
+            return Err(CredentialError::VerificationError(format!(
+                "SAID mismatch: credential has {}, canonical form produces {}",
+                said, compacted_said
+            )));
+        }
 
-    // Find this credential's anchor info
-    let anchor = anchors.iter().find(|a| a.said == said);
+        // Schema validation (if schema is expanded)
+        let schema_valid = validate_schema_if_expanded(credential);
 
-    // Check anchoring and revocation via KEL verification
-    let (is_issued, is_revoked) = if let Some(kel_v) = kel_verifications.get(&issuer) {
-        let issued = kel_v.is_said_anchored(&said);
-        let revoked = if let Some(anchor) = anchor
-            && !anchor.irrevocable
-            && let Some(ref rh) = anchor.revocation_hash
-        {
-            kel_v.is_said_anchored(rh)
+        // Find this credential's anchor info
+        let anchor = anchors.iter().find(|a| a.said == said);
+
+        // Check anchoring and revocation via KEL verification
+        let (is_issued, is_revoked) = if let Some(kel_v) = kel_verifications.get(&issuer) {
+            let issued = kel_v.is_said_anchored(&said);
+            let revoked = if let Some(anchor) = anchor
+                && !anchor.irrevocable
+                && let Some(ref rh) = anchor.revocation_hash
+            {
+                kel_v.is_said_anchored(rh)
+            } else {
+                false
+            };
+            (issued, revoked)
         } else {
-            false
+            (false, false)
         };
-        (issued, revoked)
-    } else {
-        (false, false)
-    };
 
-    // Edge verifications
-    let mut edge_verifications = BTreeMap::new();
+        // Edge verifications
+        let mut edge_verifications = BTreeMap::new();
 
-    if let Some(edges_val) = credential.get("edges")
-        && let Some(edges_obj) = edges_val.as_object()
-    {
-        for (label, edge_val) in edges_obj {
-            if label == "said" {
-                continue;
-            }
+        if let Some(edges_val) = credential.get("edges")
+            && let Some(edges_obj) = edges_val.as_object()
+        {
+            for (label, edge_val) in edges_obj {
+                if label == "said" {
+                    continue;
+                }
 
-            let edge_obj = match edge_val.as_object() {
-                Some(obj) => obj,
-                None => continue,
-            };
+                let edge_obj = match edge_val.as_object() {
+                    Some(obj) => obj,
+                    None => continue,
+                };
 
-            let edge_said = match edge_obj.get("credential").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => continue,
-            };
+                let edge_said = match edge_obj.get("credential").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
 
-            // Recursively verify the edge credential
-            let edge_verification = verify_credential(edge_said, sad_store, kel_store).await?;
-
-            // Check edge constraints
-            let edge_schema = edge_obj.get("schema").and_then(|v| v.as_str());
-            let edge_issuer = edge_obj.get("issuer").and_then(|v| v.as_str());
-            let delegated = edge_obj
-                .get("delegated")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            // Schema constraint: referenced credential's schema must match
-            if let Some(expected_schema) = edge_schema {
-                let store_value =
+                // Look up the edge credential and recursively build its verification
+                let edge_credential =
                     sad_store
                         .get_chunk(edge_said)
                         .await?
                         .ok_or(CredentialError::StorageError(
                             "Cannot find edge credential in sad store".to_string(),
                         ))?;
-                let schema_said = store_value.get("schema").and_then(|v| v.as_str()).ok_or(
-                    CredentialError::StorageError(
-                        "Cannot find schema said in sad store credential".to_string(),
-                    ),
-                )?;
+                let edge_verification = build_verification(
+                    &edge_credential,
+                    anchors,
+                    kel_verifications,
+                    sad_store,
+                    remaining_depth - 1,
+                )
+                .await?;
 
-                if schema_said != expected_schema {
-                    return Err(CredentialError::VerificationError(format!(
-                        "edge '{}' schema mismatch: expected {}, got {:?}",
-                        label, expected_schema, schema_said
-                    )));
-                }
-            }
+                // Check edge constraints
+                let edge_schema = edge_obj.get("schema").and_then(|v| v.as_str());
+                let edge_issuer = edge_obj.get("issuer").and_then(|v| v.as_str());
+                let delegated = edge_obj
+                    .get("delegated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
-            // Issuer constraint
-            if let Some(expected_issuer) = edge_issuer {
-                if delegated {
-                    // Delegated: referenced credential's issuer must be delegated by edge.issuer
-                    if let Some(ref_kel_v) = kel_verifications.get(&edge_verification.issuer) {
-                        let delegating = ref_kel_v.delegating_prefix();
-                        if delegating != Some(expected_issuer) {
-                            return Err(CredentialError::VerificationError(format!(
-                                "edge '{}' delegation check failed: expected delegating prefix {}, got {:?}",
-                                label, expected_issuer, delegating
-                            )));
-                        }
-                    } else {
+                // Schema constraint: referenced credential's schema must match
+                if let Some(expected_schema) = edge_schema {
+                    let schema_said = edge_credential
+                        .get("schema")
+                        .and_then(|v| v.as_str())
+                        .ok_or(CredentialError::StorageError(
+                            "Cannot find schema said in edge credential".to_string(),
+                        ))?;
+
+                    if schema_said != expected_schema {
                         return Err(CredentialError::VerificationError(format!(
-                            "edge '{}' delegation check failed: no KEL verification for issuer {}",
-                            label, edge_verification.issuer
+                            "edge '{}' schema mismatch: expected {}, got {:?}",
+                            label, expected_schema, schema_said
                         )));
                     }
-                } else if edge_verification.issuer != expected_issuer {
-                    return Err(CredentialError::VerificationError(format!(
-                        "edge '{}' issuer mismatch: expected {}, got {}",
-                        label, expected_issuer, edge_verification.issuer
-                    )));
                 }
+
+                // Issuer constraint
+                if let Some(expected_issuer) = edge_issuer {
+                    if delegated {
+                        // Delegated: referenced credential's issuer must be delegated by edge.issuer
+                        if let Some(ref_kel_v) = kel_verifications.get(&edge_verification.issuer) {
+                            let delegating = ref_kel_v.delegating_prefix();
+                            if delegating != Some(expected_issuer) {
+                                return Err(CredentialError::VerificationError(format!(
+                                    "edge '{}' delegation check failed: expected delegating prefix {}, got {:?}",
+                                    label, expected_issuer, delegating
+                                )));
+                            }
+                        } else {
+                            return Err(CredentialError::VerificationError(format!(
+                                "edge '{}' delegation check failed: no KEL verification for issuer {}",
+                                label, edge_verification.issuer
+                            )));
+                        }
+                    } else if edge_verification.issuer != expected_issuer {
+                        return Err(CredentialError::VerificationError(format!(
+                            "edge '{}' issuer mismatch: expected {}, got {}",
+                            label, expected_issuer, edge_verification.issuer
+                        )));
+                    }
+                }
+
+                edge_verifications.insert(label.clone(), edge_verification);
             }
-
-            edge_verifications.insert(label.clone(), edge_verification);
         }
-    }
 
-    Ok(CredentialVerification {
-        credential_said: said,
-        issuer,
-        subject: credential
-            .get("subject")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        is_issued,
-        is_revoked,
-        schema_valid,
-        edge_verifications,
+        Ok(CredentialVerification {
+            credential_said: said,
+            issuer,
+            subject: credential
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            is_issued,
+            is_revoked,
+            schema_valid,
+            edge_verifications,
+        })
     })
 }
 

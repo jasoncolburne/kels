@@ -5,6 +5,18 @@ use verifiable_storage::compact_value;
 use crate::error::CredentialError;
 use crate::store::SADStore;
 
+/// Maximum recursion depth for expansion operations. Bounds stack usage for
+/// deeply nested credential structures or malicious inputs.
+pub const MAX_EXPANSION_DEPTH: usize = 32;
+
+/// Check if a string could be a CESR SAID (44-char URL-safe base64).
+/// Used to skip store lookups for strings that obviously aren't SAIDs.
+fn could_be_said(s: &str) -> bool {
+    s.len() == 44
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Compact a JSON value bottom-up, depth-first. Delegates to `compact_value` from
 /// verifiable-storage. Returns extracted chunks keyed by SAID. After this call,
 /// `value` is a SAID string (all nodes including root are replaced).
@@ -79,11 +91,26 @@ pub fn expand_field(
 /// Expand all compacted SAID strings in a value by looking them up in the SAD store.
 /// Walks the tree and replaces any string value that resolves in the SAD store
 /// with the full object. Recurses into expanded objects to expand nested SAIDs.
+/// Uses `MAX_EXPANSION_DEPTH` to bound recursion.
 pub fn expand_all<'a>(
     value: &'a mut serde_json::Value,
     sad_store: &'a dyn SADStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
+    expand_all_bounded(value, sad_store, MAX_EXPANSION_DEPTH)
+}
+
+fn expand_all_bounded<'a>(
+    value: &'a mut serde_json::Value,
+    sad_store: &'a dyn SADStore,
+    remaining_depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
+        if remaining_depth == 0 {
+            return Err(CredentialError::ExpansionError(
+                "maximum expansion depth exceeded".to_string(),
+            ));
+        }
+
         if let Some(obj) = value.as_object_mut() {
             let keys: Vec<String> = obj.keys().cloned().collect();
             for key in keys {
@@ -92,28 +119,30 @@ pub fn expand_all<'a>(
                 }
                 if let Some(child) = obj.get(&key)
                     && let Some(said) = child.as_str()
+                    && could_be_said(said)
                     && let Some(expanded) = sad_store.get_chunk(said).await?
                 {
                     obj.insert(key.clone(), expanded);
                     if let Some(child) = obj.get_mut(&key) {
-                        expand_all(child, sad_store).await?;
+                        expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
                     }
                     continue;
                 }
                 if let Some(child) = obj.get_mut(&key) {
-                    expand_all(child, sad_store).await?;
+                    expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
                 }
             }
         } else if let Some(arr) = value.as_array_mut() {
             for elem in arr.iter_mut() {
                 if let Some(said) = elem.as_str().map(|s| s.to_string())
+                    && could_be_said(&said)
                     && let Some(expanded) = sad_store.get_chunk(&said).await?
                 {
                     *elem = expanded;
-                    expand_all(elem, sad_store).await?;
+                    expand_all_bounded(elem, sad_store, remaining_depth - 1).await?;
                     continue;
                 }
-                expand_all(elem, sad_store).await?;
+                expand_all_bounded(elem, sad_store, remaining_depth - 1).await?;
             }
         }
 
