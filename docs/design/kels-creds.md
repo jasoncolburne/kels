@@ -239,7 +239,7 @@ Any `SelfAddressed` field within a credential can be in one of two states, repre
 
 Each SAID is a function of its compacted children — a leaf object's SAID is over its raw fields, a parent's SAID is over a mix of raw fields and child SAIDs. This makes every SAID in the tree independently verifiable.
 
-All compaction uses `compact_value_bounded` with depth limits (`MAX_EXPANSION_DEPTH = 32`) to bound stack usage for deeply nested or malicious inputs. When compacting inside an already-recursive context (e.g., verification), the remaining depth is passed through rather than using the maximum constant.
+All compaction uses `compact_value_bounded` with depth limits (`MAX_RECURSION_DEPTH = 32`) to bound stack usage for deeply nested or malicious inputs. When compacting inside an already-recursive context (e.g., verification), the remaining depth is passed through rather than using the maximum constant.
 
 **Expand (two-pass batch fetch, bottom-up SAID recomputation):**
 
@@ -396,9 +396,8 @@ Verification combines structural checks with KEL-anchored trust. Anchoring in th
 
 ### Depth Bounds
 
-Both credential graph traversal (`collect_anchors`, `build_verification`) and compaction/expansion use depth limits to bound stack usage:
-- `MAX_CREDENTIAL_DEPTH = 32` — maximum depth of the credential edge graph
-- `MAX_EXPANSION_DEPTH = 32` — maximum depth of compaction/expansion recursion
+All recursive operations share a single depth constant:
+- `MAX_RECURSION_DEPTH = 32` — maximum depth for compaction, expansion, schema validation, and claims validation
 
 ### Batched KEL Verification
 

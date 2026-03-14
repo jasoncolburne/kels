@@ -1,23 +1,18 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use kels::{
-    KelStore, KelVerifier, KeyEventBuilder, KeyProvider, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource,
-    verify_key_events,
-};
+use kels::{KelStore, KeyEventBuilder, KeyProvider};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use verifiable_storage::{
-    SelfAddressed, StorageDatetime, compact_value_bounded, compute_said_from_value,
-};
+use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
 
 use crate::edge::Edges;
 use crate::error::CredentialError;
-use crate::revocation::revocation_hash;
 use crate::rule::Rules;
-use crate::schema::{CredentialSchema, validate_claims};
+use crate::schema::CredentialSchema;
 use crate::store::{InMemorySADStore, SADStore};
+use crate::verification::verify_credential;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -107,30 +102,16 @@ impl<T: Claims> Credential<T> {
         irrevocable: Option<bool>,
         expires_at: Option<StorageDatetime>,
     ) -> Result<(Self, String), CredentialError> {
-        crate::schema::validate_schema(&schema)?;
-        crate::schema::validate_claims(&schema, &serde_json::to_value(&claims)?)?;
-        crate::schema::validate_edges(&schema, edges.as_ref())?;
-        crate::schema::validate_rules(&schema, rules.as_ref())?;
-
         let issued_at = StorageDatetime::now();
 
-        // Validate expires_at against schema.expires
-        if schema.expires {
-            let exp = expires_at.as_ref().ok_or_else(|| {
-                CredentialError::SchemaValidationError(
-                    "schema requires expires_at but none provided".to_string(),
-                )
-            })?;
-            if exp <= &issued_at {
-                return Err(CredentialError::SchemaValidationError(
-                    "expires_at must be after issued_at".to_string(),
-                ));
-            }
-        } else if expires_at.is_some() {
-            return Err(CredentialError::SchemaValidationError(
-                "schema does not allow expires_at".to_string(),
-            ));
-        }
+        crate::schema::validate_credential(
+            &schema,
+            &serde_json::to_value(&claims)?,
+            edges.as_ref(),
+            rules.as_ref(),
+            &issued_at,
+            expires_at.as_ref(),
+        )?;
 
         let credential = Self {
             said: String::new(),
@@ -184,7 +165,7 @@ impl<T: Claims> Credential<T> {
         compact_value_bounded(
             &mut value,
             &mut accumulator,
-            crate::compaction::MAX_EXPANSION_DEPTH,
+            crate::compaction::MAX_RECURSION_DEPTH,
         )?;
 
         // value is now a SAID string — the compacted credential is in the accumulator
@@ -193,95 +174,12 @@ impl<T: Claims> Credential<T> {
     }
 
     /// Verify a typed credential against the KEL.
-    ///
-    /// Checks:
-    /// 1. Expanded SAID integrity — recompute SAID from credential data
-    /// 2. Compacted SAID integrity — compact to canonical form, verify consistency
-    /// 3. KEL anchoring — issuer's KEL contains the compacted credential SAID
-    /// 4. Revocation — issuer's KEL contains the revocation hash (unless irrevocable)
-    /// 5. Expiration — `expiresAt` vs current time
-    /// 6. Schema validation — if both schema and claims are expanded
+    /// Delegates to [`verify_credential`](crate::verification::verify_credential).
     pub async fn verify(
         &self,
         kel_store: &dyn KelStore,
     ) -> Result<CredentialVerification, CredentialError> {
-        // Expanded SAID integrity — verify the credential's own SAID is consistent with data
-        let value = serde_json::to_value(self)?;
-        let computed_said = compute_said_from_value(&value)?;
-        if computed_said != self.said {
-            return Err(CredentialError::VerificationError(format!(
-                "SAID mismatch: credential has {}, data produces {}",
-                self.said, computed_said
-            )));
-        }
-
-        // Compacted SAID integrity — compact and derive the anchored SAID
-        let (compacted_said, _) = self.compact()?;
-
-        // Schema validation (if both schema and claims are expanded)
-        let schema_validation = match (&self.schema, &self.claims) {
-            (Compactable::Expanded(schema), Compactable::Expanded(claims)) => {
-                if validate_claims(schema, &serde_json::to_value(claims)?).is_ok() {
-                    SchemaValidationResult::Valid
-                } else {
-                    SchemaValidationResult::Invalid
-                }
-            }
-            _ => SchemaValidationResult::NotValidated,
-        };
-
-        // KEL verification — check anchoring (compacted SAID) and revocation
-        let irrevocable = self.irrevocable.unwrap_or(false);
-        let rev_hash = if irrevocable {
-            None
-        } else {
-            Some(revocation_hash(&compacted_said))
-        };
-
-        let mut saids_to_check = vec![compacted_said.clone()];
-        if let Some(ref rh) = rev_hash {
-            saids_to_check.push(rh.clone());
-        }
-
-        let mut verifier = KelVerifier::new(&self.issuer);
-        verifier.check_anchors(saids_to_check);
-
-        let source = StoreKelSource::new(kel_store);
-        let (is_issued, is_revoked, kel_error) = match verify_key_events(
-            &self.issuer,
-            &source,
-            verifier,
-            MAX_EVENTS_PER_KEL_QUERY,
-            1024,
-        )
-        .await
-        {
-            Ok(kel_v) => {
-                let issued = kel_v.is_said_anchored(&compacted_said);
-                let revoked = rev_hash
-                    .as_ref()
-                    .is_some_and(|rh| kel_v.is_said_anchored(rh));
-                (issued, revoked, None)
-            }
-            Err(e) => (false, false, Some(e)),
-        };
-
-        // Check expiration
-        let is_expired = self
-            .expires_at
-            .as_ref()
-            .is_some_and(|exp| exp <= &StorageDatetime::now());
-
-        Ok(CredentialVerification {
-            credential_said: self.said.clone(),
-            issuer: self.issuer.clone(),
-            subject: self.subject.clone(),
-            is_issued,
-            is_revoked,
-            is_expired,
-            kel_error: kel_error.map(|e| e.to_string()),
-            schema_validation,
-        })
+        verify_credential(self, kel_store).await
     }
 
     fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {

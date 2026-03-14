@@ -12,9 +12,7 @@ use crate::disclosure::{apply_disclosure, parse_disclosure};
 use crate::edge::{Edge, Edges};
 use crate::error::CredentialError;
 use crate::rule::{Rule, Rules};
-use crate::schema::{
-    CredentialSchema, validate_claims, validate_edges, validate_rules, validate_schema,
-};
+use crate::schema::{CredentialSchema, validate_credential};
 use crate::store::{InMemorySADStore, SADStore};
 use std::str::FromStr;
 
@@ -58,9 +56,8 @@ pub async fn create(
     irrevocable: Option<bool>,
     expires_at: Option<&str>,
 ) -> Result<String, CredentialError> {
-    // Parse and validate schema
+    // Parse schema
     let schema: CredentialSchema = serde_json::from_str(json_schema)?;
-    validate_schema(&schema)?;
 
     // Parse claims — add said field, sort keys for deterministic SAID
     let claims_raw: serde_json::Value = serde_json::from_str(json_claims)?;
@@ -79,15 +76,12 @@ pub async fn create(
     }
     let claims_value = serde_json::Value::Object(sorted_claims);
 
-    validate_claims(&schema, &claims_value)?;
-
     // Parse edges
     let edges = if let Some(json) = json_edges {
         Some(parse_edges(json)?)
     } else {
         None
     };
-    validate_edges(&schema, edges.as_ref())?;
 
     // Parse rules
     let rules = if let Some(json) = json_rules {
@@ -95,7 +89,6 @@ pub async fn create(
     } else {
         None
     };
-    validate_rules(&schema, rules.as_ref())?;
 
     // Parse expires_at
     let exp = if let Some(exp_str) = expires_at {
@@ -113,23 +106,15 @@ pub async fn create(
 
     let issued_at = StorageDatetime::now();
 
-    // Validate expiry against schema
-    if schema.expires {
-        let exp_val = exp.as_ref().ok_or_else(|| {
-            CredentialError::SchemaValidationError(
-                "schema requires expires_at but none provided".to_string(),
-            )
-        })?;
-        if exp_val <= &issued_at {
-            return Err(CredentialError::SchemaValidationError(
-                "expires_at must be after issued_at".to_string(),
-            ));
-        }
-    } else if exp.is_some() {
-        return Err(CredentialError::SchemaValidationError(
-            "schema does not allow expires_at".to_string(),
-        ));
-    }
+    // Validate all credential constraints
+    validate_credential(
+        &schema,
+        &claims_value,
+        edges.as_ref(),
+        rules.as_ref(),
+        &issued_at,
+        exp.as_ref(),
+    )?;
 
     // Build credential as serde_json::Value with correct field ordering
     // (must match Credential<T> struct field order for consistent SAIDs)

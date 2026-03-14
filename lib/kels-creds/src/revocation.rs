@@ -1,7 +1,7 @@
 use cesr::{Digest, Matter};
 
 /// Compute the revocation hash for a credential SAID.
-/// `revocation_hash = Blake3(credential_said.as_bytes()).qb64()`
+/// `revocation_hash = Blake3(b"kels/revocation:" || credential_said.as_bytes()).qb64()`
 pub fn revocation_hash(credential_said: &str) -> String {
     let bytes = [b"kels/revocation:", credential_said.as_bytes()].concat();
     Digest::blake3_256(&bytes).qb64()

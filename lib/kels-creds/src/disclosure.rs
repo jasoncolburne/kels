@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use verifiable_storage::compact_value_bounded;
 
-use crate::compaction::{MAX_EXPANSION_DEPTH, expand_all};
+use crate::compaction::{MAX_RECURSION_DEPTH, expand_all};
 use crate::error::CredentialError;
 use crate::store::SADStore;
 
@@ -192,14 +192,17 @@ fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> Result<(),
     }
 
     // Always compact children first to derive the canonical SAID.
-    compact_value_bounded(child, &mut HashMap::new(), MAX_EXPANSION_DEPTH)?;
+    compact_value_bounded(child, &mut HashMap::new(), MAX_RECURSION_DEPTH)?;
 
     Ok(())
 }
 
+/// Compact all children to SAIDs while keeping the root expanded.
+/// Works by fully compacting (root becomes a SAID string), then restoring the
+/// root object from the accumulator — its children remain as SAID strings.
 fn compact_children(value: &mut serde_json::Value) -> Result<(), CredentialError> {
     let mut accumulator = HashMap::new();
-    compact_value_bounded(value, &mut accumulator, MAX_EXPANSION_DEPTH)?;
+    compact_value_bounded(value, &mut accumulator, MAX_RECURSION_DEPTH)?;
     let said = value.as_str().ok_or(CredentialError::CompactionError(
         "Could not compact children".to_string(),
     ))?;

@@ -5,9 +5,9 @@ use verifiable_storage::{compact_value_bounded, compute_said_from_value};
 use crate::error::CredentialError;
 use crate::store::SADStore;
 
-/// Maximum recursion depth for expansion operations. Bounds stack usage for
-/// deeply nested credential structures or malicious inputs.
-pub const MAX_EXPANSION_DEPTH: usize = 32;
+/// Maximum recursion depth for compaction, expansion, and schema validation.
+/// Bounds stack usage for deeply nested credential structures or malicious inputs.
+pub const MAX_RECURSION_DEPTH: usize = 32;
 
 /// Check if a string could be a CESR SAID (44-char URL-safe base64 starting
 /// with a known digest code prefix). Currently only Blake3-256 (`E`) is used.
@@ -25,19 +25,18 @@ pub fn compact(
     value: &mut serde_json::Value,
 ) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
     let mut accumulator = HashMap::new();
-    compact_value_bounded(value, &mut accumulator, MAX_EXPANSION_DEPTH)?;
+    compact_value_bounded(value, &mut accumulator, MAX_RECURSION_DEPTH)?;
     Ok(accumulator)
 }
 
-/// Compact a slice of credential values and store all resulting chunks in a single batch.
+/// Compact credential values and store all resulting chunks in a single batch.
 pub async fn store_credentials(
-    values: &[serde_json::Value],
+    mut values: Vec<serde_json::Value>,
     sad_store: &dyn SADStore,
 ) -> Result<(), CredentialError> {
     let mut all_chunks = HashMap::new();
-    for value in values {
-        let mut value = value.clone();
-        let chunks = compact(&mut value)?;
+    for value in &mut values {
+        let chunks = compact(value)?;
         all_chunks.extend(chunks);
     }
     sad_store.store_chunks(&all_chunks).await
@@ -77,7 +76,7 @@ pub fn expand_field(
     compact_value_bounded(
         &mut compacted_copy,
         &mut HashMap::new(),
-        MAX_EXPANSION_DEPTH,
+        MAX_RECURSION_DEPTH,
     )?;
     let computed = compacted_copy.as_str().ok_or_else(|| {
         CredentialError::ExpansionError("compaction did not produce a SAID string".to_string())
@@ -96,12 +95,12 @@ pub fn expand_field(
 /// Expand all compacted SAID strings in a value by looking them up in the SAD store.
 /// Walks the tree and replaces any string value that resolves in the SAD store
 /// with the full object. Recurses into expanded objects to expand nested SAIDs.
-/// Uses `MAX_EXPANSION_DEPTH` to bound recursion.
+/// Uses `MAX_RECURSION_DEPTH` to bound recursion.
 pub fn expand_all<'a>(
     value: &'a mut serde_json::Value,
     sad_store: &'a dyn SADStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
-    expand_all_bounded(value, sad_store, MAX_EXPANSION_DEPTH)
+    expand_all_bounded(value, sad_store, MAX_RECURSION_DEPTH)
 }
 
 fn expand_all_bounded<'a>(

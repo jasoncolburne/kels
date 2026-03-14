@@ -3,8 +3,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use verifiable_storage::SelfAddressed;
+use verifiable_storage::{SelfAddressed, StorageDatetime};
 
+use crate::compaction::MAX_RECURSION_DEPTH;
 use crate::edge::Edges;
 use crate::error::CredentialError;
 use crate::rule::Rules;
@@ -78,8 +79,8 @@ impl FromStr for CredentialSchema {
 /// Validate that a schema's field definitions are well-formed.
 /// Rejects `said` as a field name anywhere (it's implicit for compactable objects).
 /// Also rejects `said` as an edge or rule label.
-pub fn validate_schema(schema: &CredentialSchema) -> Result<(), CredentialError> {
-    validate_schema_fields("fields", &schema.fields)?;
+pub(crate) fn validate_schema(schema: &CredentialSchema) -> Result<(), CredentialError> {
+    validate_schema_fields("fields", &schema.fields, MAX_RECURSION_DEPTH)?;
 
     if let Some(edges) = &schema.edges {
         for label in edges.keys() {
@@ -109,7 +110,13 @@ pub fn validate_schema(schema: &CredentialSchema) -> Result<(), CredentialError>
 fn validate_schema_fields(
     path: &str,
     fields: &BTreeMap<String, SchemaField>,
+    remaining_depth: usize,
 ) -> Result<(), CredentialError> {
+    if remaining_depth == 0 {
+        return Err(CredentialError::SchemaValidationError(format!(
+            "maximum schema nesting depth exceeded at {path}"
+        )));
+    }
     for (name, field_type) in fields {
         if name == "said" {
             return Err(CredentialError::SchemaValidationError(format!(
@@ -117,10 +124,14 @@ fn validate_schema_fields(
             )));
         }
         if let SchemaField::Object { fields: sub, .. } = field_type {
-            validate_schema_fields(&format!("{path}.{name}"), sub)?;
+            validate_schema_fields(&format!("{path}.{name}"), sub, remaining_depth - 1)?;
         }
         if let SchemaField::Array(element_type) = field_type {
-            validate_schema_array_fields(&format!("{path}.{name}[]"), element_type)?;
+            validate_schema_array_fields(
+                &format!("{path}.{name}[]"),
+                element_type,
+                remaining_depth - 1,
+            )?;
         }
     }
     Ok(())
@@ -129,13 +140,54 @@ fn validate_schema_fields(
 fn validate_schema_array_fields(
     path: &str,
     field_type: &SchemaField,
+    remaining_depth: usize,
 ) -> Result<(), CredentialError> {
+    if remaining_depth == 0 {
+        return Err(CredentialError::SchemaValidationError(format!(
+            "maximum schema nesting depth exceeded at {path}"
+        )));
+    }
     if let SchemaField::Object { fields, .. } = field_type {
-        validate_schema_fields(path, fields)?;
+        validate_schema_fields(path, fields, remaining_depth - 1)?;
     }
     if let SchemaField::Array(element_type) = field_type {
-        validate_schema_array_fields(&format!("{path}[]"), element_type)?;
+        validate_schema_array_fields(&format!("{path}[]"), element_type, remaining_depth - 1)?;
     }
+    Ok(())
+}
+
+/// Validate all credential constraints: schema structure, claims conformance,
+/// edges, rules, and expiration consistency.
+pub(crate) fn validate_credential(
+    schema: &CredentialSchema,
+    claims: &serde_json::Value,
+    edges: Option<&Edges>,
+    rules: Option<&Rules>,
+    issued_at: &StorageDatetime,
+    expires_at: Option<&StorageDatetime>,
+) -> Result<(), CredentialError> {
+    validate_schema(schema)?;
+    validate_claims(schema, claims)?;
+    validate_edges(schema, edges)?;
+    validate_rules(schema, rules)?;
+
+    if schema.expires {
+        let exp = expires_at.ok_or_else(|| {
+            CredentialError::SchemaValidationError(
+                "schema requires expires_at but none provided".to_string(),
+            )
+        })?;
+        if exp <= issued_at {
+            return Err(CredentialError::SchemaValidationError(
+                "expires_at must be after issued_at".to_string(),
+            ));
+        }
+    } else if expires_at.is_some() {
+        return Err(CredentialError::SchemaValidationError(
+            "schema does not allow expires_at".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -143,7 +195,7 @@ fn validate_schema_array_fields(
 /// Closed schema: extra fields not in the schema are rejected; `said` is
 /// implicitly required on compactable objects and disallowed on non-compactable ones.
 /// If claims is a string (compacted to SAID), validation is skipped.
-pub fn validate_claims(
+pub(crate) fn validate_claims(
     schema: &CredentialSchema,
     claims: &serde_json::Value,
 ) -> Result<(), CredentialError> {
@@ -159,14 +211,14 @@ pub fn validate_claims(
     })?;
 
     // Claims is always compactable (has a `said` field)
-    validate_object_fields("claims", &schema.fields, obj, true)
+    validate_object_fields("claims", &schema.fields, obj, true, MAX_RECURSION_DEPTH)
 }
 
 /// Validate that credential edges conform to the schema's edge definitions.
 /// If the schema defines edges, the credential must provide exactly those labels,
 /// and each edge must match the schema constraints.
 /// If the schema has no edge definitions, any edges are accepted.
-pub fn validate_edges(
+pub(crate) fn validate_edges(
     schema: &CredentialSchema,
     edges: Option<&Edges>,
 ) -> Result<(), CredentialError> {
@@ -234,7 +286,7 @@ pub fn validate_edges(
 /// If the schema defines rules, the credential must provide exactly those labels,
 /// and each rule must match the schema constraints.
 /// If the schema has no rule definitions, any rules are accepted.
-pub fn validate_rules(
+pub(crate) fn validate_rules(
     schema: &CredentialSchema,
     rules: Option<&Rules>,
 ) -> Result<(), CredentialError> {
@@ -281,11 +333,23 @@ fn validate_object_fields(
     schema_fields: &BTreeMap<String, SchemaField>,
     obj: &serde_json::Map<String, serde_json::Value>,
     compactable: bool,
+    remaining_depth: usize,
 ) -> Result<(), CredentialError> {
+    if remaining_depth == 0 {
+        return Err(CredentialError::SchemaValidationError(format!(
+            "maximum nesting depth exceeded at {name}"
+        )));
+    }
+
     // Check all schema-defined fields are present and valid
     for (field_name, field_type) in schema_fields {
         if let Some(value) = obj.get(field_name) {
-            validate_field(&format!("{name}.{field_name}"), field_type, value)?;
+            validate_field(
+                &format!("{name}.{field_name}"),
+                field_type,
+                value,
+                remaining_depth - 1,
+            )?;
         } else {
             return Err(CredentialError::SchemaValidationError(format!(
                 "missing required field: {name}.{field_name}"
@@ -319,6 +383,7 @@ fn validate_field(
     name: &str,
     field_type: &SchemaField,
     value: &serde_json::Value,
+    remaining_depth: usize,
 ) -> Result<(), CredentialError> {
     match field_type {
         SchemaField::String | SchemaField::Said | SchemaField::Prefix => {
@@ -368,14 +433,14 @@ fn validate_field(
                     ))
                 }
             })?;
-            validate_object_fields(name, fields, obj, *compactable)?;
+            validate_object_fields(name, fields, obj, *compactable, remaining_depth)?;
         }
         SchemaField::Array(element_type) => {
             let arr = value.as_array().ok_or_else(|| {
                 CredentialError::SchemaValidationError(format!("field '{name}' must be an array"))
             })?;
             for (i, elem) in arr.iter().enumerate() {
-                validate_field(&format!("{name}[{i}]"), element_type, elem)?;
+                validate_field(&format!("{name}[{i}]"), element_type, elem, remaining_depth)?;
             }
         }
     }
@@ -773,5 +838,80 @@ mod tests {
 
         let err = validate_schema(&schema).unwrap_err();
         assert!(err.to_string().contains("reserved field name"));
+    }
+
+    #[test]
+    fn test_validate_schema_rejects_excessive_nesting() {
+        // Build a schema nested deeper than MAX_RECURSION_DEPTH
+        let mut fields = BTreeMap::new();
+        fields.insert("leaf".to_string(), SchemaField::String);
+
+        for _ in 0..MAX_RECURSION_DEPTH + 1 {
+            let mut outer = BTreeMap::new();
+            outer.insert(
+                "inner".to_string(),
+                SchemaField::Object {
+                    fields,
+                    compactable: false,
+                },
+            );
+            fields = outer;
+        }
+
+        let schema = CredentialSchema::create(
+            "Deep".to_string(),
+            "Excessively nested schema".to_string(),
+            "1.0".to_string(),
+            fields,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = validate_schema(&schema).unwrap_err();
+        assert!(err.to_string().contains("maximum schema nesting depth"));
+    }
+
+    #[test]
+    fn test_validate_claims_rejects_excessive_nesting() {
+        // Build a schema nested deeper than MAX_RECURSION_DEPTH
+        let mut fields = BTreeMap::new();
+        fields.insert("leaf".to_string(), SchemaField::String);
+
+        let mut claims_inner = json!({"leaf": "value"});
+
+        for _ in 0..MAX_RECURSION_DEPTH + 1 {
+            let mut outer = BTreeMap::new();
+            outer.insert(
+                "inner".to_string(),
+                SchemaField::Object {
+                    fields,
+                    compactable: false,
+                },
+            );
+            fields = outer;
+
+            claims_inner = json!({"inner": claims_inner});
+        }
+
+        let schema = CredentialSchema::create(
+            "Deep".to_string(),
+            "Excessively nested schema".to_string(),
+            "1.0".to_string(),
+            fields,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+        claims_inner.as_object_mut().unwrap().insert(
+            "said".to_string(),
+            json!("EAbc1234567890123456789012345678901234567890"),
+        );
+
+        let err = validate_claims(&schema, &claims_inner).unwrap_err();
+        assert!(err.to_string().contains("maximum nesting depth"));
     }
 }
