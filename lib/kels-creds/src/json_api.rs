@@ -1,20 +1,20 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, str::FromStr};
 
 use serde::Deserialize;
 
 use kels::KelStore;
-
 use verifiable_storage::StorageDatetime;
 
-use crate::compaction::{compact, expand_all};
-use crate::credential::Credential;
-use crate::disclosure::{apply_disclosure, parse_disclosure};
-use crate::edge::{Edge, Edges};
-use crate::error::CredentialError;
-use crate::rule::{Rule, Rules};
-use crate::schema::{CredentialSchema, validate_credential};
-use crate::store::{InMemorySADStore, SADStore};
-use std::str::FromStr;
+use crate::{
+    compaction::{compact, expand_all},
+    credential::Credential,
+    disclosure::{apply_disclosure, parse_disclosure},
+    edge::{Edge, Edges},
+    error::CredentialError,
+    rule::{Rule, Rules},
+    schema::{CredentialSchema, validate_credential},
+    store::{InMemorySADStore, SADStore},
+};
 
 /// Edge input without SAID (SAIDs are derived during creation).
 #[derive(Deserialize)]

@@ -1,13 +1,28 @@
-use kels::{KelStore, KelVerifier, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource, verify_key_events};
+use serde::Serialize;
 
+use kels::{KelStore, KelVerifier, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource, verify_key_events};
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
-use crate::credential::{
-    Claims, Compactable, Credential, CredentialVerification, SchemaValidationResult,
+use crate::{
+    credential::{Claims, Compactable, Credential},
+    error::CredentialError,
+    revocation::revocation_hash,
+    schema::{SchemaValidationResult, validate_claims},
 };
-use crate::error::CredentialError;
-use crate::revocation::revocation_hash;
-use crate::schema::validate_claims;
+
+/// The result of verifying a single credential.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialVerification {
+    pub credential_said: String,
+    pub issuer: String,
+    pub subject: Option<String>,
+    pub is_issued: bool,
+    pub is_revoked: bool,
+    pub is_expired: bool,
+    pub kel_error: Option<String>,
+    pub schema_validation: SchemaValidationResult,
+}
 
 /// Verify a credential against the KEL.
 ///

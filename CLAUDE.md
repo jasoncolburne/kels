@@ -40,7 +40,9 @@ use verifiable_storage::{SelfAddressed, StorageError};
 use crate::{handlers::AppState, repository::KelsRepository};
 ```
 
-Never import inline within function bodies.
+Never import inline within function bodies, unless inside a feature-gated block (e.g. `#[cfg(feature = "...")]`).
+
+Note: some older files may not follow this convention perfectly. When touching a file, fix its imports to match.
 
 ### General
 

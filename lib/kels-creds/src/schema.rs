@@ -1,14 +1,19 @@
-use std::collections::BTreeMap;
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
-use crate::compaction::MAX_RECURSION_DEPTH;
-use crate::edge::Edges;
-use crate::error::CredentialError;
-use crate::rule::Rules;
+use crate::{compaction::MAX_RECURSION_DEPTH, edge::Edges, error::CredentialError, rule::Rules};
+
+/// Result of schema validation during credential verification.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SchemaValidationResult {
+    Valid,
+    Invalid,
+    NotValidated,
+}
 
 /// Schema-level constraint for an edge. All fields mirror Edge fields.
 /// `schema` is required (same as Edge). Other fields, if present, constrain the edge.

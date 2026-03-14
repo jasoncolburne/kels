@@ -1,18 +1,18 @@
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
+
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kels::{KelStore, KeyEventBuilder, KeyProvider};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-
 use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
 
-use crate::edge::Edges;
-use crate::error::CredentialError;
-use crate::rule::Rules;
-use crate::schema::CredentialSchema;
-use crate::store::{InMemorySADStore, SADStore};
-use crate::verification::verify_credential;
+use crate::{
+    edge::Edges,
+    error::CredentialError,
+    rule::Rules,
+    schema::CredentialSchema,
+    store::{InMemorySADStore, SADStore},
+    verification::{CredentialVerification, verify_credential},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -35,29 +35,6 @@ impl<T> Compactable<T> {
             Compactable::Expanded(t) => Some(t),
         }
     }
-}
-
-/// Result of schema validation during credential verification.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SchemaValidationResult {
-    Valid,
-    Invalid,
-    NotValidated,
-}
-
-/// The result of verifying a single credential.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CredentialVerification {
-    pub credential_said: String,
-    pub issuer: String,
-    pub subject: Option<String>,
-    pub is_issued: bool,
-    pub is_revoked: bool,
-    pub is_expired: bool,
-    pub kel_error: Option<String>,
-    pub schema_validation: SchemaValidationResult,
 }
 
 /// Trait alias for the bounds required on credential claims types.
@@ -207,7 +184,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::schema::SchemaField;
+    use crate::schema::{SchemaField, SchemaValidationResult};
 
     /// A simple claims type for testing.
     #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]

@@ -2,9 +2,11 @@ use std::collections::HashMap;
 
 use verifiable_storage::compact_value_bounded;
 
-use crate::compaction::{MAX_RECURSION_DEPTH, expand_all};
-use crate::error::CredentialError;
-use crate::store::SADStore;
+use crate::{
+    compaction::{MAX_RECURSION_DEPTH, expand_all},
+    error::CredentialError,
+    store::SADStore,
+};
 
 /// AST node for the disclosure path DSL.
 #[derive(Debug, Clone, PartialEq, Eq)]

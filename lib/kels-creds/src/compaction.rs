@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use verifiable_storage::{compact_value_bounded, compute_said_from_value};
 
-use crate::error::CredentialError;
-use crate::store::SADStore;
+use crate::{error::CredentialError, store::SADStore};
 
 /// Maximum recursion depth for compaction, expansion, and schema validation.
 /// Bounds stack usage for deeply nested credential structures or malicious inputs.

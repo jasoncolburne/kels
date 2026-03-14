@@ -488,14 +488,14 @@ lib/kels-creds/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait, CredentialVerification
-    ├── schema.rs           # CredentialSchema, SchemaField, SchemaEdge, SchemaRule, validation
+    ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait
+    ├── schema.rs           # CredentialSchema, SchemaField, SchemaEdge, SchemaRule, SchemaValidationResult, validation
     ├── edge.rs             # Edge, Edges types (with deserialization guards)
     ├── rule.rs             # Rule, Rules types (with deserialization guards)
     ├── store.rs            # SADStore trait + InMemorySADStore
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact, expand, round-trip (depth-bounded)
-    ├── verification.rs     # verify_credential
+    ├── verification.rs     # verify_credential, CredentialVerification
     ├── revocation.rs       # revocation_hash (domain-separated)
     └── error.rs            # CredentialError
 ```
