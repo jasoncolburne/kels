@@ -2,7 +2,7 @@ use std::{collections::HashMap, str::FromStr};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use kels::{KelStore, KeyEventBuilder, KeyProvider, generate_nonce};
+use kels::{KeyEventBuilder, KeyProvider, PagedKelSource, generate_nonce};
 use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
 
 use crate::{
@@ -38,8 +38,8 @@ impl<T> Compactable<T> {
 }
 
 /// Trait alias for the bounds required on credential claims types.
-pub trait Claims: Serialize + DeserializeOwned + SelfAddressed + Clone {}
-impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone> Claims for T {}
+pub trait Claims: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync {}
+impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for T {}
 
 /// Typed credential for issuance. `T` is the claims payload.
 /// Fields that are `SelfAddressed` use `Compactable<T>` to represent either
@@ -84,17 +84,7 @@ impl<T: Claims> Credential<T> {
     ) -> Result<(Self, String), CredentialError> {
         let issued_at = StorageDatetime::now();
 
-        crate::schema::validate_credential(
-            &schema,
-            &serde_json::to_value(&claims)?,
-            edges.as_ref(),
-            rules.as_ref(),
-            &issued_at,
-            expires_at.as_ref(),
-        )?;
-
         let nonce = if unique { Some(generate_nonce()) } else { None };
-
         let irrevocable = if can_revoke { None } else { Some(true) };
 
         let credential = Self {
@@ -110,6 +100,16 @@ impl<T: Claims> Credential<T> {
             edges: edges.map(Compactable::Expanded),
             rules: rules.map(Compactable::Expanded),
         };
+
+        let report = crate::schema::validate_credential_report(
+            &credential,
+            credential.schema.as_expanded().ok_or_else(|| {
+                CredentialError::SchemaValidationError(
+                    "schema must be expanded during creation".to_string(),
+                )
+            })?,
+        )?;
+        report.require_all_valid()?;
 
         // Compact/expand cycle to derive all SAIDs
         let (compacted_said, chunks) = credential.compact()?;
@@ -159,12 +159,14 @@ impl<T: Claims> Credential<T> {
     }
 
     /// Verify a typed credential against the KEL.
+    /// If a SADStore is provided, recursively verifies edge-referenced credentials.
     /// Delegates to [`verify_credential`](crate::verification::verify_credential).
     pub async fn verify(
         &self,
-        kel_store: &dyn KelStore,
+        source: &dyn PagedKelSource,
+        sad_store: Option<&dyn SADStore>,
     ) -> Result<CredentialVerification, CredentialError> {
-        verify_credential(self, kel_store).await
+        verify_credential(self, source, sad_store).await
     }
 
     fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
@@ -213,6 +215,9 @@ mod tests {
             "A test".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -395,7 +400,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use kels::{FileKelStore, SoftwareKeyProvider};
+    use kels::{FileKelStore, SoftwareKeyProvider, StoreKelSource};
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
@@ -441,10 +446,11 @@ mod tests {
 
         cred.issue(&mut builder).await.unwrap();
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
-        assert!(result.is_issued);
-        assert!(!result.is_revoked);
-        assert!(!result.is_expired);
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
+        result.is_valid(true).unwrap();
         assert_eq!(result.credential_said, cred.said);
         assert_eq!(result.issuer, prefix);
     }
@@ -454,9 +460,11 @@ mod tests {
         let (_builder, prefix, kel_store, _dir) = setup_kel().await;
         let (cred, _) = credential_for_issuer(&prefix).await;
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
-        assert!(!result.is_issued);
-        assert!(!result.is_revoked);
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
+        assert!(result.is_valid(true).is_err());
     }
 
     #[tokio::test]
@@ -471,7 +479,11 @@ mod tests {
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
         builder.interact(&rev_hash).await.unwrap();
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
+        assert!(result.is_valid(true).is_err());
         assert!(result.is_issued);
         assert!(result.is_revoked);
     }
@@ -501,9 +513,11 @@ mod tests {
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
         builder.interact(&rev_hash).await.unwrap();
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
-        assert!(result.is_issued);
-        assert!(!result.is_revoked);
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
+        result.is_valid(true).unwrap();
     }
 
     #[tokio::test]
@@ -521,6 +535,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             true,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -543,9 +560,11 @@ mod tests {
 
         cred.issue(&mut builder).await.unwrap();
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
-        assert!(result.is_issued);
-        assert!(!result.is_expired);
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
+        result.is_valid(true).unwrap();
     }
 
     #[tokio::test]
@@ -555,9 +574,12 @@ mod tests {
 
         cred.issue(&mut builder).await.unwrap();
 
-        let result = cred.verify(kel_store.as_ref()).await.unwrap();
+        let result = cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
         assert!(matches!(
-            result.schema_validation,
+            result.schema_validation.claims,
             SchemaValidationResult::Valid
         ));
     }
@@ -582,10 +604,190 @@ mod tests {
 
         compacted_cred.issue(&mut builder).await.unwrap();
 
-        let result = compacted_cred.verify(kel_store.as_ref()).await.unwrap();
+        let result = compacted_cred
+            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .await
+            .unwrap();
         assert!(matches!(
-            result.schema_validation,
+            result.schema_validation.claims,
             SchemaValidationResult::NotValidated
         ));
+    }
+
+    #[tokio::test]
+    async fn test_verify_chained_credentials() {
+        use crate::edge::{Edge, Edges};
+
+        // Set up two issuers with separate KELs
+        let (mut builder_a, prefix_a, kel_store_a, _dir_a) = setup_kel().await;
+        let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
+
+        // Issuer A issues a base credential
+        let (cred_a, _) = credential_for_issuer(&prefix_a).await;
+        let compacted_said_a = cred_a.issue(&mut builder_a).await.unwrap();
+
+        // Store credential A in a shared SADStore
+        let sad_store = InMemorySADStore::new();
+        cred_a.store(&sad_store).await.unwrap();
+
+        // Issuer B issues a credential with an edge referencing A's credential
+        let edge = Edge::create(
+            cred_a.schema.as_expanded().unwrap().said.clone(),
+            Some(prefix_a.clone()),
+            Some(compacted_said_a.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let mut edges_map = BTreeMap::new();
+        edges_map.insert("license".to_string(), edge);
+        let edges = Edges::new_validated(edges_map).unwrap();
+
+        let (cred_b, _) = Credential::create(
+            test_schema(),
+            prefix_b.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            Some(edges),
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        cred_b.issue(&mut builder_b).await.unwrap();
+        cred_b.store(&sad_store).await.unwrap();
+
+        // Verify B with SADStore — should recursively verify A
+        // We need a composite KEL source that can look up both issuers.
+        // For now, verify against each issuer's store separately.
+        // First verify A alone works:
+        let result_a = cred_a
+            .verify(&StoreKelSource::new(kel_store_a.as_ref()), None)
+            .await
+            .unwrap();
+        assert!(result_a.is_issued);
+        result_a.is_valid(true).unwrap();
+
+        // Verify B without SADStore — edges not checked
+        let result_b_no_edges = cred_b
+            .verify(&StoreKelSource::new(kel_store_b.as_ref()), None)
+            .await
+            .unwrap();
+        assert!(result_b_no_edges.is_issued);
+        assert!(result_b_no_edges.edge_verifications.is_empty());
+
+        // Verify B with SADStore — edge credential A is verified recursively
+        // Note: edge credential A's issuer KEL is in kel_store_a, not kel_store_b.
+        // The edge verification will find A not issued (different KEL store),
+        // demonstrating that the recursive verification runs.
+        let result_b = cred_b
+            .verify(&StoreKelSource::new(kel_store_b.as_ref()), Some(&sad_store))
+            .await
+            .unwrap();
+        assert!(result_b.is_issued);
+        assert!(result_b.edge_verifications.contains_key("license"));
+        let edge_v = result_b.edge_verifications.get("license").unwrap();
+        // A's issuer KEL is not in kel_store_b, so it won't be found as issued
+        assert!(!edge_v.is_issued);
+        assert_eq!(edge_v.issuer, prefix_a);
+    }
+
+    #[tokio::test]
+    async fn test_verify_three_level_chain() {
+        use crate::edge::{Edge, Edges};
+
+        // Three issuers: root -> intermediate -> leaf
+        let (mut builder_root, prefix_root, _kel_store_root, _dir_root) = setup_kel().await;
+        let (mut builder_mid, prefix_mid, _kel_store_mid, _dir_mid) = setup_kel().await;
+        let (mut builder_leaf, prefix_leaf, kel_store_leaf, _dir_leaf) = setup_kel().await;
+
+        let sad_store = InMemorySADStore::new();
+
+        // Root credential (no edges)
+        let (cred_root, _) = credential_for_issuer(&prefix_root).await;
+        let compacted_root = cred_root.issue(&mut builder_root).await.unwrap();
+        cred_root.store(&sad_store).await.unwrap();
+
+        // Intermediate credential with edge to root
+        let root_schema_said = cred_root.schema.as_expanded().unwrap().said.clone();
+        let edge_to_root = Edge::create(
+            root_schema_said.clone(),
+            Some(prefix_root.clone()),
+            Some(compacted_root.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut mid_edges = BTreeMap::new();
+        mid_edges.insert("root".to_string(), edge_to_root);
+
+        let (cred_mid, _) = Credential::create(
+            test_schema(),
+            prefix_mid.clone(),
+            None,
+            test_claims(),
+            false,
+            Some(Edges::new_validated(mid_edges).unwrap()),
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        let compacted_mid = cred_mid.issue(&mut builder_mid).await.unwrap();
+        cred_mid.store(&sad_store).await.unwrap();
+
+        // Leaf credential with edge to intermediate
+        let mid_schema_said = cred_mid.schema.as_expanded().unwrap().said.clone();
+        let edge_to_mid = Edge::create(
+            mid_schema_said,
+            Some(prefix_mid.clone()),
+            Some(compacted_mid),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut leaf_edges = BTreeMap::new();
+        leaf_edges.insert("authority".to_string(), edge_to_mid);
+
+        let (cred_leaf, _) = Credential::create(
+            test_schema(),
+            prefix_leaf.clone(),
+            None,
+            test_claims(),
+            false,
+            Some(Edges::new_validated(leaf_edges).unwrap()),
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        cred_leaf.issue(&mut builder_leaf).await.unwrap();
+        cred_leaf.store(&sad_store).await.unwrap();
+
+        // Verify leaf — should recursively verify intermediate and root
+        let result = cred_leaf
+            .verify(
+                &StoreKelSource::new(kel_store_leaf.as_ref()),
+                Some(&sad_store),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_issued);
+        assert!(result.edge_verifications.contains_key("authority"));
+
+        let mid_v = result.edge_verifications.get("authority").unwrap();
+        assert_eq!(mid_v.issuer, prefix_mid);
+        assert!(mid_v.edge_verifications.contains_key("root"));
+
+        let root_v = mid_v.edge_verifications.get("root").unwrap();
+        assert_eq!(root_v.issuer, prefix_root);
+        assert!(root_v.edge_verifications.is_empty());
     }
 }

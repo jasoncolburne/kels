@@ -2,18 +2,18 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use serde::Deserialize;
 
-use kels::KelStore;
+use kels::PagedKelSource;
 use verifiable_storage::StorageDatetime;
 
 use crate::{
-    compaction::{compact, expand_all},
+    compaction::compact,
     credential::Credential,
     disclosure::{apply_disclosure, parse_disclosure},
     edge::{Edge, Edges},
     error::CredentialError,
     rule::{Rule, Rules},
-    schema::{CredentialSchema, validate_credential},
-    store::{InMemorySADStore, SADStore},
+    schema::{CredentialSchema, SchemaValidationReport, validate_credential_report},
+    store::SADStore,
 };
 
 /// Edge input without SAID (SAIDs are derived during creation).
@@ -55,10 +55,10 @@ pub async fn create(
     json_rules: Option<&str>,
     issuer: &str,
     subject: Option<&str>,
+    unique: bool,
     can_revoke: bool,
     expires_at: Option<&str>,
 ) -> Result<String, CredentialError> {
-    // Parse schema
     let schema: CredentialSchema = serde_json::from_str(json_schema)?;
 
     // Parse claims — add said field, sort keys for deterministic SAID
@@ -78,21 +78,18 @@ pub async fn create(
     }
     let claims_value = serde_json::Value::Object(sorted_claims);
 
-    // Parse edges
     let edges = if let Some(json) = json_edges {
         Some(parse_edges(json)?)
     } else {
         None
     };
 
-    // Parse rules
     let rules = if let Some(json) = json_rules {
         Some(parse_rules(json)?)
     } else {
         None
     };
 
-    // Parse expires_at
     let exp = if let Some(exp_str) = expires_at {
         Some(
             serde_json::from_value::<StorageDatetime>(serde_json::Value::String(
@@ -106,57 +103,18 @@ pub async fn create(
         None
     };
 
-    let issued_at = StorageDatetime::now();
-
-    // Validate all credential constraints
-    validate_credential(
-        &schema,
-        &claims_value,
-        edges.as_ref(),
-        rules.as_ref(),
-        &issued_at,
-        exp.as_ref(),
-    )?;
-
-    // Build credential as serde_json::Value with correct field ordering
-    // (must match Credential<T> struct field order for consistent SAIDs)
-    let mut cred = serde_json::Map::new();
-    cred.insert("said".to_string(), serde_json::Value::String(String::new()));
-    cred.insert("schema".to_string(), serde_json::to_value(&schema)?);
-    cred.insert(
-        "issuer".to_string(),
-        serde_json::Value::String(issuer.to_string()),
-    );
-    if let Some(subj) = subject {
-        cred.insert(
-            "subject".to_string(),
-            serde_json::Value::String(subj.to_string()),
-        );
-    }
-    cred.insert("issuedAt".to_string(), serde_json::to_value(&issued_at)?);
-    cred.insert("claims".to_string(), claims_value);
-    if let Some(ref exp_val) = exp {
-        cred.insert("expiresAt".to_string(), serde_json::to_value(exp_val)?);
-    }
-    if !can_revoke {
-        cred.insert("irrevocable".to_string(), serde_json::Value::Bool(true));
-    }
-    if let Some(ref edges_val) = edges {
-        cred.insert("edges".to_string(), serde_json::to_value(edges_val)?);
-    }
-    if let Some(ref rules_val) = rules {
-        cred.insert("rules".to_string(), serde_json::to_value(rules_val)?);
-    }
-
-    let mut credential = serde_json::Value::Object(cred);
-
-    // Compact/expand cycle to derive all SAIDs
-    let chunks = compact(&mut credential)?;
-    let temp_store = InMemorySADStore::new();
-    temp_store.store_chunks(&chunks).await?;
-
-    // credential is now a SAID string — expand back to full form
-    expand_all(&mut credential, &temp_store).await?;
+    let (credential, _) = Credential::create(
+        schema,
+        issuer.to_string(),
+        subject.map(|s| s.to_string()),
+        claims_value,
+        unique,
+        edges,
+        rules,
+        can_revoke,
+        exp,
+    )
+    .await?;
 
     serde_json::to_string(&credential).map_err(CredentialError::from)
 }
@@ -188,14 +146,16 @@ pub async fn store(
 /// Takes the credential at whatever disclosure level the caller has and verifies
 /// what's visible: SAID integrity, KEL anchoring, revocation, expiration, and
 /// schema validation (if schema and claims are both expanded).
+/// If a SADStore is provided, recursively verifies edge-referenced credentials.
 ///
 /// Returns verification result as a JSON string.
 pub async fn verify(
     json_credential: &str,
-    kel_store: &dyn KelStore,
+    source: &dyn PagedKelSource,
+    sad_store: Option<&dyn SADStore>,
 ) -> Result<String, CredentialError> {
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
-    let verification = credential.verify(kel_store).await?;
+    let verification = credential.verify(source, sad_store).await?;
     serde_json::to_string(&verification).map_err(CredentialError::from)
 }
 
@@ -211,6 +171,37 @@ pub async fn disclose(
     let tokens = parse_disclosure(disclosure_statement)?;
     let value = apply_disclosure(compacted_said, &tokens, sad_store).await?;
     serde_json::to_string(&value).map_err(CredentialError::from)
+}
+
+/// Validate a credential against a schema, reporting per-field results.
+/// Schema structure and expiration are always checked (errors on failure).
+/// Claims, edges, and rules each report Valid/Invalid/NotValidated depending
+/// on whether the field is expanded or compacted.
+pub fn validate(
+    json_credential: &str,
+    json_schema: &str,
+) -> Result<SchemaValidationReport, CredentialError> {
+    let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
+    let schema: CredentialSchema = serde_json::from_str(json_schema)?;
+
+    let schema_said = if let Some(schema) = credential.schema.as_expanded() {
+        &schema.said
+    } else {
+        credential
+            .schema
+            .as_said()
+            .ok_or(CredentialError::InvalidSaid(
+                "Invalid schema said".to_string(),
+            ))?
+    };
+
+    if *schema_said != schema.said {
+        return Err(CredentialError::InvalidSaid(
+            "Schema said mismatch".to_string(),
+        ));
+    }
+
+    validate_credential_report(&credential, &schema)
 }
 
 fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
@@ -248,7 +239,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::schema::{CredentialSchema, SchemaField};
+    use crate::{
+        schema::{CredentialSchema, SchemaField},
+        store::InMemorySADStore,
+    };
 
     fn test_schema_json() -> String {
         let mut fields = BTreeMap::new();
@@ -260,6 +254,9 @@ mod tests {
             "A test".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -281,6 +278,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             Some("ESubject23456789012345678901234567890abcde"),
+            false,
             true,
             None,
         )
@@ -310,6 +308,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -323,6 +322,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -353,6 +353,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -378,6 +379,7 @@ mod tests {
             Some(rules_json),
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -402,6 +404,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -426,6 +429,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -439,6 +443,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )
@@ -466,6 +471,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
+            false,
             true,
             None,
         )

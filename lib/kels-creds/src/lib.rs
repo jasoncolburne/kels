@@ -23,7 +23,8 @@ pub use error::CredentialError;
 pub use revocation::revocation_hash;
 pub use rule::{Rule, Rules};
 pub use schema::{
-    CredentialSchema, SchemaConstraint, SchemaEdge, SchemaField, SchemaRule, SchemaValidationResult,
+    CredentialSchema, SchemaConstraint, SchemaEdge, SchemaField, SchemaRule,
+    SchemaValidationReport, SchemaValidationResult,
 };
 pub use store::{InMemorySADStore, SADStore};
 pub use verification::{CredentialVerification, verify_credential};

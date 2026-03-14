@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
-use crate::{compaction::MAX_RECURSION_DEPTH, edge::Edges, error::CredentialError, rule::Rules};
+use crate::{
+    compaction::MAX_RECURSION_DEPTH, credential::Credential, edge::Edges, error::CredentialError,
+    rule::Rules,
+};
 
 /// Result of schema validation during credential verification.
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +16,40 @@ pub enum SchemaValidationResult {
     Valid,
     Invalid,
     NotValidated,
+}
+
+/// Per-field validation report for graduated disclosure scenarios.
+/// Schema structure and expiration are always checked (errors on failure).
+/// Claims, edges, and rules report `NotValidated` when compacted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaValidationReport {
+    pub claims: SchemaValidationResult,
+    pub edges: SchemaValidationResult,
+    pub rules: SchemaValidationResult,
+}
+
+impl SchemaValidationReport {
+    /// Require all fields to be Valid. Returns an error if any field is Invalid.
+    /// NotValidated fields are accepted (compacted fields can't be validated).
+    pub fn require_all_valid(&self) -> Result<(), CredentialError> {
+        if matches!(self.claims, SchemaValidationResult::Invalid) {
+            return Err(CredentialError::SchemaValidationError(
+                "claims validation failed".to_string(),
+            ));
+        }
+        if matches!(self.edges, SchemaValidationResult::Invalid) {
+            return Err(CredentialError::SchemaValidationError(
+                "edges validation failed".to_string(),
+            ));
+        }
+        if matches!(self.rules, SchemaValidationResult::Invalid) {
+            return Err(CredentialError::SchemaValidationError(
+                "rules validation failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Schema-level constraint on an edge field. `true` in JSON means "must be present",
@@ -78,6 +115,12 @@ pub struct CredentialSchema {
     pub fields: BTreeMap<String, SchemaField>,
     #[serde(default)]
     pub expires: bool,
+    #[serde(default)]
+    pub unique: bool,
+    #[serde(default)]
+    pub subject: bool,
+    #[serde(default)]
+    pub revocable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges: Option<BTreeMap<String, SchemaEdge>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,21 +215,85 @@ fn validate_schema_array_fields(
     Ok(())
 }
 
-/// Validate all credential constraints: schema structure, claims conformance,
-/// edges, rules, and expiration consistency.
-pub(crate) fn validate_credential(
+/// Validate a credential against a schema with graduated disclosure support.
+/// Schema structure and expiration are always checked (errors on failure).
+/// Claims, edges, and rules each report Valid/Invalid/NotValidated depending
+/// on whether the field is expanded or compacted.
+pub(crate) fn validate_credential_report<T: crate::credential::Claims>(
+    credential: &Credential<T>,
     schema: &CredentialSchema,
-    claims: &serde_json::Value,
-    edges: Option<&Edges>,
-    rules: Option<&Rules>,
+) -> Result<SchemaValidationReport, CredentialError> {
+    validate_schema(schema)?;
+    validate_expiration(
+        schema,
+        &credential.issued_at,
+        credential.expires_at.as_ref(),
+    )?;
+
+    if schema.unique && credential.nonce.is_none() {
+        return Err(CredentialError::SchemaValidationError(
+            "schema requires a nonce (unique) but none provided".to_string(),
+        ));
+    }
+
+    if schema.subject && credential.subject.is_none() {
+        return Err(CredentialError::SchemaValidationError(
+            "schema requires a subject but none provided".to_string(),
+        ));
+    }
+
+    if schema.revocable && credential.irrevocable == Some(true) {
+        return Err(CredentialError::SchemaValidationError(
+            "schema requires credential to be revocable but it is irrevocable".to_string(),
+        ));
+    }
+
+    let claims = match credential.claims.as_expanded() {
+        Some(claims) => match validate_claims(schema, &serde_json::to_value(claims)?) {
+            Ok(()) => SchemaValidationResult::Valid,
+            Err(_) => SchemaValidationResult::Invalid,
+        },
+        None => SchemaValidationResult::NotValidated,
+    };
+
+    let edges = match credential.edges.as_ref().and_then(|e| e.as_expanded()) {
+        Some(edges) => match validate_edges(schema, Some(edges)) {
+            Ok(()) => SchemaValidationResult::Valid,
+            Err(_) => SchemaValidationResult::Invalid,
+        },
+        None if credential.edges.is_some() => SchemaValidationResult::NotValidated,
+        None => match validate_edges(schema, None) {
+            Ok(()) => SchemaValidationResult::Valid,
+            Err(_) => SchemaValidationResult::Invalid,
+        },
+    };
+
+    let rules = match credential.rules.as_ref().and_then(|r| r.as_expanded()) {
+        Some(rules) => match validate_rules(schema, Some(rules)) {
+            Ok(()) => SchemaValidationResult::Valid,
+            Err(_) => SchemaValidationResult::Invalid,
+        },
+        None if credential.rules.is_some() => SchemaValidationResult::NotValidated,
+        None => match validate_rules(schema, None) {
+            Ok(()) => SchemaValidationResult::Valid,
+            Err(_) => SchemaValidationResult::Invalid,
+        },
+    };
+
+    Ok(SchemaValidationReport {
+        claims,
+        edges,
+        rules,
+    })
+}
+
+/// Validate expiration constraints: if schema requires expiration, it must be
+/// present and after issued_at. If schema forbids expiration, it must be absent.
+pub(crate) fn validate_expiration(
+    schema: &CredentialSchema,
     issued_at: &StorageDatetime,
     expires_at: Option<&StorageDatetime>,
 ) -> Result<(), CredentialError> {
-    validate_schema(schema)?;
-    validate_claims(schema, claims)?;
-    validate_edges(schema, edges)?;
-    validate_rules(schema, rules)?;
-
     if schema.expires {
         let exp = expires_at.ok_or_else(|| {
             CredentialError::SchemaValidationError(
@@ -502,6 +609,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -603,6 +713,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -629,6 +742,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -654,6 +770,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -676,6 +795,9 @@ mod tests {
             "Schema with float".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -740,6 +862,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -772,6 +897,9 @@ mod tests {
             "Compactable sub-object".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -813,6 +941,9 @@ mod tests {
             "1.0".to_string(),
             fields,
             false,
+            false,
+            false,
+            false,
             None,
             None,
         )
@@ -837,6 +968,9 @@ mod tests {
             "Schema with said field".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -866,6 +1000,9 @@ mod tests {
             "Schema with nested said field".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -899,6 +1036,9 @@ mod tests {
             "Excessively nested schema".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,
@@ -936,6 +1076,9 @@ mod tests {
             "Excessively nested schema".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,

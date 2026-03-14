@@ -64,12 +64,15 @@ pub fn expand_field(
     })?;
 
     // Verify the expanded object's SAID matches
-    if expanded.get("said").and_then(|s| s.as_str()).is_none() {
-        return Err(CredentialError::ExpansionError(format!(
-            "expanded value has no 'said' field for '{}'",
-            last
-        )));
-    }
+    let expanded_said = expanded
+        .get("said")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| {
+            CredentialError::ExpansionError(format!(
+                "expanded value has no 'said' field for '{}'",
+                last
+            ))
+        })?;
 
     let mut compacted_copy = expanded.clone();
     compact_value_bounded(
@@ -80,10 +83,10 @@ pub fn expand_field(
     let computed = compacted_copy.as_str().ok_or_else(|| {
         CredentialError::ExpansionError("compaction did not produce a SAID string".to_string())
     })?;
-    if computed != current_said {
+    if computed != current_said || computed != expanded_said {
         return Err(CredentialError::ExpansionError(format!(
-            "SAID mismatch for '{}': expected {}, got {}",
-            last, current_said, computed
+            "SAID mismatch for '{}': expected {}, got {}/{}",
+            last, current_said, computed, expanded_said
         )));
     }
 
@@ -341,21 +344,21 @@ mod tests {
 
     #[test]
     fn test_compact_then_expand_roundtrip() {
-        let child_obj = json!({
-            "said": "",
-            "data": "leaf"
-        });
-
         let mut value = json!({
             "said": "",
             "name": "root",
-            "child": child_obj.clone()
+            "child": {
+                "said": "",
+                "data": "leaf"
+            }
         });
 
         let chunks = compact(&mut value).unwrap();
         let root_said = value.as_str().unwrap().to_string();
 
         let mut root = chunks.get(&root_said).unwrap().clone();
+        let child_said = root.get("child").unwrap().as_str().unwrap();
+        let child_obj = chunks.get(child_said).unwrap().clone();
         expand_field(&mut root, &["child"], child_obj).unwrap();
 
         let chunks2 = compact(&mut root).unwrap();
@@ -421,6 +424,9 @@ mod tests {
             "A test".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            false,
+            false,
             false,
             None,
             None,

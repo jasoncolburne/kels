@@ -66,6 +66,9 @@ pub struct CredentialSchema {
     pub version: String,
     pub fields: BTreeMap<String, SchemaField>,
     pub expires: bool,
+    pub unique: bool,
+    pub subject: bool,
+    pub revocable: bool,
     pub edges: Option<BTreeMap<String, SchemaEdge>>,
     pub rules: Option<BTreeMap<String, SchemaRule>>,
 }
@@ -88,6 +91,8 @@ pub enum SchemaField {
 `Object` fields have a `compactable` flag: when `true`, the object has a `said` field and can appear as a SAID string when compacted. When `false`, the object is always fully expanded and must not have a `said` field.
 
 `expires` controls whether credentials using this schema must have an `expires_at` timestamp. If `true`, `expires_at` is required and must be after `issued_at`. If `false`, `expires_at` must be absent.
+
+`unique` requires credentials to carry an anti-correlation nonce. `subject` requires credentials to have a subject. `revocable` requires credentials to be revocable (not `irrevocable: Some(true)`).
 
 Implements `FromStr` for JSON deserialization.
 
@@ -117,7 +122,7 @@ When a schema defines edges or rules, `Credential::create()` validates that the 
 
 #### Schema Validation
 
-A single internal `validate_credential()` function enforces all structural constraints at issuance time (schema well-formedness, claims conformance, edge/rule constraints, expiration consistency). Both `Credential::create()` and `json_api::create()` call it. All validation functions are `pub(crate)` — consumers use `verify_credential` for trust decisions, which includes schema validation when both schema and claims are expanded.
+A single internal `validate_credential_report()` function validates a credential against a schema with graduated disclosure support. Schema structure, expiration, and credential-level constraints (`unique`, `subject`, `revocable`) are always checked and error on failure. Claims, edges, and rules each report `Valid`, `Invalid`, or `NotValidated` depending on whether the field is expanded or compacted. `Credential::create()` calls this and requires all fields to be `Valid` via `require_all_valid()`. Verification also uses it, but accepts `NotValidated` for compacted fields. All validation functions are `pub(crate)` — consumers use `verify_credential` for trust decisions.
 
 ### Edge/Edges
 
@@ -341,7 +346,7 @@ pub async fn apply_disclosure(said: &str, tokens: &[PathToken], sad_store: &dyn 
 
 ## Issuance Flow
 
-1. Issuer constructs `Credential<T>` via `Credential::create()`, which validates all constraints via `validate_credential()` and derives all SAIDs
+1. Issuer constructs `Credential<T>` via `Credential::create()`, which validates all constraints via `validate_credential_report()` and derives all SAIDs
 2. Credential is compacted to canonical form (all nested fields replaced by SAIDs bottom-up), then the credential's SAID is computed over this compact form
 3. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
 4. `create()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID for KEL anchoring
@@ -403,10 +408,11 @@ All recursive operations share a single depth constant:
 1. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
 2. **Compacted SAID integrity** — Compact the credential to canonical form and derive the compacted SAID. This is the SAID that was anchored in the issuer's KEL at issuance time.
 3. **Schema validation** — If both schema and claims are expanded, validate claims against the schema. If either is compacted, report `NotValidated` (not an error — just insufficient data for validation).
-4. **KEL verification** — Build a `KelVerifier` for the issuer's prefix with `check_anchors` for the compacted SAID and (unless irrevocable) the revocation hash. Run `verify_key_events` against the `KelStore`. KEL errors are captured rather than failing the entire operation.
+4. **KEL verification** — Build a `KelVerifier` for the issuer's prefix with `check_anchors` for the compacted SAID and (unless irrevocable) the revocation hash. Run `verify_key_events` against the `PagedKelSource`. KEL errors are captured rather than failing the entire operation.
 5. **Anchoring** — From the `KelVerification`: `is_said_anchored(&compacted_said)` = issued.
 6. **Revocation** — Unless `irrevocable == Some(true)`, check `is_said_anchored(&revocation_hash)`.
 7. **Expiration** — Check if `expires_at` is present and in the past. Reported as `is_expired` data, not a verification gate — consumers make policy decisions.
+8. **Edge verification** — If a `SADStore` is provided and edges are expanded, recursively verify each edge that references a credential SAID. Results are collected in `edge_verifications`.
 
 ### API
 
@@ -419,7 +425,14 @@ pub struct CredentialVerification {
     pub is_revoked: bool,
     pub is_expired: bool,
     pub kel_error: Option<String>,
-    pub schema_validation: SchemaValidationResult,
+    pub schema_validation: SchemaValidationReport,
+    pub edge_verifications: BTreeMap<String, CredentialVerification>,
+}
+
+pub struct SchemaValidationReport {
+    pub claims: SchemaValidationResult,
+    pub edges: SchemaValidationResult,
+    pub rules: SchemaValidationResult,
 }
 
 pub enum SchemaValidationResult {
@@ -428,18 +441,21 @@ pub enum SchemaValidationResult {
     NotValidated,
 }
 
-/// Verify a credential against the KEL.
+/// Verify a credential against the KEL, optionally with recursive edge verification.
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
-    kel_store: &dyn KelStore,
+    source: &dyn PagedKelSource,
+    sad_store: Option<&dyn SADStore>,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
+`CredentialVerification::is_valid(require_valid_schema: bool)` provides a single "all good" check: issued, not revoked, not expired, no KEL errors, and all edge credentials also valid (recursively). When `require_valid_schema` is `true`, also requires all expanded schema fields to pass validation via `SchemaValidationReport::require_all_valid()`.
+
+When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, fully expanded, parsed as `Credential<Value>`, and recursively verified against the KEL. Each edge label maps to the `CredentialVerification` of the referenced credential. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
+
 `kel_error` surfaces why KEL verification failed for this credential's issuer, if applicable. When KEL verification fails, `is_issued` and `is_revoked` are `false` (fail-secure) but the caller can distinguish "issuer has no KEL" from "issuer's KEL is cryptographically invalid."
 
-`Credential::verify()` is a convenience method that delegates to `verify_credential(self, kel_store)`.
-
-Edge credential verification is the caller's responsibility — each edge credential should be verified independently via `verify_credential`. The edges on a credential declare relationships; the caller fetches and verifies referenced credentials as needed.
+`Credential::verify()` is a convenience method that delegates to `verify_credential(self, source, sad_store)`.
 
 ## FFI Surface
 
@@ -498,7 +514,7 @@ lib/kels-creds/
 └── src/
     ├── lib.rs              # public API re-exports
     ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait
-    ├── schema.rs           # CredentialSchema, SchemaField, SchemaEdge, SchemaRule, SchemaValidationResult, validation
+    ├── schema.rs           # CredentialSchema, SchemaField, SchemaEdge, SchemaRule, SchemaConstraint, SchemaValidationResult, SchemaValidationReport, validation
     ├── edge.rs             # Edge, Edges types (with deserialization guards)
     ├── rule.rs             # Rule, Rules types (with deserialization guards)
     ├── store.rs            # SADStore trait + InMemorySADStore
