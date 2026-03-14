@@ -49,7 +49,7 @@ Implements `FromStr` for JSON deserialization, which is the primary way credenti
 
 ### Untyped Operations
 
-Disclosure and verification operate on `serde_json::Value` directly — no wrapper type needed. The verifier doesn't need the issuer's Rust types; they work with raw JSON objects that have a `"said"` field.
+Disclosure operates on `serde_json::Value` directly — no wrapper type needed. Verification takes a typed `Credential<T>` since it needs structured access to fields like `issuer`, `schema`, and `claims`.
 
 ### CredentialSchema
 
