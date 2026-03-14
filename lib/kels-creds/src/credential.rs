@@ -2,7 +2,7 @@ use std::{collections::HashMap, str::FromStr};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use kels::{KelStore, KeyEventBuilder, KeyProvider};
+use kels::{KelStore, KeyEventBuilder, KeyProvider, generate_nonce};
 use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
 
 use crate::{
@@ -53,6 +53,8 @@ pub struct Credential<T: Claims> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
     pub claims: Compactable<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<StorageDatetime>,
@@ -74,9 +76,10 @@ impl<T: Claims> Credential<T> {
         issuer: String,
         subject: Option<String>,
         claims: T,
+        unique: bool,
         edges: Option<Edges>,
         rules: Option<Rules>,
-        irrevocable: Option<bool>,
+        can_revoke: bool,
         expires_at: Option<StorageDatetime>,
     ) -> Result<(Self, String), CredentialError> {
         let issued_at = StorageDatetime::now();
@@ -90,12 +93,17 @@ impl<T: Claims> Credential<T> {
             expires_at.as_ref(),
         )?;
 
+        let nonce = if unique { Some(generate_nonce()) } else { None };
+
+        let irrevocable = if can_revoke { None } else { Some(true) };
+
         let credential = Self {
             said: String::new(),
             schema: Compactable::Expanded(schema),
             issuer,
             subject,
             issued_at,
+            nonce,
             claims: Compactable::Expanded(claims),
             expires_at,
             irrevocable,
@@ -222,9 +230,10 @@ mod tests {
             "EIssuer123456789012345678901234567890abcde".to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
+            false,
             None,
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -263,11 +272,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_unique_credential() {
+        let (cred, _) = Credential::create(
+            test_schema(),
+            "EIssuer123456789012345678901234567890abcde".to_string(),
+            None,
+            test_claims(),
+            true,
+            None,
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(cred.nonce.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_deterministic_credential() {
+        let (cred, _) = Credential::create(
+            test_schema(),
+            "EIssuer123456789012345678901234567890abcde".to_string(),
+            None,
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(cred.nonce.is_none());
+    }
+
+    #[tokio::test]
     async fn test_credential_with_edges() {
         use crate::edge::{Edge, Edges};
 
         let edge = Edge::create(
             "EAbc1234567890123456789012345678901234567890".to_string(),
+            None,
             None,
             None,
             None,
@@ -283,9 +331,10 @@ mod tests {
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
+            false,
             Some(edges),
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -315,9 +364,10 @@ mod tests {
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
+            false,
             None,
             Some(rules),
-            None,
+            true,
             None,
         )
         .await
@@ -374,9 +424,10 @@ mod tests {
             issuer.to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
+            false,
             None,
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -434,9 +485,10 @@ mod tests {
             prefix.clone(),
             None,
             test_claims(),
+            false,
             None,
             None,
-            Some(true),
+            false,
             None,
         )
         .await
@@ -480,9 +532,10 @@ mod tests {
             prefix.clone(),
             None,
             test_claims(),
+            false,
             None,
             None,
-            None,
+            true,
             Some(far_future),
         )
         .await

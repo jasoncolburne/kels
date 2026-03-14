@@ -17,6 +17,8 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated: Option<bool>,
 }
 
@@ -99,6 +101,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap()
     }
@@ -122,6 +125,7 @@ mod tests {
             "EAbc1234567890123456789012345678901234567890".to_string(),
             Some("EIssuer123456789012345678901234567890abcde".to_string()),
             Some("ECred12345678901234567890123456789012abcdef".to_string()),
+            Some("ENonce12345678901234567890123456789012abcde".to_string()),
             Some(true),
         )
         .unwrap();
@@ -131,6 +135,7 @@ mod tests {
         let json = serde_json::to_value(&edge).unwrap();
         assert!(json.get("issuer").is_some());
         assert!(json.get("credential").is_some());
+        assert!(json.get("nonce").is_some());
         assert!(json.get("delegated").is_some());
     }
 
@@ -140,6 +145,7 @@ mod tests {
         let json = serde_json::to_value(&edge).unwrap();
         assert!(json.get("issuer").is_none());
         assert!(json.get("credential").is_none());
+        assert!(json.get("nonce").is_none());
         assert!(json.get("delegated").is_none());
     }
 

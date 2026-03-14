@@ -26,6 +26,8 @@ struct EdgeInput {
     #[serde(default)]
     credential: Option<String>,
     #[serde(default)]
+    nonce: Option<String>,
+    #[serde(default)]
     delegated: Option<bool>,
 }
 
@@ -53,7 +55,7 @@ pub async fn create(
     json_rules: Option<&str>,
     issuer: &str,
     subject: Option<&str>,
-    irrevocable: Option<bool>,
+    can_revoke: bool,
     expires_at: Option<&str>,
 ) -> Result<String, CredentialError> {
     // Parse schema
@@ -136,8 +138,8 @@ pub async fn create(
     if let Some(ref exp_val) = exp {
         cred.insert("expiresAt".to_string(), serde_json::to_value(exp_val)?);
     }
-    if let Some(irrev) = irrevocable {
-        cred.insert("irrevocable".to_string(), serde_json::Value::Bool(irrev));
+    if !can_revoke {
+        cred.insert("irrevocable".to_string(), serde_json::Value::Bool(true));
     }
     if let Some(ref edges_val) = edges {
         cred.insert("edges".to_string(), serde_json::to_value(edges_val)?);
@@ -220,6 +222,7 @@ fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
             input.schema,
             input.issuer,
             input.credential,
+            input.nonce,
             input.delegated,
         )?;
         edges.insert(label, edge);
@@ -278,7 +281,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             Some("ESubject23456789012345678901234567890abcde"),
-            None,
+            true,
             None,
         )
         .await
@@ -307,7 +310,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -320,7 +323,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -350,7 +353,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -375,7 +378,7 @@ mod tests {
             Some(rules_json),
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -399,7 +402,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await;
@@ -423,7 +426,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -436,7 +439,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
@@ -463,7 +466,7 @@ mod tests {
             None,
             "EIssuer123456789012345678901234567890abcde",
             None,
-            None,
+            true,
             None,
         )
         .await
