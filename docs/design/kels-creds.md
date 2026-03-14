@@ -109,12 +109,7 @@ When a schema defines edges or rules, `Credential::create()` validates that the 
 
 #### Schema Validation
 
-Four validation functions enforce schema correctness at issuance time:
-
-- `validate_schema(&schema)` — rejects `said` as a field name anywhere (it's implicit for compactable objects), rejects `said` as an edge or rule label
-- `validate_claims(&schema, &claims_value)` — closed-schema validation: all fields must be present, no extra fields allowed, types must match. Float fields accept integer literals.
-- `validate_edges(&schema, edges)` — if schema defines edges, provided edges must match labels and constraints
-- `validate_rules(&schema, rules)` — same pattern for rules
+A single internal `validate_credential()` function enforces all structural constraints at issuance time (schema well-formedness, claims conformance, edge/rule constraints, expiration consistency). Both `Credential::create()` and `json_api::create()` call it. All validation functions are `pub(crate)` — consumers use `verify_credential` for trust decisions, which includes schema validation when both schema and claims are expanded.
 
 ### Edge/Edges
 
@@ -337,26 +332,21 @@ pub async fn apply_disclosure(said: &str, tokens: &[PathToken], sad_store: &dyn 
 
 ## Issuance Flow
 
-1. Issuer constructs `Credential<T>` via `Credential::create()`, which takes a `&dyn SADStore` and stores all compacted chunks automatically
-2. Credential is compacted to canonical form (all nested fields replaced by SAIDs bottom-up), then the credential's SAID is computed over this compact form. All chunks (including the compacted credential itself) are stored in the `SADStore`
-3. The credential is reconstructed from the store by expanding from the compacted SAID — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
+1. Issuer constructs `Credential<T>` via `Credential::create()`, which validates all constraints via `validate_credential()` and derives all SAIDs
+2. Credential is compacted to canonical form (all nested fields replaced by SAIDs bottom-up), then the credential's SAID is computed over this compact form
+3. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
 4. `create()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID for KEL anchoring
-5. Issuer creates an `ixn` event anchoring the compacted credential SAID
-6. Credential delivered to holder (out of band)
-
-Validation at issuance time:
-- `validate_schema` — schema structure is well-formed
-- `validate_claims` — claims conform to schema fields (closed-schema validation)
-- `validate_edges` — edges match schema edge definitions (if defined)
-- `validate_rules` — rules match schema rule definitions (if defined)
-- `expires_at` is validated against `schema.expires`
+5. Issuer stores the credential via `Credential::store(&sad_store)` or `json_api::store()` if needed for later disclosure
+6. Issuer anchors the compacted SAID via `Credential::issue(&mut builder)` (creates an `ixn` event)
+7. Credential delivered to holder (out of band)
 
 ```rust
 // Issuance
 let (credential, said) = Credential::create(
-    schema, issuer, subject, claims, edges, rules, irrevocable, expires_at, &sad_store
+    schema, issuer, subject, claims, edges, rules, irrevocable, expires_at,
 ).await?;
-builder.interact(&said)?;  // anchor in KEL
+credential.store(&sad_store).await?;       // store for disclosure
+credential.issue(&mut builder).await?;     // anchor in KEL
 ```
 
 ## Revocation
@@ -399,32 +389,15 @@ Verification combines structural checks with KEL-anchored trust. Anchoring in th
 All recursive operations share a single depth constant:
 - `MAX_RECURSION_DEPTH = 32` — maximum depth for compaction, expansion, schema validation, and claims validation
 
-### Batched KEL Verification
-
-Before any structural checks, the verifier walks the entire credential graph (top-level credential + all edge credentials from the `SADStore`) to collect every `(issuer_prefix, credential_said, revocation_hash)` tuple, plus any delegation relationships (delegating prefix must anchor delegated prefix). These are grouped by prefix, and a single `verify_key_events` call is made per unique prefix with all that prefix's SAIDs registered via `check_anchors`. This avoids redundant KEL walks when multiple credentials share an issuer or delegating authority.
-
-Cycle detection is enforced via a `visited` set of credential SAIDs during graph traversal.
-
 ### Steps
 
-1. **Collect anchors** — Walk the credential tree, pulling `issuer`, `said`, and (unless irrevocable) `revocation_hash` from each credential. Look up edge credentials from `SADStore` by SAID. Group by issuer prefix. Also collect delegation relationships from delegated edges.
-2. **Batch KEL verification** — One `verify_key_events` per unique prefix (issuers + delegating prefixes) on the `KelStore`, with all anchors for that prefix registered via `check_anchors`. Store the resulting `KelVerification` per prefix. KEL verification errors are captured per-prefix rather than failing the entire operation.
-3. **Structure** — For each credential, compact to canonical form, verify `said` matches
-4. **Schema** — If schema is expanded, validate `claims` conforms to schema fields
-5. **Anchoring** — From the issuer's `KelVerification`: `is_said_anchored(&said)` = issued
-6. **Revocation** — Unless `irrevocable == Some(true)`, check `!is_said_anchored(&revocation_hash)`
+1. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
+2. **Compacted SAID integrity** — Compact the credential to canonical form and derive the compacted SAID. This is the SAID that was anchored in the issuer's KEL at issuance time.
+3. **Schema validation** — If both schema and claims are expanded, validate claims against the schema. If either is compacted, report `NotValidated` (not an error — just insufficient data for validation).
+4. **KEL verification** — Build a `KelVerifier` for the issuer's prefix with `check_anchors` for the compacted SAID and (unless irrevocable) the revocation hash. Run `verify_key_events` against the `KelStore`. KEL errors are captured rather than failing the entire operation.
+5. **Anchoring** — From the `KelVerification`: `is_said_anchored(&compacted_said)` = issued.
+6. **Revocation** — Unless `irrevocable == Some(true)`, check `is_said_anchored(&revocation_hash)`.
 7. **Expiration** — Check if `expires_at` is present and in the past. Reported as `is_expired` data, not a verification gate — consumers make policy decisions.
-8. **Edges** — For each expanded edge, check schema/issuer/delegation constraints against the referenced credential's verification results
-
-### Delegation Verification
-
-When an edge has `delegated: true`, three checks are performed:
-
-1. The referenced credential's issuer KEL must be a `dip` (delegated inception) whose `delegating_prefix` matches the edge's `issuer` field
-2. The delegating KEL (edge's `issuer`) is cryptographically verified
-3. The delegating KEL must anchor the delegated prefix — confirming the delegation was authorized
-
-This closes the delegation trust chain: the delegated issuer claims to be delegated, and the delegating authority confirms it by anchoring the delegated prefix in their KEL.
 
 ### API
 
@@ -436,38 +409,28 @@ pub struct CredentialVerification {
     pub is_issued: bool,
     pub is_revoked: bool,
     pub is_expired: bool,
-    pub kel_error: Option<KelsError>,
-    pub schema_valid: Option<bool>,
-    pub edge_verifications: BTreeMap<String, CredentialVerification>,
+    pub kel_error: Option<String>,
+    pub schema_validation: SchemaValidationResult,
 }
 
-/// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
-pub async fn verify_credential(
-    said: &str,
-    sad_store: &dyn SADStore,
+pub enum SchemaValidationResult {
+    Valid,
+    Invalid,
+    NotValidated,
+}
+
+/// Verify a credential against the KEL.
+pub async fn verify_credential<T: Claims>(
+    credential: &Credential<T>,
     kel_store: &dyn KelStore,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
 `kel_error` surfaces why KEL verification failed for this credential's issuer, if applicable. When KEL verification fails, `is_issued` and `is_revoked` are `false` (fail-secure) but the caller can distinguish "issuer has no KEL" from "issuer's KEL is cryptographically invalid."
 
-Verification is fully self-contained — it looks up the credential from `SADStore` by SAID, verifies the issuer's KEL internally via `KelStore`, looks up edge credentials from `SADStore`, and recurses. The caller does not need to pre-verify any KELs or supply credential values directly.
+`Credential::verify()` is a convenience method that delegates to `verify_credential(self, kel_store)`.
 
-### Credential Graph Structure
-
-A credential with edges forms a DAG rooted at the top-level credential, with edges pointing to other credentials, ultimately tracing back to KEL inception events. All credential data lives in the `SADStore` — edge credentials are looked up by their SAID. Insertion order doesn't matter since the store is content-addressable.
-
-## Edge / Chaining Verification
-
-When an edge is expanded and includes a `credential` SAID:
-
-1. Look up the referenced credential from `SADStore` by SAID
-2. If the edge has a `schema`, verify the referenced credential's schema SAID matches
-3. If the edge has an `issuer` and `delegated` is not set, verify the referenced credential's issuer matches directly
-4. If `delegated` is `true`, perform full delegation verification (see Delegation Verification above)
-5. Build the verification result for the referenced credential using the shared KEL verification results (no redundant KEL re-verification)
-
-When an edge is compacted (SAID only), the verifier can only confirm the edge exists — they cannot verify the referenced credential without the holder expanding it.
+Edge credential verification is the caller's responsibility — each edge credential should be verified independently via `verify_credential`. The edges on a credential declare relationships; the caller fetches and verifies referenced credentials as needed.
 
 ## FFI Surface
 
@@ -525,14 +488,14 @@ lib/kels-creds/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait
+    ├── credential.rs       # Compactable<T>, Credential<T>, Claims trait, CredentialVerification
     ├── schema.rs           # CredentialSchema, SchemaField, SchemaEdge, SchemaRule, validation
     ├── edge.rs             # Edge, Edges types (with deserialization guards)
     ├── rule.rs             # Rule, Rules types (with deserialization guards)
     ├── store.rs            # SADStore trait + InMemorySADStore
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact, expand, round-trip (depth-bounded)
-    ├── verification.rs     # verify_credential, CredentialVerification
+    ├── verification.rs     # verify_credential
     ├── revocation.rs       # revocation_hash (domain-separated)
     └── error.rs            # CredentialError
 ```
