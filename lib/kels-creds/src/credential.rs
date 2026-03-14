@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value};
+use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
 
 use crate::edge::Edges;
 use crate::error::CredentialError;
@@ -42,7 +43,7 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone> Claims for T {}
 /// Fields that are `SelfAddressed` use `Compactable<T>` to represent either
 /// the expanded object or a compacted SAID string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "T: Claims")]
+#[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
     pub said: String,
     pub schema: Compactable<CredentialSchema>,
@@ -51,6 +52,8 @@ pub struct Credential<T: Claims> {
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
     pub claims: Compactable<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<StorageDatetime>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub irrevocable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,55 +67,79 @@ impl<T: Claims> Credential<T> {
     /// `issued_at` is auto-populated with the current timestamp.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
-        mut schema: CredentialSchema,
+        schema: CredentialSchema,
         issuer: String,
         subject: Option<String>,
-        mut claims: T,
+        claims: T,
         edges: Option<Edges>,
         rules: Option<Rules>,
         irrevocable: Option<bool>,
+        expires_at: Option<StorageDatetime>,
         store: &dyn SADStore,
     ) -> Result<(Self, String), CredentialError> {
-        schema.derive_said()?;
-        claims.derive_said()?;
+        crate::schema::validate_schema(&schema)?;
+        crate::schema::validate_claims(&schema, &serde_json::to_value(&claims)?)?;
+        crate::schema::validate_edges(&schema, edges.as_ref())?;
+        crate::schema::validate_rules(&schema, rules.as_ref())?;
 
-        let mut credential = Self {
+        let issued_at = StorageDatetime::now();
+
+        // Validate expires_at against schema.expires
+        if schema.expires {
+            let exp = expires_at.as_ref().ok_or_else(|| {
+                CredentialError::SchemaValidationError(
+                    "schema requires expires_at but none provided".to_string(),
+                )
+            })?;
+            if exp <= &issued_at {
+                return Err(CredentialError::SchemaValidationError(
+                    "expires_at must be after issued_at".to_string(),
+                ));
+            }
+        } else if expires_at.is_some() {
+            return Err(CredentialError::SchemaValidationError(
+                "schema does not allow expires_at".to_string(),
+            ));
+        }
+
+        let credential = Self {
             said: String::new(),
             schema: Compactable::Expanded(schema),
             issuer,
             subject,
-            issued_at: StorageDatetime::now(),
+            issued_at,
             claims: Compactable::Expanded(claims),
+            expires_at,
             irrevocable,
             edges: edges.map(Compactable::Expanded),
             rules: rules.map(Compactable::Expanded),
         };
 
-        let (compacted, chunks) = credential.compact()?;
-        credential.said = compacted.said.clone();
+        let (compacted_said, chunks) = credential.compact()?;
         store.store_chunks(&chunks).await?;
 
-        Ok((credential, compacted.said))
+        // Reconstruct from store — all SAIDs are now correctly derived
+        let mut expanded = serde_json::to_value(&compacted_said)?;
+        crate::compaction::expand_all(&mut expanded, store).await?;
+        let credential: Self = serde_json::from_value(expanded)?;
+
+        Ok((credential, compacted_said))
     }
 
     /// Compact this credential into its canonical compacted form and a HashMap of all
     /// extracted chunks keyed by SAID.
-    pub fn compact(
-        &self,
-    ) -> Result<(Credential<T>, HashMap<String, serde_json::Value>), CredentialError> {
+    pub fn compact(&self) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
         let mut value = serde_json::to_value(self)?;
         let mut accumulator: HashMap<String, serde_json::Value> = HashMap::new();
-        compact_value(&mut value, &mut accumulator)?;
+        compact_value_bounded(
+            &mut value,
+            &mut accumulator,
+            crate::compaction::MAX_EXPANSION_DEPTH,
+        )?;
 
         // value is now a SAID string — the compacted credential is in the accumulator
         let compacted_said = Self::string_from_value(value)?;
-        let compacted_value = accumulator.get(&compacted_said).ok_or_else(|| {
-            CredentialError::CompactionError("Couldn't find root chunk in accumulator".to_string())
-        })?;
-
-        let compacted: Credential<T> = serde_json::from_value(compacted_value.clone())?;
-
-        Ok((compacted, accumulator))
+        Ok((compacted_said, accumulator))
     }
 
     fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
@@ -124,6 +151,14 @@ impl<T: Claims> Credential<T> {
                 )
             })?
             .to_string())
+    }
+}
+
+impl<T: Claims> FromStr for Credential<T> {
+    type Err = CredentialError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(serde_json::from_str(s)?)
     }
 }
 
@@ -154,6 +189,9 @@ mod tests {
             "A test".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap()
     }
@@ -172,6 +210,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &store,
         )
         .await
@@ -180,29 +219,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_credential_said_derivation() {
-        let (cred, said) = test_credential().await;
-        assert!(!said.is_empty());
-        assert_eq!(said.len(), 44);
-        assert_eq!(cred.said, said);
+        let (cred, compacted_said) = test_credential().await;
+        assert!(!compacted_said.is_empty());
+        assert_eq!(compacted_said.len(), 44);
+        // Expanded SAID differs from compacted SAID
+        assert_ne!(cred.said, compacted_said);
+        assert_eq!(cred.said.len(), 44);
     }
 
     #[tokio::test]
     async fn test_compact_credential_said_matches() {
         let (cred, _) = test_credential().await;
-        let (compact, chunks) = cred.compact().unwrap();
-        assert_eq!(compact.said, cred.said);
-        // All chunks should be in the accumulator
-        assert!(chunks.contains_key(&compact.said));
-        assert!(chunks.contains_key(compact.schema.as_said().unwrap()));
-        assert!(chunks.contains_key(compact.claims.as_said().unwrap()));
+        let (compacted_said, chunks) = cred.compact().unwrap();
+        // Compacted credential is in the accumulator keyed by compacted SAID
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
+        let compacted_cred: Credential<TestClaims> =
+            serde_json::from_value(compacted_value.clone()).unwrap();
+        assert!(compacted_cred.schema.as_said().is_some());
+        assert!(compacted_cred.claims.as_said().is_some());
     }
 
     #[tokio::test]
     async fn test_compact_credential_roundtrip() {
         let (cred, _) = test_credential().await;
-        let (compact1, _) = cred.compact().unwrap();
-        let (compact2, _) = cred.compact().unwrap();
-        assert_eq!(compact1.said, compact2.said);
+        let (compacted1, _) = cred.compact().unwrap();
+        let (compacted2, _) = cred.compact().unwrap();
+        assert_eq!(compacted1, compacted2);
     }
 
     #[tokio::test]
@@ -230,15 +273,19 @@ mod tests {
             Some(edges),
             None,
             None,
+            None,
             &store,
         )
         .await
         .unwrap();
 
-        let (compact, chunks) = cred.compact().unwrap();
-        assert_eq!(compact.said, cred.said);
-        assert!(compact.edges.is_some());
-        let edges_said = compact.edges.as_ref().unwrap().as_said().unwrap();
+        let (compacted_said, chunks) = cred.compact().unwrap();
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
+        let compacted_cred: Credential<TestClaims> =
+            serde_json::from_value(compacted_value.clone()).unwrap();
+        assert!(compacted_cred.edges.is_some());
+        let edges_said = compacted_cred.edges.as_ref().unwrap().as_said().unwrap();
         assert!(chunks.contains_key(edges_said));
     }
 
@@ -260,15 +307,19 @@ mod tests {
             None,
             Some(rules),
             None,
+            None,
             &store,
         )
         .await
         .unwrap();
 
-        let (compact, chunks) = cred.compact().unwrap();
-        assert_eq!(compact.said, cred.said);
-        assert!(compact.rules.is_some());
-        let rules_said = compact.rules.as_ref().unwrap().as_said().unwrap();
+        let (compacted_said, chunks) = cred.compact().unwrap();
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
+        let compacted_cred: Credential<TestClaims> =
+            serde_json::from_value(compacted_value.clone()).unwrap();
+        assert!(compacted_cred.rules.is_some());
+        let rules_said = compacted_cred.rules.as_ref().unwrap().as_said().unwrap();
         assert!(chunks.contains_key(rules_said));
     }
 

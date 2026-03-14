@@ -1,13 +1,38 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use verifiable_storage::SelfAddressed;
 
+use crate::edge::Edges;
 use crate::error::CredentialError;
+use crate::rule::Rules;
+
+/// Schema-level constraint for an edge. All fields mirror Edge fields.
+/// `schema` is required (same as Edge). Other fields, if present, constrain the edge.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaEdge {
+    pub schema: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated: Option<bool>,
+}
+
+/// Schema-level constraint for a rule. If `condition` is set, the rule must match.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaRule {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum SchemaField {
     String,
     Integer,
@@ -26,6 +51,7 @@ pub enum SchemaField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
 pub struct CredentialSchema {
     #[said]
     pub said: String,
@@ -33,12 +59,51 @@ pub struct CredentialSchema {
     pub description: String,
     pub version: String,
     pub fields: BTreeMap<String, SchemaField>,
+    #[serde(default)]
+    pub expires: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<BTreeMap<String, SchemaEdge>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<BTreeMap<String, SchemaRule>>,
+}
+
+impl FromStr for CredentialSchema {
+    type Err = CredentialError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(serde_json::from_str(s)?)
+    }
 }
 
 /// Validate that a schema's field definitions are well-formed.
 /// Rejects `said` as a field name anywhere (it's implicit for compactable objects).
+/// Also rejects `said` as an edge or rule label.
 pub fn validate_schema(schema: &CredentialSchema) -> Result<(), CredentialError> {
-    validate_schema_fields("fields", &schema.fields)
+    validate_schema_fields("fields", &schema.fields)?;
+
+    if let Some(edges) = &schema.edges {
+        for label in edges.keys() {
+            if label == "said" {
+                return Err(CredentialError::SchemaValidationError(
+                    "'said' is a reserved label and cannot be used as an edge label in schema"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    if let Some(rules) = &schema.rules {
+        for label in rules.keys() {
+            if label == "said" {
+                return Err(CredentialError::SchemaValidationError(
+                    "'said' is a reserved label and cannot be used as a rule label in schema"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_schema_fields(
@@ -95,6 +160,120 @@ pub fn validate_claims(
 
     // Claims is always compactable (has a `said` field)
     validate_object_fields("claims", &schema.fields, obj, true)
+}
+
+/// Validate that credential edges conform to the schema's edge definitions.
+/// If the schema defines edges, the credential must provide exactly those labels,
+/// and each edge must match the schema constraints.
+/// If the schema has no edge definitions, any edges are accepted.
+pub fn validate_edges(
+    schema: &CredentialSchema,
+    edges: Option<&Edges>,
+) -> Result<(), CredentialError> {
+    let Some(schema_edges) = &schema.edges else {
+        return Ok(());
+    };
+
+    let edges = edges.ok_or_else(|| {
+        CredentialError::SchemaValidationError(
+            "schema defines edges but credential has none".to_string(),
+        )
+    })?;
+
+    // Check all schema-defined edges are present and match constraints
+    for (label, schema_edge) in schema_edges {
+        let edge = edges.edges.get(label).ok_or_else(|| {
+            CredentialError::SchemaValidationError(format!("missing required edge: {label}"))
+        })?;
+
+        if edge.schema != schema_edge.schema {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "edge '{label}' schema mismatch: expected {}, got {}",
+                schema_edge.schema, edge.schema
+            )));
+        }
+
+        if let Some(ref expected_issuer) = schema_edge.issuer
+            && edge.issuer.as_ref() != Some(expected_issuer)
+        {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "edge '{label}' issuer mismatch: expected {expected_issuer}"
+            )));
+        }
+
+        if let Some(ref expected_credential) = schema_edge.credential
+            && edge.credential.as_ref() != Some(expected_credential)
+        {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "edge '{label}' credential mismatch: expected {expected_credential}"
+            )));
+        }
+
+        if let Some(expected_delegated) = schema_edge.delegated
+            && edge.delegated != Some(expected_delegated)
+        {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "edge '{label}' delegated mismatch: expected {expected_delegated}"
+            )));
+        }
+    }
+
+    // Reject extra edges not in schema
+    for label in edges.edges.keys() {
+        if !schema_edges.contains_key(label) {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "unexpected edge: {label}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that credential rules conform to the schema's rule definitions.
+/// If the schema defines rules, the credential must provide exactly those labels,
+/// and each rule must match the schema constraints.
+/// If the schema has no rule definitions, any rules are accepted.
+pub fn validate_rules(
+    schema: &CredentialSchema,
+    rules: Option<&Rules>,
+) -> Result<(), CredentialError> {
+    let Some(schema_rules) = &schema.rules else {
+        return Ok(());
+    };
+
+    let rules = rules.ok_or_else(|| {
+        CredentialError::SchemaValidationError(
+            "schema defines rules but credential has none".to_string(),
+        )
+    })?;
+
+    // Check all schema-defined rules are present and match constraints
+    for (label, schema_rule) in schema_rules {
+        let rule = rules.rules.get(label).ok_or_else(|| {
+            CredentialError::SchemaValidationError(format!("missing required rule: {label}"))
+        })?;
+
+        if let Some(ref expected_condition) = schema_rule.condition
+            && &rule.condition != expected_condition
+        {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "rule '{label}' condition mismatch: expected '{expected_condition}', got '{}'",
+                rule.condition
+            )));
+        }
+    }
+
+    // Reject extra rules not in schema
+    for label in rules.rules.keys() {
+        if !schema_rules.contains_key(label) {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "unexpected rule: {label}"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_object_fields(
@@ -157,9 +336,9 @@ fn validate_field(
             }
         }
         SchemaField::Float => {
-            if !value.is_f64() {
+            if !value.is_f64() && !value.is_i64() && !value.is_u64() {
                 return Err(CredentialError::SchemaValidationError(format!(
-                    "field '{name}' must be a float"
+                    "field '{name}' must be a number"
                 )));
             }
         }
@@ -221,6 +400,9 @@ mod tests {
             "A test schema".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap()
     }
@@ -319,6 +501,9 @@ mod tests {
             "Schema with nested object".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -342,6 +527,9 @@ mod tests {
             "Schema with array".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -364,6 +552,9 @@ mod tests {
             "Schema with SAID/prefix fields".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -384,6 +575,9 @@ mod tests {
             "Schema with float".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -444,6 +638,9 @@ mod tests {
             "Non-compactable object".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -474,6 +671,9 @@ mod tests {
             "Compactable sub-object".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -511,6 +711,9 @@ mod tests {
             "Non-compactable object".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -533,6 +736,9 @@ mod tests {
             "Schema with said field".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -559,6 +765,9 @@ mod tests {
             "Schema with nested said field".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 

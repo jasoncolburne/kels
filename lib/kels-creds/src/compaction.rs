@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use verifiable_storage::compact_value;
+use verifiable_storage::{compact_value_bounded, compute_said_from_value};
 
 use crate::error::CredentialError;
 use crate::store::SADStore;
@@ -9,10 +9,11 @@ use crate::store::SADStore;
 /// deeply nested credential structures or malicious inputs.
 pub const MAX_EXPANSION_DEPTH: usize = 32;
 
-/// Check if a string could be a CESR SAID (44-char URL-safe base64).
-/// Used to skip store lookups for strings that obviously aren't SAIDs.
+/// Check if a string could be a CESR SAID (44-char URL-safe base64 starting
+/// with a known digest code prefix). Currently only Blake3-256 (`E`) is used.
 fn could_be_said(s: &str) -> bool {
     s.len() == 44
+        && s.starts_with('E')
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
@@ -24,7 +25,7 @@ pub fn compact(
     value: &mut serde_json::Value,
 ) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
     let mut accumulator = HashMap::new();
-    compact_value(value, &mut accumulator)?;
+    compact_value_bounded(value, &mut accumulator, MAX_EXPANSION_DEPTH)?;
     Ok(accumulator)
 }
 
@@ -73,7 +74,11 @@ pub fn expand_field(
     }
 
     let mut compacted_copy = expanded.clone();
-    compact_value(&mut compacted_copy, &mut HashMap::new())?;
+    compact_value_bounded(
+        &mut compacted_copy,
+        &mut HashMap::new(),
+        MAX_EXPANSION_DEPTH,
+    )?;
     let computed = compacted_copy.as_str().ok_or_else(|| {
         CredentialError::ExpansionError("compaction did not produce a SAID string".to_string())
     })?;
@@ -111,18 +116,50 @@ fn expand_all_bounded<'a>(
             ));
         }
 
+        // Handle root-level SAID strings — look up and replace, then recurse
+        if let Some(said) = value.as_str().map(|s| s.to_string())
+            && could_be_said(&said)
+        {
+            let fetched = sad_store.get_chunks(&HashSet::from([said.clone()])).await?;
+            if let Some(expanded) = fetched.get(&said) {
+                *value = expanded.clone();
+                return expand_all_bounded(value, sad_store, remaining_depth - 1).await;
+            }
+        }
+
         if let Some(obj) = value.as_object_mut() {
+            // Pass 1: collect all candidate SAIDs from string-valued children
+            let mut candidate_saids = HashSet::new();
             let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in &keys {
+                if key == "said" {
+                    continue;
+                }
+                if let Some(child) = obj.get(key.as_str())
+                    && let Some(said) = child.as_str()
+                    && could_be_said(said)
+                {
+                    candidate_saids.insert(said.to_string());
+                }
+            }
+
+            // Batch fetch all candidates at once
+            let fetched = if candidate_saids.is_empty() {
+                HashMap::new()
+            } else {
+                sad_store.get_chunks(&candidate_saids).await?
+            };
+
+            // Pass 2: expand fetched SAIDs and recurse into all children
             for key in keys {
                 if key == "said" {
                     continue;
                 }
                 if let Some(child) = obj.get(&key)
                     && let Some(said) = child.as_str()
-                    && could_be_said(said)
-                    && let Some(expanded) = sad_store.get_chunk(said).await?
+                    && let Some(expanded) = fetched.get(said)
                 {
-                    obj.insert(key.clone(), expanded);
+                    obj.insert(key.clone(), expanded.clone());
                     if let Some(child) = obj.get_mut(&key) {
                         expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
                     }
@@ -132,13 +169,38 @@ fn expand_all_bounded<'a>(
                     expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
                 }
             }
+
+            // Recompute SAID after expansion — children changed so the parent's SAID must update
+            if obj.contains_key("said") {
+                let recomputed = compute_said_from_value(value)?;
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("said".to_string(), serde_json::Value::String(recomputed));
+                }
+            }
         } else if let Some(arr) = value.as_array_mut() {
+            // Pass 1: collect all candidate SAIDs from array elements
+            let mut candidate_saids = HashSet::new();
+            for elem in arr.iter() {
+                if let Some(said) = elem.as_str()
+                    && could_be_said(said)
+                {
+                    candidate_saids.insert(said.to_string());
+                }
+            }
+
+            // Batch fetch
+            let fetched = if candidate_saids.is_empty() {
+                HashMap::new()
+            } else {
+                sad_store.get_chunks(&candidate_saids).await?
+            };
+
+            // Pass 2: expand and recurse
             for elem in arr.iter_mut() {
                 if let Some(said) = elem.as_str().map(|s| s.to_string())
-                    && could_be_said(&said)
-                    && let Some(expanded) = sad_store.get_chunk(&said).await?
+                    && let Some(expanded) = fetched.get(&said)
                 {
-                    *elem = expanded;
+                    *elem = expanded.clone();
                     expand_all_bounded(elem, sad_store, remaining_depth - 1).await?;
                     continue;
                 }
@@ -361,6 +423,9 @@ mod tests {
             "A test".to_string(),
             "1.0".to_string(),
             fields,
+            false,
+            None,
+            None,
         )
         .unwrap();
 

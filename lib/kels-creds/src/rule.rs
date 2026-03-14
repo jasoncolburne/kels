@@ -7,18 +7,50 @@ use verifiable_storage::SelfAddressed;
 use crate::error::CredentialError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
 pub struct Rule {
     #[said]
     pub said: String,
     pub condition: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[derive(Debug, Clone, Serialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
 pub struct Rules {
     #[said]
     pub said: String,
     #[serde(flatten)]
     pub rules: BTreeMap<String, Rule>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRules {
+    said: String,
+    #[serde(flatten)]
+    rules: BTreeMap<String, Rule>,
+}
+
+impl TryFrom<RawRules> for Rules {
+    type Error = CredentialError;
+
+    fn try_from(raw: RawRules) -> Result<Self, Self::Error> {
+        validate_labels(&raw.rules)?;
+        Ok(Self {
+            said: raw.said,
+            rules: raw.rules,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Rules {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawRules::deserialize(deserializer)?;
+        Rules::try_from(raw).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Validate that no rule labels use the reserved name "said".
@@ -35,8 +67,11 @@ fn validate_labels(labels: &BTreeMap<String, Rule>) -> Result<(), CredentialErro
 
 impl Rules {
     /// Create a new Rules container with label validation and SAID derivation.
-    pub fn new_validated(rules: BTreeMap<String, Rule>) -> Result<Self, CredentialError> {
+    pub fn new_validated(mut rules: BTreeMap<String, Rule>) -> Result<Self, CredentialError> {
         validate_labels(&rules)?;
+        for rule in rules.values_mut() {
+            rule.derive_said()?;
+        }
         let mut instance = Self {
             said: String::new(),
             rules,
@@ -131,5 +166,30 @@ mod tests {
         let r2 = Rules::new_validated(m2).unwrap();
 
         assert_eq!(r1.said, r2.said);
+    }
+
+    #[test]
+    fn test_rules_deserialization_roundtrip() {
+        let mut rules_map = BTreeMap::new();
+        rules_map.insert("terms".to_string(), test_rule());
+        let rules = Rules::new_validated(rules_map).unwrap();
+        let json = serde_json::to_string(&rules).unwrap();
+        let deserialized: Rules = serde_json::from_str(&json).unwrap();
+        assert_eq!(rules.said, deserialized.said);
+        assert_eq!(rules.rules.len(), deserialized.rules.len());
+    }
+
+    #[test]
+    fn test_rules_try_from_rejects_reserved_label() {
+        let raw = super::RawRules {
+            said: "EAbc1234567890123456789012345678901234567890".to_string(),
+            rules: {
+                let mut m = BTreeMap::new();
+                m.insert("said".to_string(), test_rule());
+                m
+            },
+        };
+        let err = Rules::try_from(raw).unwrap_err();
+        assert!(matches!(err, CredentialError::ReservedLabel(_)));
     }
 }

@@ -7,6 +7,7 @@ use verifiable_storage::SelfAddressed;
 use crate::error::CredentialError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
 pub struct Edge {
     #[said]
     pub said: String,
@@ -19,12 +20,43 @@ pub struct Edge {
     pub delegated: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[derive(Debug, Clone, Serialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
 pub struct Edges {
     #[said]
     pub said: String,
     #[serde(flatten)]
     pub edges: BTreeMap<String, Edge>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEdges {
+    said: String,
+    #[serde(flatten)]
+    edges: BTreeMap<String, Edge>,
+}
+
+impl TryFrom<RawEdges> for Edges {
+    type Error = CredentialError;
+
+    fn try_from(raw: RawEdges) -> Result<Self, Self::Error> {
+        validate_labels(&raw.edges)?;
+        Ok(Self {
+            said: raw.said,
+            edges: raw.edges,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Edges {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawEdges::deserialize(deserializer)?;
+        Edges::try_from(raw).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Validate that no edge labels use the reserved name "said".
@@ -41,8 +73,11 @@ fn validate_labels(labels: &BTreeMap<String, Edge>) -> Result<(), CredentialErro
 
 impl Edges {
     /// Create a new Edges container with label validation and SAID derivation.
-    pub fn new_validated(edges: BTreeMap<String, Edge>) -> Result<Self, CredentialError> {
+    pub fn new_validated(mut edges: BTreeMap<String, Edge>) -> Result<Self, CredentialError> {
         validate_labels(&edges)?;
+        for edge in edges.values_mut() {
+            edge.derive_said()?;
+        }
         let mut instance = Self {
             said: String::new(),
             edges,
@@ -162,5 +197,30 @@ mod tests {
         let json = serde_json::to_string(&edge).unwrap();
         let deserialized: Edge = serde_json::from_str(&json).unwrap();
         assert_eq!(edge.said, deserialized.said);
+    }
+
+    #[test]
+    fn test_edges_deserialization_roundtrip() {
+        let mut edges_map = BTreeMap::new();
+        edges_map.insert("license".to_string(), test_edge());
+        let edges = Edges::new_validated(edges_map).unwrap();
+        let json = serde_json::to_string(&edges).unwrap();
+        let deserialized: Edges = serde_json::from_str(&json).unwrap();
+        assert_eq!(edges.said, deserialized.said);
+        assert_eq!(edges.edges.len(), deserialized.edges.len());
+    }
+
+    #[test]
+    fn test_edges_try_from_rejects_reserved_label() {
+        let raw = super::RawEdges {
+            said: "EAbc1234567890123456789012345678901234567890".to_string(),
+            edges: {
+                let mut m = BTreeMap::new();
+                m.insert("said".to_string(), test_edge());
+                m
+            },
+        };
+        let err = Edges::try_from(raw).unwrap_err();
+        assert!(matches!(err, CredentialError::ReservedLabel(_)));
     }
 }

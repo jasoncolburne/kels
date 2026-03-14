@@ -27,6 +27,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Error handling
 thiserror = "1"
 
+# Async runtime (sync primitives for async-safe locks)
+tokio = { version = "1", features = ["sync"] }
+
 # Async traits
 async-trait = "0.1"
 

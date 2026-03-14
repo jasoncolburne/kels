@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use verifiable_storage::compact_value;
+use verifiable_storage::compact_value_bounded;
 
-use crate::compaction::expand_all;
+use crate::compaction::{MAX_EXPANSION_DEPTH, expand_all};
 use crate::error::CredentialError;
 use crate::store::SADStore;
 
@@ -179,19 +179,27 @@ fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> Result<(),
         .get_mut(last)
         .ok_or_else(|| CredentialError::InvalidDisclosure(format!("field '{}' not found", last)))?;
 
-    // Only compact if the field is an object with a "said" field
-    if child.is_object() && child.get("said").is_some() {
-        // Always compact children first to derive the canonical SAID.
-        compact_value(child, &mut HashMap::new())?;
+    if child.is_string() {
+        // Already compacted
+        return Ok(());
     }
-    // If it's already a string (compacted) or doesn't have "said", nothing to do
+
+    if !child.is_object() || child.get("said").is_none() {
+        return Err(CredentialError::InvalidDisclosure(format!(
+            "field '{}' is not a compactable object (missing 'said' field)",
+            last
+        )));
+    }
+
+    // Always compact children first to derive the canonical SAID.
+    compact_value_bounded(child, &mut HashMap::new(), MAX_EXPANSION_DEPTH)?;
 
     Ok(())
 }
 
 fn compact_children(value: &mut serde_json::Value) -> Result<(), CredentialError> {
     let mut accumulator = HashMap::new();
-    compact_value(value, &mut accumulator)?;
+    compact_value_bounded(value, &mut accumulator, MAX_EXPANSION_DEPTH)?;
     let said = value.as_str().ok_or(CredentialError::CompactionError(
         "Could not compact children".to_string(),
     ))?;

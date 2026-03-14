@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use kels::{
-    KelStore, KelVerification, KelVerifier, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource,
+    KelStore, KelVerification, KelVerifier, KelsError, MAX_EVENTS_PER_KEL_QUERY, StoreKelSource,
     verify_key_events,
 };
 
-use verifiable_storage::compact_value;
+use verifiable_storage::{StorageDatetime, compact_value_bounded};
 
 use crate::error::CredentialError;
 use crate::revocation::revocation_hash;
@@ -24,6 +24,8 @@ pub struct CredentialVerification {
     pub subject: Option<String>,
     pub is_issued: bool,
     pub is_revoked: bool,
+    pub is_expired: bool,
+    pub kel_error: Option<KelsError>,
     pub schema_valid: Option<bool>,
     pub edge_verifications: BTreeMap<String, CredentialVerification>,
 }
@@ -34,6 +36,14 @@ struct CredentialAnchor {
     issuer: String,
     revocation_hash: Option<String>,
     irrevocable: bool,
+}
+
+/// A delegation relationship: the delegating KEL must anchor the delegated prefix.
+struct DelegationAnchor {
+    /// The delegating prefix (the one that must anchor).
+    delegating_prefix: String,
+    /// The delegated issuer's prefix (must be anchored in the delegating KEL).
+    delegated_prefix: String,
 }
 
 /// Verify a credential, its anchoring in the issuer's KEL, and any edges recursively.
@@ -62,48 +72,53 @@ pub fn verify_credential<'a>(
 
         // Phase 1: Collect all credential anchors from the graph
         let mut anchors: Vec<CredentialAnchor> = Vec::new();
+        let mut delegation_anchors: Vec<DelegationAnchor> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         collect_anchors(
             &credential,
             sad_store,
             &mut anchors,
+            &mut delegation_anchors,
             &mut visited,
             MAX_CREDENTIAL_DEPTH,
         )
         .await?;
 
-        // Phase 2: Batch KEL verification — one per unique issuer
+        // Phase 2: Batch KEL verification — one per unique prefix
         let mut kel_verifications: HashMap<String, KelVerification> = HashMap::new();
+        let mut kel_errors: HashMap<String, KelsError> = HashMap::new();
 
-        // Group anchors by issuer
-        let mut issuer_anchors: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+        // Collect all SAIDs that need to be checked per prefix.
+        // This includes credential issuers (credential SAID + revocation hash)
+        // and delegating prefixes (delegated issuer prefix).
+        let mut prefix_saids: HashMap<String, Vec<String>> = HashMap::new();
         for anchor in &anchors {
-            issuer_anchors
+            prefix_saids
                 .entry(anchor.issuer.clone())
                 .or_default()
-                .push((anchor.said.clone(), anchor.revocation_hash.clone()));
+                .push(anchor.said.clone());
+            if let Some(ref rh) = anchor.revocation_hash {
+                prefix_saids
+                    .entry(anchor.issuer.clone())
+                    .or_default()
+                    .push(rh.clone());
+            }
+        }
+        for da in &delegation_anchors {
+            prefix_saids
+                .entry(da.delegating_prefix.clone())
+                .or_default()
+                .push(da.delegated_prefix.clone());
         }
 
-        for (issuer_prefix, anchor_saids) in &issuer_anchors {
-            let mut verifier = KelVerifier::new(issuer_prefix);
-
-            // Register all SAIDs and revocation hashes for this issuer
-            let all_saids: Vec<String> = anchor_saids
-                .iter()
-                .flat_map(|(said, rev_hash)| {
-                    let mut v = vec![said.clone()];
-                    if let Some(rh) = rev_hash {
-                        v.push(rh.clone());
-                    }
-                    v
-                })
-                .collect();
-            verifier.check_anchors(all_saids);
+        for (prefix, saids) in &prefix_saids {
+            let mut verifier = KelVerifier::new(prefix);
+            verifier.check_anchors(saids.clone());
 
             let source = StoreKelSource::new(kel_store);
             let max_pages = 1024;
-            if let Ok(verification) = verify_key_events(
-                issuer_prefix,
+            match verify_key_events(
+                prefix,
                 &source,
                 verifier,
                 MAX_EVENTS_PER_KEL_QUERY,
@@ -111,9 +126,13 @@ pub fn verify_credential<'a>(
             )
             .await
             {
-                kel_verifications.insert(issuer_prefix.clone(), verification);
+                Ok(verification) => {
+                    kel_verifications.insert(prefix.clone(), verification);
+                }
+                Err(e) => {
+                    kel_errors.insert(prefix.clone(), e);
+                }
             }
-            // KEL verification failure means issuer's credentials show as not issued
         }
 
         // Phase 3: Build verification results
@@ -121,6 +140,7 @@ pub fn verify_credential<'a>(
             &credential,
             &anchors,
             &kel_verifications,
+            &kel_errors,
             sad_store,
             MAX_CREDENTIAL_DEPTH,
         )
@@ -134,6 +154,7 @@ fn collect_anchors<'a>(
     credential: &'a serde_json::Value,
     sad_store: &'a dyn SADStore,
     anchors: &'a mut Vec<CredentialAnchor>,
+    delegation_anchors: &'a mut Vec<DelegationAnchor>,
     visited: &'a mut HashSet<String>,
     remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
@@ -199,9 +220,35 @@ fn collect_anchors<'a>(
                     None => continue,
                 };
 
+                // If this edge is delegated, record that the delegating KEL must
+                // anchor the referenced credential's issuer prefix
+                let delegated = edge_obj
+                    .get("delegated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if delegated
+                    && let Some(expected_delegating) =
+                        edge_obj.get("issuer").and_then(|v| v.as_str())
+                    && let Some(ref_value) = sad_store.get_chunk(cred_said).await?
+                    && let Some(delegated_issuer) = ref_value.get("issuer").and_then(|v| v.as_str())
+                {
+                    delegation_anchors.push(DelegationAnchor {
+                        delegating_prefix: expected_delegating.to_string(),
+                        delegated_prefix: delegated_issuer.to_string(),
+                    });
+                }
+
                 if let Some(ref_value) = sad_store.get_chunk(cred_said).await? {
-                    collect_anchors(&ref_value, sad_store, anchors, visited, remaining_depth - 1)
-                        .await?;
+                    collect_anchors(
+                        &ref_value,
+                        sad_store,
+                        anchors,
+                        delegation_anchors,
+                        visited,
+                        remaining_depth - 1,
+                    )
+                    .await?;
                 }
             }
         }
@@ -215,6 +262,7 @@ fn build_verification<'a>(
     credential: &'a serde_json::Value,
     anchors: &'a [CredentialAnchor],
     kel_verifications: &'a HashMap<String, KelVerification>,
+    kel_errors: &'a HashMap<String, KelsError>,
     sad_store: &'a dyn SADStore,
     remaining_depth: usize,
 ) -> std::pin::Pin<
@@ -245,7 +293,11 @@ fn build_verification<'a>(
 
         // Structural check: compact to canonical form and verify SAID
         let mut compacted = credential.clone();
-        compact_value(&mut compacted, &mut std::collections::HashMap::new())?;
+        compact_value_bounded(
+            &mut compacted,
+            &mut std::collections::HashMap::new(),
+            remaining_depth,
+        )?;
         let compacted_said = compacted.as_str().ok_or_else(|| {
             CredentialError::VerificationError("compacted credential missing SAID".to_string())
         })?;
@@ -312,6 +364,7 @@ fn build_verification<'a>(
                     &edge_credential,
                     anchors,
                     kel_verifications,
+                    kel_errors,
                     sad_store,
                     remaining_depth - 1,
                 )
@@ -345,19 +398,33 @@ fn build_verification<'a>(
                 // Issuer constraint
                 if let Some(expected_issuer) = edge_issuer {
                     if delegated {
-                        // Delegated: referenced credential's issuer must be delegated by edge.issuer
-                        if let Some(ref_kel_v) = kel_verifications.get(&edge_verification.issuer) {
-                            let delegating = ref_kel_v.delegating_prefix();
-                            if delegating != Some(expected_issuer) {
-                                return Err(CredentialError::VerificationError(format!(
-                                    "edge '{}' delegation check failed: expected delegating prefix {}, got {:?}",
-                                    label, expected_issuer, delegating
-                                )));
-                            }
-                        } else {
-                            return Err(CredentialError::VerificationError(format!(
+                        // Delegated: referenced credential's issuer KEL must be a dip
+                        // with delegating_prefix matching the expected issuer
+                        let ref_kel_v = kel_verifications.get(&edge_verification.issuer)
+                            .ok_or_else(|| CredentialError::VerificationError(format!(
                                 "edge '{}' delegation check failed: no KEL verification for issuer {}",
                                 label, edge_verification.issuer
+                            )))?;
+
+                        let delegating = ref_kel_v.delegating_prefix();
+                        if delegating != Some(expected_issuer) {
+                            return Err(CredentialError::VerificationError(format!(
+                                "edge '{}' delegation check failed: expected delegating prefix {}, got {:?}",
+                                label, expected_issuer, delegating
+                            )));
+                        }
+
+                        // Verify the delegating KEL actually anchored the delegated prefix
+                        let delegating_kel_v = kel_verifications.get(expected_issuer)
+                            .ok_or_else(|| CredentialError::VerificationError(format!(
+                                "edge '{}' delegation check failed: no KEL verification for delegating prefix {}",
+                                label, expected_issuer
+                            )))?;
+
+                        if !delegating_kel_v.is_said_anchored(&edge_verification.issuer) {
+                            return Err(CredentialError::VerificationError(format!(
+                                "edge '{}' delegation check failed: delegating KEL {} does not anchor delegated prefix {}",
+                                label, expected_issuer, edge_verification.issuer
                             )));
                         }
                     } else if edge_verification.issuer != expected_issuer {
@@ -372,6 +439,14 @@ fn build_verification<'a>(
             }
         }
 
+        // Check expiration
+        let is_expired = credential
+            .get("expiresAt")
+            .and_then(|v| serde_json::from_value::<StorageDatetime>(v.clone()).ok())
+            .is_some_and(|exp| exp <= StorageDatetime::now());
+
+        let kel_error = kel_errors.get(&issuer).cloned();
+
         Ok(CredentialVerification {
             credential_said: said,
             issuer,
@@ -381,6 +456,8 @@ fn build_verification<'a>(
                 .map(String::from),
             is_issued,
             is_revoked,
+            is_expired,
+            kel_error,
             schema_valid,
             edge_verifications,
         })
@@ -420,6 +497,8 @@ mod tests {
             subject: Some("ESubject".to_string()),
             is_issued: true,
             is_revoked: false,
+            is_expired: false,
+            kel_error: None,
             schema_valid: Some(true),
             edge_verifications: BTreeMap::new(),
         };
@@ -427,6 +506,7 @@ mod tests {
         assert_eq!(v.credential_said, "EAbc");
         assert!(v.is_issued);
         assert!(!v.is_revoked);
+        assert!(!v.is_expired);
         assert_eq!(v.schema_valid, Some(true));
         assert!(v.edge_verifications.is_empty());
     }
@@ -439,6 +519,8 @@ mod tests {
             subject: None,
             is_issued: true,
             is_revoked: false,
+            is_expired: false,
+            kel_error: None,
             schema_valid: None,
             edge_verifications: BTreeMap::new(),
         };
@@ -452,6 +534,8 @@ mod tests {
             subject: None,
             is_issued: true,
             is_revoked: false,
+            is_expired: false,
+            kel_error: None,
             schema_valid: None,
             edge_verifications: edges,
         };

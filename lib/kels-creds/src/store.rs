@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+
+use tokio::sync::RwLock;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -52,10 +53,7 @@ impl Default for InMemorySADStore {
 #[async_trait]
 impl SADStore for InMemorySADStore {
     async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError> {
-        let mut store = self
-            .chunks
-            .write()
-            .map_err(|e| CredentialError::StorageError(format!("lock poisoned: {}", e)))?;
+        let mut store = self.chunks.write().await;
         store.extend(chunks.iter().map(|(k, v)| (k.to_owned(), v.to_owned())));
         Ok(())
     }
@@ -64,10 +62,7 @@ impl SADStore for InMemorySADStore {
         &self,
         saids: &HashSet<String>,
     ) -> Result<HashMap<String, Value>, CredentialError> {
-        let store = self
-            .chunks
-            .read()
-            .map_err(|e| CredentialError::StorageError(format!("lock poisoned: {}", e)))?;
+        let store = self.chunks.read().await;
         Ok(saids
             .iter()
             .filter_map(|said| store.get(said).map(|v| (said.to_owned(), v.to_owned())))
