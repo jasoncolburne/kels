@@ -15,6 +15,15 @@ pub enum SchemaValidationResult {
     NotValidated,
 }
 
+/// Schema-level constraint on an edge field. `true` in JSON means "must be present",
+/// a string means "must equal this specific value".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SchemaConstraint {
+    Required(bool),
+    Value(String),
+}
+
 /// Schema-level constraint for an edge. All fields mirror Edge fields.
 /// `schema` is required (same as Edge). Other fields, if present, constrain the edge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,9 +31,11 @@ pub enum SchemaValidationResult {
 pub struct SchemaEdge {
     pub schema: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
+    pub issuer: Option<SchemaConstraint>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
+    pub credential: Option<SchemaConstraint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated: Option<bool>,
 }
@@ -250,19 +261,39 @@ pub(crate) fn validate_edges(
             )));
         }
 
-        if let Some(ref expected_issuer) = schema_edge.issuer
-            && edge.issuer.as_ref() != Some(expected_issuer)
-        {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "edge '{label}' issuer mismatch: expected {expected_issuer}"
-            )));
+        match &schema_edge.issuer {
+            Some(SchemaConstraint::Required(true)) if edge.issuer.is_none() => {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' requires an issuer"
+                )));
+            }
+            Some(SchemaConstraint::Value(expected)) if edge.issuer.as_ref() != Some(expected) => {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' issuer mismatch: expected {expected}"
+                )));
+            }
+            _ => {}
         }
 
-        if let Some(ref expected_credential) = schema_edge.credential
-            && edge.credential.as_ref() != Some(expected_credential)
-        {
+        match &schema_edge.credential {
+            Some(SchemaConstraint::Required(true)) if edge.credential.is_none() => {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' requires a credential"
+                )));
+            }
+            Some(SchemaConstraint::Value(expected))
+                if edge.credential.as_ref() != Some(expected) =>
+            {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' credential mismatch: expected {expected}"
+                )));
+            }
+            _ => {}
+        }
+
+        if schema_edge.nonce == Some(true) && edge.nonce.is_none() {
             return Err(CredentialError::SchemaValidationError(format!(
-                "edge '{label}' credential mismatch: expected {expected_credential}"
+                "edge '{label}' requires a nonce"
             )));
         }
 

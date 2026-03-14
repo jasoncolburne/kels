@@ -34,6 +34,7 @@ pub struct Credential<T: Claims> {
     pub issuer: String,
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
+    pub nonce: Option<String>,
     pub claims: Compactable<T>,
     pub expires_at: Option<StorageDatetime>,
     pub irrevocable: Option<bool>,
@@ -93,11 +94,18 @@ Implements `FromStr` for JSON deserialization.
 #### Schema-Level Edge and Rule Constraints
 
 ```rust
+// Constraint: `true` = must be present, `"value"` = must equal this value
+pub enum SchemaConstraint {
+    Required(bool),
+    Value(String),
+}
+
 pub struct SchemaEdge {
-    pub schema: String,      // required — expected schema SAID
-    pub issuer: Option<String>,
-    pub credential: Option<String>,
-    pub delegated: Option<bool>,
+    pub schema: String,                        // required — expected schema SAID
+    pub issuer: Option<SchemaConstraint>,      // presence or value constraint
+    pub credential: Option<SchemaConstraint>,  // presence or value constraint
+    pub nonce: Option<bool>,                   // require edge to carry an anti-correlation nonce
+    pub delegated: Option<bool>,               // value constraint
 }
 
 pub struct SchemaRule {
@@ -124,6 +132,7 @@ pub struct Edge {
     pub schema: String,                // schema SAID (what kind of credential)
     pub issuer: Option<String>,        // issuer prefix (who issued it)
     pub credential: Option<String>,    // credential SAID (a specific one)
+    pub nonce: Option<String>,         // anti-correlation nonce
     pub delegated: Option<bool>,       // self.credential.issuer must be delegated by self.edge.issuer
 }
 ```
@@ -343,7 +352,7 @@ pub async fn apply_disclosure(said: &str, tokens: &[PathToken], sad_store: &dyn 
 ```rust
 // Issuance
 let (credential, said) = Credential::create(
-    schema, issuer, subject, claims, edges, rules, irrevocable, expires_at,
+    schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at,
 ).await?;
 credential.store(&sad_store).await?;       // store for disclosure
 credential.issue(&mut builder).await?;     // anchor in KEL

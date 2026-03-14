@@ -22,6 +22,8 @@ pub use edge::{Edge, Edges};
 pub use error::CredentialError;
 pub use revocation::revocation_hash;
 pub use rule::{Rule, Rules};
-pub use schema::{CredentialSchema, SchemaEdge, SchemaField, SchemaRule, SchemaValidationResult};
+pub use schema::{
+    CredentialSchema, SchemaConstraint, SchemaEdge, SchemaField, SchemaRule, SchemaValidationResult,
+};
 pub use store::{InMemorySADStore, SADStore};
 pub use verification::{CredentialVerification, verify_credential};
