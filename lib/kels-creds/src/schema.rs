@@ -50,7 +50,7 @@ pub enum SchemaField {
     Prefix,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialSchema {
     #[said]

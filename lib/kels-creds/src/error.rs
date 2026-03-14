@@ -35,8 +35,17 @@ pub enum CredentialError {
     #[error("Storage error: {0}")]
     StorageError(String),
 
+    #[error("KEL error: {0}")]
+    KelError(String),
+
     #[error("Reserved label: {0}")]
     ReservedLabel(String),
+}
+
+impl From<kels::KelsError> for CredentialError {
+    fn from(e: kels::KelsError) -> Self {
+        CredentialError::KelError(e.to_string())
+    }
 }
 
 impl From<serde_json::Error> for CredentialError {
@@ -85,6 +94,7 @@ mod tests {
             CredentialError::JsonError("test".to_string()),
             CredentialError::CryptoError("test".to_string()),
             CredentialError::StorageError("test".to_string()),
+            CredentialError::KelError("test".to_string()),
             CredentialError::ReservedLabel("test".to_string()),
         ];
 

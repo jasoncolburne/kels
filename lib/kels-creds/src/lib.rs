@@ -8,14 +8,14 @@ pub mod credential;
 pub mod disclosure;
 pub mod edge;
 pub mod error;
+pub mod json_api;
 pub mod revocation;
 pub mod rule;
 pub mod schema;
 pub mod store;
-pub mod verification;
 
 pub use compaction::{MAX_EXPANSION_DEPTH, compact, expand_all, expand_field, store_credentials};
-pub use credential::{Compactable, Credential};
+pub use credential::{Compactable, Credential, CredentialVerification, SchemaValidationResult};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
 pub use error::CredentialError;
@@ -26,4 +26,3 @@ pub use schema::{
     validate_rules, validate_schema,
 };
 pub use store::{InMemorySADStore, SADStore};
-pub use verification::{CredentialVerification, verify_credential};
