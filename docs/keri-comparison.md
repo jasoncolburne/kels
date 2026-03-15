@@ -376,7 +376,9 @@ However, the KERI ecosystem provides no guidance for deploying the operational i
 
 ### KELS
 
-**Initial setup:** Complex but fully automated and reproducible. A single `make test-comprehensive` command deploys the entire stack and runs integration tests. The minimum viable deployment requires:
+**Initial setup:** Complex for the full federation, but fully automated and reproducible. A single `make test-comprehensive` command deploys the entire stack (registries, gossip nodes, integration tests) in ~25 minutes. For development, a single KELS node (kels service + PostgreSQL + Redis) can run without gossip or registries, providing the full KEL API without replication — comparable in complexity to KERIA's single-service setup but with a complete feature set (divergence handling, recovery, contest).
+
+The full federation deployment requires:
 1. Deploy 3 registries in standalone mode (each running 5 services: registry, identity, HSM, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors

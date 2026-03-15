@@ -111,6 +111,18 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 
 ## Quick Start
 
+### Minimal Development Setup
+
+For development, a single KELS node can run without gossip or registries — just the kels service, PostgreSQL, and Redis. This provides the full KEL API (event submission, verification, divergence handling, recovery, contest) without replication, and is comparable in complexity to a single-service setup.
+
+```bash
+garden deploy kels --env=node-a
+```
+
+### Full Federation
+
+`make test-comprehensive` deploys the entire federation (3 registries, 6 gossip nodes, integration tests) in ~25 minutes and leaves a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
+
 ### Building
 
 ```bash
