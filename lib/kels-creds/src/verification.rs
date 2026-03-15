@@ -261,6 +261,19 @@ async fn verify_edges<T: Claims>(
             ))
         })?;
 
+        // Verify the edge credential references the expected schema before expanding
+        let cred_schema_said = root_chunk
+            .get("schema")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if cred_schema_said != edge_schema.said {
+            return Err(CredentialError::VerificationError(format!(
+                "edge '{label}': credential schema {cred_schema_said} does not match \
+                 edge schema {}",
+                edge_schema.said
+            )));
+        }
+
         let mut expanded = root_chunk;
         expand_with_schema(&mut expanded, edge_schema, sad_store).await?;
 

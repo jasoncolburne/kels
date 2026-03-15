@@ -114,6 +114,21 @@ pub async fn apply_disclosure(
         ));
     };
 
+    // Verify the credential references this schema
+    let cred_schema = value
+        .get("schema")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| {
+            CredentialError::InvalidCredential("credential has no schema field".to_string())
+        })?;
+    if cred_schema != schema.said {
+        return Err(CredentialError::InvalidSchema(format!(
+            "schema SAID mismatch: credential references {cred_schema}, \
+             provided schema has {}",
+            schema.said
+        )));
+    }
+
     for token in tokens {
         match token {
             PathToken::ExpandRecursive(path) if path.is_empty() => {
@@ -422,18 +437,14 @@ mod tests {
         store
     }
 
-    fn make_test_credential() -> serde_json::Value {
+    fn make_test_credential(schema: &Schema) -> serde_json::Value {
         json!({
-            "said": "ECredentail",
-            "schema": {
-                "said": "ESchema",
-                "name": "TestSchema",
-                "version": "1.0"
-            },
+            "said": "",
+            "schema": schema.said,
             "issuer": "EIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
             "claims": {
-                "said": "EClaim",
+                "said": "",
                 "name": "Alice",
                 "age": 30
             },
@@ -442,16 +453,7 @@ mod tests {
 
     fn test_disclosure_schema() -> Schema {
         let mut fields = BTreeMap::new();
-        fields.insert(
-            "schema".to_string(),
-            SchemaField::object(
-                BTreeMap::from([
-                    ("name".to_string(), SchemaField::string()),
-                    ("version".to_string(), SchemaField::string()),
-                ]),
-                true,
-            ),
-        );
+        fields.insert("schema".to_string(), SchemaField::said());
         fields.insert("issuer".to_string(), SchemaField::string());
         fields.insert("issued_at".to_string(), SchemaField::string());
         fields.insert(
@@ -476,8 +478,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_disclosure_expand_all() {
-        let mut credential = make_test_credential();
         let schema = test_disclosure_schema();
+        let mut credential = make_test_credential(&schema);
         let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
 
@@ -486,30 +488,32 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(value.get("schema").unwrap().is_object());
+        // schema is a SAID reference (not compactable), stays as string
+        assert!(value.get("schema").unwrap().is_string());
         assert!(value.get("claims").unwrap().is_object());
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_selective() {
-        let mut credential = make_test_credential();
         let schema = test_disclosure_schema();
+        let mut credential = make_test_credential(&schema);
         let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
 
-        let tokens = parse_disclosure("schema").unwrap();
+        // Expand claims only — schema stays as SAID string
+        let tokens = parse_disclosure("claims").unwrap();
         let value = apply_disclosure(&root_said, &tokens, &store, &schema)
             .await
             .unwrap();
 
-        assert!(value.get("schema").unwrap().is_object());
-        assert!(value.get("claims").unwrap().is_string());
+        assert!(value.get("schema").unwrap().is_string());
+        assert!(value.get("claims").unwrap().is_object());
     }
 
     #[tokio::test]
     async fn test_apply_disclosure_expand_then_compact() {
-        let mut credential = make_test_credential();
         let schema = test_disclosure_schema();
+        let mut credential = make_test_credential(&schema);
         let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
 
@@ -523,8 +527,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_disclosure_empty_expression() {
-        let mut credential = make_test_credential();
         let schema = test_disclosure_schema();
+        let mut credential = make_test_credential(&schema);
         let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
 
@@ -538,28 +542,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_disclosure_nested_recursive() {
-        let mut credential = json!({
-            "said": "ECredential",
-            "schema": "ESchemaPlaceholder123456789012345678901234",
-            "issuer": "EIssuer",
-            "issued_at": "2025-01-01T00:00:00Z",
-            "claims": {
-                "said": "EClaims",
-                "name": "Alice",
-                "address": {
-                    "said": "EAddress",
-                    "deep": "data",
-                    "skipped": {
-                        "data": "more",
-                        "included": {
-                            "said": "EIncluded",
-                            "deepest": "foo"
-                        }
-                    }
-                }
-            },
-        });
-
         let schema = Schema::create(
             "Nested Test".to_string(),
             "For nested tests".to_string(),
@@ -608,6 +590,28 @@ mod tests {
             ]),
         )
         .unwrap();
+
+        let mut credential = json!({
+            "said": "",
+            "schema": schema.said,
+            "issuer": "EIssuer",
+            "issued_at": "2025-01-01T00:00:00Z",
+            "claims": {
+                "said": "",
+                "name": "Alice",
+                "address": {
+                    "said": "",
+                    "deep": "data",
+                    "skipped": {
+                        "data": "more",
+                        "included": {
+                            "said": "",
+                            "deepest": "foo"
+                        }
+                    }
+                }
+            },
+        });
 
         let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
