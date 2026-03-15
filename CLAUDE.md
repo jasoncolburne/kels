@@ -2,7 +2,7 @@
 
 ## Build & Verify
 
-- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands.
+- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands. Skip `make` for documentation-only changes (`.md` files).
 - Make targets exist for all cargo commands (`make fmt`, `make clippy`, `make test`, etc.).
 - `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
 - `make coverage` produces per-file coverage with `cargo-llvm-cov`.

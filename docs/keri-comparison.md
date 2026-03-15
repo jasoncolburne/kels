@@ -364,9 +364,11 @@ Multi-party governance aligns naturally with KELS's design:
 
 ### KERI
 
-**Initial setup:** Moderate. A minimal KERI deployment requires running a controller agent (e.g., KERIpy's `keria` or `keep`) and at least one witness. Witnesses are lightweight HTTP services. OOBIs handle discovery — the controller generates an OOBI URL pointing to its witnesses, and verifiers resolve it to bootstrap trust.
+**Initial setup:** Moderate in theory, unclear in practice. A minimal KERI deployment requires running a controller agent (e.g., KERIA) and at least one witness. KERIA provides a docker-compose configuration with a single service exposing three ports (admin, HTTP, boot), and references demo witness configurations in its startup scripts. KERIpy's README covers library installation and CLI usage but provides no multi-component deployment documentation or docker-compose.
 
-**Scaling:** Adding witnesses is straightforward — deploy the service and update the controller's witness list via a rotation event. No recompilation or coordinated redeployment required. Watchers (for duplicity detection) are optional infrastructure that can be added incrementally.
+However, the KERI ecosystem provides no guidance for deploying the operational infrastructure that distinguishes KERI from a plain KEL system. Watchers (duplicity detection), jurors (duplicity evaluation), and judges (trust decisions) — the roles that form KERI's social trust layer — do not appear to have standalone deployable implementations in the WebOfTrust GitHub organization. The KERI specification defines these roles conceptually, but a developer wanting to stand up a full KERI environment with duplicity detection faces significant uncertainty about what to deploy and how, or whether deployable implementations exist at all. No Kubernetes deployment configurations were found for any KERI component.
+
+**Scaling:** Adding witnesses is straightforward — deploy the service and update the controller's witness list via a rotation event. No recompilation or coordinated redeployment required. Watchers (for duplicity detection) are described as optional infrastructure that can be added incrementally, but the absence of deployable watcher implementations makes this theoretical.
 
 **Bootstrap chicken-and-egg:** Minimal. Identifiers are self-certifying from inception, so there is no circular dependency between infrastructure components. A controller can create an identifier before any witnesses exist and add witnesses later.
 
@@ -374,7 +376,7 @@ Multi-party governance aligns naturally with KELS's design:
 
 ### KELS
 
-**Initial setup:** Complex. The minimum viable deployment requires:
+**Initial setup:** Complex but fully automated and reproducible. A single `make test-comprehensive` command deploys the entire stack and runs integration tests. The minimum viable deployment requires:
 1. Deploy 3 registries in standalone mode (each running 5 services: registry, identity, HSM, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors
@@ -396,10 +398,12 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 | Aspect | KERI | KELS |
 |--------|------|------|
 | Minimum services for a deployment | 2-3 (agent + witnesses) | 15+ (3 registries × 5 services) |
-| Time to first identifier | Minutes | Hours (two-phase deploy) |
+| Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
+| Time to first identifier | Minutes (without duplicity detection) | ~25 minutes (full deploy + integration tests, single command) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote + restart (minutes to hours) |
 | Adding trust anchors | OOBI resolution (seconds) | Recompile + redeploy all binaries (hours to days) |
 | Configuration surface | Low (agent config + witness URLs) | High (compile-time vars, runtime env, Redis ACLs, Raft config) |
+| Reproducible dev environment | No (manual setup, no orchestration) | Yes (Garden + Kubernetes, single command) |
 | Kubernetes-native | Possible but not designed for it | Garden-based deployment in repo; naturally fits K8s |
 
 ---
