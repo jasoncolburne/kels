@@ -257,6 +257,22 @@ For airgapped high-security deployments (e.g., root key ceremonies), both protoc
 
 **2026 consideration:** Airgapped key management is increasingly mandated for high-value identifiers (CA roots, national identity anchors, critical infrastructure). Both protocols support the core workflow. KELS's gossip-based propagation provides better resilience for environments with intermittent connectivity (field deployments, satellite-linked infrastructure, disaster recovery scenarios). KERI's witness model is simpler to reason about for compliance auditors who need to verify that an event was properly receipted.
 
+### 14. Device and Platform Integration
+
+| Property | KERI | KELS |
+|----------|------|------|
+| Native mobile client | None (signify-ts is browser-based) | Swift client (`kels-client`) for iOS/macOS |
+| FFI bindings | None | C bindings (`kels-ffi`) usable from any language |
+| Hardware key integration | signify-ts uses libsodium (software keys) | Secure Enclave (iOS/macOS), HSM service (server-side) |
+| Client SDK languages | TypeScript (signify-ts), Python (signifypy) | Swift, C (via FFI), Rust (native) |
+| Edge signing | Browser-based (signify-ts + KERIA cloud agent) | On-device (Secure Enclave or software keys) |
+
+**Analysis:** KERI's client strategy is web-first: signify-ts runs in browsers and communicates with a KERIA cloud agent. Key generation and signing happen at the edge (in the browser via libsodium), but the architecture assumes a persistent cloud agent for state management. There is no native mobile SDK — iOS or Android apps would need to wrap signify-ts or reimplement the protocol.
+
+KELS provides native device integration through two paths: a Swift client (`kels-client`) with direct Secure Enclave support for iOS/macOS, and C FFI bindings (`kels-ffi`) that enable integration from any language with C interop (Kotlin/JNI for Android, C# for .NET, etc.). On-device signing uses hardware-backed keys (Secure Enclave) rather than software keys, providing stronger key protection without a cloud agent dependency.
+
+**2026 consideration:** Mobile-first identity is increasingly important as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet, Google Wallet) become primary credential containers. KELS's native Swift client and Secure Enclave integration position it well for this trend. The planned ML-DSA-65 support aligns with Apple's Secure Enclave PQ capabilities (iOS 26+), providing a clear path to post-quantum mobile identity. KERI's browser-based approach works for web applications but requires additional work for native mobile experiences.
+
 ---
 
 ## DKMI Usage Context Recommendations
@@ -356,6 +372,7 @@ Multi-party governance aligns naturally with KELS's design:
 | Government (open) | KERI | Decentralized trust, flexible infrastructure |
 | Supply chain | KELS | Inline anchor verification, federation model |
 | P2P / censorship-resistant | KERI | No infrastructure dependency, controller autonomy |
+| Mobile / consumer devices | KELS | Native Swift client, Secure Enclave integration, FFI bindings |
 | Multi-party governance | KELS | Multi-party voting, deterministic divergence resolution |
 
 ---
@@ -756,12 +773,20 @@ For a security audit, the naming difference is material:
 
 ## Conclusion
 
-KERI and KELS represent different points in the DKMI design space. KERI optimizes for decentralization, controller autonomy, and a rich ecosystem of participant roles (witnesses, watchers, jurors, judges), making it ideal for open ecosystems where no single party controls the infrastructure and where social/governance trust layers are appropriate. KELS optimizes for operational rigor, deterministic security, and automated trust decisions, making it ideal for environments with defined participants and high-assurance requirements.
+KERI and KELS represent different points in the DKMI design space. KERI optimizes for decentralization, controller autonomy, and a rich taxonomy of participant roles (witnesses, watchers, jurors, judges), making it ideal for open ecosystems where no single party controls the infrastructure and where social/governance trust layers are appropriate. KELS optimizes for operational rigor, deterministic security, and automated trust decisions, making it ideal for environments with defined participants and high-assurance requirements.
 
-The most significant differentiator is divergence handling: KERI treats it as an external detection problem resolved through its layered participant model (watchers detect duplicity, jurors evaluate evidence, judges render verdicts), while KELS treats it as a protocol state with cryptographic resolution (`rec`/`cnt`). In 2026's zero-trust landscape, where automated trust decisions are the norm and human-in-the-loop is a liability for infrastructure, KELS's approach provides stronger security guarantees for most organizational and infrastructure use cases. KERI's richer social trust layer remains the better choice where human governance, decentralization, and individual sovereignty are paramount.
+The most significant differentiator is divergence handling: KERI treats it as an external detection problem resolved through its layered participant model (watchers detect duplicity, jurors evaluate evidence, judges render verdicts), while KELS treats it as a protocol state with cryptographic resolution (`rec`/`cnt`). In 2026's zero-trust landscape, where automated trust decisions are the norm and human-in-the-loop is a liability for infrastructure, KELS's approach provides stronger security guarantees for most organizational and infrastructure use cases. KERI's richer social trust layer remains the better choice where human governance, decentralization, and individual sovereignty are paramount. However, the deployability gap is notable: KERI's watcher, juror, and judge roles lack standalone deployable implementations, while KELS ships a complete, reproducible environment behind a single command.
+
+The credential ecosystems are converging. KERI's ACDC framework with TELs is more mature, but kels-creds provides a leaner alternative — schema-aware compaction, graduated disclosure via a path expression DSL, recursive edge verification with delegation trust chains, and anchor-only issuance/revocation without separate registry infrastructure. With kels-exchange on the roadmap, the remaining functional gap is narrowing.
+
+KELS's prefix derivation provides a privacy advantage absent from KERI: because the prefix and SAID are computed sequentially (producing distinct values), event SAIDs in logs or anchor records cannot be correlated back to an identity without the full event. In KERI, prefix equals inception SAID, making any logged inception SAID immediately identifying.
 
 The terminology gap compounds the architectural differences. KERIpy's custom vocabulary creates a significant onboarding barrier that slows auditing, limits the contributor pool, and increases the risk of misunderstanding during security review. KELS's conventional naming makes the codebase immediately legible to anyone familiar with cryptography and distributed systems, reducing the distance between "reading the code" and "understanding the security model."
 
-The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy and operate but demands more from individual controllers, while KELS is heavier to deploy but distributes responsibility and automates more. The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
+The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy for a minimal setup but lacks reproducible orchestration and deployable implementations of its full architecture. KELS is heavier to deploy in full federation mode but provides a single-node development path (~30 seconds to first identifier with divergence, reconciliation, and contest features) and a fully automated federation deployment (~25 minutes including integration tests). The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
 
-Both protocols would benefit from post-quantum signature algorithm adoption. KERI's cryptographic agility gives it a head start on this migration, but KELS's tighter algorithm constraints reduce misconfiguration risk during the transition period.
+Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, and HSM-backed service identities reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and planned ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
+
+On post-quantum readiness, KELS has a concrete migration plan: ML-DSA-65 is on the roadmap, chosen for compatibility with Apple Secure Enclave, Thales Luna HSMs, and AWS KMS. KERI's broader cryptographic agility theoretically accommodates any PQ algorithm, but without a specific commitment, the migration timeline is less defined. Both protocols' pre-rotation hash commitments are already quantum-resistant.
+
+KELS's roadmap — ML-DSA-65, kels-exchange, formal proof of divergence reconciliation, and a standards proposal — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.
