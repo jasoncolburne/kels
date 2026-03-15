@@ -5,6 +5,7 @@ members = [
     "lib/gossip",
     "lib/kels",
     "lib/kels-derive",
+    "lib/kels-creds",
     "lib/kels-ffi",
     "services/kels",
     "services/kels-gossip",

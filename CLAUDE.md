@@ -2,7 +2,7 @@
 
 ## Build & Verify
 
-- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands.
+- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands. Skip `make` for documentation-only changes (`.md` files).
 - Make targets exist for all cargo commands (`make fmt`, `make clippy`, `make test`, etc.).
 - `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
 - `make coverage` produces per-file coverage with `cargo-llvm-cov`.
@@ -40,7 +40,9 @@ use verifiable_storage::{SelfAddressed, StorageError};
 use crate::{handlers::AppState, repository::KelsRepository};
 ```
 
-Never import inline within function bodies.
+Never import inline within function bodies, unless inside a feature-gated block (e.g. `#[cfg(feature = "...")]`).
+
+Note: some older files may not follow this convention perfectly. When touching a file, fix its imports to match.
 
 ### General
 

@@ -27,6 +27,8 @@ With [federated registries](docs/federation.md), KELS can also serve as a secure
 
 ## Differences from KERI (Key Event Receipt Infrastructure)
 
+For a comprehensive comparison of KERI and KELS across security properties, architectural decisions, deployment, and suitability for various DKMI scenarios, see the [KERI vs KELS Comparative Analysis](docs/keri-comparison.md).
+
 KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with self-addressing identifiers, and pre-rotation commitment.
 
 I used Base64 CESR to encode data, primarily to make development easier. I may change the encoding in the future.
@@ -46,9 +48,15 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Address GitHub issues
-2. Cleanup & self-audit
-3. Build some example applications
-4. Third party audit
+2. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
+3. Add credentials to FFI
+4. Add credentials to cli
+5. Credential exchange protocol (kels-exchange)
+6. Exhaustive proof of divergence reconciliation in distributed environments
+7. Cleanup & self-audit
+8. Build example applications
+9. Third-party audit
+10. Standards proposal (IETF Internet-Draft or equivalent)
 
 ## Project Structure
 
@@ -108,6 +116,18 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 | `dec` | Decommission - ends the KEL | Rotation + Recovery |
 
 ## Quick Start
+
+### Minimal Development Setup
+
+For development, a single KELS node can run without gossip or registries — just the kels service, PostgreSQL, and Redis. This provides the full KEL API (event submission, verification, divergence handling, recovery, contest) without replication, and is comparable in complexity to a single-service setup.
+
+```bash
+garden deploy kels --env=node-a
+```
+
+### Full Federation
+
+`make test-comprehensive` deploys the entire federation (3 registries, 6 gossip nodes, integration tests) in ~25 minutes and leaves a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
 
 ### Building
 
@@ -391,6 +411,9 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Rejection Threshold](docs/rejection-threshold.md) - Peer proposal rejection mechanics
 - [Security Invariant](docs/security-invariant.md) - DB trust model and verification categories
 - [Streaming Verification](docs/streaming-verification-architecture.md) - Paginated verification without full KEL load
+- [KERI vs KELS Comparative Analysis](docs/keri-comparison.md) - Security, architecture, and deployment comparison
+- [Credential Framework Design](docs/design/kels-creds.md) - kels-creds issuance, compaction, disclosure, and verification
+- [Code Audits](docs/claudit/) - Branch-level code audit history
 
 ## Production Readiness
 
