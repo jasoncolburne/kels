@@ -92,7 +92,7 @@ impl Edges {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
+
     use verifiable_storage::SelfAddressed;
 
     fn test_edge() -> Edge {

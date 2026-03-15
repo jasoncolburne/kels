@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use kels::{KelVerifier, MAX_EVENTS_PER_KEL_QUERY, PagedKelSource, verify_key_events};
+use kels::{
+    KelVerifier, MAX_EVENTS_PER_KEL_QUERY, PagedKelSource, max_verification_pages,
+    verify_key_events,
+};
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use crate::{
@@ -166,7 +169,7 @@ fn verify_credential_bounded<'a, T: Claims>(
             source,
             verifier,
             MAX_EVENTS_PER_KEL_QUERY,
-            1024,
+            max_verification_pages(),
         )
         .await
         {

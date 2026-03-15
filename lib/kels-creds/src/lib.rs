@@ -3,22 +3,18 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
-pub mod compaction;
-pub mod credential;
-pub mod disclosure;
-pub mod edge;
-pub mod error;
-pub mod json_api;
-pub mod revocation;
-pub mod rule;
-pub mod schema;
-pub mod store;
-pub mod verification;
+pub(crate) mod compaction;
+pub(crate) mod credential;
+pub(crate) mod disclosure;
+pub(crate) mod edge;
+pub(crate) mod error;
+pub(crate) mod json_api;
+pub(crate) mod revocation;
+pub(crate) mod rule;
+pub(crate) mod schema;
+pub(crate) mod store;
+pub(crate) mod verification;
 
-pub use compaction::{
-    MAX_RECURSION_DEPTH, compact, compact_with_schema, expand_field, expand_with_schema,
-    store_credentials,
-};
 pub use credential::{Compactable, Credential};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
@@ -28,5 +24,7 @@ pub use rule::{Rule, Rules};
 pub use schema::{
     Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult,
 };
-pub use store::{InMemorySADStore, SADStore};
+pub use store::{InMemorySADStore, SADStore, store_credentials};
 pub use verification::{CredentialVerification, verify_credential};
+
+pub use json_api::{create, disclose, store, validate, verify};
