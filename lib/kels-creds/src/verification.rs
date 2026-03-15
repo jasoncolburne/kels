@@ -146,7 +146,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         }
 
         // Compacted SAID integrity — compact and derive the anchored SAID
-        let (compacted_said, _) = credential.compact()?;
+        let (compacted_said, _) = credential.compact(schema)?;
 
         // Schema validation
         let schema_validation = validate_credential_report(credential, schema)?;

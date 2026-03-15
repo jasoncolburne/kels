@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::{compaction::compact, error::CredentialError};
+use crate::{compaction::compact_with_schema, error::CredentialError, schema::Schema};
 
 /// Content-addressable store for any SelfAddressed JSON chunk, keyed by SAID.
 /// Used by compaction, expansion, and the disclosure DSL.
@@ -29,14 +29,16 @@ pub trait SADStore: Send + Sync {
     }
 }
 
-/// Compact credential values and store all resulting chunks in a single batch.
+/// Compact credential values using schema-aware compaction and store all
+/// resulting chunks in a single batch.
 pub async fn store_credentials(
     mut values: Vec<serde_json::Value>,
+    schema: &Schema,
     sad_store: &dyn SADStore,
 ) -> Result<(), CredentialError> {
     let mut all_chunks = HashMap::new();
     for value in &mut values {
-        let chunks = compact(value)?;
+        let chunks = compact_with_schema(value, schema)?;
         all_chunks.extend(chunks);
     }
     sad_store.store_chunks(&all_chunks).await

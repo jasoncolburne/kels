@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use verifiable_storage::{compact_value_bounded, compute_said_from_value};
+use verifiable_storage::compute_said_from_value;
 
 use crate::{
     error::CredentialError,
@@ -11,17 +11,6 @@ use crate::{
 /// Maximum recursion depth for compaction, expansion, and schema validation.
 /// Bounds stack usage for deeply nested credential structures or malicious inputs.
 pub const MAX_RECURSION_DEPTH: usize = 32;
-
-/// Compact a JSON value bottom-up, depth-first. Delegates to `compact_value` from
-/// verifiable-storage. Returns extracted chunks keyed by SAID. After this call,
-/// `value` is a SAID string (all nodes including root are replaced).
-pub fn compact(
-    value: &mut serde_json::Value,
-) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
-    let mut accumulator = HashMap::new();
-    compact_value_bounded(value, &mut accumulator, MAX_RECURSION_DEPTH)?;
-    Ok(accumulator)
-}
 
 /// Schema-aware compaction. Only compacts fields that the schema marks as
 /// `compactable: true`. Walks the schema alongside the value, compacting
@@ -40,6 +29,27 @@ pub fn compact_with_schema(
         MAX_RECURSION_DEPTH,
     )?;
     Ok(accumulator)
+}
+
+/// Compact a single self-addressed node: compute its SAID, store the object
+/// (with SAID populated) in the accumulator, and replace `value` with the
+/// SAID string. Does NOT recurse into children — the caller is responsible
+/// for compacting children first via the schema-aware walk.
+fn compact_single_node(
+    value: &mut serde_json::Value,
+    accumulator: &mut HashMap<String, serde_json::Value>,
+) -> Result<(), CredentialError> {
+    let said = compute_said_from_value(value)?;
+
+    // Set the said field on the object before storing
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("said".to_string(), serde_json::Value::String(said.clone()));
+    }
+
+    accumulator.insert(said.clone(), value.clone());
+    *value = serde_json::Value::String(said);
+
+    Ok(())
 }
 
 fn compact_object_with_schema(
@@ -74,11 +84,9 @@ fn compact_object_with_schema(
         }
     }
 
-    // Now compact this object if it's compactable. Children that were compactable
-    // have already been reduced to SAID strings, so only non-compactable scalars/objects
-    // remain. Use depth 2: one level for this object, one for its (now-scalar) children.
+    // Now compact this object if it's compactable
     if compactable && obj.contains_key("said") {
-        compact_value_bounded(value, accumulator, 2)?;
+        compact_single_node(value, accumulator)?;
     }
 
     Ok(())
@@ -101,8 +109,8 @@ fn compact_field_with_schema(
                     remaining_depth,
                 )?;
             } else if field.compactable {
-                // No inner field descriptions but compactable — use blind compaction
-                compact_value_bounded(value, accumulator, remaining_depth)?;
+                // No inner field descriptions but compactable — compact just this node
+                compact_single_node(value, accumulator)?;
             }
         }
         SchemaFieldType::Array => {
@@ -295,8 +303,33 @@ mod tests {
         assert!(compute_said_from_value(&value).is_err());
     }
 
+    use std::collections::BTreeMap;
+
+    use crate::schema::{Schema, SchemaField};
+
+    fn make_schema(fields: BTreeMap<String, SchemaField>) -> Schema {
+        Schema::create(
+            "Test".to_string(),
+            "A test".to_string(),
+            "1.0".to_string(),
+            fields,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_compact_replaces_with_said() {
+        let schema = make_schema(BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            (
+                "child".to_string(),
+                SchemaField::object(
+                    BTreeMap::from([("data".to_string(), SchemaField::string())]),
+                    true,
+                ),
+            ),
+        ]));
+
         let mut value = json!({
             "said": "",
             "name": "root",
@@ -306,7 +339,7 @@ mod tests {
             }
         });
 
-        let chunks = compact(&mut value).unwrap();
+        let chunks = compact_with_schema(&mut value, &schema).unwrap();
 
         // Root is replaced with a SAID string
         assert!(value.is_string());
@@ -320,19 +353,55 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_no_said_field() {
+    fn test_compact_non_compactable_not_compacted() {
+        // Schema marks "child" as NOT compactable
+        let schema = make_schema(BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            (
+                "child".to_string(),
+                SchemaField::object(
+                    BTreeMap::from([("data".to_string(), SchemaField::string())]),
+                    false,
+                ),
+            ),
+        ]));
+
         let mut value = json!({
-            "name": "no said field"
+            "said": "",
+            "name": "root",
+            "child": {
+                "said": "",
+                "data": "leaf"
+            }
         });
 
-        let chunks = compact(&mut value).unwrap();
-        assert!(value.is_object());
-        assert!(value.get("said").is_none());
-        assert!(chunks.is_empty());
+        let chunks = compact_with_schema(&mut value, &schema).unwrap();
+
+        // Root is compacted
+        assert!(value.is_string());
+        // Only root in accumulator — child was NOT compacted
+        assert_eq!(chunks.len(), 1);
+        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        // child remains as an object (not a SAID string)
+        assert!(root.get("child").unwrap().is_object());
     }
 
     #[test]
     fn test_compact_nested() {
+        let schema = make_schema(BTreeMap::from([(
+            "level1".to_string(),
+            SchemaField::object(
+                BTreeMap::from([(
+                    "level2".to_string(),
+                    SchemaField::object(
+                        BTreeMap::from([("data".to_string(), SchemaField::string())]),
+                        true,
+                    ),
+                )]),
+                true,
+            ),
+        )]));
+
         let mut value = json!({
             "said": "",
             "level1": {
@@ -344,7 +413,7 @@ mod tests {
             }
         });
 
-        let chunks = compact(&mut value).unwrap();
+        let chunks = compact_with_schema(&mut value, &schema).unwrap();
         assert_eq!(chunks.len(), 3);
         assert!(value.is_string());
 
@@ -356,6 +425,17 @@ mod tests {
 
     #[test]
     fn test_compact_idempotent() {
+        let schema = make_schema(BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            (
+                "child".to_string(),
+                SchemaField::object(
+                    BTreeMap::from([("data".to_string(), SchemaField::string())]),
+                    true,
+                ),
+            ),
+        ]));
+
         let mut value = json!({
             "said": "",
             "name": "test",
@@ -365,10 +445,10 @@ mod tests {
             }
         });
 
-        let chunks1 = compact(&mut value).unwrap();
+        let chunks1 = compact_with_schema(&mut value, &schema).unwrap();
         let said1 = value.as_str().unwrap().to_string();
 
-        let chunks2 = compact(&mut value).unwrap();
+        let chunks2 = compact_with_schema(&mut value, &schema).unwrap();
         let said2 = value.as_str().unwrap().to_string();
 
         assert_eq!(said1, said2);
@@ -378,20 +458,10 @@ mod tests {
 
     #[test]
     fn test_said_agreement_with_typed() {
-        use std::collections::BTreeMap;
-
-        use crate::schema::{Schema, SchemaField};
-
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), SchemaField::string());
 
-        let schema = Schema::create(
-            "Test".to_string(),
-            "A test".to_string(),
-            "1.0".to_string(),
-            fields,
-        )
-        .unwrap();
+        let schema = make_schema(fields);
 
         let value = serde_json::to_value(&schema).unwrap();
         let value_said = compute_said_from_value(&value).unwrap();
@@ -400,6 +470,14 @@ mod tests {
 
     #[test]
     fn test_compact_with_array_children() {
+        let schema = make_schema(BTreeMap::from([(
+            "items".to_string(),
+            SchemaField::array(SchemaField::object(
+                BTreeMap::from([("data".to_string(), SchemaField::string())]),
+                true,
+            )),
+        )]));
+
         let mut value = json!({
             "said": "",
             "items": [
@@ -408,7 +486,7 @@ mod tests {
             ]
         });
 
-        let chunks = compact(&mut value).unwrap();
+        let chunks = compact_with_schema(&mut value, &schema).unwrap();
 
         assert_eq!(chunks.len(), 3);
         assert!(value.is_string());

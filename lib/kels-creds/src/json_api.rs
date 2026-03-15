@@ -6,7 +6,7 @@ use kels::PagedKelSource;
 use verifiable_storage::StorageDatetime;
 
 use crate::{
-    compaction::compact,
+    compaction::compact_with_schema,
     credential::Credential,
     disclosure::{apply_disclosure, parse_disclosure},
     edge::{Edge, Edges},
@@ -122,14 +122,15 @@ pub async fn create(
 
 /// Store a JSON credential in the SAD store.
 ///
-/// Compacts the credential and stores all chunks. Returns the compacted SAID
-/// (the canonical identifier for retrieval and disclosure).
+/// Compacts the credential using schema-aware compaction and stores all chunks.
+/// Returns the compacted SAID (the canonical identifier for retrieval and disclosure).
 pub async fn store(
     json_credential: &str,
+    schema: &Schema,
     sad_store: &dyn SADStore,
 ) -> Result<String, CredentialError> {
     let mut value: serde_json::Value = serde_json::from_str(json_credential)?;
-    let chunks = compact(&mut value)?;
+    let chunks = compact_with_schema(&mut value, schema)?;
     sad_store.store_chunks(&chunks).await?;
 
     let compacted_said = value
@@ -574,7 +575,7 @@ mod tests {
         .unwrap();
 
         let sad_store = InMemorySADStore::new();
-        let compacted_said = store(&credential_json, &sad_store).await.unwrap();
+        let compacted_said = store(&credential_json, &schema, &sad_store).await.unwrap();
         assert_eq!(compacted_said.len(), 44);
 
         // Disclose everything

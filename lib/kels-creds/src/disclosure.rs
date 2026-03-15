@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-
-use verifiable_storage::compact_value_bounded;
-
 use crate::{
-    compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
+    compaction::{compact_with_schema, expand_with_schema},
     error::CredentialError,
     schema::Schema,
     store::SADStore,
@@ -124,7 +120,7 @@ pub async fn apply_disclosure(
                 expand_with_schema(&mut value, schema, sad_store).await?;
             }
             PathToken::CompactRecursive(path) if path.is_empty() => {
-                compact_children(&mut value)?;
+                compact_children(&mut value, schema)?;
             }
             PathToken::Expand(path) => {
                 expand_at_path(&mut value, path, sad_store).await?;
@@ -151,7 +147,7 @@ pub async fn apply_disclosure(
                 }
             }
             PathToken::Compact(path) | PathToken::CompactRecursive(path) => {
-                compact_at_path(&mut value, path)?;
+                compact_at_path(&mut value, path, schema)?;
             }
         }
     }
@@ -205,8 +201,12 @@ async fn expand_at_path(
 }
 
 /// Compact a field at the given path to its canonical SAID string.
-/// Children are always compacted first to ensure the correct canonical SAID.
-fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> Result<(), CredentialError> {
+/// Uses schema-aware compaction to ensure only compactable fields are affected.
+fn compact_at_path(
+    value: &mut serde_json::Value,
+    path: &[String],
+    schema: &Schema,
+) -> Result<(), CredentialError> {
     let (parent, last) = navigate_to_field(value, path)?;
 
     let child = parent
@@ -225,18 +225,25 @@ fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> Result<(),
         )));
     }
 
-    // Always compact children first to derive the canonical SAID.
-    compact_value_bounded(child, &mut HashMap::new(), MAX_RECURSION_DEPTH)?;
+    // Resolve the sub-schema at this path for schema-aware compaction
+    let sub_fields = resolve_schema_fields_at_path(&schema.fields, path).unwrap_or_default();
+    let sub_schema = Schema {
+        said: String::new(),
+        name: String::new(),
+        description: String::new(),
+        version: String::new(),
+        fields: sub_fields,
+    };
+    compact_with_schema(child, &sub_schema)?;
 
     Ok(())
 }
 
 /// Compact all children to SAIDs while keeping the root expanded.
-/// Works by fully compacting (root becomes a SAID string), then restoring the
-/// root object from the accumulator — its children remain as SAID strings.
-fn compact_children(value: &mut serde_json::Value) -> Result<(), CredentialError> {
-    let mut accumulator = HashMap::new();
-    compact_value_bounded(value, &mut accumulator, MAX_RECURSION_DEPTH)?;
+/// Uses schema-aware compaction, then restores the root object from the
+/// accumulator — its children remain as SAID strings.
+fn compact_children(value: &mut serde_json::Value, schema: &Schema) -> Result<(), CredentialError> {
+    let accumulator = compact_with_schema(value, schema)?;
     let said = value.as_str().ok_or(CredentialError::CompactionError(
         "Could not compact children".to_string(),
     ))?;
@@ -281,7 +288,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::compaction::compact;
+    use crate::compaction::compact_with_schema;
     use crate::schema::{Schema, SchemaField};
     use crate::store::InMemorySADStore;
 
@@ -396,12 +403,12 @@ mod tests {
 
     // -- apply_disclosure tests --
 
-    /// Compact a value and return (root_said, chunks). The compacted root object
-    /// is in the chunks keyed by root_said.
+    /// Compact a value with the test disclosure schema and return (root_said, chunks).
     fn compact_and_collect(
         value: &mut serde_json::Value,
+        schema: &Schema,
     ) -> (String, std::collections::HashMap<String, serde_json::Value>) {
-        let chunks: HashMap<String, serde_json::Value> = compact(value).unwrap();
+        let chunks = compact_with_schema(value, schema).unwrap();
         let said = value.as_str().unwrap().to_string();
         (said, chunks)
     }
@@ -470,9 +477,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_disclosure_expand_all() {
         let mut credential = make_test_credential();
-        let (root_said, chunks) = compact_and_collect(&mut credential);
-        let store = store_from_chunks(&chunks).await;
         let schema = test_disclosure_schema();
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
+        let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure(".*").unwrap();
         let value = apply_disclosure(&root_said, &tokens, &store, &schema)
@@ -486,9 +493,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_disclosure_selective() {
         let mut credential = make_test_credential();
-        let (root_said, chunks) = compact_and_collect(&mut credential);
-        let store = store_from_chunks(&chunks).await;
         let schema = test_disclosure_schema();
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
+        let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure("schema").unwrap();
         let value = apply_disclosure(&root_said, &tokens, &store, &schema)
@@ -502,9 +509,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_disclosure_expand_then_compact() {
         let mut credential = make_test_credential();
-        let (root_said, chunks) = compact_and_collect(&mut credential);
-        let store = store_from_chunks(&chunks).await;
         let schema = test_disclosure_schema();
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
+        let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure(".* -.*").unwrap();
         let value = apply_disclosure(&root_said, &tokens, &store, &schema)
@@ -517,9 +524,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_disclosure_empty_expression() {
         let mut credential = make_test_credential();
-        let (root_said, chunks) = compact_and_collect(&mut credential);
-        let store = store_from_chunks(&chunks).await;
         let schema = test_disclosure_schema();
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
+        let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure("").unwrap();
         let value = apply_disclosure(&root_said, &tokens, &store, &schema)
@@ -602,7 +609,7 @@ mod tests {
         )
         .unwrap();
 
-        let (root_said, chunks) = compact_and_collect(&mut credential);
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
         let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure("claims.*").unwrap();

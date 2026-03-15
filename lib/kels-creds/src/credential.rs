@@ -142,33 +142,35 @@ impl<T: Claims> Credential<T> {
     /// Returns the compacted SAID.
     pub async fn issue<K: KeyProvider + Clone>(
         &self,
+        schema: &Schema,
         builder: &mut KeyEventBuilder<K>,
     ) -> Result<String, CredentialError> {
-        let (compacted_said, _) = self.compact()?;
+        let (compacted_said, _) = self.compact(schema)?;
         builder.interact(&compacted_said).await?;
         Ok(compacted_said)
     }
 
     /// Store this credential's compacted chunks in a SAD store.
     /// Returns the compacted SAID (the canonical identifier for retrieval/disclosure).
-    pub async fn store(&self, sad_store: &dyn SADStore) -> Result<String, CredentialError> {
-        let (compacted_said, chunks) = self.compact()?;
+    pub async fn store(
+        &self,
+        schema: &Schema,
+        sad_store: &dyn SADStore,
+    ) -> Result<String, CredentialError> {
+        let (compacted_said, chunks) = self.compact(schema)?;
         sad_store.store_chunks(&chunks).await?;
         Ok(compacted_said)
     }
 
     /// Compact this credential into its canonical compacted form and a HashMap of all
-    /// extracted chunks keyed by SAID. Uses blind compaction (the schema field is
-    /// just a SAID string, so no schema-aware compaction is needed here — only
-    /// compactable sub-objects like claims, edges, rules are compacted).
-    pub fn compact(&self) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
+    /// extracted chunks keyed by SAID. Uses schema-aware compaction — only fields
+    /// the schema marks as `compactable: true` are compacted.
+    pub fn compact(
+        &self,
+        schema: &Schema,
+    ) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
         let mut value = serde_json::to_value(self)?;
-        let mut accumulator: HashMap<String, serde_json::Value> = HashMap::new();
-        verifiable_storage::compact_value_bounded(
-            &mut value,
-            &mut accumulator,
-            crate::compaction::MAX_RECURSION_DEPTH,
-        )?;
+        let accumulator = compact_with_schema(&mut value, schema)?;
         let compacted_said = Self::string_from_value(value)?;
         Ok((compacted_said, accumulator))
     }
@@ -290,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn test_compact_credential_said_matches() {
         let (cred, _) = test_credential().await;
-        let (compacted_said, chunks) = cred.compact().unwrap();
+        let (compacted_said, chunks) = cred.compact(&test_schema()).unwrap();
         // Compacted credential is in the accumulator keyed by compacted SAID
         assert!(chunks.contains_key(&compacted_said));
         let compacted_value = chunks.get(&compacted_said).unwrap();
@@ -304,8 +306,8 @@ mod tests {
     #[tokio::test]
     async fn test_compact_credential_roundtrip() {
         let (cred, _) = test_credential().await;
-        let (compacted1, _) = cred.compact().unwrap();
-        let (compacted2, _) = cred.compact().unwrap();
+        let (compacted1, _) = cred.compact(&test_schema()).unwrap();
+        let (compacted2, _) = cred.compact(&test_schema()).unwrap();
         assert_eq!(compacted1, compacted2);
     }
 
@@ -428,7 +430,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (compacted_said, chunks) = cred.compact().unwrap();
+        let (compacted_said, chunks) = cred.compact(&schema).unwrap();
         assert!(chunks.contains_key(&compacted_said));
         let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
@@ -505,7 +507,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (compacted_said, chunks) = cred.compact().unwrap();
+        let (compacted_said, chunks) = cred.compact(&schema).unwrap();
         assert!(chunks.contains_key(&compacted_said));
         let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
@@ -572,7 +574,7 @@ mod tests {
         let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
-        cred.issue(&mut builder).await.unwrap();
+        cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = cred
             .verify(
@@ -613,7 +615,7 @@ mod tests {
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         // Issue
-        let compacted_said = cred.issue(&mut builder).await.unwrap();
+        let compacted_said = cred.issue(&schema, &mut builder).await.unwrap();
 
         // Anchor revocation (hash of compacted SAID)
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
@@ -653,7 +655,7 @@ mod tests {
         .unwrap();
 
         // Issue
-        let compacted_said = cred.issue(&mut builder).await.unwrap();
+        let compacted_said = cred.issue(&schema, &mut builder).await.unwrap();
 
         // Anchor the revocation hash — should be ignored
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
@@ -725,7 +727,7 @@ mod tests {
         .await
         .unwrap();
 
-        cred.issue(&mut builder).await.unwrap();
+        cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = cred
             .verify(
@@ -745,7 +747,7 @@ mod tests {
         let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
-        cred.issue(&mut builder).await.unwrap();
+        cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = cred
             .verify(
@@ -766,7 +768,7 @@ mod tests {
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         // Get the compacted credential (claims are SAIDs, schema is always a SAID string)
-        let (_, chunks) = cred.compact().unwrap();
+        let (_, chunks) = cred.compact(&test_schema()).unwrap();
         let compacted_value = chunks
             .values()
             .find(|v| {
@@ -778,7 +780,7 @@ mod tests {
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
 
-        compacted_cred.issue(&mut builder).await.unwrap();
+        compacted_cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = compacted_cred
             .verify(
@@ -805,11 +807,11 @@ mod tests {
 
         // Issuer A issues a base credential
         let (cred_a, _) = credential_for_issuer(&prefix_a).await;
-        let compacted_said_a = cred_a.issue(&mut builder_a).await.unwrap();
+        let compacted_said_a = cred_a.issue(&schema_a, &mut builder_a).await.unwrap();
 
         // Store credential A in a shared SADStore
         let sad_store = InMemorySADStore::new();
-        cred_a.store(&sad_store).await.unwrap();
+        cred_a.store(&schema_a, &sad_store).await.unwrap();
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
@@ -888,8 +890,8 @@ mod tests {
         .await
         .unwrap();
 
-        cred_b.issue(&mut builder_b).await.unwrap();
-        cred_b.store(&sad_store).await.unwrap();
+        cred_b.issue(&schema_b, &mut builder_b).await.unwrap();
+        cred_b.store(&schema_b, &sad_store).await.unwrap();
 
         // Edge schemas map for recursive verification
         let edge_schemas = BTreeMap::from([(schema_a.said.clone(), schema_a.clone())]);
@@ -952,8 +954,11 @@ mod tests {
 
         // Root credential (no edges)
         let (cred_root, _) = credential_for_issuer(&prefix_root).await;
-        let compacted_root = cred_root.issue(&mut builder_root).await.unwrap();
-        cred_root.store(&sad_store).await.unwrap();
+        let compacted_root = cred_root
+            .issue(&root_schema, &mut builder_root)
+            .await
+            .unwrap();
+        cred_root.store(&root_schema, &sad_store).await.unwrap();
 
         // Helper to build a schema with edge fields
         let make_edge_schema = |edge_label: &str| {
@@ -1032,8 +1037,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let compacted_mid = cred_mid.issue(&mut builder_mid).await.unwrap();
-        cred_mid.store(&sad_store).await.unwrap();
+        let compacted_mid = cred_mid.issue(&mid_schema, &mut builder_mid).await.unwrap();
+        cred_mid.store(&mid_schema, &sad_store).await.unwrap();
 
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
@@ -1061,8 +1066,11 @@ mod tests {
         )
         .await
         .unwrap();
-        cred_leaf.issue(&mut builder_leaf).await.unwrap();
-        cred_leaf.store(&sad_store).await.unwrap();
+        cred_leaf
+            .issue(&leaf_schema, &mut builder_leaf)
+            .await
+            .unwrap();
+        cred_leaf.store(&leaf_schema, &sad_store).await.unwrap();
 
         // All edge schemas for recursive verification
         let edge_schemas = BTreeMap::from([
