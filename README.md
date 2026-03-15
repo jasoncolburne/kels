@@ -48,11 +48,13 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Address GitHub issues
-2. Cleanup & self-audit
-3. Build some example applications
-4. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
-5. Credential exchange protocol (kels-exchange)
-6. Third party audit
+2. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
+3. Credential exchange protocol (kels-exchange)
+4. Exhaustive proof of divergence reconciliation in distributed environments
+5. Cleanup & self-audit
+6. Build some example applications
+7. Third party audit
+8. Standards proposal (IETF Internet-Draft or equivalent)
 
 ## Project Structure
 
