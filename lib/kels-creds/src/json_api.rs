@@ -116,10 +116,11 @@ pub async fn create(
 /// Returns the compacted SAID (the canonical identifier for retrieval and disclosure).
 pub async fn store(
     json_credential: &str,
-    schema: &Schema,
+    json_schema: &str,
     sad_store: &dyn SADStore,
 ) -> Result<String, CredentialError> {
-    let value: serde_json::Value = serde_json::from_str(json_credential)?;
+    let schema: Schema = serde_json::from_str(json_schema)?;
+    let mut value: serde_json::Value = serde_json::from_str(json_credential)?;
     let cred_schema = value
         .get("schema")
         .and_then(|s| s.as_str())
@@ -132,8 +133,7 @@ pub async fn store(
             schema.said
         )));
     }
-    let mut value = value;
-    let chunks = compact_with_schema(&mut value, schema)?;
+    let chunks = compact_with_schema(&mut value, &schema)?;
     sad_store.store_chunks(&chunks).await?;
 
     let compacted_said = value
@@ -153,17 +153,25 @@ pub async fn store(
 /// schema validation.
 /// If a SADStore is provided, recursively verifies edge-referenced credentials.
 ///
+/// - `json_edge_schemas`: JSON object mapping schema SAIDs to schema objects
+///
 /// Returns verification result as a JSON string.
 pub async fn verify(
     json_credential: &str,
-    schema: &Schema,
+    json_schema: &str,
     source: &dyn PagedKelSource,
     sad_store: Option<&dyn SADStore>,
-    edge_schemas: &BTreeMap<String, Schema>,
+    json_edge_schemas: Option<&str>,
 ) -> Result<String, CredentialError> {
+    let schema: Schema = serde_json::from_str(json_schema)?;
+    let edge_schemas: BTreeMap<String, Schema> = if let Some(json) = json_edge_schemas {
+        serde_json::from_str(json)?
+    } else {
+        BTreeMap::new()
+    };
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
     let verification =
-        verify_credential(&credential, schema, source, sad_store, edge_schemas).await?;
+        verify_credential(&credential, &schema, source, sad_store, &edge_schemas).await?;
     serde_json::to_string(&verification).map_err(CredentialError::from)
 }
 
@@ -176,10 +184,11 @@ pub async fn disclose(
     compacted_said: &str,
     disclosure_statement: &str,
     sad_store: &dyn SADStore,
-    schema: &Schema,
+    json_schema: &str,
 ) -> Result<String, CredentialError> {
+    let schema: Schema = serde_json::from_str(json_schema)?;
     let tokens = parse_disclosure(disclosure_statement)?;
-    let value = apply_disclosure(compacted_said, &tokens, sad_store, schema).await?;
+    let value = apply_disclosure(compacted_said, &tokens, sad_store, &schema).await?;
     serde_json::to_string(&value).map_err(CredentialError::from)
 }
 
@@ -513,8 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_and_disclose() {
-        let schema = test_schema();
-        let schema_json = serde_json::to_string(&schema).unwrap();
+        let schema_json = test_schema_json();
         let claims_json = r#"{"name": "Alice", "age": 30}"#;
 
         let credential_json = create(
@@ -532,11 +540,13 @@ mod tests {
         .unwrap();
 
         let sad_store = InMemorySADStore::new();
-        let compacted_said = store(&credential_json, &schema, &sad_store).await.unwrap();
+        let compacted_said = store(&credential_json, &schema_json, &sad_store)
+            .await
+            .unwrap();
         assert_eq!(compacted_said.len(), 44);
 
         // Disclose everything
-        let disclosed = disclose(&compacted_said, ".*", &sad_store, &schema)
+        let disclosed = disclose(&compacted_said, ".*", &sad_store, &schema_json)
             .await
             .unwrap();
         let disclosed_value: serde_json::Value = serde_json::from_str(&disclosed).unwrap();
@@ -545,7 +555,7 @@ mod tests {
         assert!(disclosed_value.get("schema").unwrap().is_string());
 
         // Disclose only claims
-        let partial = disclose(&compacted_said, "claims", &sad_store, &schema)
+        let partial = disclose(&compacted_said, "claims", &sad_store, &schema_json)
             .await
             .unwrap();
         let partial_value: serde_json::Value = serde_json::from_str(&partial).unwrap();

@@ -23,7 +23,7 @@ This enables `Credential<T>` to hold fields in either state at the type level, i
 
 ### Credential\<T\>
 
-Typed credential for issuance. `T` is the claims payload (must satisfy the `Claims` trait alias: `Serialize + DeserializeOwned + SelfAddressed + Clone + Sync`). Fields that are `SelfAddressed` use `Compactable<T>` to represent either the expanded object or a compacted SAID string.
+Typed credential for issuance. `T` is the claims payload (must satisfy the `Claims` trait alias: `Serialize + DeserializeOwned + SelfAddressed + Clone + Sync`). Fields that are `SelfAddressed` may use `Compactable<T>` to represent either the expanded object or a compacted SAID string.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,13 +463,13 @@ When a `SADStore` is provided, edges with a `credential` SAID reference are look
 
 ## JSON API
 
-The `json_api` module provides four JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs:
+The `json_api` module provides five JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
 
-- `create(schema, claims, edges, rules, issuer, subject, unique, can_revoke, expires_at)` — create a credential from JSON inputs, returns expanded credential JSON
-- `store(credential_json, schema, sad_store)` — compact and store a credential, returns compacted SAID
-- `verify(credential_json, schema, source, sad_store, edge_schemas)` — verify a credential, returns verification result JSON
-- `disclose(compacted_said, disclosure_statement, sad_store, schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
-- `validate(credential_json, schema_json)` — validate a credential against a schema, returns `SchemaValidationReport`
+- `create(json_schema, json_claims, json_edges, json_rules, issuer, subject, unique, can_revoke, expires_at)` — create a credential from JSON inputs, returns expanded credential JSON
+- `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns compacted SAID
+- `verify(json_credential, json_schema, source, sad_store, json_edge_schemas)` — verify a credential, returns verification result JSON. `json_edge_schemas` is an optional JSON object mapping schema SAIDs to schema objects.
+- `disclose(compacted_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
+- `validate(json_credential, json_schema)` — validate a credential against a schema, returns `SchemaValidationReport`
 
 These use `Credential<serde_json::Value>` internally via the `SelfAddressed` impl on `Value`, ensuring the same validation and verification logic as the typed API.
 
