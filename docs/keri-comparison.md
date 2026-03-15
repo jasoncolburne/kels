@@ -26,7 +26,7 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 
 KELS is a federated key event system that shares KERI's foundational concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust. KELS **stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem. It introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics. Replication uses a custom gossip protocol (HyParView + PlumTree over three-DH P-256 + AES-GCM-256) rather than witness receipts. Trust anchors are compile-time registry prefixes with multi-party voting for peer lifecycle.
 
-KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification attacks.
+KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification attacks.
 
 ---
 

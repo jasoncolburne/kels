@@ -27,6 +27,8 @@ With [federated registries](docs/federation.md), KELS can also serve as a secure
 
 ## Differences from KERI (Key Event Receipt Infrastructure)
 
+For a comprehensive comparison of KERI and KELS across security properties, architectural decisions, deployment, and suitability for various DKMI scenarios, see the [KERI vs KELS Comparative Analysis](docs/keri-comparison.md).
+
 KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with self-addressing identifiers, and pre-rotation commitment.
 
 I used Base64 CESR to encode data, primarily to make development easier. I may change the encoding in the future.
@@ -391,6 +393,9 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 - [Rejection Threshold](docs/rejection-threshold.md) - Peer proposal rejection mechanics
 - [Security Invariant](docs/security-invariant.md) - DB trust model and verification categories
 - [Streaming Verification](docs/streaming-verification-architecture.md) - Paginated verification without full KEL load
+- [KERI vs KELS Comparative Analysis](docs/keri-comparison.md) - Security, architecture, and deployment comparison
+- [Credential Framework Design](docs/design/kels-creds.md) - kels-creds issuance, compaction, disclosure, and verification
+- [Code Audits](docs/claudit/) - Branch-level code audit history
 
 ## Production Readiness
 
