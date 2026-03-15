@@ -275,8 +275,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use verifiable_storage::compute_said_from_value;
-
     #[test]
     fn test_compute_said_from_value() {
         let value = json!({
