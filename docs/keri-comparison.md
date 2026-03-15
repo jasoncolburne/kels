@@ -134,13 +134,13 @@ KERI's specification defines verification semantics, but implementation rigor va
 | Credential framework | ACDC (Authentic Chained Data Containers) | kels-creds (see [design](design/kels-creds.md)) |
 | Credential issuance/revocation | TELs (Transaction Event Logs) with registry | Anchor-only: credential SAID anchored = issued, revocation hash anchored = revoked |
 | Credential exchange | IPEX (Issuance and Presentation Exchange) | No built-in exchange protocol |
-| Selective disclosure | Graduated disclosure (compact, partial, full) | Path expression DSL with recursive compaction (compact, selective, full) |
-| Credential chaining | ACDC edge sections link credentials in directed graphs | SelfAddressed edges with graduated disclosure (schema, credential, issuer) |
-| Schema enforcement | JSON Schema + ACDC rules sections | SelfAddressed compactable schema within credential |
+| Selective disclosure | Graduated disclosure (compact, partial, full) | Schema-aware path expression DSL (compact, selective, full) |
+| Credential chaining | ACDC edge sections link credentials in directed graphs | SelfAddressed edges with graduated disclosure (schema, credential, issuer, delegation) |
+| Schema enforcement | JSON Schema + ACDC rules sections | SelfAddressed schema referenced by SAID; closed-schema validation with typed fields |
 
-**Analysis:** KERI's ACDC framework remains more mature, with TELs providing a dedicated append-only log for credential state. KELS takes a leaner approach with kels-creds: credentials are purely computational (no separate storage or event log), with issuance and revocation expressed as anchors in existing interaction events. Revocation is a single Blake3 hash of the credential SAID — no registry infrastructure required. Selective disclosure uses a path expression DSL that maps naturally to FFI (`*const c_char`), with recursive compaction of any SelfAddressed nested field. Edge types are themselves SelfAddressed and compactable, enabling anti-correlation properties similar to ACDC's compact disclosure — a holder can prove an edge exists without revealing the referenced credential's issuer or SAID.
+**Analysis:** KERI's ACDC framework remains more mature, with TELs providing a dedicated append-only log for credential state. KELS takes a leaner approach with kels-creds: credentials are purely computational (no separate storage or event log), with issuance and revocation expressed as anchors in existing interaction events. Revocation is a single domain-separated Blake3 hash of the credential SAID — no registry infrastructure required. Selective disclosure uses a schema-aware path expression DSL that maps naturally to FFI (`*const c_char`) — only fields the schema marks as `compactable: true` are compacted/expanded, preventing blind expansion of SAID-like strings in non-compactable fields. Edge types are themselves SelfAddressed and compactable, enabling anti-correlation properties similar to ACDC's compact disclosure — a holder can prove an edge exists without revealing the referenced credential's issuer or SAID. Edge verification enforces issuer constraints and delegation trust chains (verifying the delegating prefix's KEL anchors the issuer's prefix).
 
-The key architectural difference: ACDC credentials live in TELs (separate append-only logs), while kels-creds credentials are stateless computational objects verified against KEL anchors during the existing single-pass KEL walk. This avoids additional infrastructure but means credential state is derived rather than directly queryable.
+The key architectural difference: ACDC credentials live in TELs (separate append-only logs), while kels-creds credentials are stateless computational objects verified against KEL anchors via a dedicated `verify_key_events` call for the issuer's prefix. This avoids additional infrastructure but means credential state is derived rather than directly queryable.
 
 **2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds closes the feature gap with a simpler model — no TELs, no registrars, no IPEX — trading ecosystem maturity for architectural simplicity and a smaller attack surface.
 
@@ -169,7 +169,7 @@ KELS's dual-signature requirement for recovery events (rotation key + recovery k
 | Standards track | IETF Internet-Drafts (CESR, KERI, ACDC) | None |
 | DID method | `did:keri`, `did:webs` (W3C DID-compatible) | None |
 | Trust framework alignment | ToIP (Trust over IP) Technology Stack | Standalone |
-| Credential format | ACDC (with JSON Schema) | N/A |
+| Credential format | ACDC (with JSON Schema) | kels-creds (SelfAddressed JSON with typed schema) |
 | Wire format specification | CESR (formally specified, code tables) | CESR-based but with Blake3 (no formal spec) |
 | Interop with existing PKI | Via DID methods and OOBI bridges | FFI bindings (C, Swift) for integration |
 
@@ -223,18 +223,18 @@ KERI exposes witness addresses in the KEL itself (`"b"` field), creating infrast
 |----------|------|------|
 | Delegation inception | Delegated inception (`dip`) requires delegator approval seal | Delegated inception (`dip`) accepted if structurally valid |
 | Delegation rotation | Delegated rotation (`drt`) requires delegator approval | No delegated rotation event type |
-| Delegation trust verification | In-protocol (delegator must anchor approval in their KEL) | Deferred to consumers |
+| Delegation trust verification | In-protocol (delegator must anchor approval in their KEL) | Service-level: deferred to consumers. Credential-level: kels-creds verifies delegation trust chains |
 | Delegation revocation | Delegator can refuse future rotations | Consumer-defined |
-| Delegation depth | Multi-level (A delegates to B, B delegates to C) | Structurally possible but trust chain verification is external |
+| Delegation depth | Multi-level (A delegates to B, B delegates to C) | Structurally possible; kels-creds verifies one level of delegation for edge credentials |
 | Cooperative delegation | Delegator and delegate coordinate via interaction events | No built-in coordination protocol |
 
 **Analysis:** KERI's delegation model is deeply integrated into the protocol. When identifier B is delegated from identifier A, the delegator (A) must anchor an approval seal in their own KEL for every delegated establishment event (inception and rotation). This creates a cryptographically verifiable chain of authority: verifying B's KEL requires also verifying A's KEL and confirming the approval seals. The delegator retains ongoing control — they can refuse to approve future rotations, effectively revoking the delegation.
 
-KELS takes an explicitly minimal approach: the `dip` (delegated inception) event includes a `delegating_prefix` field, but KELS itself does not verify the delegation relationship. Any structurally valid KEL starting with `dip` is accepted. Consumers who care about delegation trust must independently fetch and verify the delegator's KEL and confirm that the delegation is anchored there.
+KELS takes a layered approach to delegation. At the service level, the `dip` (delegated inception) event includes a `delegating_prefix` field, but the KELS service itself does not verify the delegation relationship — any structurally valid KEL starting with `dip` is accepted. This is a deliberate design choice: "Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed."
 
-This is a deliberate design choice documented in KELS: "Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed." The rationale is separation of concerns — KELS provides KEL integrity, consumers apply trust policies.
+However, at the credential level, kels-creds provides full delegation verification for edge credentials. When an edge declares `delegated: true`, `verify_edges` performs three checks: (1) the issuer's KEL inception is a `dip` (a `delegating_prefix` must be present), (2) the delegating prefix's KEL is cryptographically verified, and (3) the delegating prefix's KEL anchors the issuer's prefix. This means delegation trust is verified automatically during credential verification without consumers needing to implement it independently.
 
-**2026 consideration:** Delegation is critical for organizational hierarchies (root CA → intermediate CA → end entity, analogous patterns). KERI's in-protocol delegation verification provides stronger guarantees out of the box but couples the verification cost of delegated identifiers to their entire delegation chain. KELS's deferred approach is more flexible (consumers can apply different trust policies) but requires each consumer to implement delegation verification independently, increasing the risk of inconsistent or incorrect trust decisions across an ecosystem.
+**2026 consideration:** Delegation is critical for organizational hierarchies (root CA → intermediate CA → end entity, analogous patterns). KERI's in-protocol delegation verification provides stronger guarantees out of the box for all KEL operations. KELS's layered approach defers delegation verification at the service level but provides it automatically at the credential level via kels-creds, covering the most common use case (verifying that a credential issuer is properly delegated) without requiring every consumer to implement delegation checking independently.
 
 ### 13. Offline and Airgapped Operation
 
@@ -459,7 +459,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 - **Concurrency:** `hio`'s cooperative multitasking model is less battle-tested than `tokio` or Go's goroutines for high-concurrency network services.
 - **Type safety for security invariants:** Python cannot enforce verification-before-use at the type level. Security invariants must be maintained by convention and testing, not by the compiler.
 
-**Other implementations:** There are also Go (`signify-ts`), Rust, and TypeScript implementations at various stages of maturity, but KERIpy remains the reference.
+**Other implementations:** There are also TypeScript (`signify-ts`), Rust, and Go implementations at various stages of maturity, but KERIpy remains the reference.
 
 ### KELS: Rust
 
