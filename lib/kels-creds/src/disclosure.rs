@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use verifiable_storage::compact_value_bounded;
 
 use crate::{
-    compaction::{MAX_RECURSION_DEPTH, expand_all},
+    compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
     error::CredentialError,
+    schema::Schema,
     store::SADStore,
 };
 
@@ -97,16 +98,17 @@ fn parse_token(raw: &str) -> Result<PathToken, CredentialError> {
 
 /// Apply disclosure tokens to a credential value.
 ///
-/// 1. Starts by compacting the credential to canonical form
+/// 1. Starts by fetching the credential's root chunk from the store
 /// 2. Applies tokens left-to-right:
 ///    - Expand: look up SAID in SAD store, replace with full object
-///    - ExpandRecursive: expand and recursively expand all children
+///    - ExpandRecursive: expand and recursively expand all children (schema-aware)
 ///    - Compact: replace object at path with its SAID
 ///    - CompactRecursive: compact object and all children
 pub async fn apply_disclosure(
     said: &str,
     tokens: &[PathToken],
     sad_store: &dyn SADStore,
+    schema: &Schema,
 ) -> Result<serde_json::Value, CredentialError> {
     // Start fully compacted
     let chunk = sad_store.get_chunk(said).await?;
@@ -119,16 +121,34 @@ pub async fn apply_disclosure(
     for token in tokens {
         match token {
             PathToken::ExpandRecursive(path) if path.is_empty() => {
-                expand_all(&mut value, sad_store).await?;
+                expand_with_schema(&mut value, schema, sad_store).await?;
             }
             PathToken::CompactRecursive(path) if path.is_empty() => {
                 compact_children(&mut value)?;
             }
             PathToken::Expand(path) => {
-                expand_at_path(&mut value, path, sad_store, false).await?;
+                expand_at_path(&mut value, path, sad_store).await?;
             }
             PathToken::ExpandRecursive(path) => {
-                expand_at_path(&mut value, path, sad_store, true).await?;
+                expand_at_path(&mut value, path, sad_store).await?;
+                // After expanding the field, recursively expand its children
+                // using schema-aware expansion
+                let (parent, last) = navigate_to_field(&mut value, path)?;
+                if let Some(child) = parent.get_mut(last) {
+                    // Find the schema field for this path to get sub-fields
+                    if let Some(sub_schema_fields) =
+                        resolve_schema_fields_at_path(&schema.fields, path)
+                    {
+                        let sub_schema = Schema {
+                            said: String::new(),
+                            name: String::new(),
+                            description: String::new(),
+                            version: String::new(),
+                            fields: sub_schema_fields,
+                        };
+                        expand_with_schema(child, &sub_schema, sad_store).await?;
+                    }
+                }
             }
             PathToken::Compact(path) | PathToken::CompactRecursive(path) => {
                 compact_at_path(&mut value, path)?;
@@ -139,12 +159,33 @@ pub async fn apply_disclosure(
     Ok(value)
 }
 
-/// Expand a field at the given path. If `recursive`, also expand all children.
+/// Resolve the schema fields at a given path. Returns the fields map for the
+/// object at that path, if it exists in the schema.
+fn resolve_schema_fields_at_path(
+    fields: &std::collections::BTreeMap<String, crate::schema::SchemaField>,
+    path: &[String],
+) -> Option<std::collections::BTreeMap<String, crate::schema::SchemaField>> {
+    if path.is_empty() {
+        return Some(fields.clone());
+    }
+
+    let field = fields.get(&path[0])?;
+    if let Some(ref sub_fields) = field.fields {
+        if path.len() == 1 {
+            Some(sub_fields.clone())
+        } else {
+            resolve_schema_fields_at_path(sub_fields, &path[1..])
+        }
+    } else {
+        None
+    }
+}
+
+/// Expand a field at the given path (single level, not recursive).
 async fn expand_at_path(
     value: &mut serde_json::Value,
     path: &[String],
     sad_store: &dyn SADStore,
-    recursive: bool,
 ) -> Result<(), CredentialError> {
     let (parent, last) = navigate_to_field(value, path)?;
 
@@ -158,15 +199,6 @@ async fn expand_at_path(
             CredentialError::ExpansionError(format!("chunk not found in store for SAID: {}", said))
         })?;
         parent.insert(last.to_string(), expanded);
-
-        if recursive && let Some(child) = parent.get_mut(last) {
-            expand_all(child, sad_store).await?;
-        }
-    } else if recursive {
-        // Field is already expanded — recursively expand its children
-        if let Some(child) = parent.get_mut(last) {
-            expand_all(child, sad_store).await?;
-        }
     }
 
     Ok(())
@@ -248,9 +280,12 @@ fn navigate_to_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use crate::compaction::compact;
+    use crate::schema::{Schema, SchemaField};
     use crate::store::InMemorySADStore;
 
     // -- parse_disclosure tests --
@@ -401,14 +436,51 @@ mod tests {
         })
     }
 
+    fn test_disclosure_schema() -> Schema {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "schema".to_string(),
+            SchemaField::object(
+                BTreeMap::from([
+                    ("name".to_string(), SchemaField::string()),
+                    ("version".to_string(), SchemaField::string()),
+                ]),
+                true,
+            ),
+        );
+        fields.insert("issuer".to_string(), SchemaField::string());
+        fields.insert("issued_at".to_string(), SchemaField::string());
+        fields.insert(
+            "claims".to_string(),
+            SchemaField::object(
+                BTreeMap::from([
+                    ("name".to_string(), SchemaField::string()),
+                    ("age".to_string(), SchemaField::integer()),
+                ]),
+                true,
+            ),
+        );
+
+        Schema::create(
+            "Disclosure Test".to_string(),
+            "For disclosure tests".to_string(),
+            "1.0".to_string(),
+            fields,
+        )
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn test_apply_disclosure_expand_all() {
         let mut credential = make_test_credential();
         let (root_said, chunks) = compact_and_collect(&mut credential);
         let store = store_from_chunks(&chunks).await;
+        let schema = test_disclosure_schema();
 
         let tokens = parse_disclosure(".*").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
 
         assert!(value.get("schema").unwrap().is_object());
         assert!(value.get("claims").unwrap().is_object());
@@ -419,9 +491,12 @@ mod tests {
         let mut credential = make_test_credential();
         let (root_said, chunks) = compact_and_collect(&mut credential);
         let store = store_from_chunks(&chunks).await;
+        let schema = test_disclosure_schema();
 
         let tokens = parse_disclosure("schema").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
 
         assert!(value.get("schema").unwrap().is_object());
         assert!(value.get("claims").unwrap().is_string());
@@ -432,9 +507,12 @@ mod tests {
         let mut credential = make_test_credential();
         let (root_said, chunks) = compact_and_collect(&mut credential);
         let store = store_from_chunks(&chunks).await;
+        let schema = test_disclosure_schema();
 
         let tokens = parse_disclosure(".* -.*").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
 
         assert_eq!(value.get("said").unwrap().as_str().unwrap(), root_said);
     }
@@ -444,9 +522,12 @@ mod tests {
         let mut credential = make_test_credential();
         let (root_said, chunks) = compact_and_collect(&mut credential);
         let store = store_from_chunks(&chunks).await;
+        let schema = test_disclosure_schema();
 
         let tokens = parse_disclosure("").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
 
         assert_eq!(value.get("said").unwrap().as_str().unwrap(), root_said);
     }
@@ -475,11 +556,62 @@ mod tests {
             },
         });
 
+        let schema = Schema::create(
+            "Nested Test".to_string(),
+            "For nested tests".to_string(),
+            "1.0".to_string(),
+            BTreeMap::from([
+                ("schema".to_string(), SchemaField::string()),
+                ("issuer".to_string(), SchemaField::string()),
+                ("issued_at".to_string(), SchemaField::string()),
+                (
+                    "claims".to_string(),
+                    SchemaField::object(
+                        BTreeMap::from([
+                            ("name".to_string(), SchemaField::string()),
+                            (
+                                "address".to_string(),
+                                SchemaField::object(
+                                    BTreeMap::from([
+                                        ("deep".to_string(), SchemaField::string()),
+                                        (
+                                            "skipped".to_string(),
+                                            SchemaField::object(
+                                                BTreeMap::from([
+                                                    ("data".to_string(), SchemaField::string()),
+                                                    (
+                                                        "included".to_string(),
+                                                        SchemaField::object(
+                                                            BTreeMap::from([(
+                                                                "deepest".to_string(),
+                                                                SchemaField::string(),
+                                                            )]),
+                                                            true,
+                                                        ),
+                                                    ),
+                                                ]),
+                                                false,
+                                            ),
+                                        ),
+                                    ]),
+                                    true,
+                                ),
+                            ),
+                        ]),
+                        true,
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+
         let (root_said, chunks) = compact_and_collect(&mut credential);
         let store = store_from_chunks(&chunks).await;
 
         let tokens = parse_disclosure("claims.*").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
 
         let claims_val = value.get("claims").unwrap();
         assert!(claims_val.is_object());
@@ -493,7 +625,9 @@ mod tests {
         assert_eq!(included.get("deepest").unwrap().as_str().unwrap(), "foo");
 
         let tokens = parse_disclosure("claims claims.address").unwrap();
-        let value = apply_disclosure(&root_said, &tokens, &store).await.unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
         let claims_val = value.get("claims").unwrap();
         assert!(claims_val.is_object());
         let address = claims_val.get("address").unwrap();

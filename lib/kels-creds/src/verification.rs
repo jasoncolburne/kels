@@ -6,11 +6,11 @@ use kels::{KelVerifier, MAX_EVENTS_PER_KEL_QUERY, PagedKelSource, verify_key_eve
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use crate::{
-    compaction::{MAX_RECURSION_DEPTH, expand_all},
+    compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
     credential::{Claims, Credential},
     error::CredentialError,
     revocation::revocation_hash,
-    schema::{SchemaValidationReport, SchemaValidationResult, validate_credential_report},
+    schema::{Schema, SchemaValidationReport, validate_credential_report},
     store::SADStore,
 };
 
@@ -33,8 +33,8 @@ pub struct CredentialVerification {
 impl CredentialVerification {
     /// Returns `Ok(())` if the credential is fully trustworthy: issued, not revoked,
     /// not expired, no KEL errors, and all edge credentials also valid. If
-    /// `require_valid_schema` is true, also requires all expanded schema fields
-    /// to pass validation (recursively for edges).
+    /// `require_valid_schema` is true, also requires schema validation to pass
+    /// (recursively for edges).
     pub fn is_valid(&self, require_valid_schema: bool) -> Result<(), CredentialError> {
         if !self.is_issued {
             return Err(CredentialError::VerificationError(
@@ -57,7 +57,7 @@ impl CredentialVerification {
             )));
         }
         if require_valid_schema {
-            self.schema_validation.require_all_valid()?;
+            self.schema_validation.require_valid()?;
         }
         for (label, edge_v) in &self.edge_verifications {
             edge_v
@@ -68,7 +68,8 @@ impl CredentialVerification {
     }
 }
 
-/// Verify a credential against the KEL, optionally with recursive edge verification.
+/// Verify a credential against the KEL, with schema validation and optional
+/// recursive edge verification.
 ///
 /// Checks:
 /// 1. Expanded SAID integrity — recompute SAID from credential data
@@ -76,21 +77,35 @@ impl CredentialVerification {
 /// 3. KEL anchoring — issuer's KEL contains the compacted credential SAID
 /// 4. Revocation — issuer's KEL contains the revocation hash (unless irrevocable)
 /// 5. Expiration — `expiresAt` vs current time
-/// 6. Schema validation — if both schema and claims are expanded
-/// 7. Edge verification — if edges are expanded and a SADStore is provided,
-///    recursively verify referenced credentials
+/// 6. Schema validation — validate credential against provided schema
+/// 7. Edge verification — if edges are expanded and a SADStore + edge schemas
+///    are provided, recursively verify referenced credentials
+///
+/// `edge_schemas` maps schema SAIDs to Schema objects for edge credentials.
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
+    schema: &Schema,
     source: &dyn PagedKelSource,
     sad_store: Option<&dyn SADStore>,
+    edge_schemas: &BTreeMap<String, Schema>,
 ) -> Result<CredentialVerification, CredentialError> {
-    verify_credential_bounded(credential, source, sad_store, MAX_RECURSION_DEPTH).await
+    verify_credential_bounded(
+        credential,
+        schema,
+        source,
+        sad_store,
+        edge_schemas,
+        MAX_RECURSION_DEPTH,
+    )
+    .await
 }
 
 fn verify_credential_bounded<'a, T: Claims>(
     credential: &'a Credential<T>,
+    schema: &'a Schema,
     source: &'a dyn PagedKelSource,
     sad_store: Option<&'a dyn SADStore>,
+    edge_schemas: &'a BTreeMap<String, Schema>,
     remaining_depth: usize,
 ) -> std::pin::Pin<
     Box<
@@ -106,6 +121,14 @@ fn verify_credential_bounded<'a, T: Claims>(
             ));
         }
 
+        // Verify schema SAID matches credential's schema reference
+        if credential.schema != schema.said {
+            return Err(CredentialError::VerificationError(format!(
+                "schema SAID mismatch: credential references {}, provided schema has {}",
+                credential.schema, schema.said
+            )));
+        }
+
         // Expanded SAID integrity — verify the credential's own SAID is consistent with data
         let value = serde_json::to_value(credential)?;
         let computed_said = compute_said_from_value(&value)?;
@@ -119,16 +142,8 @@ fn verify_credential_bounded<'a, T: Claims>(
         // Compacted SAID integrity — compact and derive the anchored SAID
         let (compacted_said, _) = credential.compact()?;
 
-        // Schema validation — validate what's expanded, NotValidated for compacted fields
-        let schema_validation = if let Some(schema) = credential.schema.as_expanded() {
-            validate_credential_report(credential, schema)?
-        } else {
-            SchemaValidationReport {
-                claims: SchemaValidationResult::NotValidated,
-                edges: SchemaValidationResult::NotValidated,
-                rules: SchemaValidationResult::NotValidated,
-            }
-        };
+        // Schema validation
+        let schema_validation = validate_credential_report(credential, schema)?;
 
         // KEL verification — check anchoring (compacted SAID) and revocation
         let irrevocable = credential.irrevocable.unwrap_or(false);
@@ -173,7 +188,14 @@ fn verify_credential_bounded<'a, T: Claims>(
 
         // Edge verification — recursively verify referenced credentials
         let edge_verifications = if let Some(sad_store) = sad_store {
-            verify_edges(credential, source, sad_store, remaining_depth - 1).await?
+            verify_edges(
+                credential,
+                source,
+                sad_store,
+                edge_schemas,
+                remaining_depth - 1,
+            )
+            .await?
         } else {
             BTreeMap::new()
         };
@@ -193,12 +215,14 @@ fn verify_credential_bounded<'a, T: Claims>(
 }
 
 /// Verify all edge credentials that have a `credential` SAID reference.
-/// Looks up each referenced credential in the SADStore, expands it fully,
-/// parses as `Credential<Value>`, and recursively verifies.
+/// Looks up each referenced credential in the SADStore, expands it using
+/// schema-aware expansion (with schema from `edge_schemas`), parses as
+/// `Credential<Value>`, and recursively verifies.
 async fn verify_edges<T: Claims>(
     credential: &Credential<T>,
     source: &dyn PagedKelSource,
     sad_store: &dyn SADStore,
+    edge_schemas: &BTreeMap<String, Schema>,
     remaining_depth: usize,
 ) -> Result<BTreeMap<String, CredentialVerification>, CredentialError> {
     let mut results = BTreeMap::new();
@@ -214,9 +238,23 @@ async fn verify_edges<T: Claims>(
             None => continue,
         };
 
+        // Look up the edge credential's schema
+        let edge_schema = edge_schemas.get(&edge.schema).ok_or_else(|| {
+            CredentialError::VerificationError(format!(
+                "edge '{label}': no schema provided for SAID {}",
+                edge.schema
+            ))
+        })?;
+
         // Look up and expand the referenced credential from the SADStore
-        let mut expanded = serde_json::Value::String(credential_said.clone());
-        expand_all(&mut expanded, sad_store).await?;
+        let root_chunk = sad_store.get_chunk(credential_said).await?.ok_or_else(|| {
+            CredentialError::VerificationError(format!(
+                "edge '{label}': referenced credential {credential_said} not found in store"
+            ))
+        })?;
+
+        let mut expanded = root_chunk;
+        expand_with_schema(&mut expanded, edge_schema, sad_store).await?;
 
         let edge_credential: Credential<serde_json::Value> = serde_json::from_value(expanded)
             .map_err(|e| {
@@ -225,9 +263,15 @@ async fn verify_edges<T: Claims>(
                 ))
             })?;
 
-        let verification =
-            verify_credential_bounded(&edge_credential, source, Some(sad_store), remaining_depth)
-                .await?;
+        let verification = verify_credential_bounded(
+            &edge_credential,
+            edge_schema,
+            source,
+            Some(sad_store),
+            edge_schemas,
+            remaining_depth,
+        )
+        .await?;
 
         results.insert(label.clone(), verification);
     }

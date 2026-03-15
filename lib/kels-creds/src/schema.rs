@@ -2,12 +2,9 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use verifiable_storage::{SelfAddressed, StorageDatetime};
+use verifiable_storage::SelfAddressed;
 
-use crate::{
-    compaction::MAX_RECURSION_DEPTH, credential::Credential, edge::Edges, error::CredentialError,
-    rule::Rules,
-};
+use crate::{compaction::MAX_RECURSION_DEPTH, credential::Credential, error::CredentialError};
 
 /// Result of schema validation during credential verification.
 #[derive(Debug, Clone, Serialize)]
@@ -19,115 +16,218 @@ pub enum SchemaValidationResult {
 }
 
 /// Per-field validation report for graduated disclosure scenarios.
-/// Schema structure and expiration are always checked (errors on failure).
-/// Claims, edges, and rules report `NotValidated` when compacted.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaValidationReport {
-    pub claims: SchemaValidationResult,
-    pub edges: SchemaValidationResult,
-    pub rules: SchemaValidationResult,
+    pub valid: bool,
+    pub errors: Vec<String>,
 }
 
 impl SchemaValidationReport {
-    /// Require all fields to be Valid. Returns an error if any field is Invalid.
-    /// NotValidated fields are accepted (compacted fields can't be validated).
-    pub fn require_all_valid(&self) -> Result<(), CredentialError> {
-        if matches!(self.claims, SchemaValidationResult::Invalid) {
+    pub fn require_valid(&self) -> Result<(), CredentialError> {
+        if !self.valid {
             return Err(CredentialError::SchemaValidationError(
-                "claims validation failed".to_string(),
-            ));
-        }
-        if matches!(self.edges, SchemaValidationResult::Invalid) {
-            return Err(CredentialError::SchemaValidationError(
-                "edges validation failed".to_string(),
-            ));
-        }
-        if matches!(self.rules, SchemaValidationResult::Invalid) {
-            return Err(CredentialError::SchemaValidationError(
-                "rules validation failed".to_string(),
+                self.errors.join("; "),
             ));
         }
         Ok(())
     }
 }
 
-/// Schema-level constraint on an edge field. `true` in JSON means "must be present",
-/// a string means "must equal this specific value".
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SchemaConstraint {
-    Required(bool),
-    Value(String),
-}
-
-/// Schema-level constraint for an edge. All fields mirror Edge fields.
-/// `schema` is required (same as Edge). Other fields, if present, constrain the edge.
+/// The type of a schema field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SchemaEdge {
-    pub schema: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<SchemaConstraint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<SchemaConstraint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegated: Option<bool>,
-}
-
-/// Schema-level constraint for a rule. If `condition` is set, the rule must match.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SchemaRule {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum SchemaField {
+pub enum SchemaFieldType {
     String,
     Integer,
     Float,
     Boolean,
-    /// A nested object. If `compactable` is true, the object has a `said` field and
-    /// can appear as a SAID string when compacted.
-    Object {
-        fields: BTreeMap<String, SchemaField>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        compactable: bool,
-    },
-    Array(Box<SchemaField>),
+    Object,
+    Array,
     Said,
     Prefix,
+    Datetime,
 }
 
+/// A field descriptor in a schema. Describes the type, structure, compactability,
+/// optionality, and value constraints of a single field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaField {
+    #[serde(rename = "type")]
+    pub field_type: SchemaFieldType,
+
+    /// If true, this object can be compacted to/expanded from a SAID string.
+    /// Only meaningful when `field_type` is `Object`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compactable: bool,
+
+    /// If true, this field may be absent from the object.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+
+    /// If set, the field's value must equal this exact value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraint: Option<serde_json::Value>,
+
+    /// Child fields for `Object` type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<BTreeMap<String, SchemaField>>,
+
+    /// Element type for `Array` type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Box<SchemaField>>,
+}
+
+impl SchemaField {
+    pub fn string() -> Self {
+        Self {
+            field_type: SchemaFieldType::String,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn integer() -> Self {
+        Self {
+            field_type: SchemaFieldType::Integer,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn float() -> Self {
+        Self {
+            field_type: SchemaFieldType::Float,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn boolean() -> Self {
+        Self {
+            field_type: SchemaFieldType::Boolean,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn said() -> Self {
+        Self {
+            field_type: SchemaFieldType::Said,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn prefix() -> Self {
+        Self {
+            field_type: SchemaFieldType::Prefix,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn datetime() -> Self {
+        Self {
+            field_type: SchemaFieldType::Datetime,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: None,
+        }
+    }
+
+    pub fn object(fields: BTreeMap<String, SchemaField>, compactable: bool) -> Self {
+        Self {
+            field_type: SchemaFieldType::Object,
+            compactable,
+            optional: false,
+            constraint: None,
+            fields: Some(fields),
+            items: None,
+        }
+    }
+
+    pub fn array(items: SchemaField) -> Self {
+        Self {
+            field_type: SchemaFieldType::Array,
+            compactable: false,
+            optional: false,
+            constraint: None,
+            fields: None,
+            items: Some(Box::new(items)),
+        }
+    }
+
+    /// Make this field optional.
+    pub fn opt(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+
+    /// Add a value constraint.
+    pub fn with_constraint(mut self, value: serde_json::Value) -> Self {
+        self.constraint = Some(value);
+        self
+    }
+}
+
+/// A generic, self-addressed schema. Describes the structure, types, compactability,
+/// and constraints of any self-addressed document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
-pub struct CredentialSchema {
+pub struct Schema {
     #[said]
     pub said: String,
     pub name: String,
     pub description: String,
     pub version: String,
     pub fields: BTreeMap<String, SchemaField>,
-    #[serde(default)]
-    pub expires: bool,
-    #[serde(default)]
-    pub unique: bool,
-    #[serde(default)]
-    pub subject: bool,
-    #[serde(default)]
-    pub revocable: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edges: Option<BTreeMap<String, SchemaEdge>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rules: Option<BTreeMap<String, SchemaRule>>,
 }
 
-impl FromStr for CredentialSchema {
+impl Schema {
+    /// Store this schema in a SAD store as a single chunk keyed by its SAID.
+    pub async fn store(
+        &self,
+        sad_store: &dyn crate::store::SADStore,
+    ) -> Result<(), CredentialError> {
+        let value = serde_json::to_value(self)?;
+        sad_store.store_chunk(&self.said, &value).await
+    }
+
+    /// Fetch a schema from a SAD store by its SAID.
+    pub async fn fetch(
+        said: &str,
+        sad_store: &dyn crate::store::SADStore,
+    ) -> Result<Self, CredentialError> {
+        let chunk = sad_store.get_chunk(said).await?.ok_or_else(|| {
+            CredentialError::ExpansionError(format!("schema {said} not found in store"))
+        })?;
+        Ok(serde_json::from_value(chunk)?)
+    }
+}
+
+impl FromStr for Schema {
     type Err = CredentialError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -137,33 +237,8 @@ impl FromStr for CredentialSchema {
 
 /// Validate that a schema's field definitions are well-formed.
 /// Rejects `said` as a field name anywhere (it's implicit for compactable objects).
-/// Also rejects `said` as an edge or rule label.
-pub(crate) fn validate_schema(schema: &CredentialSchema) -> Result<(), CredentialError> {
-    validate_schema_fields("fields", &schema.fields, MAX_RECURSION_DEPTH)?;
-
-    if let Some(edges) = &schema.edges {
-        for label in edges.keys() {
-            if label == "said" {
-                return Err(CredentialError::SchemaValidationError(
-                    "'said' is a reserved label and cannot be used as an edge label in schema"
-                        .to_string(),
-                ));
-            }
-        }
-    }
-
-    if let Some(rules) = &schema.rules {
-        for label in rules.keys() {
-            if label == "said" {
-                return Err(CredentialError::SchemaValidationError(
-                    "'said' is a reserved label and cannot be used as a rule label in schema"
-                        .to_string(),
-                ));
-            }
-        }
-    }
-
-    Ok(())
+pub(crate) fn validate_schema(schema: &Schema) -> Result<(), CredentialError> {
+    validate_schema_fields("fields", &schema.fields, MAX_RECURSION_DEPTH)
 }
 
 fn validate_schema_fields(
@@ -176,29 +251,20 @@ fn validate_schema_fields(
             "maximum schema nesting depth exceeded at {path}"
         )));
     }
-    for (name, field_type) in fields {
+    for (name, field) in fields {
         if name == "said" {
             return Err(CredentialError::SchemaValidationError(format!(
                 "'said' is a reserved field name and cannot appear in schema definition at {path}.{name}"
             )));
         }
-        if let SchemaField::Object { fields: sub, .. } = field_type {
-            validate_schema_fields(&format!("{path}.{name}"), sub, remaining_depth - 1)?;
-        }
-        if let SchemaField::Array(element_type) = field_type {
-            validate_schema_array_fields(
-                &format!("{path}.{name}[]"),
-                element_type,
-                remaining_depth - 1,
-            )?;
-        }
+        validate_schema_field(&format!("{path}.{name}"), field, remaining_depth - 1)?;
     }
     Ok(())
 }
 
-fn validate_schema_array_fields(
+fn validate_schema_field(
     path: &str,
-    field_type: &SchemaField,
+    field: &SchemaField,
     remaining_depth: usize,
 ) -> Result<(), CredentialError> {
     if remaining_depth == 0 {
@@ -206,269 +272,84 @@ fn validate_schema_array_fields(
             "maximum schema nesting depth exceeded at {path}"
         )));
     }
-    if let SchemaField::Object { fields, .. } = field_type {
-        validate_schema_fields(path, fields, remaining_depth - 1)?;
+
+    match field.field_type {
+        SchemaFieldType::Object => {
+            if let Some(ref fields) = field.fields {
+                validate_schema_fields(path, fields, remaining_depth)?;
+            }
+        }
+        SchemaFieldType::Array => {
+            if let Some(ref items) = field.items {
+                validate_schema_field(&format!("{path}[]"), items, remaining_depth)?;
+            }
+        }
+        _ => {}
     }
-    if let SchemaField::Array(element_type) = field_type {
-        validate_schema_array_fields(&format!("{path}[]"), element_type, remaining_depth - 1)?;
+
+    // Validate constraint type matches field type
+    if let Some(ref constraint) = field.constraint {
+        validate_constraint_type(path, &field.field_type, constraint)?;
     }
+
     Ok(())
 }
 
-/// Validate a credential against a schema with graduated disclosure support.
-/// Schema structure and expiration are always checked (errors on failure).
-/// Claims, edges, and rules each report Valid/Invalid/NotValidated depending
-/// on whether the field is expanded or compacted.
+fn validate_constraint_type(
+    path: &str,
+    field_type: &SchemaFieldType,
+    constraint: &serde_json::Value,
+) -> Result<(), CredentialError> {
+    let valid = match field_type {
+        SchemaFieldType::String
+        | SchemaFieldType::Said
+        | SchemaFieldType::Prefix
+        | SchemaFieldType::Datetime => constraint.is_string(),
+        SchemaFieldType::Integer => constraint.is_i64() || constraint.is_u64(),
+        SchemaFieldType::Float => constraint.is_f64() || constraint.is_i64() || constraint.is_u64(),
+        SchemaFieldType::Boolean => constraint.is_boolean(),
+        SchemaFieldType::Object | SchemaFieldType::Array => {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "constraints are not supported on object/array fields at {path}"
+            )));
+        }
+    };
+
+    if !valid {
+        return Err(CredentialError::SchemaValidationError(format!(
+            "constraint type mismatch at {path}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validate a credential against a schema. Returns a report with errors.
 pub(crate) fn validate_credential_report<T: crate::credential::Claims>(
     credential: &Credential<T>,
-    schema: &CredentialSchema,
+    schema: &Schema,
 ) -> Result<SchemaValidationReport, CredentialError> {
     validate_schema(schema)?;
-    validate_expiration(
-        schema,
-        &credential.issued_at,
-        credential.expires_at.as_ref(),
-    )?;
 
-    if schema.unique && credential.nonce.is_none() {
-        return Err(CredentialError::SchemaValidationError(
-            "schema requires a nonce (unique) but none provided".to_string(),
-        ));
-    }
+    let value = serde_json::to_value(credential)?;
+    let obj = value.as_object().ok_or_else(|| {
+        CredentialError::SchemaValidationError("credential must be an object".to_string())
+    })?;
 
-    if schema.subject && credential.subject.is_none() {
-        return Err(CredentialError::SchemaValidationError(
-            "schema requires a subject but none provided".to_string(),
-        ));
-    }
-
-    if schema.revocable && credential.irrevocable == Some(true) {
-        return Err(CredentialError::SchemaValidationError(
-            "schema requires credential to be revocable but it is irrevocable".to_string(),
-        ));
-    }
-
-    let claims = match credential.claims.as_expanded() {
-        Some(claims) => match validate_claims(schema, &serde_json::to_value(claims)?) {
-            Ok(()) => SchemaValidationResult::Valid,
-            Err(_) => SchemaValidationResult::Invalid,
-        },
-        None => SchemaValidationResult::NotValidated,
-    };
-
-    let edges = match credential.edges.as_ref().and_then(|e| e.as_expanded()) {
-        Some(edges) => match validate_edges(schema, Some(edges)) {
-            Ok(()) => SchemaValidationResult::Valid,
-            Err(_) => SchemaValidationResult::Invalid,
-        },
-        None if credential.edges.is_some() => SchemaValidationResult::NotValidated,
-        None => match validate_edges(schema, None) {
-            Ok(()) => SchemaValidationResult::Valid,
-            Err(_) => SchemaValidationResult::Invalid,
-        },
-    };
-
-    let rules = match credential.rules.as_ref().and_then(|r| r.as_expanded()) {
-        Some(rules) => match validate_rules(schema, Some(rules)) {
-            Ok(()) => SchemaValidationResult::Valid,
-            Err(_) => SchemaValidationResult::Invalid,
-        },
-        None if credential.rules.is_some() => SchemaValidationResult::NotValidated,
-        None => match validate_rules(schema, None) {
-            Ok(()) => SchemaValidationResult::Valid,
-            Err(_) => SchemaValidationResult::Invalid,
-        },
-    };
+    let mut errors = Vec::new();
+    validate_object_fields(
+        "credential",
+        &schema.fields,
+        obj,
+        true,
+        MAX_RECURSION_DEPTH,
+        &mut errors,
+    );
 
     Ok(SchemaValidationReport {
-        claims,
-        edges,
-        rules,
+        valid: errors.is_empty(),
+        errors,
     })
-}
-
-/// Validate expiration constraints: if schema requires expiration, it must be
-/// present and after issued_at. If schema forbids expiration, it must be absent.
-pub(crate) fn validate_expiration(
-    schema: &CredentialSchema,
-    issued_at: &StorageDatetime,
-    expires_at: Option<&StorageDatetime>,
-) -> Result<(), CredentialError> {
-    if schema.expires {
-        let exp = expires_at.ok_or_else(|| {
-            CredentialError::SchemaValidationError(
-                "schema requires expires_at but none provided".to_string(),
-            )
-        })?;
-        if exp <= issued_at {
-            return Err(CredentialError::SchemaValidationError(
-                "expires_at must be after issued_at".to_string(),
-            ));
-        }
-    } else if expires_at.is_some() {
-        return Err(CredentialError::SchemaValidationError(
-            "schema does not allow expires_at".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Validate that a claims value conforms to a schema's field definitions.
-/// Closed schema: extra fields not in the schema are rejected; `said` is
-/// implicitly required on compactable objects and disallowed on non-compactable ones.
-/// If claims is a string (compacted to SAID), validation is skipped.
-pub(crate) fn validate_claims(
-    schema: &CredentialSchema,
-    claims: &serde_json::Value,
-) -> Result<(), CredentialError> {
-    // Compacted claims (SAID string) — skip validation
-    if claims.is_string() {
-        return Ok(());
-    }
-
-    let obj = claims.as_object().ok_or_else(|| {
-        CredentialError::SchemaValidationError(
-            "claims must be an object or a compacted SAID string".to_string(),
-        )
-    })?;
-
-    // Claims is always compactable (has a `said` field)
-    validate_object_fields("claims", &schema.fields, obj, true, MAX_RECURSION_DEPTH)
-}
-
-/// Validate that credential edges conform to the schema's edge definitions.
-/// If the schema defines edges, the credential must provide exactly those labels,
-/// and each edge must match the schema constraints.
-/// If the schema has no edge definitions, any edges are accepted.
-pub(crate) fn validate_edges(
-    schema: &CredentialSchema,
-    edges: Option<&Edges>,
-) -> Result<(), CredentialError> {
-    let Some(schema_edges) = &schema.edges else {
-        return Ok(());
-    };
-
-    let edges = edges.ok_or_else(|| {
-        CredentialError::SchemaValidationError(
-            "schema defines edges but credential has none".to_string(),
-        )
-    })?;
-
-    // Check all schema-defined edges are present and match constraints
-    for (label, schema_edge) in schema_edges {
-        let edge = edges.edges.get(label).ok_or_else(|| {
-            CredentialError::SchemaValidationError(format!("missing required edge: {label}"))
-        })?;
-
-        if edge.schema != schema_edge.schema {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "edge '{label}' schema mismatch: expected {}, got {}",
-                schema_edge.schema, edge.schema
-            )));
-        }
-
-        match &schema_edge.issuer {
-            Some(SchemaConstraint::Required(true)) if edge.issuer.is_none() => {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "edge '{label}' requires an issuer"
-                )));
-            }
-            Some(SchemaConstraint::Value(expected)) if edge.issuer.as_ref() != Some(expected) => {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "edge '{label}' issuer mismatch: expected {expected}"
-                )));
-            }
-            _ => {}
-        }
-
-        match &schema_edge.credential {
-            Some(SchemaConstraint::Required(true)) if edge.credential.is_none() => {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "edge '{label}' requires a credential"
-                )));
-            }
-            Some(SchemaConstraint::Value(expected))
-                if edge.credential.as_ref() != Some(expected) =>
-            {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "edge '{label}' credential mismatch: expected {expected}"
-                )));
-            }
-            _ => {}
-        }
-
-        if schema_edge.nonce == Some(true) && edge.nonce.is_none() {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "edge '{label}' requires a nonce"
-            )));
-        }
-
-        if let Some(expected_delegated) = schema_edge.delegated
-            && edge.delegated != Some(expected_delegated)
-        {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "edge '{label}' delegated mismatch: expected {expected_delegated}"
-            )));
-        }
-    }
-
-    // Reject extra edges not in schema
-    for label in edges.edges.keys() {
-        if !schema_edges.contains_key(label) {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "unexpected edge: {label}"
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-/// Validate that credential rules conform to the schema's rule definitions.
-/// If the schema defines rules, the credential must provide exactly those labels,
-/// and each rule must match the schema constraints.
-/// If the schema has no rule definitions, any rules are accepted.
-pub(crate) fn validate_rules(
-    schema: &CredentialSchema,
-    rules: Option<&Rules>,
-) -> Result<(), CredentialError> {
-    let Some(schema_rules) = &schema.rules else {
-        return Ok(());
-    };
-
-    let rules = rules.ok_or_else(|| {
-        CredentialError::SchemaValidationError(
-            "schema defines rules but credential has none".to_string(),
-        )
-    })?;
-
-    // Check all schema-defined rules are present and match constraints
-    for (label, schema_rule) in schema_rules {
-        let rule = rules.rules.get(label).ok_or_else(|| {
-            CredentialError::SchemaValidationError(format!("missing required rule: {label}"))
-        })?;
-
-        if let Some(ref expected_condition) = schema_rule.condition
-            && &rule.condition != expected_condition
-        {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "rule '{label}' condition mismatch: expected '{expected_condition}', got '{}'",
-                rule.condition
-            )));
-        }
-    }
-
-    // Reject extra rules not in schema
-    for label in rules.rules.keys() {
-        if !schema_rules.contains_key(label) {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "unexpected rule: {label}"
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 fn validate_object_fields(
@@ -477,34 +358,33 @@ fn validate_object_fields(
     obj: &serde_json::Map<String, serde_json::Value>,
     compactable: bool,
     remaining_depth: usize,
-) -> Result<(), CredentialError> {
+    errors: &mut Vec<String>,
+) {
     if remaining_depth == 0 {
-        return Err(CredentialError::SchemaValidationError(format!(
-            "maximum nesting depth exceeded at {name}"
-        )));
+        errors.push(format!("maximum nesting depth exceeded at {name}"));
+        return;
     }
 
-    // Check all schema-defined fields are present and valid
-    for (field_name, field_type) in schema_fields {
+    // Check all schema-defined fields
+    for (field_name, field) in schema_fields {
         if let Some(value) = obj.get(field_name) {
             validate_field(
                 &format!("{name}.{field_name}"),
-                field_type,
+                field,
                 value,
                 remaining_depth - 1,
-            )?;
-        } else {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "missing required field: {name}.{field_name}"
-            )));
+                errors,
+            );
+        } else if !field.optional {
+            errors.push(format!("missing required field: {name}.{field_name}"));
         }
     }
 
     // Compactable objects must have a `said` field when expanded
     if compactable && !obj.contains_key("said") {
-        return Err(CredentialError::SchemaValidationError(format!(
+        errors.push(format!(
             "missing required field: {name}.said (compactable objects must have a said field)"
-        )));
+        ));
     }
 
     // Closed schema: reject extra fields (allow `said` on compactable objects)
@@ -513,82 +393,99 @@ fn validate_object_fields(
             continue;
         }
         if !schema_fields.contains_key(key) {
-            return Err(CredentialError::SchemaValidationError(format!(
-                "unexpected field: {name}.{key}"
-            )));
+            errors.push(format!("unexpected field: {name}.{key}"));
         }
     }
-
-    Ok(())
 }
 
 fn validate_field(
     name: &str,
-    field_type: &SchemaField,
+    field: &SchemaField,
     value: &serde_json::Value,
     remaining_depth: usize,
-) -> Result<(), CredentialError> {
-    match field_type {
-        SchemaField::String | SchemaField::Said | SchemaField::Prefix => {
+    errors: &mut Vec<String>,
+) {
+    match field.field_type {
+        SchemaFieldType::String
+        | SchemaFieldType::Said
+        | SchemaFieldType::Prefix
+        | SchemaFieldType::Datetime => {
             if !value.is_string() {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "field '{name}' must be a string"
-                )));
+                errors.push(format!("field '{name}' must be a string"));
+                return;
             }
         }
-        SchemaField::Integer => {
+        SchemaFieldType::Integer => {
             if !value.is_i64() && !value.is_u64() {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "field '{name}' must be an integer"
-                )));
+                errors.push(format!("field '{name}' must be an integer"));
+                return;
             }
         }
-        SchemaField::Float => {
+        SchemaFieldType::Float => {
             if !value.is_f64() && !value.is_i64() && !value.is_u64() {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "field '{name}' must be a number"
-                )));
+                errors.push(format!("field '{name}' must be a number"));
+                return;
             }
         }
-        SchemaField::Boolean => {
+        SchemaFieldType::Boolean => {
             if !value.is_boolean() {
-                return Err(CredentialError::SchemaValidationError(format!(
-                    "field '{name}' must be a boolean"
-                )));
+                errors.push(format!("field '{name}' must be a boolean"));
+                return;
             }
         }
-        SchemaField::Object {
-            fields,
-            compactable,
-        } => {
-            if *compactable && value.is_string() {
-                // Compacted to SAID string — valid for compactable objects
-                return Ok(());
+        SchemaFieldType::Object => {
+            if field.compactable && value.is_string() {
+                // Compacted to SAID string — valid, skip further validation
+                return;
             }
-            let obj = value.as_object().ok_or_else(|| {
-                if *compactable {
-                    CredentialError::SchemaValidationError(format!(
+            let Some(obj) = value.as_object() else {
+                if field.compactable {
+                    errors.push(format!(
                         "field '{name}' must be an object or a compacted SAID string"
-                    ))
+                    ));
                 } else {
-                    CredentialError::SchemaValidationError(format!(
-                        "field '{name}' must be an object"
-                    ))
+                    errors.push(format!("field '{name}' must be an object"));
                 }
-            })?;
-            validate_object_fields(name, fields, obj, *compactable, remaining_depth)?;
+                return;
+            };
+            if let Some(ref sub_fields) = field.fields {
+                validate_object_fields(
+                    name,
+                    sub_fields,
+                    obj,
+                    field.compactable,
+                    remaining_depth,
+                    errors,
+                );
+            }
         }
-        SchemaField::Array(element_type) => {
-            let arr = value.as_array().ok_or_else(|| {
-                CredentialError::SchemaValidationError(format!("field '{name}' must be an array"))
-            })?;
-            for (i, elem) in arr.iter().enumerate() {
-                validate_field(&format!("{name}[{i}]"), element_type, elem, remaining_depth)?;
+        SchemaFieldType::Array => {
+            let Some(arr) = value.as_array() else {
+                errors.push(format!("field '{name}' must be an array"));
+                return;
+            };
+            if let Some(ref element_type) = field.items {
+                for (i, elem) in arr.iter().enumerate() {
+                    validate_field(
+                        &format!("{name}[{i}]"),
+                        element_type,
+                        elem,
+                        remaining_depth,
+                        errors,
+                    );
+                }
             }
         }
     }
 
-    Ok(())
+    // Check value constraint
+    if let Some(ref constraint) = field.constraint
+        && value != constraint
+    {
+        errors.push(format!(
+            "field '{name}' value mismatch: expected {constraint}, got {value}"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -597,23 +494,39 @@ mod tests {
     use serde_json::json;
     use verifiable_storage::SelfAddressed;
 
-    fn test_schema() -> CredentialSchema {
-        let mut fields = BTreeMap::new();
-        fields.insert("name".to_string(), SchemaField::String);
-        fields.insert("age".to_string(), SchemaField::Integer);
-        fields.insert("active".to_string(), SchemaField::Boolean);
+    fn test_schema() -> Schema {
+        let claims_fields = BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            ("age".to_string(), SchemaField::integer()),
+            ("active".to_string(), SchemaField::boolean()),
+        ]);
 
-        CredentialSchema::create(
+        let mut fields = BTreeMap::new();
+        fields.insert("schema".to_string(), SchemaField::said());
+        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("issuedAt".to_string(), SchemaField::datetime());
+        fields.insert("subject".to_string(), SchemaField::prefix().opt());
+        fields.insert("nonce".to_string(), SchemaField::string().opt());
+        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+        fields.insert(
+            "claims".to_string(),
+            SchemaField::object(claims_fields, true),
+        );
+        fields.insert(
+            "edges".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+        fields.insert(
+            "rules".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+
+        Schema::create(
             "Test Schema".to_string(),
             "A test schema".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap()
     }
@@ -642,338 +555,29 @@ mod tests {
     fn test_schema_serialization_roundtrip() {
         let schema = test_schema();
         let json = serde_json::to_string(&schema).unwrap();
-        let deserialized: CredentialSchema = serde_json::from_str(&json).unwrap();
+        let deserialized: Schema = serde_json::from_str(&json).unwrap();
         assert_eq!(schema.said, deserialized.said);
         assert_eq!(schema.name, deserialized.name);
     }
 
     #[test]
-    fn test_validate_claims_valid() {
-        let schema = test_schema();
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "name": "Alice",
-            "age": 30,
-            "active": true
-        });
-        assert!(validate_claims(&schema, &claims).is_ok());
-    }
-
-    #[test]
-    fn test_validate_claims_missing_field() {
-        let schema = test_schema();
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "name": "Alice",
-            "age": 30
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(matches!(err, CredentialError::SchemaValidationError(_)));
-        assert!(err.to_string().contains("active"));
-    }
-
-    #[test]
-    fn test_validate_claims_wrong_type() {
-        let schema = test_schema();
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "name": "Alice",
-            "age": 1.23,
-            "active": true
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(err.to_string().contains("age"));
-    }
-
-    #[test]
-    fn test_validate_claims_compacted_skips() {
-        let schema = test_schema();
-        let compacted = json!("EAbc1234567890123456789012345678901234567890");
-        assert!(validate_claims(&schema, &compacted).is_ok());
-    }
-
-    #[test]
-    fn test_validate_claims_nested_object() {
-        let mut address_fields = BTreeMap::new();
-        address_fields.insert("city".to_string(), SchemaField::String);
-        address_fields.insert("zip".to_string(), SchemaField::String);
-
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "address".to_string(),
-            SchemaField::Object {
-                fields: address_fields,
-                compactable: false,
-            },
-        );
-
-        let schema = CredentialSchema::create(
-            "Address Schema".to_string(),
-            "Schema with nested object".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let valid = json!({ "said": "EAbc1234567890123456789012345678901234567890", "address": { "city": "Toronto", "zip": "M5V" } });
-        assert!(validate_claims(&schema, &valid).is_ok());
-
-        let missing_sub = json!({ "said": "EAbc1234567890123456789012345678901234567890", "address": { "city": "Toronto" } });
-        assert!(validate_claims(&schema, &missing_sub).is_err());
-    }
-
-    #[test]
-    fn test_validate_claims_array() {
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "tags".to_string(),
-            SchemaField::Array(Box::new(SchemaField::String)),
-        );
-
-        let schema = CredentialSchema::create(
-            "Tags Schema".to_string(),
-            "Schema with array".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let valid = json!({ "said": "EAbc1234567890123456789012345678901234567890", "tags": ["a", "b", "c"] });
-        assert!(validate_claims(&schema, &valid).is_ok());
-
-        let invalid =
-            json!({ "said": "EAbc1234567890123456789012345678901234567890", "tags": [1, 2, 3] });
-        assert!(validate_claims(&schema, &invalid).is_err());
-    }
-
-    #[test]
-    fn test_schema_field_said_and_prefix() {
-        let mut fields = BTreeMap::new();
-        fields.insert("ref".to_string(), SchemaField::Said);
-        fields.insert("id".to_string(), SchemaField::Prefix);
-
-        let schema = CredentialSchema::create(
-            "Ref Schema".to_string(),
-            "Schema with SAID/prefix fields".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let valid = json!({ "said": "EAbc1234567890123456789012345678901234567890", "ref": "EAbc...", "id": "EAbc..." });
-        assert!(validate_claims(&schema, &valid).is_ok());
-
-        let invalid = json!({ "said": "EAbc1234567890123456789012345678901234567890", "ref": 123, "id": "EAbc..." });
-        assert!(validate_claims(&schema, &invalid).is_err());
-    }
-
-    #[test]
-    fn test_validate_claims_float() {
-        let mut fields = BTreeMap::new();
-        fields.insert("score".to_string(), SchemaField::Float);
-
-        let schema = CredentialSchema::create(
-            "Score Schema".to_string(),
-            "Schema with float".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let valid =
-            json!({ "said": "EAbc1234567890123456789012345678901234567890", "score": 9.81 });
-        assert!(validate_claims(&schema, &valid).is_ok());
-    }
-
-    #[test]
-    fn test_validate_claims_not_object() {
-        let schema = test_schema();
-        let claims = json!(42);
-        assert!(validate_claims(&schema, &claims).is_err());
-    }
-
-    #[test]
-    fn test_validate_claims_extra_field_rejected() {
-        let schema = test_schema();
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "name": "Alice",
-            "age": 30,
-            "active": true,
-            "extra": "not allowed"
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(err.to_string().contains("unexpected field"));
-    }
-
-    #[test]
-    fn test_validate_claims_missing_said_on_compactable() {
-        let schema = test_schema();
-        let claims = json!({
-            "name": "Alice",
-            "age": 30,
-            "active": true
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(err.to_string().contains("said"));
-    }
-
-    #[test]
-    fn test_validate_claims_said_rejected_on_non_compactable() {
-        let mut inner = BTreeMap::new();
-        inner.insert("x".to_string(), SchemaField::String);
-
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "obj".to_string(),
-            SchemaField::Object {
-                fields: inner,
-                compactable: false,
-            },
-        );
-
-        let schema = CredentialSchema::create(
-            "NonCompact".to_string(),
-            "Non-compactable object".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "obj": { "said": "EBad1234567890123456789012345678901234567890", "x": "val" }
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(err.to_string().contains("unexpected field"));
-    }
-
-    #[test]
-    fn test_validate_compactable_object_accepts_said_string() {
-        let mut inner = BTreeMap::new();
-        inner.insert("x".to_string(), SchemaField::String);
-
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "sub".to_string(),
-            SchemaField::Object {
-                fields: inner,
-                compactable: true,
-            },
-        );
-
-        let schema = CredentialSchema::create(
-            "Compact".to_string(),
-            "Compactable sub-object".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        // Compacted form (SAID string) should be accepted
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "sub": "ESub1234567890123456789012345678901234567890"
-        });
-        assert!(validate_claims(&schema, &claims).is_ok());
-
-        // Expanded form with said should be accepted
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "sub": { "said": "ESub1234567890123456789012345678901234567890", "x": "val" }
-        });
-        assert!(validate_claims(&schema, &claims).is_ok());
-    }
-
-    #[test]
-    fn test_validate_non_compactable_rejects_string() {
-        let mut inner = BTreeMap::new();
-        inner.insert("x".to_string(), SchemaField::String);
-
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "obj".to_string(),
-            SchemaField::Object {
-                fields: inner,
-                compactable: false,
-            },
-        );
-
-        let schema = CredentialSchema::create(
-            "NonCompact".to_string(),
-            "Non-compactable object".to_string(),
-            "1.0".to_string(),
-            fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let claims = json!({
-            "said": "EAbc1234567890123456789012345678901234567890",
-            "obj": "ESome123456789012345678901234567890123456789"
-        });
-        let err = validate_claims(&schema, &claims).unwrap_err();
-        assert!(err.to_string().contains("must be an object"));
+    fn test_schema_field_builders() {
+        let f = SchemaField::string().opt().with_constraint(json!("hello"));
+        assert_eq!(f.field_type, SchemaFieldType::String);
+        assert!(f.optional);
+        assert_eq!(f.constraint, Some(json!("hello")));
     }
 
     #[test]
     fn test_validate_schema_rejects_said_field_name() {
         let mut fields = BTreeMap::new();
-        fields.insert("said".to_string(), SchemaField::String);
-        fields.insert("name".to_string(), SchemaField::String);
+        fields.insert("said".to_string(), SchemaField::string());
 
-        let schema = CredentialSchema::create(
+        let schema = Schema::create(
             "Bad".to_string(),
             "Schema with said field".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
@@ -983,29 +587,15 @@ mod tests {
 
     #[test]
     fn test_validate_schema_rejects_nested_said_field_name() {
-        let mut inner = BTreeMap::new();
-        inner.insert("said".to_string(), SchemaField::String);
-
+        let inner = BTreeMap::from([("said".to_string(), SchemaField::string())]);
         let mut fields = BTreeMap::new();
-        fields.insert(
-            "nested".to_string(),
-            SchemaField::Object {
-                fields: inner,
-                compactable: true,
-            },
-        );
+        fields.insert("nested".to_string(), SchemaField::object(inner, true));
 
-        let schema = CredentialSchema::create(
+        let schema = Schema::create(
             "Bad".to_string(),
             "Schema with nested said field".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
@@ -1015,33 +605,19 @@ mod tests {
 
     #[test]
     fn test_validate_schema_rejects_excessive_nesting() {
-        // Build a schema nested deeper than MAX_RECURSION_DEPTH
-        let mut fields = BTreeMap::new();
-        fields.insert("leaf".to_string(), SchemaField::String);
+        let mut fields = BTreeMap::from([("leaf".to_string(), SchemaField::string())]);
 
         for _ in 0..MAX_RECURSION_DEPTH + 1 {
             let mut outer = BTreeMap::new();
-            outer.insert(
-                "inner".to_string(),
-                SchemaField::Object {
-                    fields,
-                    compactable: false,
-                },
-            );
+            outer.insert("inner".to_string(), SchemaField::object(fields, false));
             fields = outer;
         }
 
-        let schema = CredentialSchema::create(
+        let schema = Schema::create(
             "Deep".to_string(),
             "Excessively nested schema".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
@@ -1050,47 +626,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_claims_rejects_excessive_nesting() {
-        // Build a schema nested deeper than MAX_RECURSION_DEPTH
+    fn test_validate_constraint_type_mismatch() {
         let mut fields = BTreeMap::new();
-        fields.insert("leaf".to_string(), SchemaField::String);
+        fields.insert(
+            "age".to_string(),
+            SchemaField::integer().with_constraint(json!("not a number")),
+        );
 
-        let mut claims_inner = json!({"leaf": "value"});
-
-        for _ in 0..MAX_RECURSION_DEPTH + 1 {
-            let mut outer = BTreeMap::new();
-            outer.insert(
-                "inner".to_string(),
-                SchemaField::Object {
-                    fields,
-                    compactable: false,
-                },
-            );
-            fields = outer;
-
-            claims_inner = json!({"inner": claims_inner});
-        }
-
-        let schema = CredentialSchema::create(
-            "Deep".to_string(),
-            "Excessively nested schema".to_string(),
+        let schema = Schema::create(
+            "Bad".to_string(),
+            "Bad constraint".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
-        claims_inner.as_object_mut().unwrap().insert(
-            "said".to_string(),
-            json!("EAbc1234567890123456789012345678901234567890"),
+        let err = validate_schema(&schema).unwrap_err();
+        assert!(err.to_string().contains("constraint type mismatch"));
+    }
+
+    #[test]
+    fn test_schema_field_serde_roundtrip() {
+        let field = SchemaField::object(
+            BTreeMap::from([
+                ("name".to_string(), SchemaField::string()),
+                ("score".to_string(), SchemaField::float().opt()),
+            ]),
+            true,
         );
 
-        let err = validate_claims(&schema, &claims_inner).unwrap_err();
-        assert!(err.to_string().contains("maximum nesting depth"));
+        let json = serde_json::to_value(&field).unwrap();
+        let deserialized: SchemaField = serde_json::from_value(json).unwrap();
+        assert_eq!(field, deserialized);
     }
 }

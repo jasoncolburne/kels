@@ -2,20 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use verifiable_storage::{compact_value_bounded, compute_said_from_value};
 
-use crate::{error::CredentialError, store::SADStore};
+use crate::{
+    error::CredentialError,
+    schema::{Schema, SchemaField, SchemaFieldType},
+    store::SADStore,
+};
 
 /// Maximum recursion depth for compaction, expansion, and schema validation.
 /// Bounds stack usage for deeply nested credential structures or malicious inputs.
 pub const MAX_RECURSION_DEPTH: usize = 32;
-
-/// Check if a string could be a CESR SAID (44-char URL-safe base64 starting
-/// with a known digest code prefix). Currently only Blake3-256 (`E`) is used.
-fn could_be_said(s: &str) -> bool {
-    s.len() == 44
-        && s.starts_with('E')
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
 
 /// Compact a JSON value bottom-up, depth-first. Delegates to `compact_value` from
 /// verifiable-storage. Returns extracted chunks keyed by SAID. After this call,
@@ -26,6 +21,245 @@ pub fn compact(
     let mut accumulator = HashMap::new();
     compact_value_bounded(value, &mut accumulator, MAX_RECURSION_DEPTH)?;
     Ok(accumulator)
+}
+
+/// Schema-aware compaction. Only compacts fields that the schema marks as
+/// `compactable: true`. Walks the schema alongside the value, compacting
+/// bottom-up (children first, then parent).
+pub fn compact_with_schema(
+    value: &mut serde_json::Value,
+    schema: &Schema,
+) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
+    let mut accumulator = HashMap::new();
+    // The root credential is itself a compactable object
+    compact_object_with_schema(
+        value,
+        &schema.fields,
+        true,
+        &mut accumulator,
+        MAX_RECURSION_DEPTH,
+    )?;
+    Ok(accumulator)
+}
+
+fn compact_object_with_schema(
+    value: &mut serde_json::Value,
+    schema_fields: &std::collections::BTreeMap<String, SchemaField>,
+    compactable: bool,
+    accumulator: &mut HashMap<String, serde_json::Value>,
+    remaining_depth: usize,
+) -> Result<(), CredentialError> {
+    if remaining_depth == 0 {
+        return Err(CredentialError::CompactionError(
+            "maximum compaction depth exceeded".to_string(),
+        ));
+    }
+
+    let Some(obj) = value.as_object_mut() else {
+        // Already compacted (SAID string) or not an object — nothing to do
+        return Ok(());
+    };
+
+    // Compact children first (bottom-up)
+    let keys: Vec<String> = obj.keys().cloned().collect();
+    for key in &keys {
+        if key == "said" {
+            continue;
+        }
+        let Some(field_schema) = schema_fields.get(key) else {
+            continue;
+        };
+        if let Some(child) = obj.get_mut(key) {
+            compact_field_with_schema(child, field_schema, accumulator, remaining_depth - 1)?;
+        }
+    }
+
+    // Now compact this object if it's compactable. Children that were compactable
+    // have already been reduced to SAID strings, so only non-compactable scalars/objects
+    // remain. Use depth 2: one level for this object, one for its (now-scalar) children.
+    if compactable && obj.contains_key("said") {
+        compact_value_bounded(value, accumulator, 2)?;
+    }
+
+    Ok(())
+}
+
+fn compact_field_with_schema(
+    value: &mut serde_json::Value,
+    field: &SchemaField,
+    accumulator: &mut HashMap<String, serde_json::Value>,
+    remaining_depth: usize,
+) -> Result<(), CredentialError> {
+    match field.field_type {
+        SchemaFieldType::Object => {
+            if let Some(ref sub_fields) = field.fields {
+                compact_object_with_schema(
+                    value,
+                    sub_fields,
+                    field.compactable,
+                    accumulator,
+                    remaining_depth,
+                )?;
+            } else if field.compactable {
+                // No inner field descriptions but compactable — use blind compaction
+                compact_value_bounded(value, accumulator, remaining_depth)?;
+            }
+        }
+        SchemaFieldType::Array => {
+            if let Some(ref items) = field.items
+                && let Some(arr) = value.as_array_mut()
+            {
+                for elem in arr.iter_mut() {
+                    compact_field_with_schema(elem, items, accumulator, remaining_depth)?;
+                }
+            }
+        }
+        _ => {
+            // Scalar types — nothing to compact
+        }
+    }
+    Ok(())
+}
+
+/// Schema-aware expansion. Only expands fields that the schema marks as
+/// `compactable: true`. Walks the schema alongside the value, expanding
+/// SAID strings into full objects from the SAD store.
+pub fn expand_with_schema<'a>(
+    value: &'a mut serde_json::Value,
+    schema: &'a Schema,
+    sad_store: &'a dyn SADStore,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
+    Box::pin(async move {
+        expand_object_with_schema(value, &schema.fields, sad_store, MAX_RECURSION_DEPTH).await
+    })
+}
+
+fn expand_object_with_schema<'a>(
+    value: &'a mut serde_json::Value,
+    schema_fields: &'a std::collections::BTreeMap<String, SchemaField>,
+    sad_store: &'a dyn SADStore,
+    remaining_depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
+    Box::pin(async move {
+        if remaining_depth == 0 {
+            return Err(CredentialError::ExpansionError(
+                "maximum expansion depth exceeded".to_string(),
+            ));
+        }
+
+        let Some(obj) = value.as_object_mut() else {
+            return Ok(());
+        };
+
+        // Collect all compactable fields that are currently SAID strings — batch fetch
+        let mut candidate_saids = HashSet::new();
+        for (key, field) in schema_fields {
+            if field.compactable
+                && let Some(child) = obj.get(key.as_str())
+                && let Some(said) = child.as_str()
+            {
+                candidate_saids.insert(said.to_string());
+            }
+        }
+
+        let fetched = if candidate_saids.is_empty() {
+            HashMap::new()
+        } else {
+            sad_store.get_chunks(&candidate_saids).await?
+        };
+
+        // Expand compactable fields and recurse into all object/array children
+        let keys: Vec<String> = schema_fields.keys().cloned().collect();
+        for key in keys {
+            let Some(field) = schema_fields.get(&key) else {
+                continue;
+            };
+
+            // Expand if compactable and currently a SAID string
+            if field.compactable
+                && let Some(child) = obj.get(&key)
+                && let Some(said) = child.as_str()
+                && let Some(expanded) = fetched.get(said)
+            {
+                obj.insert(key.clone(), expanded.clone());
+            }
+
+            // Recurse into child
+            if let Some(child) = obj.get_mut(&key) {
+                expand_field_with_schema(child, field, sad_store, remaining_depth - 1).await?;
+            }
+        }
+
+        // Recompute SAID after expansion — children changed so the parent's SAID must update
+        if obj.contains_key("said") {
+            let recomputed = compute_said_from_value(value)?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("said".to_string(), serde_json::Value::String(recomputed));
+            }
+        }
+
+        Ok(())
+    })
+}
+
+fn expand_field_with_schema<'a>(
+    value: &'a mut serde_json::Value,
+    field: &'a SchemaField,
+    sad_store: &'a dyn SADStore,
+    remaining_depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
+    Box::pin(async move {
+        match field.field_type {
+            SchemaFieldType::Object => {
+                if let Some(ref sub_fields) = field.fields {
+                    expand_object_with_schema(value, sub_fields, sad_store, remaining_depth)
+                        .await?;
+                }
+            }
+            SchemaFieldType::Array => {
+                if let Some(ref items) = field.items {
+                    if items.compactable {
+                        // Batch fetch array element SAIDs
+                        let mut candidate_saids = HashSet::new();
+                        if let Some(arr) = value.as_array() {
+                            for elem in arr {
+                                if let Some(said) = elem.as_str() {
+                                    candidate_saids.insert(said.to_string());
+                                }
+                            }
+                        }
+                        let fetched = if candidate_saids.is_empty() {
+                            HashMap::new()
+                        } else {
+                            sad_store.get_chunks(&candidate_saids).await?
+                        };
+
+                        if let Some(arr) = value.as_array_mut() {
+                            for elem in arr.iter_mut() {
+                                if let Some(said) = elem.as_str().map(|s| s.to_string())
+                                    && let Some(expanded) = fetched.get(&said)
+                                {
+                                    *elem = expanded.clone();
+                                }
+                            }
+                        }
+                    }
+
+                    // Recurse into array elements
+                    if let Some(arr) = value.as_array_mut() {
+                        for elem in arr.iter_mut() {
+                            expand_field_with_schema(elem, items, sad_store, remaining_depth)
+                                .await?;
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Scalar types — nothing to expand
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Compact credential values and store all resulting chunks in a single batch.
@@ -92,125 +326,6 @@ pub fn expand_field(
 
     target.insert(last.to_string(), expanded);
     Ok(())
-}
-
-/// Expand all compacted SAID strings in a value by looking them up in the SAD store.
-/// Walks the tree and replaces any string value that resolves in the SAD store
-/// with the full object. Recurses into expanded objects to expand nested SAIDs.
-/// Uses `MAX_RECURSION_DEPTH` to bound recursion.
-pub fn expand_all<'a>(
-    value: &'a mut serde_json::Value,
-    sad_store: &'a dyn SADStore,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
-    expand_all_bounded(value, sad_store, MAX_RECURSION_DEPTH)
-}
-
-fn expand_all_bounded<'a>(
-    value: &'a mut serde_json::Value,
-    sad_store: &'a dyn SADStore,
-    remaining_depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
-    Box::pin(async move {
-        if remaining_depth == 0 {
-            return Err(CredentialError::ExpansionError(
-                "maximum expansion depth exceeded".to_string(),
-            ));
-        }
-
-        // Handle root-level SAID strings — look up and replace, then recurse
-        if let Some(said) = value.as_str().map(|s| s.to_string())
-            && could_be_said(&said)
-        {
-            let fetched = sad_store.get_chunks(&HashSet::from([said.clone()])).await?;
-            if let Some(expanded) = fetched.get(&said) {
-                *value = expanded.clone();
-                return expand_all_bounded(value, sad_store, remaining_depth - 1).await;
-            }
-        }
-
-        if let Some(obj) = value.as_object_mut() {
-            // Pass 1: collect all candidate SAIDs from string-valued children
-            let mut candidate_saids = HashSet::new();
-            let keys: Vec<String> = obj.keys().cloned().collect();
-            for key in &keys {
-                if key == "said" {
-                    continue;
-                }
-                if let Some(child) = obj.get(key.as_str())
-                    && let Some(said) = child.as_str()
-                    && could_be_said(said)
-                {
-                    candidate_saids.insert(said.to_string());
-                }
-            }
-
-            // Batch fetch all candidates at once
-            let fetched = if candidate_saids.is_empty() {
-                HashMap::new()
-            } else {
-                sad_store.get_chunks(&candidate_saids).await?
-            };
-
-            // Pass 2: expand fetched SAIDs and recurse into all children
-            for key in keys {
-                if key == "said" {
-                    continue;
-                }
-                if let Some(child) = obj.get(&key)
-                    && let Some(said) = child.as_str()
-                    && let Some(expanded) = fetched.get(said)
-                {
-                    obj.insert(key.clone(), expanded.clone());
-                    if let Some(child) = obj.get_mut(&key) {
-                        expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
-                    }
-                    continue;
-                }
-                if let Some(child) = obj.get_mut(&key) {
-                    expand_all_bounded(child, sad_store, remaining_depth - 1).await?;
-                }
-            }
-
-            // Recompute SAID after expansion — children changed so the parent's SAID must update
-            if obj.contains_key("said") {
-                let recomputed = compute_said_from_value(value)?;
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert("said".to_string(), serde_json::Value::String(recomputed));
-                }
-            }
-        } else if let Some(arr) = value.as_array_mut() {
-            // Pass 1: collect all candidate SAIDs from array elements
-            let mut candidate_saids = HashSet::new();
-            for elem in arr.iter() {
-                if let Some(said) = elem.as_str()
-                    && could_be_said(said)
-                {
-                    candidate_saids.insert(said.to_string());
-                }
-            }
-
-            // Batch fetch
-            let fetched = if candidate_saids.is_empty() {
-                HashMap::new()
-            } else {
-                sad_store.get_chunks(&candidate_saids).await?
-            };
-
-            // Pass 2: expand and recurse
-            for elem in arr.iter_mut() {
-                if let Some(said) = elem.as_str().map(|s| s.to_string())
-                    && let Some(expanded) = fetched.get(&said)
-                {
-                    *elem = expanded.clone();
-                    expand_all_bounded(elem, sad_store, remaining_depth - 1).await?;
-                    continue;
-                }
-                expand_all_bounded(elem, sad_store, remaining_depth - 1).await?;
-            }
-        }
-
-        Ok(())
-    })
 }
 
 fn navigate_to_parent<'a>(
@@ -414,22 +529,16 @@ mod tests {
     fn test_said_agreement_with_typed() {
         use std::collections::BTreeMap;
 
-        use crate::schema::{CredentialSchema, SchemaField};
+        use crate::schema::{Schema, SchemaField};
 
         let mut fields = BTreeMap::new();
-        fields.insert("name".to_string(), SchemaField::String);
+        fields.insert("name".to_string(), SchemaField::string());
 
-        let schema = CredentialSchema::create(
+        let schema = Schema::create(
             "Test".to_string(),
             "A test".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
@@ -458,5 +567,136 @@ mod tests {
         assert!(items[0].is_string());
         assert!(items[1].is_string());
         assert_ne!(items[0].as_str().unwrap(), items[1].as_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_schema_aware_compact_expand_roundtrip() {
+        use crate::store::InMemorySADStore;
+
+        let schema = crate::schema::Schema::create(
+            "Test".to_string(),
+            "A test".to_string(),
+            "1.0".to_string(),
+            std::collections::BTreeMap::from([
+                ("name".to_string(), SchemaField::string()),
+                (
+                    "child".to_string(),
+                    SchemaField::object(
+                        std::collections::BTreeMap::from([(
+                            "data".to_string(),
+                            SchemaField::string(),
+                        )]),
+                        true,
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+
+        let mut value = json!({
+            "said": "",
+            "name": "root",
+            "child": {
+                "said": "",
+                "data": "leaf"
+            }
+        });
+
+        // Compact with schema
+        let chunks = compact_with_schema(&mut value, &schema).unwrap();
+
+        // Root should be compacted to a SAID string
+        assert!(value.is_string());
+
+        // Store chunks
+        let store = InMemorySADStore::new();
+        store.store_chunks(&chunks).await.unwrap();
+
+        // Get root object back
+        let root_said = value.as_str().unwrap();
+        let mut root = store.get_chunk(root_said).await.unwrap().unwrap();
+
+        // Child should be a SAID string (compacted)
+        assert!(root.get("child").unwrap().is_string());
+
+        // Expand with schema
+        expand_with_schema(&mut root, &schema, &store)
+            .await
+            .unwrap();
+
+        // Child should now be expanded
+        assert!(root.get("child").unwrap().is_object());
+        assert_eq!(
+            root.get("child")
+                .unwrap()
+                .get("data")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "leaf"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schema_aware_expand_skips_non_compactable() {
+        use crate::store::InMemorySADStore;
+
+        // Schema where "ref_said" is a Said type (not compactable)
+        let schema = crate::schema::Schema::create(
+            "Test".to_string(),
+            "A test".to_string(),
+            "1.0".to_string(),
+            std::collections::BTreeMap::from([
+                ("ref_said".to_string(), SchemaField::said()),
+                (
+                    "child".to_string(),
+                    SchemaField::object(
+                        std::collections::BTreeMap::from([(
+                            "data".to_string(),
+                            SchemaField::string(),
+                        )]),
+                        true,
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+
+        let store = InMemorySADStore::new();
+
+        // Store a chunk that matches the ref_said value
+        let ref_value =
+            json!({"said": "ERef_1234567890123456789012345678901234567", "extra": "data"});
+        store
+            .store_chunk("ERef_1234567890123456789012345678901234567", &ref_value)
+            .await
+            .unwrap();
+
+        let child_value =
+            json!({"said": "EChild234567890123456789012345678901234567", "data": "leaf"});
+        store
+            .store_chunk("EChild234567890123456789012345678901234567", &child_value)
+            .await
+            .unwrap();
+
+        let mut value = json!({
+            "said": "",
+            "ref_said": "ERef_1234567890123456789012345678901234567",
+            "child": "EChild234567890123456789012345678901234567"
+        });
+
+        expand_with_schema(&mut value, &schema, &store)
+            .await
+            .unwrap();
+
+        // ref_said should NOT be expanded (it's a Said type, not compactable)
+        assert!(value.get("ref_said").unwrap().is_string());
+        assert_eq!(
+            value.get("ref_said").unwrap().as_str().unwrap(),
+            "ERef_1234567890123456789012345678901234567"
+        );
+
+        // child SHOULD be expanded (it's compactable)
+        assert!(value.get("child").unwrap().is_object());
     }
 }

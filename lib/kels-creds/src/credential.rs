@@ -1,15 +1,19 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kels::{KeyEventBuilder, KeyProvider, PagedKelSource, generate_nonce};
-use verifiable_storage::{SelfAddressed, StorageDatetime, compact_value_bounded};
+use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use crate::{
+    compaction::{compact_with_schema, expand_with_schema},
     edge::Edges,
     error::CredentialError,
     rule::Rules,
-    schema::CredentialSchema,
+    schema::Schema,
     store::{InMemorySADStore, SADStore},
     verification::{CredentialVerification, verify_credential},
 };
@@ -48,7 +52,7 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
     pub said: String,
-    pub schema: Compactable<CredentialSchema>,
+    pub schema: String,
     pub issuer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
@@ -72,7 +76,7 @@ impl<T: Claims> Credential<T> {
     /// Does NOT store the credential — call `store()` separately.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
-        schema: CredentialSchema,
+        schema: &Schema,
         issuer: String,
         subject: Option<String>,
         claims: T,
@@ -89,7 +93,7 @@ impl<T: Claims> Credential<T> {
 
         let credential = Self {
             said: String::new(),
-            schema: Compactable::Expanded(schema),
+            schema: schema.said.clone(),
             issuer,
             subject,
             issued_at,
@@ -101,24 +105,35 @@ impl<T: Claims> Credential<T> {
             rules: rules.map(Compactable::Expanded),
         };
 
-        let report = crate::schema::validate_credential_report(
-            &credential,
-            credential.schema.as_expanded().ok_or_else(|| {
-                CredentialError::SchemaValidationError(
-                    "schema must be expanded during creation".to_string(),
-                )
-            })?,
-        )?;
-        report.require_all_valid()?;
+        let report = crate::schema::validate_credential_report(&credential, schema)?;
+        report.require_valid()?;
 
-        // Compact/expand cycle to derive all SAIDs
-        let (compacted_said, chunks) = credential.compact()?;
+        // Schema-aware compact to derive all inner SAIDs, then expand back.
+        let mut value = serde_json::to_value(&credential)?;
+        let chunks = compact_with_schema(&mut value, schema)?;
+
+        let compacted_said = value
+            .as_str()
+            .ok_or_else(|| {
+                CredentialError::CompactionError(
+                    "compact did not produce a SAID string".to_string(),
+                )
+            })?
+            .to_string();
+
+        // Expand back using schema-aware expansion from the accumulator
         let temp_store = InMemorySADStore::new();
         temp_store.store_chunks(&chunks).await?;
 
-        let mut expanded = serde_json::to_value(&compacted_said)?;
-        crate::compaction::expand_all(&mut expanded, &temp_store).await?;
-        let credential: Self = serde_json::from_value(expanded)?;
+        let root_chunk = chunks.get(&compacted_said).ok_or_else(|| {
+            CredentialError::CompactionError(
+                "compacted credential not found in accumulator".to_string(),
+            )
+        })?;
+        let mut expanded_value = root_chunk.clone();
+        expand_with_schema(&mut expanded_value, schema, &temp_store).await?;
+
+        let credential: Self = serde_json::from_value(expanded_value)?;
 
         Ok((credential, compacted_said))
     }
@@ -143,17 +158,17 @@ impl<T: Claims> Credential<T> {
     }
 
     /// Compact this credential into its canonical compacted form and a HashMap of all
-    /// extracted chunks keyed by SAID.
+    /// extracted chunks keyed by SAID. Uses blind compaction (the schema field is
+    /// just a SAID string, so no schema-aware compaction is needed here — only
+    /// compactable sub-objects like claims, edges, rules are compacted).
     pub fn compact(&self) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
         let mut value = serde_json::to_value(self)?;
         let mut accumulator: HashMap<String, serde_json::Value> = HashMap::new();
-        compact_value_bounded(
+        verifiable_storage::compact_value_bounded(
             &mut value,
             &mut accumulator,
             crate::compaction::MAX_RECURSION_DEPTH,
         )?;
-
-        // value is now a SAID string — the compacted credential is in the accumulator
         let compacted_said = Self::string_from_value(value)?;
         Ok((compacted_said, accumulator))
     }
@@ -163,10 +178,12 @@ impl<T: Claims> Credential<T> {
     /// Delegates to [`verify_credential`](crate::verification::verify_credential).
     pub async fn verify(
         &self,
+        schema: &Schema,
         source: &dyn PagedKelSource,
         sad_store: Option<&dyn SADStore>,
+        edge_schemas: &BTreeMap<String, Schema>,
     ) -> Result<CredentialVerification, CredentialError> {
-        verify_credential(self, source, sad_store).await
+        verify_credential(self, schema, source, sad_store, edge_schemas).await
     }
 
     fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
@@ -192,9 +209,8 @@ impl<T: Claims> FromStr for Credential<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    use crate::schema::{SchemaField, SchemaValidationResult};
+    use crate::schema::SchemaField;
 
     /// A simple claims type for testing.
     #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -205,22 +221,38 @@ mod tests {
         age: u32,
     }
 
-    fn test_schema() -> CredentialSchema {
-        let mut fields = BTreeMap::new();
-        fields.insert("name".to_string(), SchemaField::String);
-        fields.insert("age".to_string(), SchemaField::Integer);
+    fn test_schema() -> Schema {
+        let claims_fields = BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            ("age".to_string(), SchemaField::integer()),
+        ]);
 
-        CredentialSchema::create(
+        let mut fields = BTreeMap::new();
+        fields.insert("schema".to_string(), SchemaField::said());
+        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("issuedAt".to_string(), SchemaField::datetime());
+        fields.insert("subject".to_string(), SchemaField::prefix().opt());
+        fields.insert("nonce".to_string(), SchemaField::string().opt());
+        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+        fields.insert(
+            "claims".to_string(),
+            SchemaField::object(claims_fields, true),
+        );
+        fields.insert(
+            "edges".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+        fields.insert(
+            "rules".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+
+        Schema::create(
             "Test Schema".to_string(),
             "A test".to_string(),
             "1.0".to_string(),
             fields,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap()
     }
@@ -231,7 +263,7 @@ mod tests {
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
         Credential::create(
-            test_schema(),
+            &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
@@ -264,7 +296,8 @@ mod tests {
         let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
-        assert!(compacted_cred.schema.as_said().is_some());
+        // schema is always a SAID string
+        assert_eq!(compacted_cred.schema.len(), 44);
         assert!(compacted_cred.claims.as_said().is_some());
     }
 
@@ -279,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn test_unique_credential() {
         let (cred, _) = Credential::create(
-            test_schema(),
+            &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
@@ -298,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn test_deterministic_credential() {
         let (cred, _) = Credential::create(
-            test_schema(),
+            &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
@@ -331,8 +364,58 @@ mod tests {
         edges_map.insert("license".to_string(), edge);
         let edges = Edges::new_validated(edges_map).unwrap();
 
+        let schema = {
+            let claims_fields = BTreeMap::from([
+                ("name".to_string(), SchemaField::string()),
+                ("age".to_string(), SchemaField::integer()),
+            ]);
+
+            let edge_fields = BTreeMap::from([(
+                "license".to_string(),
+                SchemaField::object(
+                    BTreeMap::from([
+                        ("schema".to_string(), SchemaField::said()),
+                        ("issuer".to_string(), SchemaField::prefix().opt()),
+                        ("credential".to_string(), SchemaField::said().opt()),
+                        ("nonce".to_string(), SchemaField::string().opt()),
+                        ("delegated".to_string(), SchemaField::boolean().opt()),
+                    ]),
+                    true,
+                ),
+            )]);
+
+            let mut fields = BTreeMap::new();
+            fields.insert("schema".to_string(), SchemaField::said());
+            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("issuedAt".to_string(), SchemaField::datetime());
+            fields.insert("subject".to_string(), SchemaField::prefix().opt());
+            fields.insert("nonce".to_string(), SchemaField::string().opt());
+            fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+            fields.insert(
+                "claims".to_string(),
+                SchemaField::object(claims_fields, true),
+            );
+            fields.insert(
+                "edges".to_string(),
+                SchemaField::object(edge_fields, true).opt(),
+            );
+            fields.insert(
+                "rules".to_string(),
+                SchemaField::object(BTreeMap::new(), true).opt(),
+            );
+
+            Schema::create(
+                "Test Schema".to_string(),
+                "A test".to_string(),
+                "1.0".to_string(),
+                fields,
+            )
+            .unwrap()
+        };
+
         let (cred, _) = Credential::create(
-            test_schema(),
+            &schema,
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
@@ -364,8 +447,52 @@ mod tests {
         rules_map.insert("terms".to_string(), rule);
         let rules = Rules::new_validated(rules_map).unwrap();
 
+        let schema = {
+            let claims_fields = BTreeMap::from([
+                ("name".to_string(), SchemaField::string()),
+                ("age".to_string(), SchemaField::integer()),
+            ]);
+
+            let rule_fields = BTreeMap::from([(
+                "terms".to_string(),
+                SchemaField::object(
+                    BTreeMap::from([("condition".to_string(), SchemaField::string())]),
+                    true,
+                ),
+            )]);
+
+            let mut fields = BTreeMap::new();
+            fields.insert("schema".to_string(), SchemaField::said());
+            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("issuedAt".to_string(), SchemaField::datetime());
+            fields.insert("subject".to_string(), SchemaField::prefix().opt());
+            fields.insert("nonce".to_string(), SchemaField::string().opt());
+            fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+            fields.insert(
+                "claims".to_string(),
+                SchemaField::object(claims_fields, true),
+            );
+            fields.insert(
+                "edges".to_string(),
+                SchemaField::object(BTreeMap::new(), true).opt(),
+            );
+            fields.insert(
+                "rules".to_string(),
+                SchemaField::object(rule_fields, true).opt(),
+            );
+
+            Schema::create(
+                "Test Schema".to_string(),
+                "A test".to_string(),
+                "1.0".to_string(),
+                fields,
+            )
+            .unwrap()
+        };
+
         let (cred, _) = Credential::create(
-            test_schema(),
+            &schema,
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
@@ -425,7 +552,7 @@ mod tests {
 
     async fn credential_for_issuer(issuer: &str) -> (Credential<TestClaims>, String) {
         Credential::create(
-            test_schema(),
+            &test_schema(),
             issuer.to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
@@ -442,12 +569,18 @@ mod tests {
     #[tokio::test]
     async fn test_verify_issued_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         cred.issue(&mut builder).await.unwrap();
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         result.is_valid(true).unwrap();
@@ -458,10 +591,16 @@ mod tests {
     #[tokio::test]
     async fn test_verify_unissued_credential() {
         let (_builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         assert!(result.is_valid(true).is_err());
@@ -470,6 +609,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_revoked_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         // Issue
@@ -480,7 +620,12 @@ mod tests {
         builder.interact(&rev_hash).await.unwrap();
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         assert!(result.is_valid(true).is_err());
@@ -491,9 +636,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_irrevocable_ignores_revocation_hash() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
 
         let (cred, _) = Credential::create(
-            test_schema(),
+            &schema,
             prefix.clone(),
             None,
             test_claims(),
@@ -514,7 +660,12 @@ mod tests {
         builder.interact(&rev_hash).await.unwrap();
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         result.is_valid(true).unwrap();
@@ -526,26 +677,42 @@ mod tests {
 
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
 
+        let claims_fields = BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            ("age".to_string(), SchemaField::integer()),
+        ]);
         let mut fields = BTreeMap::new();
-        fields.insert("name".to_string(), SchemaField::String);
-        fields.insert("age".to_string(), SchemaField::Integer);
-        let schema = CredentialSchema::create(
+        fields.insert("schema".to_string(), SchemaField::said());
+        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("issuedAt".to_string(), SchemaField::datetime());
+        fields.insert("subject".to_string(), SchemaField::prefix().opt());
+        fields.insert("nonce".to_string(), SchemaField::string().opt());
+        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+        fields.insert(
+            "claims".to_string(),
+            SchemaField::object(claims_fields, true),
+        );
+        fields.insert(
+            "edges".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+        fields.insert(
+            "rules".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+
+        let schema = Schema::create(
             "Expiring Schema".to_string(),
             "A test".to_string(),
             "1.0".to_string(),
             fields,
-            true,
-            false,
-            false,
-            false,
-            None,
-            None,
         )
         .unwrap();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
         let (cred, _) = Credential::create(
-            schema,
+            &schema,
             prefix.clone(),
             None,
             test_claims(),
@@ -561,7 +728,12 @@ mod tests {
         cred.issue(&mut builder).await.unwrap();
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         result.is_valid(true).unwrap();
@@ -570,26 +742,30 @@ mod tests {
     #[tokio::test]
     async fn test_verify_schema_validation_expanded() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
         cred.issue(&mut builder).await.unwrap();
 
         let result = cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
-        assert!(matches!(
-            result.schema_validation.claims,
-            SchemaValidationResult::Valid
-        ));
+        assert!(result.schema_validation.valid);
     }
 
     #[tokio::test]
     async fn test_verify_schema_validation_compacted() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
+        let schema = test_schema();
         let (cred, _) = credential_for_issuer(&prefix).await;
 
-        // Get the compacted credential (schema and claims are SAIDs)
+        // Get the compacted credential (claims are SAIDs, schema is always a SAID string)
         let (_, chunks) = cred.compact().unwrap();
         let compacted_value = chunks
             .values()
@@ -605,13 +781,16 @@ mod tests {
         compacted_cred.issue(&mut builder).await.unwrap();
 
         let result = compacted_cred
-            .verify(&StoreKelSource::new(kel_store.as_ref()), None)
+            .verify(
+                &schema,
+                &StoreKelSource::new(kel_store.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
-        assert!(matches!(
-            result.schema_validation.claims,
-            SchemaValidationResult::NotValidated
-        ));
+        assert!(result.schema_validation.valid);
+        assert!(result.schema_validation.errors.is_empty());
     }
 
     #[tokio::test]
@@ -621,6 +800,8 @@ mod tests {
         // Set up two issuers with separate KELs
         let (mut builder_a, prefix_a, kel_store_a, _dir_a) = setup_kel().await;
         let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
+
+        let schema_a = test_schema();
 
         // Issuer A issues a base credential
         let (cred_a, _) = credential_for_issuer(&prefix_a).await;
@@ -632,7 +813,7 @@ mod tests {
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
-            cred_a.schema.as_expanded().unwrap().said.clone(),
+            cred_a.schema.clone(),
             Some(prefix_a.clone()),
             Some(compacted_said_a.clone()),
             None,
@@ -644,8 +825,57 @@ mod tests {
         edges_map.insert("license".to_string(), edge);
         let edges = Edges::new_validated(edges_map).unwrap();
 
+        // Schema with edge fields described
+        let edge_fields = BTreeMap::from([(
+            "license".to_string(),
+            SchemaField::object(
+                BTreeMap::from([
+                    ("schema".to_string(), SchemaField::said()),
+                    ("issuer".to_string(), SchemaField::prefix().opt()),
+                    ("credential".to_string(), SchemaField::said().opt()),
+                    ("nonce".to_string(), SchemaField::string().opt()),
+                    ("delegated".to_string(), SchemaField::boolean().opt()),
+                ]),
+                true,
+            ),
+        )]);
+
+        let claims_fields = BTreeMap::from([
+            ("name".to_string(), SchemaField::string()),
+            ("age".to_string(), SchemaField::integer()),
+        ]);
+
+        let mut fields = BTreeMap::new();
+        fields.insert("schema".to_string(), SchemaField::said());
+        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("issuedAt".to_string(), SchemaField::datetime());
+        fields.insert("subject".to_string(), SchemaField::prefix().opt());
+        fields.insert("nonce".to_string(), SchemaField::string().opt());
+        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+        fields.insert(
+            "claims".to_string(),
+            SchemaField::object(claims_fields, true),
+        );
+        fields.insert(
+            "edges".to_string(),
+            SchemaField::object(edge_fields, true).opt(),
+        );
+        fields.insert(
+            "rules".to_string(),
+            SchemaField::object(BTreeMap::new(), true).opt(),
+        );
+
+        let schema_b = Schema::create(
+            "Test Schema B".to_string(),
+            "Schema with edges".to_string(),
+            "1.0".to_string(),
+            fields,
+        )
+        .unwrap();
+
         let (cred_b, _) = Credential::create(
-            test_schema(),
+            &schema_b,
             prefix_b.clone(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
@@ -661,12 +891,17 @@ mod tests {
         cred_b.issue(&mut builder_b).await.unwrap();
         cred_b.store(&sad_store).await.unwrap();
 
-        // Verify B with SADStore — should recursively verify A
-        // We need a composite KEL source that can look up both issuers.
-        // For now, verify against each issuer's store separately.
-        // First verify A alone works:
+        // Edge schemas map for recursive verification
+        let edge_schemas = BTreeMap::from([(schema_a.said.clone(), schema_a.clone())]);
+
+        // Verify A alone works:
         let result_a = cred_a
-            .verify(&StoreKelSource::new(kel_store_a.as_ref()), None)
+            .verify(
+                &schema_a,
+                &StoreKelSource::new(kel_store_a.as_ref()),
+                None,
+                &BTreeMap::new(),
+            )
             .await
             .unwrap();
         assert!(result_a.is_issued);
@@ -674,18 +909,25 @@ mod tests {
 
         // Verify B without SADStore — edges not checked
         let result_b_no_edges = cred_b
-            .verify(&StoreKelSource::new(kel_store_b.as_ref()), None)
+            .verify(
+                &schema_b,
+                &StoreKelSource::new(kel_store_b.as_ref()),
+                None,
+                &edge_schemas,
+            )
             .await
             .unwrap();
         assert!(result_b_no_edges.is_issued);
         assert!(result_b_no_edges.edge_verifications.is_empty());
 
         // Verify B with SADStore — edge credential A is verified recursively
-        // Note: edge credential A's issuer KEL is in kel_store_a, not kel_store_b.
-        // The edge verification will find A not issued (different KEL store),
-        // demonstrating that the recursive verification runs.
         let result_b = cred_b
-            .verify(&StoreKelSource::new(kel_store_b.as_ref()), Some(&sad_store))
+            .verify(
+                &schema_b,
+                &StoreKelSource::new(kel_store_b.as_ref()),
+                Some(&sad_store),
+                &edge_schemas,
+            )
             .await
             .unwrap();
         assert!(result_b.is_issued);
@@ -706,16 +948,67 @@ mod tests {
         let (mut builder_leaf, prefix_leaf, kel_store_leaf, _dir_leaf) = setup_kel().await;
 
         let sad_store = InMemorySADStore::new();
+        let root_schema = test_schema();
 
         // Root credential (no edges)
         let (cred_root, _) = credential_for_issuer(&prefix_root).await;
         let compacted_root = cred_root.issue(&mut builder_root).await.unwrap();
         cred_root.store(&sad_store).await.unwrap();
 
+        // Helper to build a schema with edge fields
+        let make_edge_schema = |edge_label: &str| {
+            let edge_fields = BTreeMap::from([(
+                edge_label.to_string(),
+                SchemaField::object(
+                    BTreeMap::from([
+                        ("schema".to_string(), SchemaField::said()),
+                        ("issuer".to_string(), SchemaField::prefix().opt()),
+                        ("credential".to_string(), SchemaField::said().opt()),
+                        ("nonce".to_string(), SchemaField::string().opt()),
+                        ("delegated".to_string(), SchemaField::boolean().opt()),
+                    ]),
+                    true,
+                ),
+            )]);
+
+            let claims_fields = BTreeMap::from([
+                ("name".to_string(), SchemaField::string()),
+                ("age".to_string(), SchemaField::integer()),
+            ]);
+
+            let mut fields = BTreeMap::new();
+            fields.insert("schema".to_string(), SchemaField::said());
+            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("issuedAt".to_string(), SchemaField::datetime());
+            fields.insert("subject".to_string(), SchemaField::prefix().opt());
+            fields.insert("nonce".to_string(), SchemaField::string().opt());
+            fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
+            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
+            fields.insert(
+                "claims".to_string(),
+                SchemaField::object(claims_fields, true),
+            );
+            fields.insert(
+                "edges".to_string(),
+                SchemaField::object(edge_fields, true).opt(),
+            );
+            fields.insert(
+                "rules".to_string(),
+                SchemaField::object(BTreeMap::new(), true).opt(),
+            );
+
+            Schema::create(
+                "Edge Schema".to_string(),
+                "Schema with edge".to_string(),
+                "1.0".to_string(),
+                fields,
+            )
+            .unwrap()
+        };
+
         // Intermediate credential with edge to root
-        let root_schema_said = cred_root.schema.as_expanded().unwrap().said.clone();
         let edge_to_root = Edge::create(
-            root_schema_said.clone(),
+            cred_root.schema.clone(),
             Some(prefix_root.clone()),
             Some(compacted_root.clone()),
             None,
@@ -725,8 +1018,9 @@ mod tests {
         let mut mid_edges = BTreeMap::new();
         mid_edges.insert("root".to_string(), edge_to_root);
 
+        let mid_schema = make_edge_schema("root");
         let (cred_mid, _) = Credential::create(
-            test_schema(),
+            &mid_schema,
             prefix_mid.clone(),
             None,
             test_claims(),
@@ -742,9 +1036,8 @@ mod tests {
         cred_mid.store(&sad_store).await.unwrap();
 
         // Leaf credential with edge to intermediate
-        let mid_schema_said = cred_mid.schema.as_expanded().unwrap().said.clone();
         let edge_to_mid = Edge::create(
-            mid_schema_said,
+            cred_mid.schema.clone(),
             Some(prefix_mid.clone()),
             Some(compacted_mid),
             None,
@@ -754,8 +1047,9 @@ mod tests {
         let mut leaf_edges = BTreeMap::new();
         leaf_edges.insert("authority".to_string(), edge_to_mid);
 
+        let leaf_schema = make_edge_schema("authority");
         let (cred_leaf, _) = Credential::create(
-            test_schema(),
+            &leaf_schema,
             prefix_leaf.clone(),
             None,
             test_claims(),
@@ -770,11 +1064,19 @@ mod tests {
         cred_leaf.issue(&mut builder_leaf).await.unwrap();
         cred_leaf.store(&sad_store).await.unwrap();
 
+        // All edge schemas for recursive verification
+        let edge_schemas = BTreeMap::from([
+            (root_schema.said.clone(), root_schema),
+            (mid_schema.said.clone(), mid_schema),
+        ]);
+
         // Verify leaf — should recursively verify intermediate and root
         let result = cred_leaf
             .verify(
+                &leaf_schema,
                 &StoreKelSource::new(kel_store_leaf.as_ref()),
                 Some(&sad_store),
+                &edge_schemas,
             )
             .await
             .unwrap();
