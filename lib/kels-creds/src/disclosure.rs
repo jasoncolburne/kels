@@ -269,10 +269,7 @@ fn navigate_to_field<'a>(
         .as_object_mut()
         .ok_or_else(|| CredentialError::InvalidDisclosure("parent is not an object".to_string()))?;
 
-    // Safety: path is non-empty, so last() always succeeds
-    let last = path
-        .last()
-        .ok_or_else(|| CredentialError::InvalidDisclosure("empty path".to_string()))?;
+    let last = &path[path.len() - 1];
 
     Ok((parent, last.as_str()))
 }

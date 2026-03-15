@@ -28,6 +28,9 @@ pub struct CredentialVerification {
     pub is_revoked: bool,
     pub is_expired: bool,
     pub kel_error: Option<String>,
+    /// The delegating prefix from the issuer's KEL inception, if it was a `dip`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegating_prefix: Option<String>,
     pub schema_validation: SchemaValidationReport,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub edge_verifications: BTreeMap<String, CredentialVerification>,
@@ -164,7 +167,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         let mut verifier = KelVerifier::new(&credential.issuer);
         verifier.check_anchors(saids_to_check);
 
-        let (is_issued, is_revoked, kel_error) = match verify_key_events(
+        let (is_issued, is_revoked, kel_error, delegating_prefix) = match verify_key_events(
             &credential.issuer,
             source,
             verifier,
@@ -178,9 +181,10 @@ fn verify_credential_bounded<'a, T: Claims>(
                 let revoked = rev_hash
                     .as_ref()
                     .is_some_and(|rh| kel_v.is_said_anchored(rh));
-                (issued, revoked, None)
+                let dp = kel_v.delegating_prefix().map(String::from);
+                (issued, revoked, None, dp)
             }
-            Err(e) => (false, false, Some(e)),
+            Err(e) => (false, false, Some(e), None),
         };
 
         // Check expiration
@@ -211,6 +215,7 @@ fn verify_credential_bounded<'a, T: Claims>(
             is_revoked,
             is_expired,
             kel_error: kel_error.map(|e| e.to_string()),
+            delegating_prefix,
             schema_validation,
             edge_verifications,
         })
@@ -266,6 +271,17 @@ async fn verify_edges<T: Claims>(
                 ))
             })?;
 
+        // Enforce edge.issuer constraint — the edge declares which issuer is expected
+        if let Some(ref expected_issuer) = edge.issuer
+            && *expected_issuer != edge_credential.issuer
+        {
+            return Err(CredentialError::VerificationError(format!(
+                "edge '{label}': issuer mismatch — edge declares {expected_issuer}, \
+                 credential has {}",
+                edge_credential.issuer
+            )));
+        }
+
         let verification = verify_credential_bounded(
             &edge_credential,
             edge_schema,
@@ -275,6 +291,46 @@ async fn verify_edges<T: Claims>(
             remaining_depth,
         )
         .await?;
+
+        // Enforce edge.delegated constraint — verify the issuer's prefix is anchored
+        // in the delegating prefix's KEL
+        if edge.delegated == Some(true) {
+            let dp = verification.delegating_prefix.as_deref().ok_or_else(|| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': credential claims delegation but issuer's KEL \
+                     has no delegating prefix (not a dip inception)"
+                ))
+            })?;
+
+            // Verify the delegating prefix's KEL anchors the delegated prefix
+            let mut delegator_verifier = KelVerifier::new(dp);
+            delegator_verifier.check_anchors(vec![edge_credential.issuer.clone()]);
+
+            match verify_key_events(
+                dp,
+                source,
+                delegator_verifier,
+                MAX_EVENTS_PER_KEL_QUERY,
+                max_verification_pages(),
+            )
+            .await
+            {
+                Ok(kel_v) => {
+                    if !kel_v.is_said_anchored(&edge_credential.issuer) {
+                        return Err(CredentialError::VerificationError(format!(
+                            "edge '{label}': delegating prefix {dp} does not anchor \
+                             issuer prefix {}",
+                            edge_credential.issuer
+                        )));
+                    }
+                }
+                Err(e) => {
+                    return Err(CredentialError::VerificationError(format!(
+                        "edge '{label}': failed to verify delegating prefix {dp}: {e}"
+                    )));
+                }
+            }
+        }
 
         results.insert(label.clone(), verification);
     }
