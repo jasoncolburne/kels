@@ -129,7 +129,20 @@ pub async fn store(
     schema: &Schema,
     sad_store: &dyn SADStore,
 ) -> Result<String, CredentialError> {
-    let mut value: serde_json::Value = serde_json::from_str(json_credential)?;
+    let value: serde_json::Value = serde_json::from_str(json_credential)?;
+    let cred_schema = value
+        .get("schema")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| {
+            CredentialError::InvalidCredential("credential has no schema field".to_string())
+        })?;
+    if cred_schema != schema.said {
+        return Err(CredentialError::InvalidSchema(format!(
+            "schema SAID mismatch: credential references {cred_schema}, provided schema has {}",
+            schema.said
+        )));
+    }
+    let mut value = value;
     let chunks = compact_with_schema(&mut value, schema)?;
     sad_store.store_chunks(&chunks).await?;
 

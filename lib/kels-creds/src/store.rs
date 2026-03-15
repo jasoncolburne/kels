@@ -38,6 +38,19 @@ pub async fn store_credentials(
 ) -> Result<(), CredentialError> {
     let mut all_chunks = HashMap::new();
     for value in &mut values {
+        let cred_schema = value
+            .get("schema")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| {
+                CredentialError::InvalidCredential("credential has no schema field".to_string())
+            })?;
+        if cred_schema != schema.said {
+            return Err(CredentialError::InvalidSchema(format!(
+                "schema SAID mismatch: credential references {cred_schema}, \
+                 provided schema has {}",
+                schema.said
+            )));
+        }
         let chunks = compact_with_schema(value, schema)?;
         all_chunks.extend(chunks);
     }

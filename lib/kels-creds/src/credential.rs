@@ -169,6 +169,12 @@ impl<T: Claims> Credential<T> {
         &self,
         schema: &Schema,
     ) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
+        if self.schema != schema.said {
+            return Err(CredentialError::InvalidSchema(format!(
+                "schema SAID mismatch: credential references {}, provided schema has {}",
+                self.schema, schema.said
+            )));
+        }
         let mut value = serde_json::to_value(self)?;
         let accumulator = compact_with_schema(&mut value, schema)?;
         let compacted_said = Self::string_from_value(value)?;
