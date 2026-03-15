@@ -51,7 +51,8 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 2. Cleanup & self-audit
 3. Build some example applications
 4. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
-5. Third party audit
+5. Credential exchange protocol (kels-exchange)
+6. Third party audit
 
 ## Project Structure
 

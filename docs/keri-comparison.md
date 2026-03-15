@@ -133,7 +133,7 @@ KERI's specification defines verification semantics, but implementation rigor va
 |----------|------|------|
 | Credential framework | ACDC (Authentic Chained Data Containers) | kels-creds (see [design](design/kels-creds.md)) |
 | Credential issuance/revocation | TELs (Transaction Event Logs) with registry | Anchor-only: credential SAID anchored = issued, revocation hash anchored = revoked |
-| Credential exchange | IPEX (Issuance and Presentation Exchange) | No built-in exchange protocol |
+| Credential exchange | IPEX (Issuance and Presentation Exchange) | kels-exchange on roadmap |
 | Selective disclosure | Graduated disclosure (compact, partial, full) | Schema-aware path expression DSL (compact, selective, full) |
 | Credential chaining | ACDC edge sections link credentials in directed graphs | SelfAddressed edges with graduated disclosure (schema, credential, issuer, delegation) |
 | Schema enforcement | JSON Schema + ACDC rules sections | SelfAddressed schema referenced by SAID; closed-schema validation with typed fields |
