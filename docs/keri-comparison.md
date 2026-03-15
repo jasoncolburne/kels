@@ -166,7 +166,7 @@ KELS's dual-signature requirement for recovery events (rotation key + recovery k
 
 | Property | KERI | KELS |
 |----------|------|------|
-| Standards track | IETF Internet-Drafts (CESR, KERI, ACDC) | None |
+| Standards track | IETF Internet-Drafts (CESR, KERI, ACDC) | Standards proposal on roadmap |
 | DID method | `did:keri`, `did:webs` (W3C DID-compatible) | None |
 | Trust framework alignment | ToIP (Trust over IP) Technology Stack | Standalone |
 | Credential format | ACDC (with JSON Schema) | kels-creds (SelfAddressed JSON with typed schema) |
@@ -175,9 +175,9 @@ KELS's dual-signature requirement for recovery events (rotation key + recovery k
 
 **Analysis:** KERI has invested heavily in standards positioning. The IETF Internet-Drafts for CESR, KERI, and ACDC provide formal specifications that enable independent implementations and regulatory reference. The `did:webs` method bridges KERI to the W3C DID ecosystem, enabling interop with existing SSI (Self-Sovereign Identity) tooling. ToIP alignment connects KERI to a broader governance framework used by governments and enterprises.
 
-KELS has no standards track presence. Its wire format is JSON with CESR-encoded cryptographic material and Blake3 hashing, but there is no formal specification beyond the codebase itself. Integration happens through FFI bindings (C for general use, Swift for iOS/macOS) rather than through standardized protocols.
+KELS has no standards track presence yet, but a standards proposal (IETF Internet-Draft or equivalent) is on the roadmap, planned after third-party audit and formal proof of divergence reconciliation. Its wire format is JSON with CESR-encoded cryptographic material and Blake3 hashing. Integration happens through FFI bindings (C for general use, Swift for iOS/macOS) rather than through standardized protocols.
 
-**2026 consideration:** Regulated industries increasingly require standards compliance for identity infrastructure. eIDAS 2.0, ISO 18013-5 (mDL), and national digital identity programs reference or require standards-based approaches. KERI's standards positioning is a practical prerequisite for these markets. KELS would need either its own standards effort or a bridge layer to participate in standards-governed ecosystems.
+**2026 consideration:** Regulated industries increasingly require standards compliance for identity infrastructure. eIDAS 2.0, ISO 18013-5 (mDL), and national digital identity programs reference or require standards-based approaches. KERI's standards positioning is a practical prerequisite for these markets. KELS's planned standards effort would need to cover the core protocol, CESR extensions, and the credential framework to participate in standards-governed ecosystems.
 
 ### 10. Community and Ecosystem Maturity
 
@@ -401,7 +401,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 |--------|------|------|
 | Minimum services for a deployment | 2-3 (agent + witnesses) | 15+ (3 registries × 5 services) |
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
-| Time to first identifier | Minutes (without duplicity detection) | ~25 minutes (full deploy + integration tests, single command) |
+| Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote + restart (minutes to hours) |
 | Adding trust anchors | OOBI resolution (seconds) | Recompile + redeploy all binaries (hours to days) |
 | Configuration surface | Low (agent config + witness URLs) | High (compile-time vars, runtime env, Redis ACLs, Raft config) |
