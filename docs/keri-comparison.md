@@ -92,7 +92,7 @@ KELS's transport security is notably stronger: the three-DH handshake with HSM-b
 
 **Analysis:** KERI's trust model is more decentralized at the root — any identifier is self-certifying from its inception event alone. KELS introduces a federation layer with compile-time trust anchors, which is a stronger assumption but provides a clearer trust boundary for organizational deployments.
 
-KELS's multi-party voting for peer lifecycle (minimum 3 votes from different registries) provides strong Sybil resistance and prevents unilateral infrastructure changes. KERI relies on the controller's witness selection, which is more flexible but places more trust in the controller.
+KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of registries as the federation grows) provides strong Sybil resistance and prevents unilateral infrastructure changes. KERI relies on the controller's witness selection, which is more flexible but places more trust in the controller.
 
 **2026 consideration:** Supply chain security concerns favor KELS's compile-time trust anchors — the trusted set is auditable and cannot be changed at runtime. However, this rigidity is a liability in dynamic environments. KERI's model is more adaptable but requires more careful operational security around witness management.
 
@@ -101,15 +101,15 @@ KELS's multi-party voting for peer lifecycle (minimum 3 votes from different reg
 | Property | KERI | KELS |
 |----------|------|------|
 | Pre-rotation hash commitment | SHA-256 or Blake3 (quantum-resistant) | Blake3-256 (quantum-resistant) |
-| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ECDSA P-256 (128-bit classical security) |
-| Hash agility | CESR code tables allow algorithm migration | CESR with Blake3; migration path unclear |
+| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ECDSA P-256 (128-bit classical); ML-DSA-65 (192-bit post-quantum) on roadmap |
+| Hash agility | CESR code tables allow algorithm migration | CESR with Blake3; ML-DSA-65 planned via CESR code extension |
 | Forward secrecy | Implementation-dependent | Three-DH provides per-session forward secrecy |
 
-**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. However, neither currently uses post-quantum signature algorithms (PQ-DSA candidates like ML-DSA/Dilithium or SLH-DSA/SPHINCS+).
+**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. Neither currently uses post-quantum signature algorithms in production, but KELS has ML-DSA-65 on its roadmap — a 192-bit post-quantum signature algorithm already supported by Apple Secure Enclave (iOS 26+), Thales Luna HSMs, and AWS KMS.
 
-KERI has better cryptographic agility via CESR code tables that can accommodate new algorithms. KELS's tighter coupling to P-256 and Blake3 provides less migration flexibility but a smaller attack surface (fewer algorithm choices = fewer misconfiguration risks).
+KERI has broader cryptographic agility via CESR code tables that can accommodate new algorithms. KELS targets a specific post-quantum algorithm (ML-DSA-65) chosen for hardware availability — Apple's Secure Enclave supports ML-DSA-65 and ML-DSA-87 but not ML-DSA-44, making ML-DSA-65 the practical floor for consumer device compatibility.
 
-**2026 consideration:** With NIST PQC standards finalized, both protocols need migration paths to post-quantum signatures. KERI's algorithm agility gives it an advantage here. However, for the hash-based pre-rotation commitment — the most critical quantum-resistance property — both protocols are already prepared. Organizations should plan hybrid classical+PQ deployments regardless of protocol choice.
+**2026 consideration:** With NIST PQC standards finalized and hardware support arriving (Apple Secure Enclave, Thales Luna, AWS KMS), the migration path from classical to post-quantum signatures is becoming concrete. KELS's planned ML-DSA-65 support aligns with the hardware ecosystem. KERI's algorithm agility theoretically allows any PQ algorithm, but without a specific commitment, the migration timeline is less clear. For the hash-based pre-rotation commitment — the most critical quantum-resistance property — both protocols are already prepared.
 
 ### 6. Verification Model
 
