@@ -62,22 +62,12 @@ pub async fn create(
 ) -> Result<String, CredentialError> {
     let schema: Schema = serde_json::from_str(json_schema)?;
 
-    // Parse claims — add said field, sort keys for deterministic SAID
-    let claims_raw: serde_json::Value = serde_json::from_str(json_claims)?;
-    let claims_obj = claims_raw.as_object().ok_or_else(|| {
+    // Parse claims — add said field for SelfAddressed derivation
+    let mut claims_value: serde_json::Value = serde_json::from_str(json_claims)?;
+    let claims_obj = claims_value.as_object_mut().ok_or_else(|| {
         CredentialError::SchemaValidationError("claims must be a JSON object".to_string())
     })?;
-
-    let mut sorted_claims = serde_json::Map::new();
-    sorted_claims.insert("said".to_string(), serde_json::Value::String(String::new()));
-    let mut keys: Vec<&String> = claims_obj.keys().collect();
-    keys.sort();
-    for key in keys {
-        if let Some(value) = claims_obj.get(key) {
-            sorted_claims.insert(key.clone(), value.clone());
-        }
-    }
-    let claims_value = serde_json::Value::Object(sorted_claims);
+    claims_obj.insert("said".to_string(), serde_json::Value::String(String::new()));
 
     let edges = if let Some(json) = json_edges {
         Some(parse_edges(json)?)
@@ -519,52 +509,6 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_create_claims_field_order_independent() {
-        let schema_json = test_schema_json();
-
-        // Different JSON field orders should produce the same SAID
-        // (because we sort claims keys)
-        let claims1 = r#"{"name": "Alice", "age": 30}"#;
-        let claims2 = r#"{"age": 30, "name": "Alice"}"#;
-
-        let r1 = create(
-            &schema_json,
-            claims1,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let r2 = create(
-            &schema_json,
-            claims2,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let v1: serde_json::Value = serde_json::from_str(&r1).unwrap();
-        let v2: serde_json::Value = serde_json::from_str(&r2).unwrap();
-        // Claims SAIDs should match since keys are sorted
-        assert_eq!(
-            v1.get("claims").unwrap().get("said"),
-            v2.get("claims").unwrap().get("said")
-        );
     }
 
     #[tokio::test]

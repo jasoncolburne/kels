@@ -1,5 +1,5 @@
 use crate::{
-    compaction::{compact_with_schema, expand_with_schema},
+    compaction::{compact_with_fields, compact_with_schema, expand_with_fields, expand_with_schema},
     error::CredentialError,
     schema::Schema,
     store::SADStore,
@@ -146,18 +146,10 @@ pub async fn apply_disclosure(
                 // using schema-aware expansion
                 let (parent, last) = navigate_to_field(&mut value, path)?;
                 if let Some(child) = parent.get_mut(last) {
-                    // Find the schema field for this path to get sub-fields
-                    if let Some(sub_schema_fields) =
+                    if let Some(sub_fields) =
                         resolve_schema_fields_at_path(&schema.fields, path)
                     {
-                        let sub_schema = Schema {
-                            said: String::new(),
-                            name: String::new(),
-                            description: String::new(),
-                            version: String::new(),
-                            fields: sub_schema_fields,
-                        };
-                        expand_with_schema(child, &sub_schema, sad_store).await?;
+                        expand_with_fields(child, &sub_fields, sad_store).await?;
                     }
                 }
             }
@@ -181,14 +173,21 @@ fn resolve_schema_fields_at_path(
     }
 
     let field = fields.get(&path[0])?;
-    if let Some(ref sub_fields) = field.fields {
-        if path.len() == 1 {
-            Some(sub_fields.clone())
-        } else {
-            resolve_schema_fields_at_path(sub_fields, &path[1..])
-        }
+
+    // Resolve child fields from Object fields or Array items fields
+    let child_fields = field
+        .fields
+        .as_ref()
+        .or_else(|| field.items.as_ref().and_then(|items| items.fields.as_ref()));
+
+    let Some(sub_fields) = child_fields else {
+        return None;
+    };
+
+    if path.len() == 1 {
+        Some(sub_fields.clone())
     } else {
-        None
+        resolve_schema_fields_at_path(sub_fields, &path[1..])
     }
 }
 
@@ -240,16 +239,9 @@ fn compact_at_path(
         )));
     }
 
-    // Resolve the sub-schema at this path for schema-aware compaction
+    // Resolve the sub-schema fields at this path for schema-aware compaction
     let sub_fields = resolve_schema_fields_at_path(&schema.fields, path).unwrap_or_default();
-    let sub_schema = Schema {
-        said: String::new(),
-        name: String::new(),
-        description: String::new(),
-        version: String::new(),
-        fields: sub_fields,
-    };
-    compact_with_schema(child, &sub_schema)?;
+    compact_with_fields(child, &sub_fields)?;
 
     Ok(())
 }
@@ -644,5 +636,100 @@ mod tests {
         assert!(skipped.is_object());
         let included = skipped.get("included").unwrap();
         assert!(included.is_string());
+    }
+
+    #[tokio::test]
+    async fn test_apply_disclosure_expand_recursive_through_array() {
+        let schema = Schema::create(
+            "Array Test".to_string(),
+            "For array tests".to_string(),
+            "1.0".to_string(),
+            BTreeMap::from([
+                ("schema".to_string(), SchemaField::string()),
+                ("issuer".to_string(), SchemaField::string()),
+                ("issued_at".to_string(), SchemaField::string()),
+                (
+                    "claims".to_string(),
+                    SchemaField::object(
+                        BTreeMap::from([(
+                            "items".to_string(),
+                            SchemaField::array(SchemaField::object(
+                                BTreeMap::from([
+                                    ("name".to_string(), SchemaField::string()),
+                                    (
+                                        "detail".to_string(),
+                                        SchemaField::object(
+                                            BTreeMap::from([(
+                                                "value".to_string(),
+                                                SchemaField::string(),
+                                            )]),
+                                            true,
+                                        ),
+                                    ),
+                                ]),
+                                true,
+                            )),
+                        )]),
+                        true,
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+
+        let mut credential = json!({
+            "said": "",
+            "schema": schema.said,
+            "issuer": "EIssuer",
+            "issued_at": "2025-01-01T00:00:00Z",
+            "claims": {
+                "said": "",
+                "items": [
+                    {
+                        "said": "",
+                        "name": "first",
+                        "detail": {
+                            "said": "",
+                            "value": "deep1"
+                        }
+                    },
+                    {
+                        "said": "",
+                        "name": "second",
+                        "detail": {
+                            "said": "",
+                            "value": "deep2"
+                        }
+                    }
+                ]
+            },
+        });
+
+        let (root_said, chunks) = compact_and_collect(&mut credential, &schema);
+        let store = store_from_chunks(&chunks).await;
+
+        // ExpandRecursive on claims should expand through the array elements
+        let tokens = parse_disclosure("claims.*").unwrap();
+        let value = apply_disclosure(&root_said, &tokens, &store, &schema)
+            .await
+            .unwrap();
+
+        let claims = value.get("claims").unwrap();
+        assert!(claims.is_object());
+        let items = claims.get("items").unwrap().as_array().unwrap();
+        assert_eq!(items.len(), 2);
+
+        // Array elements should be expanded objects, not SAID strings
+        assert!(items[0].is_object());
+        assert_eq!(items[0].get("name").unwrap().as_str().unwrap(), "first");
+
+        // Nested compactable objects within array elements should also be expanded
+        let detail = items[0].get("detail").unwrap();
+        assert!(detail.is_object());
+        assert_eq!(detail.get("value").unwrap().as_str().unwrap(), "deep1");
+
+        let detail2 = items[1].get("detail").unwrap();
+        assert!(detail2.is_object());
+        assert_eq!(detail2.get("value").unwrap().as_str().unwrap(), "deep2");
     }
 }

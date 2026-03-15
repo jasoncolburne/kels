@@ -237,7 +237,7 @@ impl FromStr for Schema {
 
 /// Validate that a schema's field definitions are well-formed.
 /// Rejects `said` as a field name anywhere (it's implicit for compactable objects).
-pub(crate) fn validate_schema(schema: &Schema) -> Result<(), CredentialError> {
+pub fn validate_schema(schema: &Schema) -> Result<(), CredentialError> {
     validate_schema_fields("fields", &schema.fields, MAX_RECURSION_DEPTH)
 }
 

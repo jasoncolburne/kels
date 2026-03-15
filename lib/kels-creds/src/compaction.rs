@@ -19,15 +19,18 @@ pub fn compact_with_schema(
     value: &mut serde_json::Value,
     schema: &Schema,
 ) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
+    compact_with_fields(value, &schema.fields)
+}
+
+/// Schema-aware compaction using a fields map directly.
+/// Use this when operating on a sub-tree where only the field definitions
+/// are available (e.g., disclosure operations on a nested object).
+pub fn compact_with_fields(
+    value: &mut serde_json::Value,
+    fields: &std::collections::BTreeMap<String, SchemaField>,
+) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
     let mut accumulator = HashMap::new();
-    // The root credential is itself a compactable object
-    compact_object_with_schema(
-        value,
-        &schema.fields,
-        true,
-        &mut accumulator,
-        MAX_RECURSION_DEPTH,
-    )?;
+    compact_object_with_schema(value, fields, true, &mut accumulator, MAX_RECURSION_DEPTH)?;
     Ok(accumulator)
 }
 
@@ -137,8 +140,19 @@ pub fn expand_with_schema<'a>(
     schema: &'a Schema,
     sad_store: &'a dyn SADStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
+    expand_with_fields(value, &schema.fields, sad_store)
+}
+
+/// Schema-aware expansion using a fields map directly.
+/// Use this when operating on a sub-tree where only the field definitions
+/// are available (e.g., disclosure operations on a nested object).
+pub fn expand_with_fields<'a>(
+    value: &'a mut serde_json::Value,
+    fields: &'a std::collections::BTreeMap<String, SchemaField>,
+    sad_store: &'a dyn SADStore,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
-        expand_object_with_schema(value, &schema.fields, sad_store, MAX_RECURSION_DEPTH).await
+        expand_object_with_schema(value, fields, sad_store, MAX_RECURSION_DEPTH).await
     })
 }
 

@@ -23,6 +23,7 @@ pub use revocation::revocation_hash;
 pub use rule::{Rule, Rules};
 pub use schema::{
     Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult,
+    validate_schema,
 };
 pub use store::{InMemorySADStore, SADStore, store_credentials};
 pub use verification::{CredentialVerification, verify_credential};
