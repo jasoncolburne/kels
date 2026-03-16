@@ -88,7 +88,7 @@ KELS's transport security is notably stronger: the three-DH handshake with HSM-b
 | Root of trust | Self-certifying identifiers (inception event) | Self-certifying identifiers (inception event) for participants, Compile-time trusted registry prefixes for infrastructure |
 | Delegation trust | Verified in protocol (delegated rotation) | Deferred to consumers (KELS accepts any valid `dip`) |
 | Ambient verifiability | Yes (any party can verify any KEL) | Yes (any party can verify any KEL) |
-| Infrastructure trust | Witness selection by controller | Multi-party voting (min 3 votes) for peer lifecycle |
+| Infrastructure trust | Witness selection by controller | Multi-party voting (min 3 votes scaling to 1/3 voter pool) for peer lifecycle |
 
 **Analysis:** KERI's trust model is more decentralized at the root — any identifier is self-certifying from its inception event alone. KELS introduces a federation layer with compile-time trust anchors, which is a stronger assumption but provides a clearer trust boundary for organizational deployments.
 
