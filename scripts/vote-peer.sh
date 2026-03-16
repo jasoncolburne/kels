@@ -17,20 +17,10 @@ fi
 REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
 
 if [ -z "$REGISTRY_NS" ]; then
-    # Find a follower registry to vote from
-    LEADER_NS=""
+    # Find the leader, then pick a follower to vote from
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    LEADER_NS=$("$SCRIPT_DIR/find-leader.sh")
 
-    for ns in "${REGISTRIES[@]}"; do
-        LEADER_INFO=$(curl -s "http://kels-registry.${ns}.kels/api/federation/status" 2>/dev/null || echo "{}")
-        IS_LEADER=$(echo "$LEADER_INFO" | jq -r '.isLeader // false')
-
-        if [ "$IS_LEADER" = "true" ]; then
-            LEADER_NS="$ns"
-            break
-        fi
-    done
-
-    # Find a follower
     for ns in "${REGISTRIES[@]}"; do
         if [ "$ns" != "$LEADER_NS" ]; then
             REGISTRY_NS="$ns"
