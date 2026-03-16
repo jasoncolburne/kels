@@ -235,10 +235,220 @@ impl FromStr for Schema {
     }
 }
 
+/// Validate that a schema is well-formed and compliant with kels-creds.
+/// Combines structural validation and credential envelope compliance.
+pub fn validate_schema(schema: &Schema) -> Result<(), CredentialError> {
+    validate_schema_structure(schema)?;
+    validate_schema_compliance(schema)
+}
+
 /// Validate that a schema's field definitions are well-formed.
 /// Rejects `said` as a field name anywhere (it's implicit for compactable objects).
-pub fn validate_schema(schema: &Schema) -> Result<(), CredentialError> {
+pub fn validate_schema_structure(schema: &Schema) -> Result<(), CredentialError> {
     validate_schema_fields("fields", &schema.fields, MAX_RECURSION_DEPTH)
+}
+
+/// Validate that a schema includes the required credential envelope fields
+/// with correct types. These fields are required by the `Credential` struct.
+pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError> {
+    fn require_field(
+        fields: &BTreeMap<String, SchemaField>,
+        name: &str,
+        expected_type: SchemaFieldType,
+        optional: bool,
+    ) -> Result<(), CredentialError> {
+        let field = fields.get(name).ok_or_else(|| {
+            CredentialError::SchemaValidationError(format!(
+                "schema missing required credential field '{name}'"
+            ))
+        })?;
+        if field.field_type != expected_type {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "credential field '{name}' must be type {expected_type:?}, got {:?}",
+                field.field_type
+            )));
+        }
+        if field.optional != optional {
+            let expectation = if optional { "optional" } else { "required" };
+            return Err(CredentialError::SchemaValidationError(format!(
+                "credential field '{name}' must be {expectation}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_compactable_object(
+        fields: &BTreeMap<String, SchemaField>,
+        name: &str,
+        optional: bool,
+    ) -> Result<(), CredentialError> {
+        let field = fields.get(name).ok_or_else(|| {
+            CredentialError::SchemaValidationError(format!(
+                "schema missing required credential field '{name}'"
+            ))
+        })?;
+        if field.field_type != SchemaFieldType::Object {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "credential field '{name}' must be type Object, got {:?}",
+                field.field_type
+            )));
+        }
+        if !field.compactable {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "credential field '{name}' must be compactable"
+            )));
+        }
+        if field.optional != optional {
+            let expectation = if optional { "optional" } else { "required" };
+            return Err(CredentialError::SchemaValidationError(format!(
+                "credential field '{name}' must be {expectation}"
+            )));
+        }
+        Ok(())
+    }
+
+    let fields = &schema.fields;
+
+    // Required fields
+    require_field(fields, "schema", SchemaFieldType::Said, false)?;
+    require_field(fields, "issuer", SchemaFieldType::Prefix, false)?;
+    require_field(fields, "issuedAt", SchemaFieldType::Datetime, false)?;
+    require_compactable_object(fields, "claims", false)?;
+
+    // Optional fields with required types
+    require_field(fields, "subject", SchemaFieldType::Prefix, true)?;
+    require_field(fields, "nonce", SchemaFieldType::String, true)?;
+    require_field(fields, "expiresAt", SchemaFieldType::Datetime, true)?;
+    require_field(fields, "irrevocable", SchemaFieldType::Boolean, true)?;
+    require_compactable_object(fields, "edges", true)?;
+    require_compactable_object(fields, "rules", true)?;
+
+    // Validate edge entry structure
+    if let Some(ref edge_fields) = fields["edges"].fields {
+        for (label, entry) in edge_fields {
+            if entry.field_type != SchemaFieldType::Object {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' must be type Object, got {:?}",
+                    entry.field_type
+                )));
+            }
+            if !entry.compactable {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "edge '{label}' must be compactable"
+                )));
+            }
+            if let Some(ref entry_fields) = entry.fields {
+                const ALLOWED_EDGE_FIELDS: &[&str] =
+                    &["schema", "issuer", "credential", "nonce", "delegated"];
+
+                // schema is required
+                require_field(entry_fields, "schema", SchemaFieldType::Said, false).map_err(
+                    |_| {
+                        CredentialError::SchemaValidationError(format!(
+                            "edge '{label}' must have required field 'schema' of type Said"
+                        ))
+                    },
+                )?;
+
+                // Optional edge fields with required types
+                if let Some(f) = entry_fields.get("issuer")
+                    && (f.field_type != SchemaFieldType::Prefix || !f.optional)
+                {
+                    return Err(CredentialError::SchemaValidationError(format!(
+                        "edge '{label}' field 'issuer' must be optional Prefix"
+                    )));
+                }
+                if let Some(f) = entry_fields.get("credential")
+                    && (f.field_type != SchemaFieldType::Said || !f.optional)
+                {
+                    return Err(CredentialError::SchemaValidationError(format!(
+                        "edge '{label}' field 'credential' must be optional Said"
+                    )));
+                }
+                if let Some(f) = entry_fields.get("nonce")
+                    && (f.field_type != SchemaFieldType::String || !f.optional)
+                {
+                    return Err(CredentialError::SchemaValidationError(format!(
+                        "edge '{label}' field 'nonce' must be optional String"
+                    )));
+                }
+                if let Some(f) = entry_fields.get("delegated")
+                    && (f.field_type != SchemaFieldType::Boolean || !f.optional)
+                {
+                    return Err(CredentialError::SchemaValidationError(format!(
+                        "edge '{label}' field 'delegated' must be optional Boolean"
+                    )));
+                }
+
+                for name in entry_fields.keys() {
+                    if !ALLOWED_EDGE_FIELDS.contains(&name.as_str()) {
+                        return Err(CredentialError::SchemaValidationError(format!(
+                            "edge '{label}' has unknown field '{name}'"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate rule entry structure
+    if let Some(ref rule_fields) = fields["rules"].fields {
+        for (label, entry) in rule_fields {
+            if entry.field_type != SchemaFieldType::Object {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "rule '{label}' must be type Object, got {:?}",
+                    entry.field_type
+                )));
+            }
+            if !entry.compactable {
+                return Err(CredentialError::SchemaValidationError(format!(
+                    "rule '{label}' must be compactable"
+                )));
+            }
+            if let Some(ref entry_fields) = entry.fields {
+                const ALLOWED_RULE_FIELDS: &[&str] = &["condition"];
+
+                require_field(entry_fields, "condition", SchemaFieldType::String, false).map_err(
+                    |_| {
+                        CredentialError::SchemaValidationError(format!(
+                            "rule '{label}' must have required field 'condition' of type String"
+                        ))
+                    },
+                )?;
+
+                for name in entry_fields.keys() {
+                    if !ALLOWED_RULE_FIELDS.contains(&name.as_str()) {
+                        return Err(CredentialError::SchemaValidationError(format!(
+                            "rule '{label}' has unknown field '{name}'"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Reject unknown top-level fields
+    const ALLOWED_FIELDS: &[&str] = &[
+        "schema",
+        "issuer",
+        "issuedAt",
+        "claims",
+        "subject",
+        "nonce",
+        "expiresAt",
+        "irrevocable",
+        "edges",
+        "rules",
+    ];
+    for name in fields.keys() {
+        if !ALLOWED_FIELDS.contains(&name.as_str()) {
+            return Err(CredentialError::SchemaValidationError(format!(
+                "unknown top-level credential field '{name}'"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_schema_fields(
