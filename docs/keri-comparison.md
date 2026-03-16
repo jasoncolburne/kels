@@ -279,11 +279,12 @@ KELS provides native device integration through two paths: a Swift client (`kels
 
 ### 1. Personal/Consumer Identity (e.g., digital wallets, personal credentials)
 
-**Recommended: KERI**
+**Recommended: Context-dependent**
 
-Personal identity benefits from KERI's fully decentralized trust model — no dependency on specific infrastructure. Users control their own witness selection, and the OOBI mechanism provides flexible discovery. The social accountability model for duplicity aligns with how personal identity works: reputation matters, and human judgment is available for trust decisions.
+- **For mobile wallets with hardware-backed keys**: **KELS**. Native Swift client with Secure Enclave integration provides on-device signing without cloud agent dependency. The planned ML-DSA-65 support aligns with Apple's Secure Enclave PQ capabilities. A single KELS node can serve as the backend — no federation required for personal use.
+- **For fully decentralized, infrastructure-independent identity**: **KERI**. Self-certifying identifiers with controller-selected witnesses and OOBI discovery require no specific backend infrastructure. The social accountability model for duplicity aligns with how personal reputation works.
 
-KELS's federation model and compile-time trust anchors are over-specified for personal use. The operational complexity of registry deployment is disproportionate to individual needs.
+KERI's browser-based client (signify-ts) works well for web applications but lacks native mobile SDK support or hardware key integration. KELS's native device support is a significant advantage as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet) become primary credential containers.
 
 ### 2. Enterprise/Organizational Identity (e.g., corporate PKI replacement, B2B trust)
 
@@ -364,7 +365,8 @@ Multi-party governance aligns naturally with KELS's design:
 
 | Usage Context | Recommended | Key Deciding Factor |
 |---|---|---|
-| Personal identity | KERI | Decentralized trust, no infrastructure dependency |
+| Personal identity (mobile) | KELS | Native device client, Secure Enclave, no cloud agent |
+| Personal identity (web/decentralized) | KERI | Decentralized trust, no infrastructure dependency |
 | Enterprise identity | KELS | Deterministic recovery, auditable divergence, controlled federation |
 | IoT / device identity | KELS | Gossip replication, automated recovery, HSM integration |
 | DeFi / high-value | KELS | Total compromise response, zero-trust verification |
