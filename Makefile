@@ -352,4 +352,4 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
 
-test-comprehensive: clean-garden fix-ingress configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-nodes test-suite
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-nodes test-suite

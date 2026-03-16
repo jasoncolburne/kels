@@ -172,7 +172,30 @@ make clean-garden
 
 Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
 
-#### Host Configuration
+#### Deployment
+
+We won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
+deploys 10 independent Kubernetes namespaces, finishing with 9 running for you to poke at.
+
+This is the flow:
+
+1. Deploy all registries
+2. Gather their prefixes
+3. Rebuild all software to bake prefixes in
+4. Update environment variables as required
+5. Re-deploy registries
+6. Deploy peers
+7. Gather peer prefixes
+8. Propose peers
+9. Approve peers
+
+This system assumes operators of registries are coordinated.
+
+### Querying from the host
+
+To use the command line tools or iOS application, you'll need to modify your /etc/hosts file and fix your ingress.
+
+#### Hosts
 
 First, add the following entries to `/etc/hosts` to enable local hostname resolution:
 
@@ -195,30 +218,11 @@ This allows the CLI and iOS app to connect to the local KELS nodes and registrie
 
 Certain versions of Garden mistakenly create the Traefik ingress service as `ClusterIP` instead of
 `LoadBalancer`. On Docker Desktop, this prevents host access to services. If you get empty replies
-from `curl`, run:
+from `curl` when querying from the host, run:
 
 ```bash
 make fix-ingress
 ```
-
-#### Deployment
-
-We won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
-deploys 9 independent Kubernetes namespaces.
-
-This is the flow:
-
-1. Deploy all registries
-2. Gather their prefixes
-3. Rebuild all software to bake prefixes in
-4. Update environment variables as required
-5. Re-deploy registries
-6. Deploy peers
-7. Gather peer prefixes
-8. Propose peers
-9. Approve peers
-
-This system assumes operators of registries are coordinated.
 
 ## Security Model
 
