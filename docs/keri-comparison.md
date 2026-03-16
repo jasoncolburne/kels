@@ -61,7 +61,7 @@ KELS derives the prefix differently from the SAID (blanking both `said` and `pre
 
 KERI's approach relies on the social layer — once duplicity is detected, the controller's reputation is damaged, and relying parties must make trust decisions. This works well in contexts where identity reputation matters (human identifiers, organizational credentials) but poorly in automated systems where there is no "reputation" to damage.
 
-KELS's approach is more mechanical and auditable: divergence is a protocol state with defined transitions (recover or contest). This is better suited to automated, high-assurance environments where human judgment cannot be inserted at every trust decision.
+KELS's approach is more mechanical and auditable: divergence is a protocol state with defined transitions (recover or contest). This is better suited to automated, high-assurance environments where human judgment cannot be inserted at every trust decision. Notably, KELS also supports external auditing of divergence — since divergence is visible in the data structure and propagated via gossip, external parties can monitor for divergence events and apply their own social or policy-based trust decisions, just as KERI's watchers do for duplicity. KELS provides both the cryptographic resolution path and the external monitoring path; KERI provides only the external path.
 
 **2026 consideration:** Zero-trust architectures demand automated, cryptographically-verifiable trust decisions. KELS's approach aligns better with this paradigm — divergence state is machine-readable and resolution is protocol-defined rather than requiring human interpretation.
 
