@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, str::FromStr};
 use serde::Deserialize;
 
 use kels::PagedKelSource;
-use verifiable_storage::StorageDatetime;
 
 use crate::{
     compaction::compact_with_schema,
@@ -20,94 +19,23 @@ use crate::{
 /// Edge input without SAID (SAIDs are derived during creation).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct EdgeInput {
-    schema: String,
+pub struct EdgeInput {
+    pub schema: String,
     #[serde(default)]
-    issuer: Option<String>,
+    pub issuer: Option<String>,
     #[serde(default)]
-    credential: Option<String>,
+    pub credential: Option<String>,
     #[serde(default)]
-    nonce: Option<String>,
+    pub nonce: Option<String>,
     #[serde(default)]
-    delegated: Option<bool>,
+    pub delegated: Option<bool>,
 }
 
 /// Rule input without SAID (SAIDs are derived during creation).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RuleInput {
-    condition: String,
-}
-
-/// Create a credential from JSON inputs.
-///
-/// Returns the fully-expanded credential as a JSON string with all SAIDs derived.
-/// Does NOT store the credential — call `store()` separately.
-///
-/// - `json_schema`: A `Schema` JSON with SAID already derived
-/// - `json_claims`: Claims JSON object (without `said` field — it will be added and derived)
-/// - `json_edges`: Optional map of label → edge data (without SAIDs)
-/// - `json_rules`: Optional map of label → rule data (without SAIDs)
-#[allow(clippy::too_many_arguments)]
-pub async fn create(
-    json_schema: &str,
-    json_claims: &str,
-    json_edges: Option<&str>,
-    json_rules: Option<&str>,
-    issuer: &str,
-    subject: Option<&str>,
-    unique: bool,
-    can_revoke: bool,
-    expires_at: Option<&str>,
-) -> Result<String, CredentialError> {
-    let schema: Schema = serde_json::from_str(json_schema)?;
-
-    // Parse claims — add said field for SelfAddressed derivation
-    let mut claims_value: serde_json::Value = serde_json::from_str(json_claims)?;
-    let claims_obj = claims_value.as_object_mut().ok_or_else(|| {
-        CredentialError::SchemaValidationError("claims must be a JSON object".to_string())
-    })?;
-    claims_obj.insert("said".to_string(), serde_json::Value::String(String::new()));
-
-    let edges = if let Some(json) = json_edges {
-        Some(parse_edges(json)?)
-    } else {
-        None
-    };
-
-    let rules = if let Some(json) = json_rules {
-        Some(parse_rules(json)?)
-    } else {
-        None
-    };
-
-    let exp = if let Some(exp_str) = expires_at {
-        Some(
-            serde_json::from_value::<StorageDatetime>(serde_json::Value::String(
-                exp_str.to_string(),
-            ))
-            .map_err(|e| {
-                CredentialError::SchemaValidationError(format!("invalid expires_at: {}", e))
-            })?,
-        )
-    } else {
-        None
-    };
-
-    let (credential, _) = Credential::create(
-        &schema,
-        issuer.to_string(),
-        subject.map(|s| s.to_string()),
-        claims_value,
-        unique,
-        edges,
-        rules,
-        can_revoke,
-        exp,
-    )
-    .await?;
-
-    serde_json::to_string(&credential).map_err(CredentialError::from)
+pub struct RuleInput {
+    pub condition: String,
 }
 
 /// Store a JSON credential in the SAD store.
@@ -209,7 +137,7 @@ pub fn validate(
     validate_credential_report(&credential, &schema)
 }
 
-fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
+pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     let inputs: BTreeMap<String, EdgeInput> = serde_json::from_str(json)?;
     let mut edges = BTreeMap::new();
 
@@ -227,7 +155,7 @@ fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     Edges::new_validated(edges)
 }
 
-fn parse_rules(json: &str) -> Result<Rules, CredentialError> {
+pub fn parse_rules(json: &str) -> Result<Rules, CredentialError> {
     let inputs: BTreeMap<String, RuleInput> = serde_json::from_str(json)?;
     let mut rules = BTreeMap::new();
 
@@ -290,254 +218,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_basic() {
-        let schema_json = test_schema_json();
-        let claims_json = r#"{"name": "Alice", "age": 30}"#;
-
-        let result = create(
-            &schema_json,
-            claims_json,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            Some("ESubject23456789012345678901234567890abcde"),
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let credential: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(credential.get("said").is_some());
-        assert_eq!(credential.get("said").unwrap().as_str().unwrap().len(), 44);
-        assert!(credential.get("schema").unwrap().is_string());
-        assert!(credential.get("claims").unwrap().is_object());
-        assert_eq!(
-            credential.get("issuer").unwrap().as_str().unwrap(),
-            "EIssuer123456789012345678901234567890abcde"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_deterministic() {
-        let schema_json = test_schema_json();
-        let claims_json = r#"{"name": "Alice", "age": 30}"#;
-
-        let r1 = create(
-            &schema_json,
-            claims_json,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let r2 = create(
-            &schema_json,
-            claims_json,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        // SAIDs should differ due to different issued_at timestamps,
-        // but the structure should be identical
-        let v1: serde_json::Value = serde_json::from_str(&r1).unwrap();
-        let v2: serde_json::Value = serde_json::from_str(&r2).unwrap();
-        assert_eq!(
-            v1.get("claims").unwrap().get("name"),
-            v2.get("claims").unwrap().get("name")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_with_edges() {
-        let claims_fields = BTreeMap::from([
-            ("name".to_string(), SchemaField::string()),
-            ("age".to_string(), SchemaField::integer()),
-        ]);
-        let edge_fields = BTreeMap::from([(
-            "license".to_string(),
-            SchemaField::object(
-                BTreeMap::from([
-                    ("schema".to_string(), SchemaField::said()),
-                    ("issuer".to_string(), SchemaField::prefix().opt()),
-                    ("credential".to_string(), SchemaField::said().opt()),
-                    ("nonce".to_string(), SchemaField::string().opt()),
-                    ("delegated".to_string(), SchemaField::boolean().opt()),
-                ]),
-                true,
-            ),
-        )]);
-        let mut fields = BTreeMap::new();
-        fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
-        fields.insert("issuedAt".to_string(), SchemaField::datetime());
-        fields.insert("subject".to_string(), SchemaField::prefix().opt());
-        fields.insert("nonce".to_string(), SchemaField::string().opt());
-        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
-        fields.insert(
-            "claims".to_string(),
-            SchemaField::object(claims_fields, true),
-        );
-        fields.insert(
-            "edges".to_string(),
-            SchemaField::object(edge_fields, true).opt(),
-        );
-        fields.insert(
-            "rules".to_string(),
-            SchemaField::object(BTreeMap::new(), true).opt(),
-        );
-        let schema = Schema::create(
-            "Edge Test Schema".to_string(),
-            "A test".to_string(),
-            "1.0".to_string(),
-            fields,
-        )
-        .unwrap();
-        let schema_json = serde_json::to_string(&schema).unwrap();
-
-        let claims_json = r#"{"name": "Alice", "age": 30}"#;
-        let edges_json =
-            r#"{"license": {"schema": "EAbc1234567890123456789012345678901234567890"}}"#;
-
-        let result = create(
-            &schema_json,
-            claims_json,
-            Some(edges_json),
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let credential: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let edges = credential.get("edges").unwrap();
-        assert!(edges.is_object());
-        assert!(edges.get("license").is_some());
-    }
-
-    #[tokio::test]
-    async fn test_create_with_rules() {
-        let claims_fields = BTreeMap::from([
-            ("name".to_string(), SchemaField::string()),
-            ("age".to_string(), SchemaField::integer()),
-        ]);
-        let rule_fields = BTreeMap::from([(
-            "terms".to_string(),
-            SchemaField::object(
-                BTreeMap::from([("condition".to_string(), SchemaField::string())]),
-                true,
-            ),
-        )]);
-        let mut fields = BTreeMap::new();
-        fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
-        fields.insert("issuedAt".to_string(), SchemaField::datetime());
-        fields.insert("subject".to_string(), SchemaField::prefix().opt());
-        fields.insert("nonce".to_string(), SchemaField::string().opt());
-        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
-        fields.insert(
-            "claims".to_string(),
-            SchemaField::object(claims_fields, true),
-        );
-        fields.insert(
-            "edges".to_string(),
-            SchemaField::object(BTreeMap::new(), true).opt(),
-        );
-        fields.insert(
-            "rules".to_string(),
-            SchemaField::object(rule_fields, true).opt(),
-        );
-        let schema = Schema::create(
-            "Rule Test Schema".to_string(),
-            "A test".to_string(),
-            "1.0".to_string(),
-            fields,
-        )
-        .unwrap();
-        let schema_json = serde_json::to_string(&schema).unwrap();
-
-        let claims_json = r#"{"name": "Alice", "age": 30}"#;
-        let rules_json = r#"{"terms": {"condition": "For verification only"}}"#;
-
-        let result = create(
-            &schema_json,
-            claims_json,
-            None,
-            Some(rules_json),
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let credential: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let rules = credential.get("rules").unwrap();
-        assert!(rules.is_object());
-        assert!(rules.get("terms").is_some());
-    }
-
-    #[tokio::test]
-    async fn test_create_invalid_claims() {
-        let schema_json = test_schema_json();
-        let claims_json = r#"{"name": "Alice"}"#; // missing "age"
-
-        let result = create(
-            &schema_json,
-            claims_json,
-            None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
-            false,
-            true,
-            None,
-        )
-        .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
     async fn test_store_and_disclose() {
-        let schema_json = test_schema_json();
-        let claims_json = r#"{"name": "Alice", "age": 30}"#;
+        use verifiable_storage::SelfAddressed;
 
-        let credential_json = create(
-            &schema_json,
-            claims_json,
+        let schema = test_schema();
+        let schema_json = test_schema_json();
+
+        // Build a credential via the typed API
+        let mut claims = serde_json::json!({"said": "", "name": "Alice", "age": 30});
+        claims.derive_said().unwrap();
+        let (cred, _) = crate::credential::Credential::build(
+            &schema,
+            "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
-            None,
-            "EIssuer123456789012345678901234567890abcde",
-            None,
+            claims,
             false,
+            None,
+            None,
             true,
             None,
         )
         .await
         .unwrap();
+        let credential_json = serde_json::to_string(&cred).unwrap();
 
         let sad_store = InMemorySADStore::new();
         let compacted_said = store(&credential_json, &schema_json, &sad_store)

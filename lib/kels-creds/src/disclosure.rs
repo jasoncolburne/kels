@@ -1,5 +1,7 @@
 use crate::{
-    compaction::{compact_with_fields, compact_with_schema, expand_with_fields, expand_with_schema},
+    compaction::{
+        compact_with_fields, compact_with_schema, expand_with_fields, expand_with_schema,
+    },
     error::CredentialError,
     schema::Schema,
     store::SADStore,
@@ -145,12 +147,10 @@ pub async fn apply_disclosure(
                 // After expanding the field, recursively expand its children
                 // using schema-aware expansion
                 let (parent, last) = navigate_to_field(&mut value, path)?;
-                if let Some(child) = parent.get_mut(last) {
-                    if let Some(sub_fields) =
-                        resolve_schema_fields_at_path(&schema.fields, path)
-                    {
-                        expand_with_fields(child, &sub_fields, sad_store).await?;
-                    }
+                if let Some(child) = parent.get_mut(last)
+                    && let Some(sub_fields) = resolve_schema_fields_at_path(&schema.fields, path)
+                {
+                    expand_with_fields(child, &sub_fields, sad_store).await?;
                 }
             }
             PathToken::Compact(path) | PathToken::CompactRecursive(path) => {
@@ -180,9 +180,7 @@ fn resolve_schema_fields_at_path(
         .as_ref()
         .or_else(|| field.items.as_ref().and_then(|items| items.fields.as_ref()));
 
-    let Some(sub_fields) = child_fields else {
-        return None;
-    };
+    let sub_fields = child_fields?;
 
     if path.len() == 1 {
         Some(sub_fields.clone())

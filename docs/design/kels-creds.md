@@ -105,7 +105,7 @@ Implements `FromStr` for JSON deserialization.
 - Value constraints enforced
 - Returns `SchemaValidationReport { valid: bool, errors: Vec<String> }` for graduated reporting
 
-`Credential::create()` calls `validate_credential_report` and requires `valid == true` via `require_valid()`. Verification also uses it, but accepts compacted fields (which skip type checking).
+`Credential::issue()` calls `validate_credential_report` and requires `valid == true` via `require_valid()`. Verification also uses it, but accepts compacted fields (which skip type checking).
 
 ### Edge/Edges
 
@@ -345,21 +345,23 @@ pub async fn apply_disclosure(
 
 ## Issuance Flow
 
-1. Issuer constructs `Credential<T>` via `Credential::create()`, which validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
-2. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this compact form
-3. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
-4. `create()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID for KEL anchoring
-5. Issuer stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
-6. Issuer anchors the compacted SAID via `Credential::issue(schema, &mut builder)` (creates an `ixn` event)
-7. Credential delivered to holder (out of band)
+`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from fully expanded inputs and anchors its compacted SAID in the issuer's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a compacted SAID commits to content the issuer has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
+
+1. `issue()` takes fully expanded inputs (claims, edges, rules) plus a schema and `KeyEventBuilder`
+2. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
+3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this compact form
+4. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
+5. The compacted SAID is anchored in the issuer's KEL via `builder.interact()` (creates an `ixn` event)
+6. `issue()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID that was anchored
+7. Issuer stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
+8. Credential delivered to holder (out of band)
 
 ```rust
-// Issuance
-let (credential, said) = Credential::create(
-    &schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at,
+// Issuance (atomic: construct + validate + anchor)
+let (credential, compacted_said) = Credential::issue(
+    &schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at, &mut builder,
 ).await?;
 credential.store(&schema, &sad_store).await?;       // store for disclosure
-credential.issue(&schema, &mut builder).await?;     // anchor in KEL
 ```
 
 ## Revocation
@@ -463,13 +465,16 @@ When a `SADStore` is provided, edges with a `credential` SAID reference are look
 
 ## JSON API
 
-The `json_api` module provides five JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
+The `json_api` module provides JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
 
-- `create(json_schema, json_claims, json_edges, json_rules, issuer, subject, unique, can_revoke, expires_at)` — create a credential from JSON inputs, returns expanded credential JSON
 - `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns compacted SAID
 - `verify(json_credential, json_schema, source, sad_store, json_edge_schemas)` — verify a credential, returns verification result JSON. `json_edge_schemas` is an optional JSON object mapping schema SAIDs to schema objects.
 - `disclose(compacted_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
 - `validate(json_credential, json_schema)` — validate a credential against a schema, returns `SchemaValidationReport`
+- `parse_edges(json)` — parse edge JSON into `Edges` (for FFI use)
+- `parse_rules(json)` — parse rule JSON into `Rules` (for FFI use)
+
+Credential issuance is not in the JSON API — it requires a `KeyEventBuilder` which is a typed Rust generic. Issuance goes through the typed `Credential::issue()` API; the FFI layer will manage builder lifecycle.
 
 These use `Credential<serde_json::Value>` internally via the `SelfAddressed` impl on `Value`, ensuring the same validation and verification logic as the typed API.
 
@@ -538,7 +543,7 @@ lib/kels-creds/
     ├── compaction.rs       # compact/expand (schema-aware, depth-bounded, with _fields variants for sub-trees)
     ├── verification.rs     # verify_credential, CredentialVerification
     ├── revocation.rs       # revocation_hash (domain-separated)
-    ├── json_api.rs         # JSON-boundary functions (create, store, verify, disclose, validate)
+    ├── json_api.rs         # JSON-boundary functions (store, verify, disclose, validate, parse helpers)
     └── error.rs            # CredentialError
 ```
 

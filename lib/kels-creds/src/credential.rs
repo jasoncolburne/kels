@@ -45,9 +45,20 @@ impl<T> Compactable<T> {
 pub trait Claims: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync {}
 impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for T {}
 
-/// Typed credential for issuance. `T` is the claims payload.
+/// Typed credential. `T` is the claims payload.
 /// Fields that are `SelfAddressed` use `Compactable<T>` to represent either
 /// the expanded object or a compacted SAID string.
+///
+/// # Security: Atomic Issuance
+///
+/// The only public way to create a credential is [`Credential::issue()`], which
+/// takes fully expanded inputs and atomically anchors the credential in the
+/// issuer's KEL. This prevents signing credentials with compacted (uninspected)
+/// fields — a compacted SAID commits to content the issuer has not examined,
+/// allowing an attacker to hide malicious payloads behind opaque hashes.
+///
+/// Disclosure and verification may operate on compacted or partially compacted
+/// forms — the content commitment was already accepted at issuance time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
@@ -71,11 +82,13 @@ pub struct Credential<T: Claims> {
 }
 
 impl<T: Claims> Credential<T> {
-    /// Create a new credential with all inner SAIDs derived.
-    /// `issued_at` is auto-populated with the current timestamp.
-    /// Does NOT store the credential — call `store()` separately.
+    /// Construct a credential from fully expanded inputs, validate against schema,
+    /// and derive all inner SAIDs. Returns the expanded credential and its compacted SAID.
+    ///
+    /// This is an internal building block — use [`issue()`](Self::issue) for the public API,
+    /// which atomically constructs and anchors the credential in the issuer's KEL.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub(crate) async fn build(
         schema: &Schema,
         issuer: String,
         subject: Option<String>,
@@ -138,16 +151,35 @@ impl<T: Claims> Credential<T> {
         Ok((credential, compacted_said))
     }
 
-    /// Issue this credential by anchoring its compacted SAID in the issuer's KEL.
-    /// Returns the compacted SAID.
+    /// Issue a credential by constructing it from fully expanded inputs and
+    /// atomically anchoring its compacted SAID in the issuer's KEL.
+    ///
+    /// This is the only public way to create a credential. It takes expanded
+    /// types directly, preventing issuance of credentials with compacted
+    /// (uninspected) fields — the issuer must have examined all content before
+    /// it can be signed.
+    ///
+    /// Returns the fully expanded credential (with all SAIDs derived) and
+    /// the compacted SAID that was anchored in the KEL.
+    #[allow(clippy::too_many_arguments)]
     pub async fn issue<K: KeyProvider + Clone>(
-        &self,
         schema: &Schema,
+        issuer: String,
+        subject: Option<String>,
+        claims: T,
+        unique: bool,
+        edges: Option<Edges>,
+        rules: Option<Rules>,
+        can_revoke: bool,
+        expires_at: Option<StorageDatetime>,
         builder: &mut KeyEventBuilder<K>,
-    ) -> Result<String, CredentialError> {
-        let (compacted_said, _) = self.compact(schema)?;
+    ) -> Result<(Self, String), CredentialError> {
+        let (credential, compacted_said) = Self::build(
+            schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at,
+        )
+        .await?;
         builder.interact(&compacted_said).await?;
-        Ok(compacted_said)
+        Ok((credential, compacted_said))
     }
 
     /// Store this credential's compacted chunks in a SAD store.
@@ -270,7 +302,7 @@ mod tests {
     }
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
-        Credential::create(
+        Credential::build(
             &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
@@ -319,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unique_credential() {
-        let (cred, _) = Credential::create(
+        let (cred, _) = Credential::build(
             &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
@@ -338,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deterministic_credential() {
-        let (cred, _) = Credential::create(
+        let (cred, _) = Credential::build(
             &test_schema(),
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
@@ -422,7 +454,7 @@ mod tests {
             .unwrap()
         };
 
-        let (cred, _) = Credential::create(
+        let (cred, _) = Credential::build(
             &schema,
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
@@ -499,7 +531,7 @@ mod tests {
             .unwrap()
         };
 
-        let (cred, _) = Credential::create(
+        let (cred, _) = Credential::build(
             &schema,
             "EIssuer123456789012345678901234567890abcde".to_string(),
             None,
@@ -559,7 +591,7 @@ mod tests {
     }
 
     async fn credential_for_issuer(issuer: &str) -> (Credential<TestClaims>, String) {
-        Credential::create(
+        Credential::build(
             &test_schema(),
             issuer.to_string(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
@@ -578,9 +610,20 @@ mod tests {
     async fn test_verify_issued_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let (cred, _) = credential_for_issuer(&prefix).await;
-
-        cred.issue(&schema, &mut builder).await.unwrap();
+        let (cred, _) = Credential::issue(
+            &schema,
+            prefix.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder,
+        )
+        .await
+        .unwrap();
 
         let result = cred
             .verify(
@@ -618,10 +661,21 @@ mod tests {
     async fn test_verify_revoked_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let (cred, _) = credential_for_issuer(&prefix).await;
 
-        // Issue
-        let compacted_said = cred.issue(&schema, &mut builder).await.unwrap();
+        let (cred, compacted_said) = Credential::issue(
+            &schema,
+            prefix.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder,
+        )
+        .await
+        .unwrap();
 
         // Anchor revocation (hash of compacted SAID)
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
@@ -646,7 +700,7 @@ mod tests {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
 
-        let (cred, _) = Credential::create(
+        let (cred, compacted_said) = Credential::issue(
             &schema,
             prefix.clone(),
             None,
@@ -656,12 +710,10 @@ mod tests {
             None,
             false,
             None,
+            &mut builder,
         )
         .await
         .unwrap();
-
-        // Issue
-        let compacted_said = cred.issue(&schema, &mut builder).await.unwrap();
 
         // Anchor the revocation hash — should be ignored
         let rev_hash = crate::revocation::revocation_hash(&compacted_said);
@@ -719,7 +771,7 @@ mod tests {
         .unwrap();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
-        let (cred, _) = Credential::create(
+        let (cred, _) = Credential::issue(
             &schema,
             prefix.clone(),
             None,
@@ -729,11 +781,10 @@ mod tests {
             None,
             true,
             Some(far_future),
+            &mut builder,
         )
         .await
         .unwrap();
-
-        cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = cred
             .verify(
@@ -751,9 +802,20 @@ mod tests {
     async fn test_verify_schema_validation_expanded() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let (cred, _) = credential_for_issuer(&prefix).await;
-
-        cred.issue(&schema, &mut builder).await.unwrap();
+        let (cred, _) = Credential::issue(
+            &schema,
+            prefix.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder,
+        )
+        .await
+        .unwrap();
 
         let result = cred
             .verify(
@@ -771,10 +833,25 @@ mod tests {
     async fn test_verify_schema_validation_compacted() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let (cred, _) = credential_for_issuer(&prefix).await;
 
-        // Get the compacted credential (claims are SAIDs, schema is always a SAID string)
-        let (_, chunks) = cred.compact(&test_schema()).unwrap();
+        // Issue the expanded credential (anchors compacted SAID in KEL)
+        let (cred, _) = Credential::issue(
+            &schema,
+            prefix.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder,
+        )
+        .await
+        .unwrap();
+
+        // Get the compacted form and verify schema validation works on it
+        let (_, chunks) = cred.compact(&schema).unwrap();
         let compacted_value = chunks
             .values()
             .find(|v| {
@@ -785,8 +862,6 @@ mod tests {
             .unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
-
-        compacted_cred.issue(&schema, &mut builder).await.unwrap();
 
         let result = compacted_cred
             .verify(
@@ -812,8 +887,20 @@ mod tests {
         let schema_a = test_schema();
 
         // Issuer A issues a base credential
-        let (cred_a, _) = credential_for_issuer(&prefix_a).await;
-        let compacted_said_a = cred_a.issue(&schema_a, &mut builder_a).await.unwrap();
+        let (cred_a, compacted_said_a) = Credential::issue(
+            &schema_a,
+            prefix_a.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder_a,
+        )
+        .await
+        .unwrap();
 
         // Store credential A in a shared SADStore
         let sad_store = InMemorySADStore::new();
@@ -882,7 +969,7 @@ mod tests {
         )
         .unwrap();
 
-        let (cred_b, _) = Credential::create(
+        let (cred_b, _) = Credential::issue(
             &schema_b,
             prefix_b.clone(),
             Some("ESubject23456789012345678901234567890abcde".to_string()),
@@ -892,11 +979,11 @@ mod tests {
             None,
             true,
             None,
+            &mut builder_b,
         )
         .await
         .unwrap();
 
-        cred_b.issue(&schema_b, &mut builder_b).await.unwrap();
         cred_b.store(&schema_b, &sad_store).await.unwrap();
 
         // Edge schemas map for recursive verification
@@ -959,11 +1046,20 @@ mod tests {
         let root_schema = test_schema();
 
         // Root credential (no edges)
-        let (cred_root, _) = credential_for_issuer(&prefix_root).await;
-        let compacted_root = cred_root
-            .issue(&root_schema, &mut builder_root)
-            .await
-            .unwrap();
+        let (cred_root, compacted_root) = Credential::issue(
+            &root_schema,
+            prefix_root.clone(),
+            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            test_claims(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            &mut builder_root,
+        )
+        .await
+        .unwrap();
         cred_root.store(&root_schema, &sad_store).await.unwrap();
 
         // Helper to build a schema with edge fields
@@ -1030,7 +1126,7 @@ mod tests {
         mid_edges.insert("root".to_string(), edge_to_root);
 
         let mid_schema = make_edge_schema("root");
-        let (cred_mid, _) = Credential::create(
+        let (cred_mid, compacted_mid) = Credential::issue(
             &mid_schema,
             prefix_mid.clone(),
             None,
@@ -1040,10 +1136,10 @@ mod tests {
             None,
             true,
             None,
+            &mut builder_mid,
         )
         .await
         .unwrap();
-        let compacted_mid = cred_mid.issue(&mid_schema, &mut builder_mid).await.unwrap();
         cred_mid.store(&mid_schema, &sad_store).await.unwrap();
 
         // Leaf credential with edge to intermediate
@@ -1059,7 +1155,7 @@ mod tests {
         leaf_edges.insert("authority".to_string(), edge_to_mid);
 
         let leaf_schema = make_edge_schema("authority");
-        let (cred_leaf, _) = Credential::create(
+        let (cred_leaf, _) = Credential::issue(
             &leaf_schema,
             prefix_leaf.clone(),
             None,
@@ -1069,13 +1165,10 @@ mod tests {
             None,
             true,
             None,
+            &mut builder_leaf,
         )
         .await
         .unwrap();
-        cred_leaf
-            .issue(&leaf_schema, &mut builder_leaf)
-            .await
-            .unwrap();
         cred_leaf.store(&leaf_schema, &sad_store).await.unwrap();
 
         // All edge schemas for recursive verification

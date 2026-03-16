@@ -28,4 +28,6 @@ pub use schema::{
 pub use store::{InMemorySADStore, SADStore, store_credentials};
 pub use verification::{CredentialVerification, verify_credential};
 
-pub use json_api::{create, disclose, store, validate, verify};
+pub use json_api::{
+    EdgeInput, RuleInput, disclose, parse_edges, parse_rules, store, validate, verify,
+};
