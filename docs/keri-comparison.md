@@ -142,7 +142,7 @@ KERI's specification defines verification semantics, but implementation rigor va
 
 The key architectural difference: ACDC credentials live in TELs (separate append-only logs), while kels-creds credentials are stateless computational objects verified against KEL anchors via a dedicated `verify_key_events` call for the issuer's prefix. This avoids additional infrastructure but means credential state is derived rather than directly queryable. One should likely be verifying anchors on use of a credential in a zero-trust architecture, anyway.
 
-**2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds closes the feature gap with a simpler model — no TELs, no registrars, no IPEX — trading ecosystem maturity for architectural simplicity and a smaller attack surface.
+**2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds closes the feature gap with a simpler model — no TELs, no registrars — trading ecosystem maturity for architectural simplicity and a smaller attack surface.
 
 ### 8. Multi-Signature and Threshold Control
 
