@@ -16,15 +16,8 @@ REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
 
 if [ -z "$REGISTRY_NS" ]; then
     # Find the leader registry (proposals are submitted to leader)
-    for ns in "${REGISTRIES[@]}"; do
-        LEADER_INFO=$(curl -s "http://kels-registry.${ns}.kels/api/federation/status" 2>/dev/null || echo "{}")
-        IS_LEADER=$(echo "$LEADER_INFO" | jq -r '.isLeader // false')
-
-        if [ "$IS_LEADER" = "true" ]; then
-            REGISTRY_NS="$ns"
-            break
-        fi
-    done
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    REGISTRY_NS=$("$SCRIPT_DIR/find-leader.sh")
 fi
 
 if [ -z "$REGISTRY_NS" ]; then

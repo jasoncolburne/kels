@@ -18,20 +18,9 @@ if [ -z "$PEER_PREFIX" ]; then
     exit 1
 fi
 
-# Find all available registries
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
-LEADER_NS=""
-
-# Find the federation leader
-for ns in "${REGISTRIES[@]}"; do
-    LEADER_INFO=$(curl -s "http://kels-registry.${ns}.kels/api/federation/status" 2>/dev/null || echo "{}")
-    IS_LEADER=$(echo "$LEADER_INFO" | jq -r '.isLeader // false')
-
-    if [ "$IS_LEADER" = "true" ]; then
-        LEADER_NS="$ns"
-        break
-    fi
-done
+# Find the federation leader (curl runs inside cluster via test-client)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LEADER_NS=$("$SCRIPT_DIR/find-leader.sh")
 
 if [ -z "$LEADER_NS" ]; then
     echo "Error: Could not find federation leader" >&2
