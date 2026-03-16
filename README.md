@@ -49,14 +49,25 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 
 1. Address GitHub issues
 2. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
-3. Add credentials to FFI
-4. Add credentials to cli
-5. Credential exchange protocol (kels-exchange)
-6. Exhaustive proof of divergence reconciliation in distributed environments
-7. Cleanup & self-audit
-8. Build example applications
-9. Third-party audit
-10. Standards proposal (IETF Internet-Draft or equivalent)
+3. Add kels-policy crate
+  - Policy DSL:
+    a. threshold
+    b. weighted
+    c. nested groups
+    d. role-based
+  - Self-addressed policy objects anchored in KELs
+  - PolicyVerification model similar to others, based on anchoring
+4. Add kels-policy to kels-creds
+5. Add credentials/policy to cli
+6. Add credentials/policy to FFI
+7. Add Android SDK
+8. Credential exchange protocol (kels-exchange)
+9. Exhaustive proof of divergence reconciliation in distributed environments
+10. Cleanup & self-audit
+11. Build example applications
+12. Third-party audit
+13. Standards proposal (IETF Internet-Draft or equivalent)
+14. DID method specification
 
 ## Project Structure
 

@@ -150,24 +150,24 @@ The key architectural difference: ACDC credentials live in TELs (separate append
 |----------|------|------|
 | Multi-sig signing | Native weighted thresholds (`"kt"`: `"1/2,1/2,1/2"`) | Single signing key per event |
 | Multi-sig rotation | Threshold of next key digests (`"nt"`, `"n"`) | Single rotation hash commitment |
-| Threshold structures | Fractionally weighted, nested groups | N/A |
-| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder; federation voting for infrastructure |
+| Threshold structures | Fractionally weighted, nested groups | Threshold, weighted, nested groups, role-based (kels-policy on roadmap) |
+| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance (on roadmap); federation voting for infrastructure |
 | Recovery signatures | Implementation-dependent | Dual signature (rotation key + recovery key) required |
 
 **Analysis:** KERI's multi-sig support is deeply integrated. A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys.
 
-KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Organizational governance is handled at the federation layer (multi-party voting for peer lifecycle) rather than at the identifier layer. This is simpler and eliminates the complexity of threshold cryptography in the critical verification path, but it means organizational multi-party control must be implemented externally — for example, by having multiple parties control separate delegated identifiers that anchor decisions.
+KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Core KEL verification stays single-key and simple. However, kels-policy (on roadmap) will provide an expressive policy DSL — threshold, weighted, nested groups, and role-based — for multi-party governance at a layer above the KEL. Policies are self-addressed objects anchored in KELs, and verification checks that enough signers have anchored approval in their own KELs. This keeps threshold logic out of the critical KEL verification path while providing governance expressiveness comparable to KERI's built-in multi-sig.
 
 KELS's dual-signature requirement for recovery events (rotation key + recovery key) is a form of 2-of-2 multi-sig, but it serves a specific security purpose (proving possession of both key tiers) rather than general governance.
 
-**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus externally (KELS's approach) becomes a meaningful architectural decision. KERI's approach is more expressive but adds verification complexity. KELS's approach is simpler to verify but requires additional coordination layers for multi-party control.
+**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus at a higher layer (KELS's kels-policy approach) becomes a meaningful architectural decision. KERI's approach integrates multi-sig into KEL verification — a single KEL replay checks all thresholds. KELS's approach requires verifying multiple KELs (the policy creator + M approvers) but keeps core verification simple and makes governance independently evolvable. Both approaches can express equivalent policies; the difference is where verification complexity lives.
 
 ### 9. Standards and Interoperability
 
 | Property | KERI | KELS |
 |----------|------|------|
 | Standards track | IETF Internet-Drafts (CESR, KERI, ACDC) | Standards proposal on roadmap |
-| DID method | `did:keri`, `did:webs` (W3C DID-compatible) | None |
+| DID method | `did:keri`, `did:webs` (W3C DID-compatible) | DID method specification on roadmap |
 | Trust framework alignment | ToIP (Trust over IP) Technology Stack | Standalone |
 | Credential format | ACDC (with JSON Schema) | kels-creds (SelfAddressed JSON with typed schema) |
 | Wire format specification | CESR (formally specified, code tables) | CESR-based but with Blake3 (no formal spec) |
@@ -175,7 +175,7 @@ KELS's dual-signature requirement for recovery events (rotation key + recovery k
 
 **Analysis:** KERI has invested heavily in standards positioning. The IETF Internet-Drafts for CESR, KERI, and ACDC provide formal specifications that enable independent implementations and regulatory reference. The `did:webs` method bridges KERI to the W3C DID ecosystem, enabling interop with existing SSI (Self-Sovereign Identity) tooling. ToIP alignment connects KERI to a broader governance framework used by governments and enterprises.
 
-KELS has no standards track presence yet, but a standards proposal (IETF Internet-Draft or equivalent) is on the roadmap, planned after third-party audit and formal proof of divergence reconciliation. Its wire format is JSON with CESR-encoded cryptographic material and Blake3 hashing. Integration happens through FFI bindings (C for general use, Swift for iOS/macOS) rather than through standardized protocols.
+KELS has no standards track presence yet, but a standards proposal (IETF Internet-Draft or equivalent) and a DID method specification are both on the roadmap, planned after third-party audit and exhaustive proof of divergence reconciliation. Its wire format is JSON with CESR-encoded cryptographic material and Blake3 hashing. Integration happens through FFI bindings (C for general use, Swift for iOS/macOS) and an Android SDK (on roadmap) rather than through standardized protocols.
 
 **2026 consideration:** Regulated industries increasingly require standards compliance for identity infrastructure. eIDAS 2.0, ISO 18013-5 (mDL), and national digital identity programs reference or require standards-based approaches. KERI's standards positioning is a practical prerequisite for these markets. KELS's planned standards effort would need to cover the core protocol, CESR extensions, and the credential framework to participate in standards-governed ecosystems.
 
@@ -261,15 +261,15 @@ For airgapped high-security deployments (e.g., root key ceremonies), both protoc
 
 | Property | KERI | KELS |
 |----------|------|------|
-| Native mobile client | None (signify-ts is browser-based) | Swift client (`kels-client`) for iOS/macOS |
+| Native mobile client | None (signify-ts is browser-based) | Swift client (`kels-client`) for iOS/macOS; Android SDK on roadmap |
 | FFI bindings | None | C bindings (`kels-ffi`) usable from any language |
 | Hardware key integration | signify-ts uses libsodium (software keys) | Secure Enclave (iOS/macOS), HSM service (server-side) |
-| Client SDK languages | TypeScript (signify-ts), Python (signifypy) | Swift, C (via FFI), Rust (native) |
+| Client SDK languages | TypeScript (signify-ts), Python (signifypy) | Swift, C (via FFI), Rust (native), Android (on roadmap) |
 | Edge signing | Browser-based (signify-ts + KERIA cloud agent) | On-device (Secure Enclave or software keys) |
 
 **Analysis:** KERI's client strategy is web-first: signify-ts runs in browsers and communicates with a KERIA cloud agent. Key generation and signing happen at the edge (in the browser via libsodium), but the architecture assumes a persistent cloud agent for state management. There is no native mobile SDK — iOS or Android apps would need to wrap signify-ts or reimplement the protocol.
 
-KELS provides native device integration through two paths: a Swift client (`kels-client`) with direct Secure Enclave support for iOS/macOS, and C FFI bindings (`kels-ffi`) that enable integration from any language with C interop (Kotlin/JNI for Android, C# for .NET, etc.). On-device signing uses hardware-backed keys (Secure Enclave) rather than software keys, providing stronger key protection without a cloud agent dependency.
+KELS provides native device integration through two paths: a Swift client (`kels-client`) with direct Secure Enclave support for iOS/macOS, and C FFI bindings (`kels-ffi`) that enable integration from any language with C interop. An Android SDK (Kotlin/JNI over the C FFI) is on the roadmap. On-device signing uses hardware-backed keys (Secure Enclave) rather than software keys, providing stronger key protection without a cloud agent dependency.
 
 **2026 consideration:** Mobile-first identity is increasingly important as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet, Google Wallet) become primary credential containers. KELS's native Swift client and Secure Enclave integration position it well for this trend. The planned ML-DSA-65 support aligns with Apple's Secure Enclave PQ capabilities (iOS 26+), providing a clear path to post-quantum mobile identity. KERI's browser-based approach works for web applications but requires additional work for native mobile experiences.
 
@@ -355,6 +355,7 @@ KELS's federation model introduces infrastructure dependencies that conflict wit
 **Recommended: KELS**
 
 Multi-party governance aligns naturally with KELS's design:
+- **kels-policy** (on roadmap) provides an expressive policy DSL (threshold, weighted, nested groups, role-based) for multi-party approval verified against KEL anchors.
 - **Multi-party voting** for infrastructure changes mirrors governance voting patterns.
 - **Deterministic divergence resolution** provides clear rules when parties disagree.
 - **Federation model** maps to governance structures with defined membership.
@@ -778,7 +779,7 @@ KERI and KELS represent different points in the DKMI design space. KERI optimize
 
 The most significant differentiator is divergence handling: KERI treats it as an external detection problem resolved through its layered participant model (watchers detect duplicity, jurors evaluate evidence, judges render verdicts), while KELS treats it as a protocol state with cryptographic resolution (`rec`/`cnt`). In 2026's zero-trust landscape, where automated trust decisions are the norm and human-in-the-loop is a liability for infrastructure, KELS's approach provides stronger security guarantees for most organizational and infrastructure use cases. KERI's richer social trust layer remains the better choice where human governance, decentralization, and individual sovereignty are paramount. However, the deployability gap is notable: KERI's watcher, juror, and judge roles lack standalone deployable implementations, while KELS ships a complete, reproducible environment behind a single command.
 
-KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's two-tier model (signing + pre-rotated next). KELS eliminates the race condition inherent in KERI's rotation-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response (`cnt`) that KERI lacks. Conversely, KERI's native multi-signature support — weighted thresholds for both signing and rotation — enables organizational governance policies to be expressed directly in the identifier, something KELS does not support at the identifier layer. KELS uses single signing keys per event, deferring multi-party control to the federation layer or to external coordination via delegated identifiers.
+KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's two-tier model (signing + pre-rotated next). KELS eliminates the race condition inherent in KERI's rotation-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response (`cnt`) that KERI lacks. On multi-party governance, KERI embeds weighted multi-sig thresholds directly in the identifier, while KELS keeps core KELs single-key and provides governance at a higher layer via kels-policy (on roadmap) — an expressive policy DSL supporting threshold, weighted, nested group, and role-based policies verified against KEL anchors. Both approaches can express equivalent policies; the difference is where verification complexity lives.
 
 KELS's verification model enforces security invariants at the type level: the `KelVerification` token (private fields, no public constructor, obtainable only through `KelVerifier::into_verification()`) guarantees at compile time that security decisions cannot be made on unverified data. Advisory locking through verify+write eliminates TOCTOU vulnerabilities. KERI's verification semantics are specified but enforcement rigor is implementation-dependent.
 
@@ -794,8 +795,8 @@ The terminology gap compounds the architectural differences. KERIpy's custom voc
 
 The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy for a minimal setup but lacks reproducible orchestration and deployable implementations of its full architecture. KELS is heavier to deploy in full federation mode but provides a single-node development path (~30 seconds to first identifier with divergence, reconciliation, and contest features) and a fully automated federation deployment (~25 minutes including integration tests). The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
 
-Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, and HSM-backed service identities reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and planned ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
+Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, HSM-backed service identities, and an Android SDK on the roadmap reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and planned ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
 
 On post-quantum readiness, KELS has a concrete migration plan: ML-DSA-65 is on the roadmap, chosen for compatibility with Apple Secure Enclave, Thales Luna HSMs, and AWS KMS. KERI's broader cryptographic agility theoretically accommodates any PQ algorithm, but without a specific commitment, the migration timeline is less defined. Both protocols' pre-rotation hash commitments are already quantum-resistant.
 
-KELS's roadmap — ML-DSA-65, kels-exchange, formal proof of divergence reconciliation, and a standards proposal — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.
+KELS's roadmap — ML-DSA-65, kels-policy (multi-party governance DSL), Android SDK, kels-exchange, exhaustive proof of divergence reconciliation, a standards proposal, and a DID method specification — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.
