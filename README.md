@@ -58,10 +58,10 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
   - Self-addressed policy objects anchored in KELs
   - PolicyVerification model similar to others, based on anchoring
 4. Add kels-policy to kels-creds
-5. Add credentials/policy to cli
-6. Add credentials/policy to FFI
-7. Add Android SDK
-8. Credential exchange protocol (kels-exchange)
+5. Credential exchange protocol (kels-exchange)
+6. Add credentials/policy/exchange to cli
+7. Add credentials/policy/exchange to FFI
+8. Add Android SDK
 9. Exhaustive proof of divergence reconciliation in distributed environments
 10. Cleanup & self-audit
 11. Build example applications
