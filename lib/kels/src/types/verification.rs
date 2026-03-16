@@ -36,6 +36,7 @@ pub struct KelVerification {
     #[said]
     said: String,
     prefix: String,
+    delegating_prefix: Option<String>,
     branch_tips: Vec<BranchTip>,
     is_contested: bool,
     diverged_at_serial: Option<u64>,
@@ -54,6 +55,11 @@ impl KelVerification {
     /// The prefix this context is for.
     pub fn prefix(&self) -> &str {
         &self.prefix
+    }
+
+    /// The delegating prefix from the inception event, if it was a `dip`.
+    pub fn delegating_prefix(&self) -> Option<&str> {
+        self.delegating_prefix.as_deref()
     }
 
     /// All verified branch endpoints.

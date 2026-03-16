@@ -1,6 +1,6 @@
-LIBS_PACKAGES := libkels libkels-derive libkels-ffi
+LIBS_PACKAGES := libkels libkels-derive kels-creds libkels-ffi
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive kels-ffi
+LIBS_SUBDIRS := kels kels-derive kels-creds kels-ffi
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services

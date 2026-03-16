@@ -79,6 +79,8 @@ fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsE
 /// (proof-of-verification token).
 pub struct KelVerifier {
     prefix: String,
+    /// Delegating prefix from the inception event, if it was a `dip`.
+    delegating_prefix: Option<String>,
     /// Pre-divergence: single branch state. Branches keyed by tip SAID.
     branches: HashMap<String, BranchState>,
     /// The current serial we've verified up to.
@@ -102,6 +104,7 @@ impl KelVerifier {
     pub fn new(prefix: impl Into<String>) -> Self {
         Self {
             prefix: prefix.into(),
+            delegating_prefix: None,
             branches: HashMap::new(),
             last_verified_serial: None,
             diverged_at_serial: None,
@@ -118,6 +121,10 @@ impl KelVerifier {
     /// Used for divergence/recovery scenarios where events need to be verified
     /// against a specific branch (not all branches). Creates a single-branch
     /// verifier from the branch tip's crypto state.
+    /// `delegating_prefix` is not needed here — this is only used by the
+    /// merge path for verifying new events against an existing branch, which
+    /// does not produce verifications consumed for delegation checks.
+    /// Delegation-aware verification always starts from inception via `new()`.
     pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
@@ -129,6 +136,7 @@ impl KelVerifier {
 
         Ok(Self {
             prefix,
+            delegating_prefix: None,
             branches,
             last_verified_serial,
             diverged_at_serial: None,
@@ -161,6 +169,7 @@ impl KelVerifier {
 
         Ok(Self {
             prefix,
+            delegating_prefix: kel_verification.delegating_prefix().map(String::from),
             branches,
             last_verified_serial,
             diverged_at_serial: kel_verification.diverged_at_serial(),
@@ -237,6 +246,7 @@ impl KelVerifier {
 
         let mut kel_verification = KelVerification::new(
             self.prefix,
+            self.delegating_prefix,
             branch_tips,
             self.is_contested,
             self.diverged_at_serial,
@@ -414,6 +424,9 @@ impl KelVerifier {
         // Verify signature with the event's own public key
         let public_key = PublicKey::from_qb64(qb64)?;
         Self::verify_signatures(signed_event, &public_key)?;
+
+        // Capture delegating prefix from dip events
+        self.delegating_prefix = event.delegating_prefix.clone();
 
         // Initialize branch
         let arc_event = Arc::new(signed_event.clone());
