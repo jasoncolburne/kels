@@ -85,7 +85,7 @@ KELS's transport security is notably stronger: the three-DH handshake with HSM-b
 
 | Property | KERI | KELS |
 |----------|------|------|
-| Root of trust | Self-certifying identifiers (inception event) | Compile-time trusted registry prefixes |
+| Root of trust | Self-certifying identifiers (inception event) | Self-certifying identifiers (inception event) for participants, Compile-time trusted registry prefixes for infrastructure |
 | Delegation trust | Verified in protocol (delegated rotation) | Deferred to consumers (KELS accepts any valid `dip`) |
 | Ambient verifiability | Yes (any party can verify any KEL) | Yes (any party can verify any KEL) |
 | Infrastructure trust | Witness selection by controller | Multi-party voting (min 3 votes) for peer lifecycle |
