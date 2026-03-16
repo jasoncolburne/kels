@@ -102,7 +102,7 @@ KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of
 |----------|------|------|
 | Pre-rotation hash commitment | SHA-256 or Blake3 (quantum-resistant) | Blake3-256 (quantum-resistant) |
 | Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ECDSA P-256 (128-bit classical); ML-DSA-65 (192-bit post-quantum) on roadmap |
-| Hash agility | CESR code tables allow algorithm migration | CESR with Blake3; ML-DSA-65 planned via CESR code extension |
+| Cryptographic agility | CESR code tables allow algorithm migration | CESR with Blake3; ML-DSA-65 planned via CESR code extension |
 | Forward secrecy | Implementation-dependent | Three-DH provides per-session forward secrecy |
 
 **Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. Neither currently uses post-quantum signature algorithms in production, but KELS has ML-DSA-65 on its roadmap — a 192-bit post-quantum signature algorithm already supported by Apple Secure Enclave (iOS 26+), Thales Luna HSMs, and AWS KMS.
