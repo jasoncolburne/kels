@@ -90,7 +90,7 @@ KELS's transport security is notably stronger: the three-DH handshake with HSM-b
 | Ambient verifiability | Yes (any party can verify any KEL) | Yes (any party can verify any KEL) |
 | Infrastructure trust | Witness selection by controller | Multi-party voting (min 3 votes scaling to 1/3 voter pool) for peer lifecycle |
 
-**Analysis:** KERI's trust model is more decentralized at the root — any identifier is self-certifying from its inception event alone. KELS introduces a federation layer with compile-time trust anchors, which is a stronger assumption but provides a clearer trust boundary for organizational deployments.
+**Analysis:** Both protocols share the same root of trust for identities — any identifier is self-certifying from its inception event alone. The difference is in infrastructure trust: KERI relies on controller-selected witnesses, while KELS introduces a federation layer with compile-time trust anchors for infrastructure (registries and gossip peers). This is a stronger assumption but provides a clearer trust boundary for organizational deployments.
 
 KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of registries as the federation grows) provides strong Sybil resistance and prevents unilateral infrastructure changes. KERI relies on the controller's witness selection, which is more flexible but places more trust in the controller.
 
