@@ -51,11 +51,13 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 ///
 /// # Security: Atomic Issuance
 ///
-/// The only public way to create a credential is [`Credential::issue()`], which
+/// The only public way to issue a credential is [`Credential::issue()`], which
 /// takes fully expanded inputs and atomically anchors the credential in the
 /// issuer's KEL. This prevents signing credentials with compacted (uninspected)
 /// fields — a compacted SAID commits to content the issuer has not examined,
 /// allowing an attacker to hide malicious payloads behind opaque hashes.
+/// `Credential` values can be constructed via deserialization (for verification
+/// and disclosure of received credentials), but issuance requires expanded types.
 ///
 /// Disclosure and verification may operate on compacted or partially compacted
 /// forms — the content commitment was already accepted at issuance time.
@@ -834,7 +836,10 @@ mod tests {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
 
-        // Issue the expanded credential (anchors compacted SAID in KEL)
+        // Issue via the expanded API — Credential::issue() takes expanded types
+        // by value, so compacted credentials cannot be issued. This test verifies
+        // that schema validation works on the compacted *form* of a legitimately
+        // issued credential during verification.
         let (cred, _) = Credential::issue(
             &schema,
             prefix.clone(),
