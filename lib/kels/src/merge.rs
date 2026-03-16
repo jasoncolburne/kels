@@ -634,8 +634,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 establishment_tip: establishment,
             };
 
-            let mut event_verifier = KelVerifier::from_branch_tip(prefix, &anchor_tip, None)
-                .map_err(|e| {
+            let mut event_verifier =
+                KelVerifier::from_branch_tip(prefix, &anchor_tip).map_err(|e| {
                     KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
                 })?;
             event_verifier
@@ -700,10 +700,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             establishment_tip: establishment,
         };
 
-        let mut verifier =
-            KelVerifier::from_branch_tip(prefix, &branch_tip, None).map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-            })?;
+        let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip).map_err(|e| {
+            KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+        })?;
         verifier
             .verify_page(new_events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;

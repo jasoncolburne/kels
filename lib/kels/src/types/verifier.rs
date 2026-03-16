@@ -121,11 +121,11 @@ impl KelVerifier {
     /// Used for divergence/recovery scenarios where events need to be verified
     /// against a specific branch (not all branches). Creates a single-branch
     /// verifier from the branch tip's crypto state.
-    pub fn from_branch_tip(
-        prefix: impl Into<String>,
-        tip: &BranchTip,
-        delegating_prefix: Option<String>,
-    ) -> Result<Self, KelsError> {
+    /// `delegating_prefix` is not needed here — this is only used by the
+    /// merge path for verifying new events against an existing branch, which
+    /// does not produce verifications consumed for delegation checks.
+    /// Delegation-aware verification always starts from inception via `new()`.
+    pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
@@ -136,7 +136,7 @@ impl KelVerifier {
 
         Ok(Self {
             prefix,
-            delegating_prefix,
+            delegating_prefix: None,
             branches,
             last_verified_serial,
             diverged_at_serial: None,
@@ -2339,7 +2339,7 @@ mod tests {
 
         let owner_ixn2 = owner.interact(&anchor("owner2")).await.unwrap();
 
-        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip, None).unwrap();
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip).unwrap();
         verifier.verify_page(slice::from_ref(&owner_ixn2)).unwrap();
         let kel_verification = verifier.into_verification().unwrap();
 
@@ -3132,8 +3132,7 @@ mod tests {
         };
 
         // Verify recovery event against owner branch
-        let mut verifier =
-            KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip, None).unwrap();
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip).unwrap();
         verifier.verify_page(slice::from_ref(&rec)).unwrap();
         let kel_verification = verifier.into_verification().unwrap();
 
