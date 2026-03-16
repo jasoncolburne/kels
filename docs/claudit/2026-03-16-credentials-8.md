@@ -7,8 +7,8 @@ Eighth-pass audit of `credentials` branch changes vs `main`. Scope: full `lib/ke
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High     | 0    | 0        |
-| Medium   | 1    | 0        |
-| Low      | 1    | 0        |
+| Medium   | 0    | 1        |
+| Low      | 0    | 1        |
 
 All 49 findings from rounds 1–7 remain resolved.
 
@@ -16,25 +16,25 @@ All 49 findings from rounds 1–7 remain resolved.
 
 ## Medium Priority
 
-### 1. Doc comment overstates construction restriction
+### ~~1. Doc comment overstates construction restriction~~ — RESOLVED
 
 **File:** `lib/kels-creds/src/credential.rs:54`
 
-The struct doc says "The only public way to create a credential is `Credential::issue()`" but all fields on `Credential<T>` are `pub`, allowing struct literal construction or manual `Deserialize` from arbitrary JSON. The security invariant (can't *anchor* uninspected content) holds regardless — `issue()` takes expanded types by value, not `&self`, so the type system prevents issuing compacted credentials. But the doc claim is technically incorrect and could mislead auditors into thinking construction is gated.
+~~The struct doc says "The only public way to create a credential is `Credential::issue()`" but all fields on `Credential<T>` are `pub`, allowing struct literal construction or manual `Deserialize` from arbitrary JSON. The security invariant (can't *anchor* uninspected content) holds regardless — `issue()` takes expanded types by value, not `&self`, so the type system prevents issuing compacted credentials. But the doc claim is technically incorrect and could mislead auditors into thinking construction is gated.~~
 
-**Suggested fix:** Change "The only public way to create a credential" to "The only public way to issue a credential" (or "create and anchor"). The distinction between construction (for verification/disclosure of received credentials) and issuance (anchoring in a KEL) is the actual security boundary.
+**Resolution:** Changed "create a credential" to "issue a credential" and added clarification that `Credential` values can be constructed via deserialization for verification/disclosure, but issuance requires expanded types.
 
 ---
 
 ## Low Priority
 
-### 2. No explicit test demonstrating the closed attack vector
+### ~~2. No explicit test demonstrating the closed attack vector~~ — RESOLVED
 
 **File:** `lib/kels-creds/src/credential.rs`
 
-The round 8 refactor eliminated the vulnerability where a compacted credential could be issued via the old `cred.issue(&schema, &mut builder)` API. The new `Credential::issue()` takes expanded types directly, making this impossible by construction. However, there is no test that explicitly documents this closed attack vector — e.g., a comment in the test suite noting why the old `test_verify_schema_validation_compacted` test no longer issues the compacted credential, or a doc-test showing the type system prevents it.
+~~The round 8 refactor eliminated the vulnerability where a compacted credential could be issued via the old `cred.issue(&schema, &mut builder)` API. The new `Credential::issue()` takes expanded types directly, making this impossible by construction. However, there is no test that explicitly documents this closed attack vector — e.g., a comment in the test suite noting why the old `test_verify_schema_validation_compacted` test no longer issues the compacted credential, or a doc-test showing the type system prevents it.~~
 
-**Suggested fix:** Add a brief comment in the test suite (e.g., near `test_verify_schema_validation_compacted`) explaining that the test previously issued a compacted credential to test schema validation, and that the API now prevents this by taking expanded types directly. This documents the security decision for future auditors.
+**Resolution:** Added a comment in `test_verify_schema_validation_compacted` explaining that `Credential::issue()` takes expanded types by value so compacted credentials cannot be issued, and that the test verifies schema validation on the compacted *form* of a legitimately issued credential during verification.
 
 ---
 
