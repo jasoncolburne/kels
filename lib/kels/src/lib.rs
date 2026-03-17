@@ -63,6 +63,7 @@ pub use crypto::HardwareProviderConfig;
 pub use hardware::HardwareKeyProvider;
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
+pub use cesr::SigningKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,
@@ -96,15 +97,15 @@ pub use types::resolve_key_events;
 
 /// Maximum number of events allowed in a single submit_events request.
 /// Shared between the server handler and gossip client chunking logic.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = 512;
+pub const MAX_EVENTS_PER_SUBMISSION: usize = 64;
 
 /// Maximum number of events fetched in a single KEL database query or HTTP page.
-pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
+pub const MAX_EVENTS_PER_KEL_QUERY: usize = 64;
 
 /// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
-/// At 512 events per page, 512 pages = ~262K events before failing secure.
-pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
+/// At 64 events per page, 64 pages = 4096 max events before failing secure.
+pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
 
 static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
     match env::var("KELS_MAX_VERIFICATION_PAGES") {

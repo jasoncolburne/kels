@@ -569,7 +569,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use kels::{FileKelStore, SoftwareKeyProvider, StoreKelSource};
+    use kels::{FileKelStore, SigningKeyCode, SoftwareKeyProvider, StoreKelSource};
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
@@ -580,7 +580,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
         let mut builder = KeyEventBuilder::with_dependencies(
-            SoftwareKeyProvider::new(),
+            SoftwareKeyProvider::new(SigningKeyCode::Secp256r1),
             None,
             Some(kel_store.clone() as Arc<dyn kels::KelStore>),
             None,

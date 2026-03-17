@@ -61,7 +61,7 @@ providers:
     buildMode: local-docker
 
 variables:
-  rustLogLevel: info
+  rustLogLevel: info,gossip::net::transport=debug
   postgres:
     user: kels_admin
     password: use_something_better_in_production
@@ -94,10 +94,6 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
-  hsm:
-    port: "80"
-    host: hsm
-    url: http://${var.hsm.host}:${var.hsm.port}
   identity:
     port: "80"
     host: identity

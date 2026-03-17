@@ -39,7 +39,6 @@ jobs:
             lib/kels \
             lib/kels-derive \
             lib/kels-ffi \
-            services/hsm \
             services/identity \
             services/kels \
             services/kels-gossip \

@@ -9,7 +9,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 **Zero-trust storage:** Data read from any store (PostgreSQL, Redis) is treated as untrusted input. All KEL data is cryptographically re-verified (signatures, SAID chains) before use. Peer allowlists are verified via the full proposal DAG with thresholds computed from compiled-in `trusted_prefixes()`. Stores are persistence layers, not trust anchors.
 
 **Assumptions (INSUFFICENT FOR PRODUCTION):**
-- HSM and identity services are pod-internal only (not exposed to the overlay network)
+- Identity service is pod-internal only (not exposed to the overlay network)
 - Network isolation between pods enforces service boundaries
 
 ## Gossip Protocol Attacks
@@ -47,13 +47,13 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Bootstrap Prefix Enumeration
 
 **Attack:** Use the `list_prefixes` endpoint to enumerate all prefixes stored on a node.
-- **Mitigation:** `list_prefixes` requires a signed request (ECDSA P-256 signature over the JSON payload). The signer's peer_prefix must be in the authorized peer allowlist — which is itself verified via the full proposal DAG (structural integrity, KEL anchoring, threshold from compiled-in `trusted_prefixes()`). A 60-second timestamp window prevents replay. Unknown peer_prefixes trigger an allowlist refresh and recheck.
+- **Mitigation:** `list_prefixes` requires a signed request (signature over the JSON payload). The signer's peer_prefix must be in the authorized peer allowlist — which is itself verified via the full proposal DAG (structural integrity, KEL anchoring, threshold from compiled-in `trusted_prefixes()`). A 60-second timestamp window prevents replay. Unknown peer_prefixes trigger an allowlist refresh and recheck.
 - **Residual risk:** Any authorized gossip peer can enumerate all prefixes. KELs are public by design, so this is information disclosure but not a confidentiality breach.
 
 ### Bootstrap Response Size Explosion
 
 **Attack:** Request KEL fetches that generate large responses.
-- **Mitigation:** KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via `PagedKelSource` / `PagedKelSink` traits. Each page is bounded by `MAX_EVENTS_PER_KEL_QUERY` (512 events). Pagination limit is clamped to `1..=512`.
+- **Mitigation:** KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via `PagedKelSource` / `PagedKelSink` traits. Each page is bounded by `MAX_EVENTS_PER_KEL_QUERY` (64 events). Pagination limit is clamped to `1..=64`.
 - **Residual risk:** A single large KEL could still require many pages. No per-request byte limit.
 
 ## Network-Level Attacks
@@ -66,7 +66,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip traffic between nodes.
-- **Mitigation:** The gossip protocol uses a three-DH handshake (ephemeral-ephemeral, static-ephemeral via HSM, ephemeral-static locally) with AES-GCM-256 authenticated encryption. Session keys are derived from all three shared secrets via BLAKE3, so an attacker needs both the ephemeral session secret and the HSM-held static private key to derive session keys. Each peer's handshake signature is verified against their KEL public key via the verified allowlist. Modifying messages invalidates the AES-GCM authentication tag.
+- **Mitigation:** The gossip protocol uses ML-KEM-768 key exchange + ML-DSA-65 mutual authentication with AES-GCM-256 authenticated encryption. Session keys are derived from the ML-KEM shared secret via BLAKE3 KDF. Each peer's handshake signature (ML-DSA-65) is verified against their KEL public key via the verified allowlist. Only ML-DSA-65 peers are accepted. Modifying messages invalidates the AES-GCM authentication tag. The protocol provides post-quantum security.
 
 ### Replay Attack (Gossip)
 
@@ -87,7 +87,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Denial of Service — Read Request Abuse
 
 **Attack:** Send many concurrent KEL read requests to exhaust memory or database connections.
-- **Mitigation:** KELs are fetched individually per prefix with paginated responses (max 512 events per page). Redis cache reduces database load for frequently accessed KELs. Body size limit (5 MiB) bounds response processing cost.
+- **Mitigation:** KELs are fetched individually per prefix with paginated responses (max 64 events per page). Redis cache reduces database load for frequently accessed KELs. Body size limit (5 MiB) bounds response processing cost.
 - **Residual risk:** Read endpoints are not per-IP rate limited (idempotent and cache-backed). Concurrent requests from many distinct sources could still exhaust database connections.
 
 ### Advisory Lock Contention
@@ -141,7 +141,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 
 ### ~~TLS between services (addresses residual risk 2)~~
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses three-DH P-256 + AES-GCM-256 for authenticated encryption on the p2p transport.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ML-KEM-768 + ML-DSA-65 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
 ### ~~Gossip protocol hardening (addresses residual risks 8, 9)~~
 

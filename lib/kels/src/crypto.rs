@@ -2,7 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use cesr::{Matter, PrivateKey, PublicKey, Signature, generate_secp256r1};
+use cesr::{
+    Matter, PrivateKey, PublicKey, Signature, SigningKeyCode, generate_ml_dsa_65,
+    generate_secp256r1,
+};
 
 use crate::{compute_rotation_hash, error::KelsError};
 
@@ -31,11 +34,29 @@ pub trait ProviderConfig: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct SoftwareProviderConfig {
     pub key_dir: PathBuf,
+    pub signing_algorithm: SigningKeyCode,
+    pub recovery_algorithm: SigningKeyCode,
 }
 
 impl SoftwareProviderConfig {
-    pub fn new(key_dir: PathBuf) -> Self {
-        Self { key_dir }
+    pub fn new(key_dir: PathBuf, algorithm: SigningKeyCode) -> Self {
+        Self {
+            key_dir,
+            signing_algorithm: algorithm,
+            recovery_algorithm: algorithm,
+        }
+    }
+
+    pub fn new_mixed(
+        key_dir: PathBuf,
+        signing_algorithm: SigningKeyCode,
+        recovery_algorithm: SigningKeyCode,
+    ) -> Self {
+        Self {
+            key_dir,
+            signing_algorithm,
+            recovery_algorithm,
+        }
     }
 }
 
@@ -47,7 +68,10 @@ impl ProviderConfig for SoftwareProviderConfig {
         if self.key_dir.exists() {
             SoftwareKeyProvider::load_from_dir(&self.key_dir)
         } else {
-            Ok(SoftwareKeyProvider::new())
+            Ok(SoftwareKeyProvider::new_mixed(
+                self.signing_algorithm,
+                self.recovery_algorithm,
+            ))
         }
     }
 
@@ -180,43 +204,107 @@ pub trait KeyProvider: Send + Sync {
     /// Signs data with the recovery key.
     async fn sign_with_recovery(&self, data: &[u8]) -> Result<Signature, KelsError>;
 
+    // ==================== Algorithm Configuration ====================
+
+    /// Set the signing algorithm for future key generation.
+    /// Default implementation returns an error (e.g., hardware providers don't support this).
+    async fn set_signing_algorithm(&mut self, _algorithm: SigningKeyCode) -> Result<(), KelsError> {
+        Err(KelsError::HardwareError(
+            "Algorithm change not supported by this provider".into(),
+        ))
+    }
+
+    /// Set the recovery algorithm for future key generation.
+    /// Default implementation returns an error (e.g., hardware providers don't support this).
+    async fn set_recovery_algorithm(
+        &mut self,
+        _algorithm: SigningKeyCode,
+    ) -> Result<(), KelsError> {
+        Err(KelsError::HardwareError(
+            "Algorithm change not supported by this provider".into(),
+        ))
+    }
+
     // ==================== Convenience Methods ====================
+}
+
+fn generate_for_algorithm(algorithm: SigningKeyCode) -> Result<(PublicKey, PrivateKey), KelsError> {
+    match algorithm {
+        SigningKeyCode::Secp256r1 => {
+            generate_secp256r1().map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))
+        }
+        SigningKeyCode::MlDsa65 => {
+            generate_ml_dsa_65().map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))
+        }
+    }
 }
 
 // ==================== SoftwareKeyProvider ====================
 
 #[derive(Debug, Clone)]
 pub struct SoftwareKeyProvider {
+    signing_algorithm: SigningKeyCode,
+    recovery_algorithm: SigningKeyCode,
     keys: Vec<PrivateKey>,
     recovery_keys: Vec<PrivateKey>,
 }
 
 impl Default for SoftwareKeyProvider {
     fn default() -> Self {
-        Self::new()
+        Self::new(SigningKeyCode::Secp256r1)
     }
 }
 
 impl SoftwareKeyProvider {
     // ==================== Constructors ====================
 
-    pub fn new() -> Self {
+    pub fn new(algorithm: SigningKeyCode) -> Self {
         Self {
+            signing_algorithm: algorithm,
+            recovery_algorithm: algorithm,
+            keys: Vec::new(),
+            recovery_keys: Vec::new(),
+        }
+    }
+
+    pub fn new_mixed(
+        signing_algorithm: SigningKeyCode,
+        recovery_algorithm: SigningKeyCode,
+    ) -> Self {
+        Self {
+            signing_algorithm,
+            recovery_algorithm,
             keys: Vec::new(),
             recovery_keys: Vec::new(),
         }
     }
 
     pub fn with_all_keys(current: PrivateKey, next: PrivateKey, recovery: PrivateKey) -> Self {
+        // Infer signing algorithm from next key (what future rotations will use)
+        let signing_algorithm = next.algorithm();
+        let recovery_algorithm = recovery.algorithm();
         Self {
+            signing_algorithm,
+            recovery_algorithm,
             keys: vec![current, next],
             recovery_keys: vec![recovery],
         }
     }
 
+    // ==================== Key Generation ====================
+
+    fn generate_signing_keypair(&self) -> Result<(PublicKey, PrivateKey), KelsError> {
+        generate_for_algorithm(self.signing_algorithm)
+    }
+
+    fn generate_recovery_keypair(&self) -> Result<(PublicKey, PrivateKey), KelsError> {
+        generate_for_algorithm(self.recovery_algorithm)
+    }
+
     // ==================== Persistence ====================
 
     /// Loads keys from a directory containing key files.
+    /// Algorithm is auto-detected from CESR code prefix.
     pub fn load_from_dir(dir: &Path) -> Result<Self, KelsError> {
         let current_path = dir.join("current.key");
         let next_path = dir.join("next.key");
@@ -329,9 +417,9 @@ impl KeyProvider for SoftwareKeyProvider {
     }
 
     async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
-        let (public, private) = generate_secp256r1()?;
-        let (next_public, next_private) = generate_secp256r1()?;
-        let (recovery_public, recovery_private) = generate_secp256r1()?;
+        let (public, private) = self.generate_signing_keypair()?;
+        let (next_public, next_private) = self.generate_signing_keypair()?;
+        let (recovery_public, recovery_private) = self.generate_recovery_keypair()?;
 
         let rotation_hash = compute_rotation_hash(&next_public.qb64());
         let recovery_hash = compute_rotation_hash(&recovery_public.qb64());
@@ -372,7 +460,7 @@ impl KeyProvider for SoftwareKeyProvider {
             self.keys[length - 1].public_key()
         };
 
-        let (new_next_pub, new_next_priv) = generate_secp256r1()?;
+        let (new_next_pub, new_next_priv) = self.generate_signing_keypair()?;
         self.keys.push(new_next_priv);
 
         let rotation_hash = compute_rotation_hash(&new_next_pub.qb64());
@@ -387,7 +475,7 @@ impl KeyProvider for SoftwareKeyProvider {
 
         let current_recovery = self.recovery_keys[0].public_key();
 
-        let (new_recovery_pub, new_recovery_priv) = generate_secp256r1()?;
+        let (new_recovery_pub, new_recovery_priv) = self.generate_recovery_keypair()?;
         self.recovery_keys.push(new_recovery_priv);
         let new_recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
 
@@ -447,6 +535,16 @@ impl KeyProvider for SoftwareKeyProvider {
         key.sign(data)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
     }
+
+    async fn set_signing_algorithm(&mut self, algorithm: SigningKeyCode) -> Result<(), KelsError> {
+        self.signing_algorithm = algorithm;
+        Ok(())
+    }
+
+    async fn set_recovery_algorithm(&mut self, algorithm: SigningKeyCode) -> Result<(), KelsError> {
+        self.recovery_algorithm = algorithm;
+        Ok(())
+    }
 }
 
 // ==================== Tests ====================
@@ -458,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_initial_keys() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
 
         let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert!(provider.current_public_key().await.is_ok());
@@ -474,8 +572,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_generate_initial_keys_ml_dsa_65() {
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::MlDsa65);
+
+        let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
+        assert_eq!(current.algorithm(), SigningKeyCode::MlDsa65);
+        assert!(provider.current_public_key().await.is_ok());
+        assert_eq!(
+            provider.current_public_key().await.unwrap().qb64(),
+            current.qb64()
+        );
+
+        assert_ne!(next_hash, recovery_hash);
+    }
+
+    #[tokio::test]
     async fn test_rotation() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -496,20 +609,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation_without_next_fails() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         // No keys at all - should fail
         assert!(provider.stage_rotation().await.is_err());
     }
 
     #[tokio::test]
     async fn test_sign_without_key_fails() {
-        let provider = SoftwareKeyProvider::new();
+        let provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         assert!(provider.sign(b"test").await.is_err());
     }
 
     #[tokio::test]
     async fn test_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -535,7 +648,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
+        let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
+
+        let message = b"test message";
+        let signature = provider.sign(message).await.unwrap();
+
+        assert!(current.verify(message, &signature).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sign_ml_dsa_65() {
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::MlDsa65);
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
@@ -564,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_rotation() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
 
         let (original_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -586,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -612,21 +736,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_with_recovery_without_key_fails() {
-        let provider = SoftwareKeyProvider::new();
+        let provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         let result = provider.sign_with_recovery(b"test").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_stage_recovery_rotation_without_key_fails() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         let result = provider.stage_recovery_rotation().await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_commit_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         provider.generate_initial_keys().await.unwrap();
         let result = provider.commit().await;
         assert!(result.is_err());
@@ -634,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         provider.generate_initial_keys().await.unwrap();
         let result = provider.rollback().await;
         assert!(result.is_err());
@@ -642,7 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_public_key_without_next_fails() {
-        let provider = SoftwareKeyProvider::new();
+        let provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         let result = provider.current_public_key().await;
         assert!(result.is_err());
     }
@@ -651,7 +775,7 @@ mod tests {
     async fn test_save_and_load_roundtrip() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
 
@@ -666,10 +790,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_save_and_load_roundtrip_ml_dsa_65() {
+        use tempfile::TempDir;
+
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::MlDsa65);
+        provider.generate_initial_keys().await.unwrap();
+        let original_pub = provider.current_public_key().await.unwrap();
+        assert_eq!(original_pub.algorithm(), SigningKeyCode::MlDsa65);
+
+        let temp = TempDir::new().unwrap();
+        provider.save_to_dir(temp.path()).await.unwrap();
+
+        let loaded = SoftwareKeyProvider::load_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            loaded.current_public_key().await.unwrap().qb64(),
+            original_pub.qb64()
+        );
+        assert_eq!(loaded.signing_algorithm, SigningKeyCode::MlDsa65);
+    }
+
+    #[tokio::test]
     async fn test_save_without_current_fails() {
         use tempfile::TempDir;
 
-        let provider = SoftwareKeyProvider::new();
+        let provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         let temp = TempDir::new().unwrap();
         let result = provider.save_to_dir(temp.path()).await;
         assert!(result.is_err());
@@ -679,7 +823,7 @@ mod tests {
     async fn test_save_while_staged_fails() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         provider.generate_initial_keys().await.unwrap();
         provider.stage_rotation().await.unwrap();
 
@@ -697,7 +841,8 @@ mod tests {
 
     #[test]
     fn test_software_provider_config_new() {
-        let config = SoftwareProviderConfig::new(PathBuf::from("/tmp/keys"));
+        let config =
+            SoftwareProviderConfig::new(PathBuf::from("/tmp/keys"), SigningKeyCode::Secp256r1);
         assert_eq!(config.key_dir, PathBuf::from("/tmp/keys"));
     }
 
@@ -707,7 +852,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let nonexistent = temp.path().join("nonexistent");
-        let config = SoftwareProviderConfig::new(nonexistent);
+        let config = SoftwareProviderConfig::new(nonexistent, SigningKeyCode::Secp256r1);
 
         let provider = config.load_provider().await.unwrap();
         assert!(!provider.has_current().await);
@@ -719,20 +864,66 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let key_dir = temp.path().join("keys");
-        let config = SoftwareProviderConfig::new(key_dir.clone());
+        let config = SoftwareProviderConfig::new(key_dir.clone(), SigningKeyCode::Secp256r1);
 
         // Create and save a provider
-        let mut provider = SoftwareKeyProvider::new();
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
         config.save_provider(&provider).await.unwrap();
 
         // Load it back
-        let config2 = SoftwareProviderConfig::new(key_dir);
+        let config2 = SoftwareProviderConfig::new(key_dir, SigningKeyCode::Secp256r1);
         let loaded = config2.load_provider().await.unwrap();
         assert_eq!(
             loaded.current_public_key().await.unwrap().qb64(),
             original_pub.qb64()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mixed_algorithm_p256_signing_ml_dsa_recovery() {
+        let mut provider =
+            SoftwareKeyProvider::new_mixed(SigningKeyCode::Secp256r1, SigningKeyCode::MlDsa65);
+
+        let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
+        assert_eq!(current.algorithm(), SigningKeyCode::Secp256r1);
+
+        // Signing key is P-256
+        let message = b"test message";
+        let sig = provider.sign(message).await.unwrap();
+        assert!(current.verify(message, &sig).is_ok());
+
+        // Recovery key is ML-DSA-65
+        let recovery_sig = provider.sign_with_recovery(message).await.unwrap();
+        assert_eq!(recovery_sig.algorithm(), cesr::SignatureCode::MlDsa65);
+    }
+
+    #[tokio::test]
+    async fn test_algorithm_upgrade_p256_to_ml_dsa() {
+        // Start with P-256
+        let mut provider = SoftwareKeyProvider::new(SigningKeyCode::Secp256r1);
+        let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
+        assert_eq!(current.algorithm(), SigningKeyCode::Secp256r1);
+
+        // User decides to upgrade to ML-DSA-65
+        provider.signing_algorithm = SigningKeyCode::MlDsa65;
+
+        // Stage rotation — next key will be ML-DSA-65
+        let (new_current, _new_next_hash) = provider.stage_rotation().await.unwrap();
+        // new_current is the old P-256 next key (generated before upgrade)
+        assert_eq!(new_current.algorithm(), SigningKeyCode::Secp256r1);
+
+        provider.commit().await.unwrap();
+
+        // After one more rotation, current will be ML-DSA-65
+        let (ml_dsa_current, _) = provider.stage_rotation().await.unwrap();
+        assert_eq!(ml_dsa_current.algorithm(), SigningKeyCode::MlDsa65);
+
+        provider.commit().await.unwrap();
+        assert_eq!(
+            provider.current_public_key().await.unwrap().algorithm(),
+            SigningKeyCode::MlDsa65
         );
     }
 }

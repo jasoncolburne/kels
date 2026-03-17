@@ -581,9 +581,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new_recovery(
             cnt_event,
-            rotation_key.qb64(),
             cnt_primary_signature.qb64(),
-            current_recovery_pub.qb64(),
             cnt_secondary_signature.qb64(),
         ))
     }
@@ -597,7 +595,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new(
             event,
-            current_key.qb64(),
+            "signing".to_string(),
             signature.qb64(),
         ))
     }
@@ -619,7 +617,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new(
             event,
-            current_key.qb64(),
+            "signing".to_string(),
             signature.qb64(),
         ))
     }
@@ -629,14 +627,12 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
         base_event: &KeyEvent,
         anchor: &str,
     ) -> Result<SignedKeyEvent, KelsError> {
-        let current_key = self.key_provider.current_public_key().await?;
-
         let event = KeyEvent::create_interaction(base_event, anchor.to_string())?;
         let signature = self.key_provider.sign(event.said.as_bytes()).await?;
 
         Ok(SignedKeyEvent::new(
             event,
-            current_key.qb64(),
+            "signing".to_string(),
             signature.qb64(),
         ))
     }
@@ -652,7 +648,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new(
             event,
-            new_current.qb64(),
+            "signing".to_string(),
             signature.qb64(),
         ))
     }
@@ -679,9 +675,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new_recovery(
             event,
-            new_current.qb64(),
             primary_signature.qb64(),
-            current_recovery_pub.qb64(),
             secondary_signature.qb64(),
         ))
     }
@@ -711,9 +705,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new_recovery(
             event,
-            new_current.qb64(),
             primary_signature.qb64(),
-            current_recovery_pub.qb64(),
             secondary_signature.qb64(),
         ))
     }
@@ -742,9 +734,7 @@ impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
 
         Ok(SignedKeyEvent::new_recovery(
             rec_event,
-            rotation_key.qb64(),
             rec_primary_signature.qb64(),
-            current_recovery_pub.qb64(),
             rec_secondary_signature.qb64(),
         ))
     }

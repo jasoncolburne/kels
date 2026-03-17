@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_registry_key_events_prefix_previous ON registry_k
 CREATE TABLE IF NOT EXISTS registry_key_event_signatures (
     said CHAR(44) PRIMARY KEY,
     event_said CHAR(44) NOT NULL,
-    public_key TEXT NOT NULL,
+    label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
 

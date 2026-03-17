@@ -2,28 +2,9 @@
 
 Complete inventory of HTTP endpoints, gossip protocols, and internal RPC across all services.
 
-## HSM Service
-
-Internal PKCS#11 wrapper for SoftHSM2. No authentication — relies on network isolation (pod-internal only).
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | None | Health check probe |
-| POST | `/api/hsm/keys` | None | Generate or retrieve secp256r1 keypair (get-or-create by label) |
-| GET | `/api/hsm/keys` | None | List all key labels |
-| GET | `/api/hsm/keys/:label/public` | None | Get compressed public key (CESR qb64) |
-| POST | `/api/hsm/keys/:label/sign` | None | Sign data with ECDSA P-256; returns signature + public key (CESR qb64) |
-| POST | `/api/hsm/keys/:label/ecdh` | None | ECDH key agreement (CKM_ECDH1_DERIVE); accepts base64url peer public key, returns base64url shared secret |
-
-**Notes:**
-- Label validation: alphanumeric + `-_.`, max 128 chars
-- All crypto values encoded as CESR qb64
-- Sign endpoint accepts base64url-encoded data
-- No rate limiting; depends entirely on network isolation
-
 ## Identity Service
 
-HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. Most endpoints have no authentication — internal to the pod. The manage endpoint requires a signed request (the `IdentityClient` handles signing internally).
+PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both registries and gossip nodes. The identity service loads the PKCS#11 .so directly via cryptoki (`kels-mock-hsm` in development, real HSM in production). Most endpoints have no authentication — internal to the pod. The manage endpoint requires a signed request (the `IdentityClient` handles signing internally).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -32,13 +13,12 @@ HSM-backed key management for cryptographic identity (KEL). Used by both registr
 | GET | `/api/identity/kel` | None | Get registry KEL (paginated; `?limit=N&since=SAID`); returns `SignedKeyEventPage {events, hasMore}` |
 | POST | `/api/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/identity/sign` | None | Sign arbitrary JSON data with current signing key |
-| POST | `/api/identity/ecdh` | None | ECDH key agreement using current signing key; accepts base64url peer public key, returns base64url shared secret |
 | GET | `/api/identity/status` | None | Get identity status (initialized, prefix, last SAID, current key handle) |
 | POST | `/api/identity/kel/manage` | **Signed request (own KEL)** | Manage KEL (rotate, recover, contest, decommission); updates in-memory builder |
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 512) and `?since=SAID` for delta fetch
+- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 64) and `?since=SAID` for delta fetch
 - Sign returns qb64-encoded signature + public key
 - Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
@@ -51,8 +31,8 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check (checks `kels:gossip:ready` in Redis) |
-| POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL); max 512 events per request |
-| GET | `/api/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-512, default 512); returns `SignedKeyEventPage {events, hasMore}` |
+| POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL); max 500 events per request |
+| GET | `/api/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-64, default 64); returns `SignedKeyEventPage {events, hasMore}` |
 | GET | `/api/kels/kel/:prefix/audit` | None | Get audit records for prefix (recovery/contest archives) |
 | GET | `/api/kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 | GET | `/api/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
@@ -60,8 +40,8 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
-- `list_prefixes` requires ECDSA signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 512 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-512, default 512). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
+- `list_prefixes` requires signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
+- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 64 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
 - `get_kel_audit` returns `Vec<KelsAuditRecord>` — archived events from recovery/contest operations, separate from the paginated KEL endpoint.
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
 - KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
@@ -131,8 +111,8 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Protocol | Auth | Description |
 |----------|------|-------------|
-| PlumTree broadcast (`kels/events/v1`) | **Three-DH P-256 + AES-GCM-256** | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
-| HyParView membership | **Three-DH P-256 + AES-GCM-256** | Mesh overlay maintenance (join, shuffle, forward-join) |
+| PlumTree broadcast (`kels/events/v1`) | **ML-KEM-768 + ML-DSA-65 + AES-GCM-256** | KEL update announcements (`KelAnnouncement` JSON: prefix, said) |
+| HyParView membership | **ML-KEM-768 + ML-DSA-65 + AES-GCM-256** | Mesh overlay maintenance (join, shuffle, forward-join) |
 | Allowlist verification | **Signature + verified allowlist** | Verifies peer's NodePrefix against verified allowlist post-handshake |
 
 ### Peer-to-Peer HTTP (between gossip nodes)
@@ -143,7 +123,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | GET | `/api/kels/kel/:prefix` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); paginated via `forward_key_events` |
 
 **Notes:**
-- Transport: Three-DH P-256 key exchange (ee + se + es) + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers
+- Transport: ML-KEM-768 key exchange + ML-DSA-65 mutual authentication + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers; P-256 peers rejected
 - Peer verification: handshake signature verified against peer's KEL public key; unknown peers trigger allowlist refresh before rejection
 - Allowlist verification: peer record SAID (`verify()`), peer SAID anchored in registry KEL, full DAG verification (`AdditionWithVotes::verify()`) + proposal records anchored in proposer's KEL + approval votes anchored in voter's KEL; threshold and member set derived from compiled-in trusted prefixes
 
@@ -151,11 +131,11 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 | Method | Where Used | Mechanism |
 |--------|-----------|-----------|
-| **Signed request** | Prefix listing, identity rotation | ECDSA P-256 signature over JSON payload; peer_prefix derived from public key; checked against allowlist (or own KEL for identity rotation) |
+| **Signed request** | Prefix listing, identity rotation | Signature (ML-DSA-65 for infrastructure) over JSON payload; peer_prefix derived from KEL; checked against allowlist (or own KEL for identity rotation) |
 | **Federation KEL signature** | Raft RPC | Signed payload verified against sender's KEL (current key from last establishment event) |
 | **Signed admin request** | Admin API | SignedRequest<AdminRequest> verified against own identity KEL |
 | **Federation membership** | Proposals, votes, RPC | `config.is_member(prefix)` — compile-time trusted prefixes |
-| **Gossip handshake** | Gossip connections | Three-DH pattern (ee + se + es) with AES-GCM-256; signature verified against peer's KEL; static key operations via HSM |
+| **Gossip handshake** | Gossip connections | ML-KEM-768 key exchange + ML-DSA-65 mutual authentication + AES-GCM-256; signature verified against peer's KEL; ML-DSA-65 only (P-256 rejected) |
 | **Allowlist** | Gossip connections | NodePrefix checked against verified peer allowlist with full KEL verification |
 | **SAID integrity** | Peer records, votes | `SelfAddressed::verify()` — content hash matches declared SAID |
 | **KEL anchoring** | Peer records, votes | SAID must appear in an ixn event in the authorizing registry's KEL |

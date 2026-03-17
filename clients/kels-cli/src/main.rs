@@ -11,7 +11,7 @@ use colored::Colorize;
 use kels::{EventKind, KelStore};
 use kels::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SigningKeyCode, SoftwareKeyProvider,
     SoftwareProviderConfig, max_verification_pages,
 };
 
@@ -44,7 +44,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Create a new KEL (inception event)
-    Incept,
+    Incept {
+        /// Signing algorithm (secp256r1 or ml-dsa-65)
+        #[arg(long, default_value = "secp256r1")]
+        algorithm: String,
+    },
 
     /// Rotate the signing key
     Rotate {
@@ -176,6 +180,17 @@ enum AdversaryCommands {
     },
 }
 
+fn parse_algorithm(algorithm: &str) -> Result<SigningKeyCode> {
+    match algorithm {
+        "secp256r1" => Ok(SigningKeyCode::Secp256r1),
+        "ml-dsa-65" => Ok(SigningKeyCode::MlDsa65),
+        _ => Err(anyhow!(
+            "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65",
+            algorithm
+        )),
+    }
+}
+
 fn config_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(ref dir) = cli.config_dir {
         return Ok(dir.clone());
@@ -191,7 +206,10 @@ fn kel_dir(cli: &Cli) -> Result<PathBuf> {
 
 fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    Ok(SoftwareProviderConfig::new(key_dir))
+    Ok(SoftwareProviderConfig::new(
+        key_dir,
+        SigningKeyCode::Secp256r1,
+    ))
 }
 
 /// Parse comma-separated registry URLs into a Vec.
@@ -296,11 +314,12 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_incept(cli: &Cli) -> Result<()> {
+async fn cmd_incept(cli: &Cli, algorithm: &str) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
+    let signing_key_code = parse_algorithm(algorithm)?;
     let client = create_client(cli).await?;
-    let key_provider = SoftwareKeyProvider::new();
+    let key_provider = SoftwareKeyProvider::new(signing_key_code);
 
     // Pass a kel_store to the builder so add_and_flush saves automatically
     let kel_dir = kel_dir(cli)?;
@@ -949,7 +968,7 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&config_dir)?;
 
     match &cli.command {
-        Commands::Incept => cmd_incept(&cli).await,
+        Commands::Incept { algorithm } => cmd_incept(&cli, algorithm).await,
         Commands::Rotate { prefix } => cmd_rotate(&cli, prefix).await,
         Commands::RotateRecovery { prefix } => cmd_rotate_recovery(&cli, prefix).await,
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,

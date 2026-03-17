@@ -19,7 +19,6 @@ derive_more = { version = "2", features = ["add", "debug", "deref", "from"] }
 futures = "0.3"
 hex = "0.4"
 indexmap = "2"
-p256 = { version = "0.13", features = ["ecdh"] }
 pin-project-lite = "0.2"
 postcard = { version = "1", default-features = false, features = ["alloc", "use-std", "experimental-derive"] }
 rand = { version = "0.9", features = ["std_rng"] }

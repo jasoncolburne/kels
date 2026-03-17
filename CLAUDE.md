@@ -108,14 +108,14 @@ When events are submitted, the KEL merge produces one of:
 - **kels-gossip** — Gossip service. Syncs KELs between peers (HyParView + PlumTree). See `docs/gossip.md`.
 - **kels-registry** — Registry service. Peer lifecycle via OpenRaft consensus. See `docs/registry.md`.
 - **identity** — Identity service. Manages the registry's own KEL and signing keys.
-- **hsm** — Hardware security module interface for key storage and signing operations.
 
 ### Libraries
 
 - **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with three-DH P-256 + AES-GCM-256).
+- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with ML-KEM-768 + ML-DSA-65 + AES-GCM-256).
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
+- **kels-mock-hsm** (`lib/kels-mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.
 
 ### Clients
 
@@ -160,8 +160,8 @@ The DB cannot be trusted. All operations on KEL data fall into three categories:
 Events are stored in PostgreSQL via the `verifiable-storage` framework (`Stored`, `SignedEvents`, `Chained`, `SelfAddressed` derive macros). Transactional operations use `KelTransaction` (PG transaction + advisory lock).
 
 - All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events. The CASE expression uses `EventKind::sort_priority_mapping()`.
-- `MAX_EVENTS_PER_KEL_QUERY` (512) — page size for database queries and HTTP responses.
-- Pre-serialized JSON cache in Redis for KELs ≤ 512 events; Redis pub/sub for cache invalidation.
+- `MAX_EVENTS_PER_KEL_QUERY` (64) — page size for database queries and HTTP responses (reduced from 512 due to larger ML-DSA-65 signatures).
+- Pre-serialized JSON cache in Redis for KELs ≤ 64 events; Redis pub/sub for cache invalidation.
 - Verifiable data patterns:
     - Creator sends full records as the payload (no wrapper types) and anchors by SAID in their KEL.
     - Verifier receives full records, verifies structure (SAID/prefix), chain integrity, and anchoring.

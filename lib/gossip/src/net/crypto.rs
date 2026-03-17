@@ -1,8 +1,8 @@
 //! Cryptographic primitives for the gossip network layer.
 //!
-//! Provides ECDH key exchange, AES-GCM-256 session encryption, and the
-//! [`EncryptedStream`] wrapper that transparently encrypts/decrypts data
-//! flowing through a byte stream (placed below yamux in the transport stack).
+//! Provides AES-GCM-256 session encryption and the [`EncryptedStream`] wrapper
+//! that transparently encrypts/decrypts data flowing through a byte stream
+//! (placed below yamux in the transport stack).
 
 use std::{
     io,
@@ -14,12 +14,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, consts::U12},
 };
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use p256::{
-    PublicKey, SecretKey,
-    ecdh::diffie_hellman,
-    elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
-};
+use futures::{AsyncRead, AsyncWrite};
 use pin_project_lite::pin_project;
 
 /// Maximum plaintext frame size (64 KiB).
@@ -31,37 +26,44 @@ const TAG_LEN: usize = 16;
 /// Frame length prefix size (4 bytes, big-endian).
 const LEN_PREFIX_SIZE: usize = 4;
 
-/// Derive two AES-256-GCM session keys from three ECDH shared secrets.
+/// Derive two AES-256-GCM session keys from an ML-KEM shared secret.
 ///
-/// The three secrets come from the three-DH pattern:
-/// - `ee`: ephemeral × ephemeral (forward secrecy)
-/// - `se`: our_static × their_ephemeral (via HSM)
-/// - `es`: our_ephemeral × their_static (local)
-///
-/// The IKM is canonicalized so both sides produce the same input:
-/// `ikm = ee || DH(initiator_static, acceptor_eph) || DH(initiator_eph, acceptor_static)`
-///
-/// Uses blake3's key derivation to produce separate keys for each direction.
+/// Uses blake3's key derivation to produce separate keys for each direction,
+/// incorporating both peer prefixes in the context for domain separation.
 pub fn derive_session_keys(
-    ee: &[u8; 32],
-    se: &[u8; 32],
-    es: &[u8; 32],
+    shared_secret: &[u8; 32],
+    our_prefix: &[u8; 44],
+    their_prefix: &[u8; 44],
     is_initiator: bool,
 ) -> (Aes256Gcm, Aes256Gcm) {
-    let mut ikm = [0u8; 96];
-    ikm[..32].copy_from_slice(ee);
-    if is_initiator {
-        ikm[32..64].copy_from_slice(se); // DH(init_static, acc_eph)
-        ikm[64..96].copy_from_slice(es); // DH(init_eph, acc_static)
+    let (init_prefix, resp_prefix) = if is_initiator {
+        (our_prefix, their_prefix)
     } else {
-        ikm[32..64].copy_from_slice(es); // DH(init_static, acc_eph)
-        ikm[64..96].copy_from_slice(se); // DH(init_eph, acc_static)
-    }
+        (their_prefix, our_prefix)
+    };
 
-    let i2a = blake3::derive_key("kels/gossip/v1/keys/initiator-to-acceptor", &ikm);
-    let a2i = blake3::derive_key("kels/gossip/v1/keys/acceptor-to-initiator", &ikm);
+    let mut init_to_resp_context = b"kels/gossip/v2/keys/init-to-resp/".to_vec();
+    init_to_resp_context.extend_from_slice(init_prefix);
+    init_to_resp_context.extend_from_slice(resp_prefix);
 
-    let (send_key, recv_key) = if is_initiator { (i2a, a2i) } else { (a2i, i2a) };
+    let mut resp_to_init_context = b"kels/gossip/v2/keys/resp-to-init/".to_vec();
+    resp_to_init_context.extend_from_slice(init_prefix);
+    resp_to_init_context.extend_from_slice(resp_prefix);
+
+    let init_to_resp_key = blake3::derive_key(
+        &String::from_utf8_lossy(&init_to_resp_context),
+        shared_secret,
+    );
+    let resp_to_init_key = blake3::derive_key(
+        &String::from_utf8_lossy(&resp_to_init_context),
+        shared_secret,
+    );
+
+    let (send_key, recv_key) = if is_initiator {
+        (init_to_resp_key, resp_to_init_key)
+    } else {
+        (resp_to_init_key, init_to_resp_key)
+    };
 
     let send_cipher = Aes256Gcm::new(&send_key.into());
     let recv_cipher = Aes256Gcm::new(&recv_key.into());
@@ -87,7 +89,7 @@ pin_project! {
     /// ```
     ///
     /// Each direction uses a separate key and incrementing nonce counter, derived from the
-    /// ECDH shared secret via [`derive_session_keys`].
+    /// ML-KEM shared secret via [`derive_session_keys`].
     pub struct EncryptedStream<S> {
         #[pin]
         inner: S,
@@ -369,77 +371,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
     }
 }
 
-/// Perform an ephemeral ECDH key exchange over a raw stream.
-///
-/// Both parties generate ephemeral P-256 keypairs, exchange the compressed SEC1 public keys
-/// (33 bytes each), and derive a shared secret.
-///
-/// Returns `(shared_secret_bytes, ephemeral_secret_key, our_eph_pubkey_bytes, their_eph_pubkey_bytes)`.
-/// The `SecretKey` is returned so the caller can perform additional DH operations (e.g.,
-/// static-ephemeral DH with the peer's KEL signing key).
-pub async fn ecdh_key_exchange<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: &mut S,
-    is_initiator: bool,
-) -> Result<([u8; 32], SecretKey, Vec<u8>, Vec<u8>), super::Error> {
-    // Generate ephemeral keypair.
-    let secret = SecretKey::random(&mut OsRng);
-    let our_pubkey = secret.public_key();
-    let our_encoded = our_pubkey.to_encoded_point(true);
-    let our_bytes = our_encoded.as_bytes(); // 33 bytes compressed SEC1
-
-    // Exchange public keys. Initiator sends first.
-    let mut their_bytes = vec![0u8; our_bytes.len()];
-
-    if is_initiator {
-        stream
-            .write_all(our_bytes)
-            .await
-            .map_err(super::Error::Io)?;
-        stream.flush().await.map_err(super::Error::Io)?;
-        stream
-            .read_exact(&mut their_bytes)
-            .await
-            .map_err(super::Error::Io)?;
-    } else {
-        stream
-            .read_exact(&mut their_bytes)
-            .await
-            .map_err(super::Error::Io)?;
-        stream
-            .write_all(our_bytes)
-            .await
-            .map_err(super::Error::Io)?;
-        stream.flush().await.map_err(super::Error::Io)?;
-    }
-
-    // Parse peer's public key and compute shared secret.
-    let their_pubkey = PublicKey::from_sec1_bytes(&their_bytes)
-        .map_err(|e| super::Error::Handshake(format!("invalid peer ephemeral pubkey: {e}")))?;
-
-    let shared = diffie_hellman(secret.to_nonzero_scalar(), their_pubkey.as_affine());
-    let mut shared_bytes = [0u8; 32];
-    shared_bytes.copy_from_slice(shared.raw_secret_bytes().as_ref());
-
-    Ok((shared_bytes, secret, our_bytes.to_vec(), their_bytes))
-}
-
-/// Compute a static-ephemeral DH: our ephemeral private key × peer's static public key.
-///
-/// `eph_secret` is our ephemeral secret key (kept in-process).
-/// `static_pubkey_bytes` is the peer's KEL signing key (compressed SEC1, 33 bytes).
-pub fn compute_eph_static_dh(
-    eph_secret: &SecretKey,
-    static_pubkey_bytes: &[u8],
-) -> Result<[u8; 32], super::Error> {
-    let static_pubkey = PublicKey::from_sec1_bytes(static_pubkey_bytes)
-        .map_err(|e| super::Error::Handshake(format!("invalid static pubkey: {e}")))?;
-
-    let shared = diffie_hellman(eph_secret.to_nonzero_scalar(), static_pubkey.as_affine());
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(shared.raw_secret_bytes().as_ref());
-    Ok(bytes)
-}
-
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
@@ -453,10 +384,9 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_stream_roundtrip() {
-        // In the real protocol: initiator's se = acceptor's es (and vice versa)
-        let ee = [0x11u8; 32];
-        let init_se = [0x22u8; 32]; // DH(init_static, acc_eph)
-        let init_es = [0x33u8; 32]; // DH(init_eph, acc_static)
+        let shared_secret = [0x42u8; 32];
+        let init_prefix = [0x11u8; 44];
+        let resp_prefix = [0x22u8; 44];
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -464,8 +394,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.map_err(|_| "accept failed")?;
             let compat = stream.compat();
-            // Acceptor: se = DH(acc_static, init_eph) = init_es, es = DH(acc_eph, init_static) = init_se
-            let (send_cipher, recv_cipher) = derive_session_keys(&ee, &init_es, &init_se, false);
+            let (send_cipher, recv_cipher) =
+                derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false);
             let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
             let mut buf = vec![0u8; 1024];
@@ -483,7 +413,8 @@ mod tests {
 
         let stream = TcpStream::connect(addr).await.unwrap();
         let compat = stream.compat();
-        let (send_cipher, recv_cipher) = derive_session_keys(&ee, &init_se, &init_es, true);
+        let (send_cipher, recv_cipher) =
+            derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true);
         let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
         let msg = b"hello encrypted world";
@@ -501,13 +432,12 @@ mod tests {
 
     #[test]
     fn key_derivation_produces_different_keys() {
-        // In the real protocol: initiator's se = acceptor's es (and vice versa)
-        let ee = [0x11u8; 32];
-        let init_se = [0x22u8; 32]; // DH(init_static, acc_eph)
-        let init_es = [0x33u8; 32]; // DH(init_eph, acc_static)
-        let (send1, recv1) = derive_session_keys(&ee, &init_se, &init_es, true);
-        // Acceptor: se = init_es, es = init_se
-        let (send2, recv2) = derive_session_keys(&ee, &init_es, &init_se, false);
+        let shared_secret = [0x42u8; 32];
+        let init_prefix = [0x11u8; 44];
+        let resp_prefix = [0x22u8; 44];
+
+        let (send1, recv1) = derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true);
+        let (send2, recv2) = derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false);
 
         // Initiator's send key should match acceptor's recv key.
         let nonce = nonce_from_counter(0);
@@ -520,33 +450,5 @@ mod tests {
         let ct2 = send2.encrypt(&nonce, plaintext.as_ref()).unwrap();
         let pt1 = recv1.decrypt(&nonce, ct2.as_ref()).unwrap();
         assert_eq!(pt1, plaintext);
-    }
-
-    #[tokio::test]
-    async fn ecdh_key_exchange_produces_shared_secret() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.map_err(|_| "accept")?;
-            let mut compat = stream.compat();
-            let (shared, _eph_secret, _, _) = ecdh_key_exchange(&mut compat, false)
-                .await
-                .map_err(|_| "ecdh")?;
-            Ok::<_, &str>(shared)
-        });
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        let stream = TcpStream::connect(addr).await.unwrap();
-        let mut compat = stream.compat();
-        let (client_shared, _eph_secret, _, _) =
-            ecdh_key_exchange(&mut compat, true).await.unwrap();
-
-        let result = server.await;
-        assert!(result.is_ok());
-        if let Ok(Ok(server_shared)) = result {
-            assert_eq!(client_shared, server_shared);
-        }
     }
 }

@@ -1,0 +1,27 @@
+[package]
+name = "kels-mock-hsm"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "Mock PKCS#11 provider for KELS with ML-DSA-65 support"
+
+[lib]
+name = "kels_mock_hsm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fips204 = { version = "0.4", default-features = false, features = ["default"] }
+rand = { version = "0.8", features = ["std_rng", "getrandom"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serial_test = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

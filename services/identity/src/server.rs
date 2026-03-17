@@ -17,7 +17,7 @@ use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
 
 use crate::{
     handlers::{self, AppState},
-    hsm::{HsmClient, HsmKeyProvider},
+    hsm::{HsmKeyProvider, Pkcs11Client},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
 
@@ -27,7 +27,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/identity", get(handlers::get_identity))
         .route("/api/identity/status", get(handlers::get_status))
         .route("/api/identity/anchor", post(handlers::anchor))
-        .route("/api/identity/ecdh", post(handlers::ecdh))
         .route("/api/identity/kel", get(handlers::get_key_events))
         .route("/api/identity/kel/manage", post(handlers::manage_kel))
         .route("/api/identity/sign", post(handlers::sign))
@@ -37,7 +36,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
-    let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
+    let pkcs11_library = std::env::var("PKCS11_LIBRARY")
+        .unwrap_or_else(|_| "/usr/lib/kels/libkels_mock_hsm.so".to_string());
+    let hsm_slot: usize = std::env::var("HSM_SLOT")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse()
+        .unwrap_or(0);
+    let hsm_pin = std::env::var("HSM_PIN").unwrap_or_else(|_| "1234".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
     let forward_url = std::env::var("KEL_FORWARD_URL")
@@ -62,8 +67,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database connected");
 
-    info!("Connecting to HSM service at {}", hsm_url);
-    let hsm = Arc::new(HsmClient::new(&hsm_url));
+    info!("Connecting to PKCS#11 HSM at {}", pkcs11_library);
+    let hsm = Arc::new(
+        Pkcs11Client::new(&pkcs11_library, hsm_slot, &hsm_pin)
+            .map_err(|e| format!("Failed to connect to PKCS#11 HSM: {}", e))?,
+    );
 
     let kel_repo = Arc::new(crate::repository::KeyEventRepository::new(
         repo.pool().clone(),

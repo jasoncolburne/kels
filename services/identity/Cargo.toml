@@ -49,11 +49,11 @@ thiserror = "1"
 # Async traits
 async-trait = "0.1"
 
-# HTTP client for kels and HSM services
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# PKCS#11 HSM interface
+cryptoki = "0.12"
 
-# Base64 encoding
-base64 = "0.22"
+# HTTP client for kels service
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive", "env"] }
@@ -72,7 +72,7 @@ ctor = "0.4"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-p256 = "0.13"
+fips204 = { version = "0.4", default-features = false, features = ["default"] }
 
 [lints.clippy]
 unwrap_used = "deny"

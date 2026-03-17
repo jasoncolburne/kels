@@ -26,17 +26,6 @@ spec:
                 sleep 2;
               done;
               echo "PostgreSQL is ready!";
-        - name: wait-for-hsm
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z hsm ${var.hsm.port}; do
-                echo "Waiting for hsm...";
-                sleep 2;
-              done;
-              echo "HSM is ready!";
       containers:
         - name: identity
           image: ${actions.build.identity.outputs.deployment-image-id}
@@ -50,12 +39,19 @@ spec:
               value: "${var.identityKeyHandlePrefix}"
             - name: DATABASE_URL
               value: "${var.identityDatabaseUrl}"
-            - name: HSM_URL
-              value: "${var.hsm.url}"
+            - name: PKCS11_LIBRARY
+              value: "/app/libkels_mock_hsm.so"
+            - name: KELS_HSM_DATA_DIR
+              value: "/data/hsm"
+            - name: HSM_PIN
+              value: "1234"
             - name: KEL_FORWARD_URL
               value: "${var.kelForwardUrl}"
             - name: KEL_FORWARD_PATH_PREFIX
               value: "${var.kelForwardPathPrefix}"
+          volumeMounts:
+            - name: hsm-data
+              mountPath: /data/hsm
           livenessProbe:
             httpGet:
               path: /health
@@ -75,6 +71,25 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      volumes:
+        - name: hsm-data
+          persistentVolumeClaim:
+            claimName: hsm-data
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hsm-data
+  labels:
+    app: identity
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
 
 ---
 

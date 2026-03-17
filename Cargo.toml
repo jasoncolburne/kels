@@ -7,11 +7,11 @@ members = [
     "lib/kels-derive",
     "lib/kels-creds",
     "lib/kels-ffi",
+    "lib/kels-mock-hsm",
     "services/kels",
     "services/kels-gossip",
     "services/kels-registry",
     "services/identity",
-    "services/hsm",
     "clients/kels-bench",
     "clients/kels-cli",
 ]

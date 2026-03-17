@@ -95,12 +95,6 @@ pub trait Signer: Send + Sync + 'static {
 
     /// Sign the given data. Returns the signature and public key as raw bytes.
     fn sign(&self, data: &[u8]) -> impl Future<Output = Result<SignatureBundle, Error>> + Send;
-
-    /// Perform ECDH key agreement using our static signing key.
-    ///
-    /// `peer_public_key` is compressed SEC1 (33 bytes). Returns the 32-byte shared secret.
-    /// The private key never leaves the HSM — the operation is performed via the identity service.
-    fn ecdh(&self, peer_public_key: &[u8]) -> impl Future<Output = Result<[u8; 32], Error>> + Send;
 }
 
 /// Trait for verifying peer identity during handshake.

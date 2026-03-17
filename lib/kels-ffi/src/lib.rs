@@ -20,14 +20,14 @@ use kels::EventKind;
     feature = "secure-enclave"
 ))]
 use kels::HardwareKeyProvider;
+use kels::{
+    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider, NodeStatus,
+};
 #[cfg(not(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 )))]
-use kels::SoftwareKeyProvider;
-use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider, NodeStatus,
-};
+use kels::{SigningKeyCode, SoftwareKeyProvider};
 use serde::{Deserialize, Serialize};
 
 // ==================== Key State Persistence ====================
@@ -275,6 +275,26 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
     unsafe { CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_string()) }
 }
 
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+fn parse_algorithm_option(algo: *const c_char) -> Option<SigningKeyCode> {
+    match from_c_string(algo).as_deref() {
+        Some("ml-dsa-65") | Some("ML-DSA-65") => Some(SigningKeyCode::MlDsa65),
+        Some("secp256r1") | Some("p256") => Some(SigningKeyCode::Secp256r1),
+        _ => None, // null, empty, or unrecognized = keep current
+    }
+}
+
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "ios"),
+    feature = "secure-enclave"
+)))]
+fn parse_algorithm(algo: *const c_char) -> SigningKeyCode {
+    parse_algorithm_option(algo).unwrap_or(SigningKeyCode::Secp256r1)
+}
+
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
         KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
@@ -312,6 +332,10 @@ async fn save_key_state<K: KeyProvider + Clone>(
 /// * `state_dir` - Directory for storing local state (KELs, keys)
 /// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
+/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). NULL defaults to "secp256r1".
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+/// * `recovery_algorithm` - Recovery key algorithm. NULL defaults to "secp256r1".
+///   Only used in software-only builds; ignored when Secure Enclave is available.
 ///
 /// # Returns
 /// Pointer to context, or NULL on error. Check kels_last_error() for details.
@@ -321,6 +345,8 @@ pub extern "C" fn kels_init(
     state_dir: *const c_char,
     key_namespace: *const c_char,
     prefix: *const c_char,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
 ) -> *mut KelsContext {
     clear_last_error();
 
@@ -351,6 +377,27 @@ pub extern "C" fn kels_init(
         feature = "secure-enclave"
     )))]
     let _ = key_namespace; // Unused in software-only builds
+
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let signing_algo = parse_algorithm(signing_algorithm);
+
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    )))]
+    let recovery_algo = parse_algorithm(recovery_algorithm);
+
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    {
+        let _ = signing_algorithm; // Secure Enclave uses hardware keys, algorithm is fixed
+        let _ = recovery_algorithm;
+    }
 
     let prefix_opt = from_c_string(prefix);
     let state_path = PathBuf::from(&state_dir_str);
@@ -410,7 +457,7 @@ pub extern "C" fn kels_init(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     )))]
-    let key_provider = SoftwareKeyProvider::new();
+    let key_provider = SoftwareKeyProvider::new_mixed(signing_algo, recovery_algo);
 
     // Create KELS client
     let client = KelsClient::new(&url);
@@ -549,11 +596,22 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 
 /// Create an inception event (start a new KEL)
 ///
+/// # Arguments
+/// * `signing_algorithm` - Signing algorithm for this inception (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+/// * `recovery_algorithm` - Recovery algorithm for this inception (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_incept(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -576,7 +634,37 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
         return;
     };
 
-    let incept_result = ctx.runtime.block_on(async { builder_guard.incept().await });
+    let incept_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        {
+            if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_signing_algorithm(algo)
+                    .await?;
+            }
+            if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_recovery_algorithm(algo)
+                    .await?;
+            }
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        {
+            let _ = signing_algorithm;
+            let _ = recovery_algorithm;
+        }
+
+        builder_guard.incept().await
+    });
 
     match incept_result {
         Ok(icp) => {
@@ -608,11 +696,19 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
 
 /// Rotate the signing key
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_rotate(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -635,7 +731,26 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
         return;
     };
 
-    let rotate_result = ctx.runtime.block_on(async { builder_guard.rotate().await });
+    let rotate_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        let _ = signing_algorithm;
+
+        builder_guard.rotate().await
+    });
 
     match rotate_result {
         Ok(rot) => {
@@ -663,11 +778,19 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
 
 /// Rotate the recovery key (requires dual signature)
 ///
+/// # Arguments
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_rotate_recovery(
+    ctx: *mut KelsContext,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -690,9 +813,26 @@ pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mu
         return;
     };
 
-    let rotate_result = ctx
-        .runtime
-        .block_on(async { builder_guard.rotate_recovery().await });
+    let rotate_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        let _ = recovery_algorithm;
+
+        builder_guard.rotate_recovery().await
+    });
 
     match rotate_result {
         Ok(ror) => {
@@ -781,11 +921,22 @@ pub unsafe extern "C" fn kels_interact(
 
 /// Attempt recovery from divergence or adversary attack
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsRecoveryResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRecoveryResult) {
+pub unsafe extern "C" fn kels_recover(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsRecoveryResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -811,6 +962,34 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
     };
 
     let recover_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        {
+            if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_signing_algorithm(algo)
+                    .await?;
+            }
+            if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_recovery_algorithm(algo)
+                    .await?;
+            }
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        {
+            let _ = signing_algorithm;
+            let _ = recovery_algorithm;
+        }
+
         // Verify server KEL to detect if adversary revealed the rotation key
         let add_rot = if let Some(prefix) = builder_guard.prefix() {
             let kels_url = match ctx.kels_url.read() {
@@ -882,11 +1061,22 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
 /// Use this when an adversary has revealed your recovery key.
 /// The KEL will be permanently frozen after contesting.
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_contest(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -909,9 +1099,37 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
         return;
     };
 
-    let contest_result = ctx
-        .runtime
-        .block_on(async { builder_guard.contest().await });
+    let contest_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        {
+            if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_signing_algorithm(algo)
+                    .await?;
+            }
+            if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_recovery_algorithm(algo)
+                    .await?;
+            }
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        {
+            let _ = signing_algorithm;
+            let _ = recovery_algorithm;
+        }
+
+        builder_guard.contest().await
+    });
 
     match contest_result {
         Ok(cnt) => {
@@ -939,11 +1157,22 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
 
 /// Decommission a KEL (permanently disable it)
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Only used in software-only builds; ignored when Secure Enclave is available.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_decommission(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -966,9 +1195,37 @@ pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut K
         return;
     };
 
-    let decommission_result = ctx
-        .runtime
-        .block_on(async { builder_guard.decommission().await });
+    let decommission_result = ctx.runtime.block_on(async {
+        #[cfg(not(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        )))]
+        {
+            if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_signing_algorithm(algo)
+                    .await?;
+            }
+            if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+                builder_guard
+                    .key_provider_mut()
+                    .set_recovery_algorithm(algo)
+                    .await?;
+            }
+        }
+
+        #[cfg(all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "secure-enclave"
+        ))]
+        {
+            let _ = signing_algorithm;
+            let _ = recovery_algorithm;
+        }
+
+        builder_guard.decommission().await
+    });
 
     match decommission_result {
         Ok(dec) => {

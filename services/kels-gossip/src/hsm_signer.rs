@@ -9,10 +9,6 @@
 //! cryptographic identity (HSM-backed key pair + KEL).
 
 use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
-use p256::{
-    PublicKey as P256PublicKey,
-    ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
-};
 use thiserror::Error;
 
 use gossip::identity::NodePrefix;
@@ -30,16 +26,9 @@ pub enum SignerError {
     Key(String),
 }
 
-/// Decode a CESR qb64 public key to compressed SEC1 bytes (33 bytes).
-fn cesr_pubkey_to_compressed(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, SignerError> {
-    let raw = cesr_key.raw();
-    if raw.len() != 33 {
-        return Err(SignerError::Key(format!(
-            "Expected 33-byte compressed key, got {} bytes",
-            raw.len()
-        )));
-    }
-    Ok(raw.to_vec())
+/// Extract raw bytes from a CESR public key.
+fn cesr_pubkey_to_raw(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, SignerError> {
+    Ok(cesr_key.raw().to_vec())
 }
 
 // ============================================================================
@@ -77,24 +66,6 @@ impl Signer for IdentityGossipSigner {
         self.node_prefix
     }
 
-    async fn ecdh(&self, peer_public_key: &[u8]) -> Result<[u8; 32], GossipError> {
-        let result = self
-            .identity_client
-            .ecdh(peer_public_key)
-            .await
-            .map_err(|e| GossipError::Handshake(format!("Identity ECDH failed: {}", e)))?;
-
-        let mut secret = [0u8; 32];
-        if result.len() != 32 {
-            return Err(GossipError::Handshake(format!(
-                "ECDH shared secret wrong length: {} (expected 32)",
-                result.len()
-            )));
-        }
-        secret.copy_from_slice(&result);
-        Ok(secret)
-    }
-
     async fn sign(&self, data: &[u8]) -> Result<SignatureBundle, GossipError> {
         // The handshake data is a JSON string (from transport::handshake_payload)
         let data_str = std::str::from_utf8(data)
@@ -106,16 +77,16 @@ impl Signer for IdentityGossipSigner {
             .await
             .map_err(|e| GossipError::Handshake(format!("Identity sign failed: {}", e)))?;
 
-        // Decode CESR signature to raw bytes (r||s, 64 bytes)
+        // Decode CESR signature to raw bytes
         let cesr_sig = CesrSignature::from_qb64(&result.signature)
             .map_err(|e| GossipError::Handshake(format!("CESR signature decode: {}", e)))?;
         let signature = cesr_sig.raw().to_vec();
 
-        // Decode CESR public key to compressed SEC1 bytes (33 bytes)
+        // Decode CESR public key to raw bytes
         let cesr_pubkey = CesrPublicKey::from_qb64(&result.public_key)
             .map_err(|e| GossipError::Handshake(format!("CESR pubkey decode: {}", e)))?;
-        let public_key = cesr_pubkey_to_compressed(&cesr_pubkey)
-            .map_err(|e| GossipError::Handshake(format!("pubkey decompress: {}", e)))?;
+        let public_key = cesr_pubkey_to_raw(&cesr_pubkey)
+            .map_err(|e| GossipError::Handshake(format!("pubkey extract: {}", e)))?;
 
         Ok(SignatureBundle {
             signature,
@@ -182,7 +153,7 @@ impl KelsPeerVerifier {
         self.is_in_allowlist(prefix).await
     }
 
-    /// Get the current public key from a peer's KEL as compressed SEC1 bytes.
+    /// Get the current public key from a peer's KEL as raw bytes.
     async fn public_key_from_key_events(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key for signing
         let source = kels::HttpKelSource::new(&self.kels_url, "/api/kels/kel/{prefix}");
@@ -213,25 +184,26 @@ impl KelsPeerVerifier {
             GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
         })?;
 
-        cesr_pubkey_to_compressed(&cesr_pubkey)
+        cesr_pubkey_to_raw(&cesr_pubkey)
             .map_err(|e| GossipError::VerificationFailed(format!("pubkey for {}: {}", prefix, e)))
     }
 
-    /// Verify signature using P-256 ECDSA.
+    /// Verify signature using ML-DSA-65.
     fn verify_signature(
         &self,
         data: &[u8],
         signature: &[u8],
         public_key: &[u8],
     ) -> Result<(), GossipError> {
-        let p256_pubkey = P256PublicKey::from_sec1_bytes(public_key)
-            .map_err(|e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)))?;
-        let verifying_key = VerifyingKey::from(&p256_pubkey);
+        let cesr_pubkey =
+            CesrPublicKey::from_raw(cesr::SigningKeyCode::MlDsa65, public_key.to_vec()).map_err(
+                |e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)),
+            )?;
 
-        let sig = P256Signature::from_slice(signature)
+        let cesr_sig = CesrSignature::from_raw(cesr::SignatureCode::MlDsa65, signature.to_vec())
             .map_err(|e| GossipError::VerificationFailed(format!("Invalid signature: {}", e)))?;
 
-        verifying_key.verify(data, &sig).map_err(|e| {
+        cesr_pubkey.verify(data, &cesr_sig).map_err(|e| {
             GossipError::VerificationFailed(format!("Signature verification failed: {}", e))
         })
     }
@@ -424,51 +396,28 @@ mod tests {
         );
     }
 
-    // ==================== cesr_pubkey_to_compressed Tests ====================
+    // ==================== cesr_pubkey_to_raw Tests ====================
 
     #[test]
-    fn test_cesr_pubkey_to_compressed_valid() {
-        use p256::ecdsa::SigningKey;
+    fn test_cesr_pubkey_to_raw_valid() {
+        let (cesr_key, _) = cesr::generate_ml_dsa_65().unwrap();
 
-        let seed: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-            0x1d, 0x1e, 0x1f, 0x20,
-        ];
-        let signing_key = SigningKey::from_slice(&seed).unwrap();
-        let verifying_key = signing_key.verifying_key();
-        let compressed = verifying_key.to_encoded_point(true);
-
-        let cesr_key =
-            CesrPublicKey::from_raw(cesr::KeyCode::Secp256r1, compressed.as_bytes().to_vec())
-                .unwrap();
-
-        let result = cesr_pubkey_to_compressed(&cesr_key);
+        let result = cesr_pubkey_to_raw(&cesr_key);
         assert!(result.is_ok());
         let bytes = result.unwrap();
-        assert_eq!(bytes.len(), 33);
-        assert!(bytes[0] == 0x02 || bytes[0] == 0x03);
+        assert_eq!(bytes.len(), 1952); // ML-DSA-65 public key size
     }
 
     // ==================== KelsPeerVerifier Tests ====================
 
     #[test]
     fn test_kels_peer_verifier_verify_valid_signature() {
-        use p256::ecdsa::{SigningKey, signature::Signer as _};
-
-        let seed: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-            0x1d, 0x1e, 0x1f, 0x20,
-        ];
-        let signing_key = SigningKey::from_slice(&seed).unwrap();
-        let verifying_key = signing_key.verifying_key();
-        let compressed = verifying_key.to_encoded_point(true);
-        let public_key = compressed.as_bytes();
+        let (cesr_pubkey, cesr_privkey) = cesr::generate_ml_dsa_65().unwrap();
+        let public_key = cesr_pubkey.raw().to_vec();
 
         let data = b"test data to sign";
-        let sig: P256Signature = signing_key.sign(data);
-        let sig_bytes = sig.to_bytes();
+        let cesr_sig = cesr_privkey.sign(data).unwrap();
+        let sig_bytes = cesr_sig.raw().to_vec();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
@@ -481,25 +430,16 @@ mod tests {
             store,
         );
 
-        let result = verifier.verify_signature(data, &sig_bytes, public_key);
+        let result = verifier.verify_signature(data, &sig_bytes, &public_key);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_kels_peer_verifier_verify_bad_signature() {
-        use p256::ecdsa::SigningKey;
+        let (cesr_pubkey, _) = cesr::generate_ml_dsa_65().unwrap();
+        let public_key = cesr_pubkey.raw().to_vec();
 
-        let seed: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-            0x1d, 0x1e, 0x1f, 0x20,
-        ];
-        let signing_key = SigningKey::from_slice(&seed).unwrap();
-        let verifying_key = signing_key.verifying_key();
-        let compressed = verifying_key.to_encoded_point(true);
-        let public_key = compressed.as_bytes();
-
-        let bad_sig = vec![1u8; 64];
+        let bad_sig = vec![1u8; 3309];
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
@@ -512,7 +452,7 @@ mod tests {
             store,
         );
 
-        let result = verifier.verify_signature(b"test data", &bad_sig, public_key);
+        let result = verifier.verify_signature(b"test data", &bad_sig, &public_key);
         assert!(result.is_err());
     }
 }

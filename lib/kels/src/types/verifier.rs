@@ -543,13 +543,9 @@ impl KelVerifier {
         public_key: &PublicKey,
     ) -> Result<(), KelsError> {
         let event = &signed_event.event;
-        let expected_qb64 = public_key.qb64();
 
-        let sig = signed_event.signature(&expected_qb64).ok_or_else(|| {
-            KelsError::InvalidKel(format!(
-                "Event {} has no signature for expected key",
-                &event.said,
-            ))
+        let sig = signed_event.signature("signing").ok_or_else(|| {
+            KelsError::InvalidKel(format!("Event {} has no signing signature", &event.said,))
         })?;
 
         let signature = Signature::from_qb64(&sig.signature)?;
@@ -571,9 +567,9 @@ impl KelVerifier {
                 ))
             })?;
 
-            let recovery_sig = signed_event.signature(recovery_key_qb64).ok_or_else(|| {
+            let recovery_sig = signed_event.signature("recovery").ok_or_else(|| {
                 KelsError::InvalidKel(format!(
-                    "Recovery event {} has no signature for recovery key",
+                    "Recovery event {} has no recovery signature",
                     &event.said,
                 ))
             })?;
@@ -1298,7 +1294,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cesr::{Matter, PrivateKey};
+    use cesr::{Matter, PrivateKey, SigningKeyCode};
 
     use super::*;
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider, store::KelStore};
@@ -1427,20 +1423,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_kel_paginated_verification() {
-        // Build a 1025-event KEL (icp + 1024 ixn) — spans 3 pages at 512 events/page
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        // Build a 129-event KEL (icp + 128 ixn) — spans 3 pages at 64 events/page
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
         let mut events = vec![icp];
-        for i in 0..1024 {
+        for i in 0..128 {
             let ixn = builder
                 .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
                 .await
                 .unwrap();
             events.push(ixn);
         }
-        assert_eq!(events.len(), 1025);
+        assert_eq!(events.len(), 129);
 
         // Save to MemoryStore
         let store = MemoryStore::new();
@@ -1450,7 +1447,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             100,
             iter::empty(),
         )
@@ -1474,7 +1471,8 @@ mod tests {
     #[tokio::test]
     async fn test_large_kel_with_early_divergence() {
         // Build a long KEL, then inject a divergent event at serial 2
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let ixn1 = builder1
@@ -1487,14 +1485,14 @@ mod tests {
 
         // Owner continues building a long chain
         let mut owner_events = vec![icp.clone(), ixn1.clone()];
-        for i in 2..1025 {
+        for i in 2..129 {
             let ixn = builder1
                 .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
                 .await
                 .unwrap();
             owner_events.push(ixn);
         }
-        assert_eq!(owner_events.len(), 1025);
+        assert_eq!(owner_events.len(), 129);
 
         // Adversary injects one event at serial 2 (divergence)
         let adversary_ixn = builder2
@@ -1516,7 +1514,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             100,
             iter::empty(),
         )
@@ -1535,7 +1533,8 @@ mod tests {
         let target_anchor = Digest::blake3_256(b"target-anchor").qb64();
         let missing_anchor = Digest::blake3_256(b"missing-anchor").qb64();
 
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let ixn = builder.interact(&target_anchor).await.unwrap();
@@ -1547,7 +1546,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             100,
             iter::once(target_anchor.clone()),
         )
@@ -1561,7 +1560,7 @@ mod tests {
         let kel_verification2 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             100,
             iter::once(missing_anchor.clone()),
         )
@@ -1575,7 +1574,8 @@ mod tests {
     #[tokio::test]
     async fn test_max_pages_limit_fails_secure() {
         // Build a KEL larger than max_pages * page_size
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -1613,7 +1613,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncate_incomplete_generation_basic() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let ixn1 = builder1
             .interact(&Digest::blake3_256(b"a1").qb64())
@@ -1666,7 +1667,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_incept() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
 
         let icp = builder.incept().await.unwrap();
 
@@ -1689,7 +1691,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_interact() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
 
         let icp = builder.incept().await.unwrap();
 
@@ -1707,7 +1710,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
 
         let icp = builder.incept().await.unwrap();
         let original_public_key = builder.current_public_key().await.unwrap();
@@ -1731,14 +1735,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_interact_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let result = builder.interact("some_anchor").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_rotate_before_incept_fails() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let result = builder.rotate().await;
         assert!(result.is_err());
     }
@@ -1747,7 +1753,8 @@ mod tests {
     async fn test_said_verification() {
         use verifiable_storage::SelfAddressed;
 
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
 
         let icp = builder.incept().await.unwrap();
         assert!(icp.event.verify_prefix().is_ok());
@@ -1758,7 +1765,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_events() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&builder1);
@@ -1777,7 +1785,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation_after_interactions() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         builder.interact(&anchor("a1")).await.unwrap();
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
@@ -1802,7 +1811,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_roundtrip() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
 
         let json = serde_json::to_string(&icp).unwrap();
@@ -1819,7 +1829,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_basic_kel() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
@@ -1837,7 +1848,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_with_rotation() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         builder.interact(&anchor("a1")).await.unwrap();
         let rot = builder.rotate().await.unwrap();
@@ -1868,7 +1880,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergence_two_way() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let mut builder2 = builder1.clone();
 
@@ -1890,7 +1903,8 @@ mod tests {
     async fn test_three_events_at_same_serial_rejected() {
         // The DB can never have 3 events at the same serial — handle_overlap_submission
         // only inserts one divergent event. The verifier must reject this as invalid.
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
@@ -1913,7 +1927,8 @@ mod tests {
     async fn test_second_divergence_after_existing_rejected() {
         // Once a KEL is divergent, only 1 event per generation is allowed.
         // A second divergence (2 events at a serial after the divergence point) is invalid.
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
@@ -1937,7 +1952,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergent_kel_has_no_single_public_key() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let mut builder2 = builder1.clone();
 
@@ -1954,7 +1970,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_adversary_rotation_detection() {
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let owner_ixn = owner.interact(&anchor("owner")).await.unwrap();
 
@@ -1986,7 +2003,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_decommissioned_kel() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.decommission().await.unwrap();
 
@@ -1997,7 +2015,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_contested_kel() {
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
 
         let mut adversary = owner.clone();
@@ -2015,7 +2034,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_contested_kel_with_ror() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
 
         let mut adversary = builder.clone();
@@ -2034,7 +2054,8 @@ mod tests {
     #[tokio::test]
     async fn test_anchor_found() {
         let a = anchor("my-anchor");
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
@@ -2047,7 +2068,8 @@ mod tests {
     async fn test_anchor_not_found() {
         let a = anchor("my-anchor");
         let missing = anchor("missing");
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
@@ -2059,7 +2081,8 @@ mod tests {
     #[tokio::test]
     async fn test_anchor_no_interactions() {
         let missing = anchor("anything");
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
 
         let kel_verification = verify_with_anchors(builder.pending_events(), [missing.clone()]);
@@ -2069,7 +2092,8 @@ mod tests {
     #[tokio::test]
     async fn test_anchor_before_divergence() {
         let a_pre = anchor("pre-divergence");
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         owner.incept().await.unwrap();
         owner.interact(&a_pre).await.unwrap();
 
@@ -2097,7 +2121,8 @@ mod tests {
         let a_pre = anchor("pre-divergence");
         let a_owner = anchor("owner");
         let a_adv = anchor("adversary");
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         owner.incept().await.unwrap();
         owner.interact(&a_pre).await.unwrap();
         let mut adversary = owner.clone();
@@ -2126,7 +2151,8 @@ mod tests {
         // Chain: icp(0), ixn(1, pre-anchor), diverge at 2, owner extends to 3 with anchor.
         let a_pre = anchor("before");
         let a_post = anchor("after");
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         owner.incept().await.unwrap();
         owner.interact(&a_pre).await.unwrap(); // serial 1
         let mut adversary = owner.clone();
@@ -2154,7 +2180,8 @@ mod tests {
     #[tokio::test]
     async fn test_max_pages_exact_boundary_succeeds() {
         // Boundary: KEL fits exactly within max_pages * page_size — should succeed.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -2187,7 +2214,8 @@ mod tests {
     #[tokio::test]
     async fn test_max_pages_one_over_boundary_fails() {
         // One event over max_pages * page_size — should fail secure.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -2220,7 +2248,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_effective_tail_said_non_divergent() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
@@ -2233,7 +2262,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_effective_tail_said_divergent() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let mut builder2 = builder1.clone();
 
@@ -2260,7 +2290,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_recovery_event() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.recover(false).await.unwrap();
 
@@ -2278,7 +2309,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_rotate_recovery() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.rotate_recovery().await.unwrap();
 
@@ -2298,7 +2330,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_extends_verification() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         let ixn1 = builder.interact(&anchor("a1")).await.unwrap();
 
@@ -2325,7 +2358,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_from_branch_tip_verifies_extension() {
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -2353,7 +2387,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_divergent_events() {
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         builder1.interact(&anchor("a1")).await.unwrap();
 
@@ -2417,15 +2452,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_page_kel_with_rotations() {
-        // Build a 600-event KEL that spans 2 pages (page_size=512), with
+        // Build an 80-event KEL that spans 2 pages (page_size=64), with
         // rotations interspersed. Verifies that key state transitions are
         // tracked correctly across page boundaries.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
-        for i in 0..599 {
-            if i % 100 == 99 {
+        for i in 0..79 {
+            if i % 20 == 19 {
                 builder.rotate().await.unwrap();
             } else {
                 builder
@@ -2436,7 +2472,7 @@ mod tests {
         }
 
         let events = builder.pending_events().to_vec();
-        assert_eq!(events.len(), 600);
+        assert_eq!(events.len(), 80);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &events).await.unwrap();
@@ -2444,7 +2480,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             10,
             iter::empty(),
         )
@@ -2460,7 +2496,7 @@ mod tests {
             events.last().unwrap().event.said
         );
 
-        // Last establishment event should be the last rotation (at serial 500)
+        // Last establishment event should be the last rotation (at serial 60)
         let last_est = kel_verification.last_establishment_event().unwrap();
         assert!(last_est.event.is_rotation());
 
@@ -2477,16 +2513,17 @@ mod tests {
     async fn test_anchor_checking_across_pages() {
         // Place an anchor in the first page and another in the second page.
         // Verify both are found with completed_verification.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
         let early_anchor = anchor("early-target");
         let late_anchor = anchor("late-target");
 
-        // First page: events 0..512
-        for i in 0..510 {
-            if i == 50 {
+        // First page: events 0..64
+        for i in 0..62 {
+            if i == 10 {
                 builder.interact(&early_anchor).await.unwrap();
             } else {
                 builder
@@ -2495,9 +2532,9 @@ mod tests {
                     .unwrap();
             }
         }
-        // Second page: events 512+
-        for i in 0..20 {
-            if i == 10 {
+        // Second page: events 64+
+        for i in 0..8 {
+            if i == 4 {
                 builder.interact(&late_anchor).await.unwrap();
             } else {
                 builder
@@ -2508,7 +2545,7 @@ mod tests {
         }
 
         let events = builder.pending_events().to_vec();
-        assert!(events.len() > 512);
+        assert!(events.len() > 64);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &events).await.unwrap();
@@ -2516,7 +2553,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             10,
             vec![early_anchor.clone(), late_anchor.clone()],
         )
@@ -2532,24 +2569,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergence_starts_on_second_page() {
-        // Owner builds exactly 512 events (serials 0..511, filling one page).
-        // Both owner and adversary add events at serial 512, which falls
+        // Owner builds exactly 64 events (serials 0..63, filling one page).
+        // Both owner and adversary add events at serial 64, which falls
         // entirely on page 2 — no split generation.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
-        for i in 0..511 {
+        for i in 0..63 {
             owner.interact(&anchor(&format!("o-{}", i))).await.unwrap();
         }
-        // Owner has 512 events (serial 0..511). Clone for adversary.
+        // Owner has 64 events (serial 0..63). Clone for adversary.
         let mut adversary = owner.clone();
 
-        // Both add an event at serial 512
-        let owner_ixn = owner.interact(&anchor("owner-512")).await.unwrap();
-        let adv_ixn = adversary.interact(&anchor("adv-512")).await.unwrap();
-        assert_eq!(owner_ixn.event.serial, 512);
-        assert_eq!(adv_ixn.event.serial, 512);
+        // Both add an event at serial 64
+        let owner_ixn = owner.interact(&anchor("owner-64")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-64")).await.unwrap();
+        assert_eq!(owner_ixn.event.serial, 64);
+        assert_eq!(adv_ixn.event.serial, 64);
 
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn);
@@ -2561,7 +2599,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             10,
             iter::empty(),
         )
@@ -2569,7 +2607,7 @@ mod tests {
         .unwrap();
 
         assert!(kel_verification.is_divergent());
-        assert_eq!(kel_verification.diverged_at_serial(), Some(512));
+        assert_eq!(kel_verification.diverged_at_serial(), Some(64));
         assert_eq!(kel_verification.branch_tips().len(), 2);
         assert!(kel_verification.current_public_key().is_none());
     }
@@ -2578,19 +2616,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_long_owner_chain_with_early_adversary() {
-        // Owner: icp + 1023 ixn (1024 events, 2 full pages).
+        // Owner: icp + 127 ixn (128 events, 2 full pages).
         // Adversary: branches after icp, adds 1 ixn at serial 1.
         // Tests: multi-page divergent verification where one branch is
         // much longer than the other. The short adversary branch should
         // be carried forward across pages.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut adversary = owner.clone();
 
         // Owner builds long chain
-        let owner_tip = build_interactions(&mut owner, 1023, "owner").await;
-        assert_eq!(owner_tip.event.serial, 1023);
+        let owner_tip = build_interactions(&mut owner, 127, "owner").await;
+        assert_eq!(owner_tip.event.serial, 127);
 
         // Adversary injects one event at serial 1
         let adv_ixn = adversary.interact(&anchor("adversary-1")).await.unwrap();
@@ -2599,7 +2638,7 @@ mod tests {
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn.clone());
         sort_events(&mut all_events);
-        assert_eq!(all_events.len(), 1025);
+        assert_eq!(all_events.len(), 129);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &all_events).await.unwrap();
@@ -2607,7 +2646,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             10,
             iter::empty(),
         )
@@ -2634,7 +2673,8 @@ mod tests {
         // Owner continues with rotation after divergence.
         // Adversary branch is a single event (the DB invariant).
         // Verifier tracks independent crypto state per branch.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -2675,7 +2715,8 @@ mod tests {
     async fn test_recovery_after_divergence() {
         // Owner incepts, adversary branches, owner recovers.
         // After recovery, the KEL should be non-divergent.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
 
         let (current_key, next_key, recovery_key) = clone_keys(&owner);
@@ -2718,7 +2759,8 @@ mod tests {
     async fn test_contest_freezes_kel() {
         // Adversary reveals recovery key via rotate_recovery.
         // Owner contests. The contested KEL is permanently frozen.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -2751,7 +2793,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_decommission_then_no_more_events() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.interact(&anchor("data")).await.unwrap();
         builder.decommission().await.unwrap();
@@ -2771,7 +2814,8 @@ mod tests {
     async fn test_resume_across_multiple_increments() {
         // Simulate three incremental verifications: page 1, page 2, page 3.
         // Each time resume from the previous Verification and verify the next batch.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
 
         // Build 30 events total
@@ -2814,7 +2858,8 @@ mod tests {
     async fn test_resume_preserves_divergence() {
         // Diverge at serial 1, then resume and verify the continuing branch extends.
         // The shorter branch is exactly 1 event (DB invariant).
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -2853,7 +2898,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delegated_inception_verifies() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let dip = builder
             .incept_delegated("EDelegatingPrefix________________________________")
             .await
@@ -2882,7 +2928,8 @@ mod tests {
     async fn test_effective_said_is_deterministic_across_orderings() {
         // Two divergent branches produce the same effective SAID regardless
         // of which order they appear internally.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -2923,7 +2970,8 @@ mod tests {
         // Serial 2 has 1 event but serial 1 has 2 → 1 < 2 → truncation
         // removes the lone serial-2 event. Remaining page still has the
         // complete divergent generation at serial 1.
-        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut b1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         b1.incept().await.unwrap();
         let mut b2 = b1.clone();
 
@@ -2952,7 +3000,8 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_no_op_on_complete_generation() {
         // A complete generation should not be truncated.
-        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut b1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = b1.incept().await.unwrap();
         let mut b2 = b1.clone();
 
@@ -2985,7 +3034,8 @@ mod tests {
         // Page size 7: first page = serials 0-4 (5 events) + serial 5 (2 events) = 7.
         // Truncation: serial 5 has 2 events, no incomplete generation. Full page.
         // Page 2: serials 6-7 (2 events).
-        let mut b1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut b1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = b1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -3043,7 +3093,8 @@ mod tests {
     async fn test_full_lifecycle() {
         // Full lifecycle test: incept, interact, rotate, adversary branches,
         // verify divergence, owner recovers, verify recovery.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -3078,7 +3129,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            512,
+            64,
             10,
             iter::empty(),
         )
@@ -3114,7 +3165,8 @@ mod tests {
         // Simulate the submit handler's recovery verification path:
         // verify a divergent KEL, pick the owner branch tip, then verify
         // recovery events against that specific branch.
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let mut adversary = owner.clone();
 
@@ -3152,7 +3204,8 @@ mod tests {
     async fn test_verification_said_is_content_addressable() {
         // Two independent verifications of the same events must produce
         // the same Verification SAID.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.interact(&anchor("a")).await.unwrap();
         builder.rotate().await.unwrap();
@@ -3172,7 +3225,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             "ENonexistent_Prefix_________________________",
-            512,
+            64,
             10,
             iter::empty(),
         )
@@ -3190,7 +3243,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate_recovery_changes_recovery_key() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let ror = builder.rotate_recovery().await.unwrap();
 
@@ -3217,7 +3271,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rejects_wrong_prefix() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
 
         let mut verifier = KelVerifier::new("EWrongPrefix____________________________________");
@@ -3229,7 +3284,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rejects_serial_gap() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         builder.incept().await.unwrap();
         builder.interact(&anchor("a")).await.unwrap();
         builder.interact(&anchor("b")).await.unwrap();
@@ -3249,7 +3305,8 @@ mod tests {
     async fn test_tiny_page_size_verifies_correctly() {
         // Use page_size=3 to force many page loads. This stress-tests the
         // pagination loop in completed_verification.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
@@ -3356,7 +3413,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_key_events_linear() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         builder.interact(&anchor("a1")).await.unwrap();
@@ -3380,7 +3438,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_key_events_linear() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         builder.interact(&anchor("a1")).await.unwrap();
@@ -3395,7 +3454,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_forward_key_events_linear() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         builder.interact(&anchor("a1")).await.unwrap();
@@ -3414,7 +3474,8 @@ mod tests {
     async fn test_transfer_key_events_divergent() {
         // Owner: icp, o1, o2, o3, o4, o5
         // Adversary: a1 at serial 2 (diverges from o1)
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let o1 = owner.interact(&anchor("o1")).await.unwrap();
@@ -3454,7 +3515,8 @@ mod tests {
     #[tokio::test]
     async fn test_transfer_key_events_divergent_page_boundary() {
         // Test divergence at the end of a page boundary
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         owner.interact(&anchor("o1")).await.unwrap();
@@ -3487,7 +3549,8 @@ mod tests {
     #[tokio::test]
     async fn test_transfer_key_events_no_verifier() {
         // Structural divergence detection works without crypto verification
-        let mut owner = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut owner =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         owner.interact(&anchor("o1")).await.unwrap();
@@ -3514,7 +3577,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_transfer_key_events_max_pages() {
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         for i in 0..10 {
@@ -3534,7 +3598,8 @@ mod tests {
     async fn test_paginated_anchor_check_then_resume() {
         // Phase 1: verify a KEL via completed_verification with anchor checking.
         // Phase 2: add more events with new anchors, resume, verify new anchors.
-        let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 

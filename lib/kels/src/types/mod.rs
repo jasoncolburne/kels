@@ -128,7 +128,7 @@ mod tests {
     }
 
     fn make_secp256r1_key() -> String {
-        use cesr::{KeyCode, Matter, PublicKey};
+        use cesr::{Matter, PublicKey, SigningKeyCode};
         // Valid compressed secp256r1 public key (33 bytes)
         let key_bytes = [
             0x02, // compressed prefix
@@ -136,7 +136,7 @@ mod tests {
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
         ];
-        PublicKey::from_raw(KeyCode::Secp256r1, key_bytes.to_vec())
+        PublicKey::from_raw(SigningKeyCode::Secp256r1, key_bytes.to_vec())
             .unwrap()
             .qb64()
     }
@@ -420,11 +420,11 @@ mod tests {
     fn test_signed_key_event_equality_same_said() {
         let event = make_valid_icp();
         let sig1 = KeyEventSignature {
-            public_key: "key1".to_string(),
+            label: "key1".to_string(),
             signature: "sig1".to_string(),
         };
         let sig2 = KeyEventSignature {
-            public_key: "key2".to_string(),
+            label: "key2".to_string(),
             signature: "sig2".to_string(),
         };
 
@@ -448,7 +448,7 @@ mod tests {
         event2.said = make_blake3_digest("different");
 
         let sig = KeyEventSignature {
-            public_key: "key".to_string(),
+            label: "key".to_string(),
             signature: "sig".to_string(),
         };
 
@@ -468,11 +468,11 @@ mod tests {
     fn test_signed_key_event_signature_lookup() {
         let event = make_valid_icp();
         let sig1 = KeyEventSignature {
-            public_key: "key1".to_string(),
+            label: "key1".to_string(),
             signature: "sig1".to_string(),
         };
         let sig2 = KeyEventSignature {
-            public_key: "key2".to_string(),
+            label: "key2".to_string(),
             signature: "sig2".to_string(),
         };
 
@@ -822,10 +822,10 @@ mod tests {
     #[test]
     fn test_signed_key_event_new() {
         let event = make_valid_icp();
-        let signed = SignedKeyEvent::new(event.clone(), "pubkey".to_string(), "sig".to_string());
+        let signed = SignedKeyEvent::new(event.clone(), "signing".to_string(), "sig".to_string());
         assert_eq!(signed.event.said, event.said);
         assert_eq!(signed.signatures.len(), 1);
-        assert_eq!(signed.signatures[0].public_key, "pubkey");
+        assert_eq!(signed.signatures[0].label, "signing");
         assert_eq!(signed.signatures[0].signature, "sig");
     }
 
@@ -834,14 +834,12 @@ mod tests {
         let event = make_valid_icp();
         let signed = SignedKeyEvent::new_recovery(
             event.clone(),
-            "primary_key".to_string(),
             "primary_sig".to_string(),
-            "recovery_key".to_string(),
             "recovery_sig".to_string(),
         );
         assert_eq!(signed.signatures.len(), 2);
-        assert_eq!(signed.signatures[0].public_key, "primary_key");
-        assert_eq!(signed.signatures[1].public_key, "recovery_key");
+        assert_eq!(signed.signatures[0].label, "signing");
+        assert_eq!(signed.signatures[1].label, "recovery");
     }
 
     #[test]
@@ -853,7 +851,7 @@ mod tests {
         ];
         let signed = SignedKeyEvent::from_signatures(event, sigs);
         assert_eq!(signed.signatures.len(), 2);
-        assert_eq!(signed.signatures[0].public_key, "key1");
+        assert_eq!(signed.signatures[0].label, "key1");
         assert_eq!(signed.signatures[1].signature, "sig2");
     }
 
@@ -882,7 +880,7 @@ mod tests {
     fn test_signed_key_event_equality_different_signature_count() {
         let event = make_valid_icp();
         let sig = KeyEventSignature {
-            public_key: "key".to_string(),
+            label: "key".to_string(),
             signature: "sig".to_string(),
         };
 
@@ -905,14 +903,14 @@ mod tests {
         let signed1 = SignedKeyEvent {
             event: event.clone(),
             signatures: vec![KeyEventSignature {
-                public_key: "key".to_string(),
+                label: "key".to_string(),
                 signature: "sig1".to_string(),
             }],
         };
         let signed2 = SignedKeyEvent {
             event,
             signatures: vec![KeyEventSignature {
-                public_key: "key".to_string(),
+                label: "key".to_string(),
                 signature: "sig2".to_string(),
             }],
         };

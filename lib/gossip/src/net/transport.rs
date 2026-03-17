@@ -1,18 +1,16 @@
-//! TCP transport with ECDH handshake and AES-GCM-256 encryption.
+//! TCP transport with handshake and AES-GCM-256 encryption.
 //!
 //! Handles the full connection lifecycle:
 //! 1. TCP connect/accept
 //! 2. Prefix exchange (peer identity)
-//! 3. ECDH key exchange (ephemeral P-256)
-//! 4. Mutual authentication (sign and verify ephemeral keys)
-//! 5. Derive AES-GCM-256 session keys and create encrypted stream
+//! 3. ML-KEM-768 key exchange and mutual ML-DSA-65 authentication
+//! 4. Derive AES-GCM-256 session keys and create encrypted stream
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cesr::{KeyCode, Matter, PublicKey as CesrPublicKey};
+use cesr::{KemCiphertext, KemPublicKey, Matter, generate_ml_kem_768};
 use futures::{AsyncReadExt, AsyncWriteExt};
-use serde::Serialize;
 use socket2::SockRef;
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
@@ -21,20 +19,9 @@ use tracing::{debug, warn};
 use crate::identity::NodePrefix;
 
 use super::{
-    Error, PeerVerifier, Signer, codec,
-    crypto::{self, EncryptedStream},
+    Error, PeerVerifier, SignatureBundle, Signer,
+    crypto::{EncryptedStream, derive_session_keys},
 };
-
-/// JSON payload signed during the handshake.
-///
-/// Contains CESR-encoded ephemeral public keys and the peer's prefix.
-/// Field order is deterministic via `serde_json` `preserve_order`.
-#[derive(Serialize)]
-struct HandshakePayload {
-    our_eph: String,
-    their_eph: String,
-    their_prefix: String,
-}
 
 /// An established, authenticated, encrypted connection to a peer.
 pub struct PeerConnection {
@@ -44,19 +31,6 @@ pub struct PeerConnection {
     pub stream: EncryptedStream<Compat<TcpStream>>,
 }
 
-/// Perform the full handshake on an established TCP connection.
-///
-/// This implements the KELS gossip handshake protocol (three-DH pattern):
-/// 1. Exchange prefixes (44 bytes each)
-/// 2. Ephemeral ECDH key exchange (33 bytes compressed P-256)
-/// 3. Mutual authentication: each side signs a JSON payload containing CESR-encoded
-///    ephemeral keys and the peer's prefix
-/// 4. Verify peer's signature against their KEL public key
-/// 5. Static-ephemeral DH: compute se (our_static × their_eph via HSM) and
-///    es (our_eph × their_static locally)
-/// 6. Derive AES-GCM-256 session keys from all three DH secrets (ee + se + es)
-///
-/// Returns a `PeerConnection` with the authenticated peer identity and encrypted stream.
 /// Configure TCP keepalive for faster stale connection detection.
 ///
 /// Without this, a crashed peer's TCP connections linger for ~2 hours (default
@@ -83,80 +57,40 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     let their_id = exchange_prefixes(&mut stream, &our_id, is_initiator).await?;
     debug!(peer = %their_id, "prefix exchange complete");
 
-    // Step 2: ECDH key exchange (returns ephemeral SecretKey for static-ephemeral DH).
-    let (ee_secret, eph_secret_key, our_eph, their_eph) =
-        crypto::ecdh_key_exchange(&mut stream, is_initiator).await?;
-    debug!(peer = %their_id, "ECDH key exchange complete");
+    // Step 2: ML-KEM-768 key exchange.
+    let (shared_secret, our_ek_qb64, their_ek_qb64) =
+        mlkem_key_exchange(&mut stream, is_initiator).await?;
+    debug!(peer = %their_id, "ML-KEM key exchange complete");
 
-    // Step 3: Sign our ephemeral key binding as a JSON payload.
-    let sign_data = handshake_payload(&our_eph, &their_eph, &their_id)?;
-    let sig_bundle = signer.sign(sign_data.as_bytes()).await?;
+    // Step 3: Sign handshake transcript.
+    let payload = handshake_payload(&our_ek_qb64, &their_ek_qb64, &their_id);
+    let our_sig = signer.sign(payload.as_bytes()).await?;
 
-    // Exchange signatures and public keys.
-    if is_initiator {
-        codec::write_bytes(&mut stream, &sig_bundle.signature).await?;
-        codec::write_bytes(&mut stream, &sig_bundle.public_key).await?;
-    }
+    // Step 4: Exchange and verify signatures.
+    let their_sig = exchange_signatures(&mut stream, &our_sig, is_initiator).await?;
 
-    let their_sig = codec::read_bytes(&mut stream).await?;
-    let their_pubkey = codec::read_bytes(&mut stream).await?;
-
-    if !is_initiator {
-        codec::write_bytes(&mut stream, &sig_bundle.signature).await?;
-        codec::write_bytes(&mut stream, &sig_bundle.public_key).await?;
-    }
-
-    // Step 4: Verify peer's signature.
-    // They signed with our_eph/their_eph swapped (from their perspective).
-    let verify_data = handshake_payload(&their_eph, &our_eph, &our_id)?;
+    // Verify peer's signature (they signed with our_ek and their_ek swapped, and our prefix)
+    let their_payload = handshake_payload(&their_ek_qb64, &our_ek_qb64, &our_id);
     verifier
-        .verify_peer(&their_id, verify_data.as_bytes(), &their_sig, &their_pubkey)
-        .await?;
-    debug!(peer = %their_id, "peer authentication verified");
+        .verify_peer(
+            &their_id,
+            their_payload.as_bytes(),
+            &their_sig.signature,
+            &their_sig.public_key,
+        )
+        .await
+        .map_err(|e| Error::Handshake(format!("Peer verification failed: {}", e)))?;
+    debug!(peer = %their_id, "peer authenticated");
 
-    // Step 5: Static-ephemeral DH.
-    // se: our_static × their_ephemeral (via identity service / HSM)
-    let se_secret = signer.ecdh(&their_eph).await?;
-    // es: our_ephemeral × their_static (local computation)
-    let es_secret = crypto::compute_eph_static_dh(&eph_secret_key, &their_pubkey)?;
-
-    // Step 6: Derive session keys from all three DH secrets.
+    // Step 5: Derive session keys from ML-KEM shared secret.
     let (send_cipher, recv_cipher) =
-        crypto::derive_session_keys(&ee_secret, &se_secret, &es_secret, is_initiator);
+        derive_session_keys(&shared_secret, &our_id.0, &their_id.0, is_initiator);
     let encrypted = EncryptedStream::new(stream, send_cipher, recv_cipher);
 
     Ok(PeerConnection {
         peer_prefix: their_id,
         stream: encrypted,
     })
-}
-
-/// Build the JSON string signed during the handshake.
-///
-/// CESR-encodes the ephemeral P-256 public keys and includes the peer prefix,
-/// then serializes to a deterministic JSON string.
-fn handshake_payload(
-    our_eph: &[u8],
-    their_eph: &[u8],
-    their_id: &NodePrefix,
-) -> Result<String, Error> {
-    let our_eph_qb64 = CesrPublicKey::from_raw(KeyCode::Secp256r1, our_eph.to_vec())
-        .map_err(|e| Error::Handshake(format!("CESR encode our_eph: {e}")))?
-        .qb64();
-    let their_eph_qb64 = CesrPublicKey::from_raw(KeyCode::Secp256r1, their_eph.to_vec())
-        .map_err(|e| Error::Handshake(format!("CESR encode their_eph: {e}")))?
-        .qb64();
-    let their_prefix = their_id
-        .to_option_string()
-        .ok_or_else(|| Error::Handshake("Invalid peer prefix encoding".to_string()))?;
-
-    let payload = HandshakePayload {
-        our_eph: our_eph_qb64,
-        their_eph: their_eph_qb64,
-        their_prefix,
-    };
-
-    serde_json::to_string(&payload).map_err(|e| Error::Handshake(format!("JSON serialize: {e}")))
 }
 
 /// Exchange 44-byte prefixes between peers.
@@ -178,6 +112,158 @@ async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     }
 
     Ok(NodePrefix(their_bytes))
+}
+
+/// Perform ML-KEM-768 key exchange.
+///
+/// Returns (shared_secret, our_ek_or_ct_qb64, their_ek_or_ct_qb64).
+/// - Initiator: generates keypair, sends ek, receives ct, decapsulates.
+/// - Acceptor: receives ek, encapsulates, sends ct.
+async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
+    stream: &mut S,
+    is_initiator: bool,
+) -> Result<([u8; 32], String, String), Error> {
+    if is_initiator {
+        // Generate ML-KEM keypair
+        let (ek, dk) = generate_ml_kem_768()
+            .map_err(|e| Error::Handshake(format!("ML-KEM keygen failed: {}", e)))?;
+        let ek_qb64 = ek.qb64();
+
+        // Send encapsulation key
+        send_length_prefixed(stream, ek_qb64.as_bytes()).await?;
+
+        // Receive ciphertext
+        let ct_bytes = recv_length_prefixed(stream).await?;
+        let ct_qb64 = String::from_utf8(ct_bytes)
+            .map_err(|_| Error::Handshake("Invalid ciphertext encoding".into()))?;
+        let ct = KemCiphertext::from_qb64(&ct_qb64)
+            .map_err(|e| Error::Handshake(format!("Invalid ciphertext: {}", e)))?;
+
+        // Decapsulate
+        let shared_secret = dk
+            .decapsulate(&ct)
+            .map_err(|e| Error::Handshake(format!("Decapsulation failed: {}", e)))?;
+
+        Ok((shared_secret, ek_qb64, ct_qb64))
+    } else {
+        // Receive encapsulation key
+        let ek_bytes = recv_length_prefixed(stream).await?;
+        let ek_qb64 = String::from_utf8(ek_bytes)
+            .map_err(|_| Error::Handshake("Invalid encapsulation key encoding".into()))?;
+        let ek = KemPublicKey::from_qb64(&ek_qb64)
+            .map_err(|e| Error::Handshake(format!("Invalid encapsulation key: {}", e)))?;
+
+        // Encapsulate
+        let (ct, shared_secret) = ek
+            .encapsulate()
+            .map_err(|e| Error::Handshake(format!("Encapsulation failed: {}", e)))?;
+        let ct_qb64 = ct.qb64();
+
+        // Send ciphertext
+        send_length_prefixed(stream, ct_qb64.as_bytes()).await?;
+
+        Ok((shared_secret, ct_qb64, ek_qb64))
+    }
+}
+
+/// Exchange ML-DSA-65 signature bundles between peers.
+async fn exchange_signatures<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
+    stream: &mut S,
+    our_sig: &SignatureBundle,
+    is_initiator: bool,
+) -> Result<SignatureBundle, Error> {
+    // Serialize our bundle: 4-byte sig_len + sig + 4-byte key_len + key
+    let mut our_payload = Vec::new();
+    our_payload.extend_from_slice(&(our_sig.signature.len() as u32).to_be_bytes());
+    our_payload.extend_from_slice(&our_sig.signature);
+    our_payload.extend_from_slice(&(our_sig.public_key.len() as u32).to_be_bytes());
+    our_payload.extend_from_slice(&our_sig.public_key);
+
+    if is_initiator {
+        send_length_prefixed(stream, &our_payload).await?;
+        let their_payload = recv_length_prefixed(stream).await?;
+        deserialize_signature_bundle(&their_payload)
+    } else {
+        let their_payload = recv_length_prefixed(stream).await?;
+        send_length_prefixed(stream, &our_payload).await?;
+        deserialize_signature_bundle(&their_payload)
+    }
+}
+
+fn deserialize_signature_bundle(data: &[u8]) -> Result<SignatureBundle, Error> {
+    if data.len() < 8 {
+        return Err(Error::Handshake("Signature bundle too short".into()));
+    }
+
+    let sig_len = u32::from_be_bytes(
+        data[..4]
+            .try_into()
+            .map_err(|_| Error::Handshake("bad sig len".into()))?,
+    ) as usize;
+    if data.len() < 4 + sig_len + 4 {
+        return Err(Error::Handshake("Signature bundle truncated".into()));
+    }
+
+    let signature = data[4..4 + sig_len].to_vec();
+    let key_offset = 4 + sig_len;
+    let key_len = u32::from_be_bytes(
+        data[key_offset..key_offset + 4]
+            .try_into()
+            .map_err(|_| Error::Handshake("bad key len".into()))?,
+    ) as usize;
+    if data.len() < key_offset + 4 + key_len {
+        return Err(Error::Handshake("Signature bundle key truncated".into()));
+    }
+
+    let public_key = data[key_offset + 4..key_offset + 4 + key_len].to_vec();
+
+    Ok(SignatureBundle {
+        signature,
+        public_key,
+    })
+}
+
+/// Build the JSON handshake payload that each side signs.
+fn handshake_payload(our_ek: &str, their_ek: &str, their_prefix: &NodePrefix) -> String {
+    serde_json::json!({
+        "our_ek": our_ek,
+        "their_ek": their_ek,
+        "their_prefix": hex::encode(their_prefix.0),
+    })
+    .to_string()
+}
+
+/// Send a length-prefixed message (4-byte big-endian length + payload).
+async fn send_length_prefixed<S: futures::AsyncWrite + Unpin>(
+    stream: &mut S,
+    data: &[u8],
+) -> Result<(), Error> {
+    let len = (data.len() as u32).to_be_bytes();
+    stream.write_all(&len).await?;
+    stream.write_all(data).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+/// Maximum handshake message size (8 KiB — larger than any single ML-KEM/ML-DSA artifact).
+const MAX_HANDSHAKE_MSG: usize = 8 * 1024;
+
+/// Receive a length-prefixed message (4-byte big-endian length + payload).
+async fn recv_length_prefixed<S: futures::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Result<Vec<u8>, Error> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_HANDSHAKE_MSG {
+        return Err(Error::Handshake(format!(
+            "Handshake message too large: {} bytes",
+            len
+        )));
+    }
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+    Ok(buf)
 }
 
 /// Dial a peer at the given address and perform the handshake.

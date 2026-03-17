@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with three-DH P-256 + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
+The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768 key exchange + ML-DSA-65 mutual authentication + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
@@ -104,8 +104,8 @@ struct KelAnnouncement {
 
 | Protocol | Transport | Purpose |
 |----------|-----------|---------|
-| PlumTree broadcast | TCP + three-DH P-256 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
-| HyParView membership | TCP + three-DH P-256 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
+| PlumTree broadcast | TCP + ML-KEM-768 + ML-DSA-65 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
+| HyParView membership | TCP + ML-KEM-768 + ML-DSA-65 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
 | HTTP fetch | HTTP | Fetch KEL events from peer's KELS service |
 
 ## Configuration
@@ -116,7 +116,10 @@ struct KelAnnouncement {
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
-| `HSM_URL` | HSM service URL | `http://hsm` |
+| `PKCS11_LIBRARY` | Path to PKCS#11 .so (mock HSM or real HSM) | (required) |
+| `KELS_HSM_DATA_DIR` | HSM key persistence directory | (required) |
+| `HSM_SLOT` | PKCS#11 slot number | (required) |
+| `HSM_PIN` | PKCS#11 PIN | (required) |
 | `IDENTITY_URL` | Identity service URL | `http://identity` |
 | `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for peer discovery and HA | (required) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
@@ -139,12 +142,20 @@ struct KelAnnouncement {
 ### HSM-backed gossip identity
 
 Gossip nodes use persistent HSM-backed identities:
-- Each node's identity is cryptographically bound to keys in the HSM — the identity does not change across restarts
+- Each node's identity is cryptographically bound to ML-DSA-65 keys in the HSM — the identity does not change across restarts
 - The NodePrefix (44-char CESR-encoded) identifies the node in the gossip mesh and verified allowlist
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh
 - Unauthorized peers are rejected during the gossip handshake
-- The handshake uses a three-DH pattern: ephemeral-ephemeral (forward secrecy), static-ephemeral via HSM (our static key × their ephemeral), and ephemeral-static locally (our ephemeral × their static key). Session keys are derived from all three shared secrets via BLAKE3 key derivation. The static private key never leaves the HSM.
-- Each peer's handshake signature is verified against their KEL public key via the verified allowlist
+- Only ML-DSA-65 peers are accepted (P-256 peers are rejected)
+- The handshake uses ML-KEM-768 key exchange + ML-DSA-65 signature authentication:
+  1. Exchange 44-byte prefixes
+  2. Initiator generates ML-KEM-768 keypair, sends encapsulation key (qb64)
+  3. Acceptor encapsulates, sends ciphertext back (qb64)
+  4. Both derive 32-byte shared secret
+  5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65
+  6. Exchange and verify signatures against peer's KEL public key
+  7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v2/keys/..."`
+- Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security
 - See [Secure Registration](design/secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback

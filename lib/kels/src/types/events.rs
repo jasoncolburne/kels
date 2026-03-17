@@ -403,7 +403,7 @@ impl KeyEvent {
     /// Validates that the event has the correct fields for its kind.
     /// Returns Ok(()) if valid, Err with description if invalid.
     pub fn validate_structure(&self) -> Result<(), String> {
-        use cesr::{Digest, DigestCode, KeyCode, Matter, PublicKey};
+        use cesr::{Digest, DigestCode, Matter, PublicKey};
 
         // Helper to check field presence
         let require = |name: &str, present: bool| -> Result<(), String> {
@@ -428,12 +428,9 @@ impl KeyEvent {
             }
             Ok(())
         };
-        let validate_secp256r1_key = |name: &str, value: &str| -> Result<(), String> {
-            let key = PublicKey::from_qb64(value)
+        let validate_public_key = |name: &str, value: &str| -> Result<(), String> {
+            PublicKey::from_qb64(value)
                 .map_err(|_| format!("{} is not a valid CESR public key", name))?;
-            if key.algorithm() != KeyCode::Secp256r1 {
-                return Err(format!("{} must be a secp256r1 public key", name));
-            }
             Ok(())
         };
 
@@ -463,10 +460,10 @@ impl KeyEvent {
 
         // Validate public key fields when present
         if let Some(ref key) = self.public_key {
-            validate_secp256r1_key("publicKey", key)?;
+            validate_public_key("publicKey", key)?;
         }
         if let Some(ref key) = self.recovery_key {
-            validate_secp256r1_key("recoveryKey", key)?;
+            validate_public_key("recoveryKey", key)?;
         }
 
         match self.kind {
@@ -564,15 +561,15 @@ pub struct EventSignature {
     #[said]
     pub said: String,
     pub event_said: String,
-    pub public_key: String, // qb64
-    pub signature: String,  // qb64
+    pub label: String,
+    pub signature: String, // qb64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEventSignature {
-    pub public_key: String, // qb64
-    pub signature: String,  // qb64
+    pub label: String,
+    pub signature: String, // qb64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,40 +616,35 @@ impl Hash for SignedKeyEvent {
 }
 
 impl SignedKeyEvent {
-    pub fn new(event: KeyEvent, public_key: String, signature: String) -> Self {
+    pub fn new(event: KeyEvent, label: String, signature: String) -> Self {
         Self {
             event,
-            signatures: vec![KeyEventSignature {
-                public_key,
-                signature,
-            }],
+            signatures: vec![KeyEventSignature { label, signature }],
         }
     }
 
     pub fn new_recovery(
         event: KeyEvent,
-        primary_public_key: String,
         primary_signature: String,
-        secondary_public_key: String,
-        secondary_signature: String,
+        recovery_signature: String,
     ) -> Self {
         Self {
             event,
             signatures: vec![
                 KeyEventSignature {
-                    public_key: primary_public_key,
+                    label: "signing".to_string(),
                     signature: primary_signature,
                 },
                 KeyEventSignature {
-                    public_key: secondary_public_key,
-                    signature: secondary_signature,
+                    label: "recovery".to_string(),
+                    signature: recovery_signature,
                 },
             ],
         }
     }
 
-    pub fn signature(&self, public_key: &str) -> Option<&KeyEventSignature> {
-        self.signatures.iter().find(|s| s.public_key == public_key)
+    pub fn signature(&self, label: &str) -> Option<&KeyEventSignature> {
+        self.signatures.iter().find(|s| s.label == label)
     }
 
     pub fn from_signatures(event: KeyEvent, sigs: Vec<(String, String)>) -> Self {
@@ -660,10 +652,7 @@ impl SignedKeyEvent {
             event,
             signatures: sigs
                 .into_iter()
-                .map(|(public_key, signature)| KeyEventSignature {
-                    public_key,
-                    signature,
-                })
+                .map(|(label, signature)| KeyEventSignature { label, signature })
                 .collect(),
         }
     }
@@ -674,7 +663,7 @@ impl SignedKeyEvent {
             .map(|s| {
                 EventSignature::new(
                     self.event.said.clone(),
-                    s.public_key.clone(),
+                    s.label.clone(),
                     s.signature.clone(),
                 )
             })

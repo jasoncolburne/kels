@@ -323,6 +323,8 @@ impl KelsClient {
 
 #[cfg(test)]
 mod tests {
+    use cesr::SigningKeyCode;
+
     use super::*;
     use crate::SoftwareKeyProvider;
     use crate::builder::KeyEventBuilder;
@@ -433,7 +435,8 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
@@ -460,7 +463,8 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let icp = builder.incept().await.unwrap();
             let ixn1 = builder.interact("anchor1").await.unwrap();
             let ixn2 = builder.interact("anchor2").await.unwrap();
@@ -488,7 +492,8 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
@@ -515,7 +520,8 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
@@ -539,7 +545,8 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let signed = builder.incept().await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri());
@@ -552,7 +559,8 @@ mod tests {
         async fn test_fetch_key_events_success() {
             let mock_server = MockServer::start().await;
 
-            let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+            let mut builder =
+                KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
             let icp = builder.incept().await.unwrap();
             let prefix = icp.event.prefix.clone();
 

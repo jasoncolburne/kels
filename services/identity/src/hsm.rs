@@ -1,13 +1,19 @@
-//! HSM Client - HTTP client for the HSM service
+//! HSM Client - PKCS#11 interface for hardware security modules
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
-use cesr::{Matter, PublicKey, Signature};
+use cesr::{Matter, PublicKey, Signature, SignatureCode, SigningKeyCode};
+use cryptoki::{
+    context::{CInitializeArgs, CInitializeFlags, Pkcs11},
+    mechanism::{Mechanism, dsa::HedgeType, dsa::SignAdditionalContext},
+    object::{Attribute, AttributeType, ObjectClass},
+    session::Session,
+    types::AuthPin,
+};
 use kels::{KelsError, KeyProvider, compute_rotation_hash};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyHandle(String);
@@ -36,156 +42,167 @@ impl From<&str> for KeyHandle {
 
 #[async_trait]
 pub trait HsmOperations: Send + Sync {
-    async fn generate_keypair(&self, label: &str) -> Result<(KeyHandle, PublicKey), KelsError>;
+    async fn generate_keypair(
+        &self,
+        label: &str,
+        algorithm: &str,
+    ) -> Result<(KeyHandle, PublicKey), KelsError>;
     async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError>;
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError>;
-    async fn ecdh(&self, handle: &KeyHandle, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError>;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GenerateKeyRequest {
-    label: String,
+pub struct Pkcs11Client {
+    _pkcs11: Arc<Pkcs11>,
+    session: Mutex<Session>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GenerateKeyResponse {
-    label: String,
-    public_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicKeyResponse {
-    public_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SignRequest {
-    data: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SignResponse {
-    signature: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EcdhRequest {
-    peer_public_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EcdhResponse {
-    shared_secret: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorResponse {
-    error: String,
-}
-
-pub struct HsmClient {
-    client: Client,
-    base_url: String,
-}
-
-impl HsmClient {
-    pub fn new(base_url: &str) -> Self {
-        Self {
-            client: Client::new(),
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
-    }
-
-    async fn request_error(&self, response: reqwest::Response) -> KelsError {
-        match response.json::<ErrorResponse>().await {
-            Ok(e) => KelsError::HardwareError(e.error),
-            Err(e) => e.into(),
-        }
-    }
-
-    async fn parse_response<T: serde::de::DeserializeOwned>(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<T, KelsError> {
-        if !response.status().is_success() {
-            return Err(self.request_error(response).await);
-        }
-        Ok(response.json().await?)
+impl Pkcs11Client {
+    pub fn new(library_path: &str, slot_index: usize, pin: &str) -> Result<Self, KelsError> {
+        let pkcs11 = Pkcs11::new(library_path)
+            .map_err(|e| KelsError::HardwareError(format!("PKCS#11 init failed: {}", e)))?;
+        pkcs11
+            .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+            .map_err(|e| KelsError::HardwareError(format!("PKCS#11 init failed: {}", e)))?;
+        let slots = pkcs11
+            .get_slots_with_token()
+            .map_err(|e| KelsError::HardwareError(format!("No slots: {}", e)))?;
+        let slot = slots
+            .get(slot_index)
+            .copied()
+            .ok_or_else(|| KelsError::HardwareError("No slot available".into()))?;
+        let session = pkcs11
+            .open_rw_session(slot)
+            .map_err(|e| KelsError::HardwareError(format!("Session failed: {}", e)))?;
+        session
+            .login(
+                cryptoki::session::UserType::User,
+                Some(&AuthPin::new(pin.into())),
+            )
+            .map_err(|e| KelsError::HardwareError(format!("Login failed: {}", e)))?;
+        Ok(Self {
+            _pkcs11: Arc::new(pkcs11),
+            session: Mutex::new(session),
+        })
     }
 }
 
 #[async_trait]
-impl HsmOperations for HsmClient {
-    async fn generate_keypair(&self, label: &str) -> Result<(KeyHandle, PublicKey), KelsError> {
-        let url = format!("{}/api/hsm/keys", self.base_url);
+impl HsmOperations for Pkcs11Client {
+    async fn generate_keypair(
+        &self,
+        label: &str,
+        _algorithm: &str,
+    ) -> Result<(KeyHandle, PublicKey), KelsError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&GenerateKeyRequest {
-                label: label.to_string(),
+        let pub_template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+        ];
+        let priv_template = vec![
+            Attribute::Token(true),
+            Attribute::Private(true),
+            Attribute::Sensitive(true),
+            Attribute::Sign(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+        ];
+
+        let (pub_handle, _priv_handle) = session
+            .generate_key_pair(&Mechanism::MlDsaKeyPairGen, &pub_template, &priv_template)
+            .map_err(|e| KelsError::KeyGenerationFailed(format!("PKCS#11 keygen failed: {}", e)))?;
+
+        let attrs = session
+            .get_attributes(pub_handle, &[AttributeType::Value])
+            .map_err(|e| {
+                KelsError::KeyGenerationFailed(format!("Failed to get public key: {}", e))
+            })?;
+
+        let value_bytes = attrs
+            .into_iter()
+            .find_map(|a| {
+                if let Attribute::Value(v) = a {
+                    Some(v)
+                } else {
+                    None
+                }
             })
-            .send()
-            .await?;
+            .ok_or_else(|| {
+                KelsError::KeyGenerationFailed("CKA_VALUE not found on public key".into())
+            })?;
 
-        let resp: GenerateKeyResponse = self.parse_response(response).await?;
+        let public_key = PublicKey::from_raw(SigningKeyCode::MlDsa65, value_bytes)
+            .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
 
-        let public_key = PublicKey::from_qb64(&resp.public_key)?;
-
-        Ok((KeyHandle::new(resp.label), public_key))
+        Ok((KeyHandle::new(label), public_key))
     }
 
     async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError> {
-        let url = format!("{}/api/hsm/keys/{}/public", self.base_url, handle.as_str());
+        let session = self
+            .session
+            .lock()
+            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
 
-        let response = self.client.get(&url).send().await?;
+        let template = vec![
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::Label(handle.as_str().as_bytes().to_vec()),
+        ];
 
-        let resp: PublicKeyResponse = self.parse_response(response).await?;
+        let objects = session
+            .find_objects(&template)
+            .map_err(|e| KelsError::HsmKeyNotFound(format!("Find failed: {}", e)))?;
 
-        Ok(PublicKey::from_qb64(&resp.public_key)?)
+        let obj_handle = objects
+            .first()
+            .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
+
+        let attrs = session
+            .get_attributes(*obj_handle, &[AttributeType::Value])
+            .map_err(|e| KelsError::HardwareError(format!("Get attributes failed: {}", e)))?;
+
+        let value_bytes = attrs
+            .into_iter()
+            .find_map(|a| {
+                if let Attribute::Value(v) = a {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| KelsError::HsmKeyNotFound("CKA_VALUE not found".into()))?;
+
+        PublicKey::from_raw(SigningKeyCode::MlDsa65, value_bytes)
+            .map_err(|e| KelsError::CryptoError(e.to_string()))
     }
 
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError> {
-        let url = format!("{}/api/hsm/keys/{}/sign", self.base_url, handle.as_str());
+        let session = self
+            .session
+            .lock()
+            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
 
-        let request = SignRequest {
-            data: base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, data),
-        };
+        let template = vec![
+            Attribute::Class(ObjectClass::PRIVATE_KEY),
+            Attribute::Label(handle.as_str().as_bytes().to_vec()),
+        ];
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        let objects = session
+            .find_objects(&template)
+            .map_err(|e| KelsError::HsmKeyNotFound(format!("Find failed: {}", e)))?;
 
-        let resp: SignResponse = self.parse_response(response).await?;
+        let priv_handle = objects
+            .first()
+            .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
 
-        Ok(Signature::from_qb64(&resp.signature)?)
-    }
+        let ctx = SignAdditionalContext::new(HedgeType::Preferred, None);
+        let sig_bytes = session
+            .sign(&Mechanism::MlDsa(ctx), *priv_handle, data)
+            .map_err(|e| KelsError::SigningFailed(format!("PKCS#11 sign failed: {}", e)))?;
 
-    async fn ecdh(&self, handle: &KeyHandle, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError> {
-        let url = format!("{}/api/hsm/keys/{}/ecdh", self.base_url, handle.as_str());
-
-        let request = EcdhRequest {
-            peer_public_key: base64::Engine::encode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                peer_public_key,
-            ),
-        };
-
-        let response = self.client.post(&url).json(&request).send().await?;
-
-        let resp: EcdhResponse = self.parse_response(response).await?;
-
-        base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            &resp.shared_secret,
-        )
-        .map_err(|e| KelsError::CryptoError(format!("Invalid base64 shared secret: {}", e)))
+        Signature::from_raw(SignatureCode::MlDsa65, sig_bytes)
+            .map_err(|e| KelsError::SigningFailed(e.to_string()))
     }
 }
 
@@ -275,29 +292,14 @@ impl HsmKeyProvider {
         let mut generation = self.signing_generation.write().await;
         let label = format!("{}-{}", self.label_prefix, *generation);
         *generation += 1;
-        self.hsm.generate_keypair(&label).await
+        self.hsm.generate_keypair(&label, "ml-dsa-65").await
     }
 
     async fn generate_recovery_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
         let mut generation = self.recovery_generation.write().await;
         let label = format!("{}-recovery-{}", self.label_prefix, *generation);
         *generation += 1;
-        self.hsm.generate_keypair(&label).await
-    }
-
-    /// Perform ECDH key agreement using the current signing key.
-    ///
-    /// `peer_public_key` is compressed SEC1 (33 bytes). Returns the 32-byte shared secret.
-    pub async fn ecdh(&self, peer_public_key: &[u8]) -> Result<Vec<u8>, KelsError> {
-        if !self.has_next().await {
-            return Err(KelsError::NoCurrentKey);
-        }
-
-        let key_handles = self.key_handles.read().await;
-        let length = key_handles.len();
-        let handle = &key_handles[length - 2];
-
-        self.hsm.ecdh(handle, peer_public_key).await
+        self.hsm.generate_keypair(&label, "ml-dsa-65").await
     }
 }
 
@@ -576,29 +578,29 @@ mod tests {
 
     #[async_trait]
     impl HsmOperations for MockHsm {
-        async fn generate_keypair(&self, label: &str) -> Result<(KeyHandle, PublicKey), KelsError> {
+        async fn generate_keypair(
+            &self,
+            label: &str,
+            _algorithm: &str,
+        ) -> Result<(KeyHandle, PublicKey), KelsError> {
             let mut count = self.call_count.lock().await;
             *count += 1;
 
-            // Generate a deterministic "public key" based on label
-            // Use a valid CESR secp256r1 compressed public key format
-            use p256::ecdsa::SigningKey;
+            // Generate a deterministic ML-DSA-65 keypair from seed
+            use fips204::ml_dsa_65;
+            use fips204::traits::{KeyGen, SerDes};
 
-            // Create deterministic seed from label
             let mut seed = [0u8; 32];
             for (i, b) in label.bytes().enumerate() {
                 seed[i % 32] ^= b;
             }
             seed[0] = seed[0].wrapping_add(*count as u8);
 
-            let signing_key = SigningKey::from_slice(&seed)
-                .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
-            let verifying_key = signing_key.verifying_key();
-            let compressed = verifying_key.to_encoded_point(true);
+            let (pk, _sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
+            let pk_bytes = pk.into_bytes().to_vec();
 
-            let public_key =
-                PublicKey::from_raw(cesr::KeyCode::Secp256r1, compressed.as_bytes().to_vec())
-                    .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
+            let public_key = PublicKey::from_raw(cesr::SigningKeyCode::MlDsa65, pk_bytes)
+                .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
 
             let mut keys = self.keys.lock().await;
             keys.insert(label.to_string(), public_key.qb64());
@@ -624,32 +626,10 @@ mod tests {
                 return Err(KelsError::HsmKeyNotFound(handle.as_str().to_string()));
             }
 
-            // Return a mock signature (valid CESR format)
-            let sig_bytes = vec![1u8; 64];
-            Signature::from_raw(cesr::SignatureCode::Secp256r1, sig_bytes)
+            // Return a mock signature (valid CESR ML-DSA-65 format)
+            let sig_bytes = vec![1u8; 3309];
+            Signature::from_raw(cesr::SignatureCode::MlDsa65, sig_bytes)
                 .map_err(|e| KelsError::SigningFailed(e.to_string()))
-        }
-
-        async fn ecdh(
-            &self,
-            handle: &KeyHandle,
-            peer_public_key: &[u8],
-        ) -> Result<Vec<u8>, KelsError> {
-            use p256::{SecretKey, ecdh::diffie_hellman};
-
-            let seeds = self.seeds.lock().await;
-            let seed = seeds
-                .get(handle.as_str())
-                .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
-
-            let secret_key =
-                SecretKey::from_slice(seed).map_err(|e| KelsError::CryptoError(e.to_string()))?;
-
-            let peer_pk = p256::PublicKey::from_sec1_bytes(peer_public_key)
-                .map_err(|e| KelsError::CryptoError(format!("Invalid peer public key: {}", e)))?;
-
-            let shared = diffie_hellman(secret_key.to_nonzero_scalar(), peer_pk.as_affine());
-            Ok(shared.raw_secret_bytes().to_vec())
         }
     }
 
@@ -672,9 +652,9 @@ mod tests {
         let mock = Arc::new(MockHsm::new());
 
         // Pre-populate mock with keys
-        let _ = mock.generate_keypair("current").await;
-        let _ = mock.generate_keypair("next").await;
-        let _ = mock.generate_keypair("recovery").await;
+        let _ = mock.generate_keypair("current", "ml-dsa-65").await;
+        let _ = mock.generate_keypair("next", "ml-dsa-65").await;
+        let _ = mock.generate_keypair("recovery", "ml-dsa-65").await;
 
         let provider = HsmKeyProvider::with_handles(
             mock,
@@ -725,8 +705,8 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_current_handle() {
         let mock = Arc::new(MockHsm::new());
-        let _ = mock.generate_keypair("curr").await;
-        let _ = mock.generate_keypair("nxt").await;
+        let _ = mock.generate_keypair("curr", "ml-dsa-65").await;
+        let _ = mock.generate_keypair("nxt", "ml-dsa-65").await;
 
         let provider = HsmKeyProvider::with_handles(
             mock,
@@ -862,31 +842,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hsm_key_provider_ecdh() {
-        let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock.clone(), "test", 0, 0);
-
-        provider.generate_initial_keys().await.unwrap();
-
-        // Generate a peer keypair and get its compressed public key
-        let (_, peer_pk) = mock.generate_keypair("peer").await.unwrap();
-        let peer_bytes = peer_pk.raw();
-
-        let result = provider.ecdh(peer_bytes).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 32);
-    }
-
-    #[tokio::test]
-    async fn test_hsm_key_provider_ecdh_no_key() {
-        let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "test", 0, 0);
-
-        let result = provider.ecdh(&[0u8; 33]).await;
-        assert!(matches!(result, Err(KelsError::NoCurrentKey)));
-    }
-
-    #[tokio::test]
     async fn test_hsm_key_provider_sign_with_recovery() {
         let mock = Arc::new(MockHsm::new());
         let mut provider = HsmKeyProvider::new(mock, "test", 0, 0);
@@ -985,77 +940,5 @@ mod tests {
         let debug_str = format!("{:?}", provider);
         assert!(debug_str.contains("HsmKeyProvider"));
         assert!(debug_str.contains("my-prefix"));
-    }
-
-    // ==================== HsmClient Tests ====================
-
-    #[test]
-    fn test_hsm_client_new_strips_trailing_slash() {
-        let client = HsmClient::new("http://localhost:8080/");
-        assert_eq!(client.base_url, "http://localhost:8080");
-    }
-
-    #[test]
-    fn test_hsm_client_new_no_trailing_slash() {
-        let client = HsmClient::new("http://localhost:8080");
-        assert_eq!(client.base_url, "http://localhost:8080");
-    }
-
-    #[test]
-    fn test_hsm_client_new_multiple_trailing_slashes() {
-        let client = HsmClient::new("http://localhost:8080///");
-        // trim_end_matches removes all trailing slashes
-        assert_eq!(client.base_url, "http://localhost:8080");
-    }
-
-    // ==================== Request/Response Serde Tests ====================
-
-    #[test]
-    fn test_generate_key_request_serialization() {
-        let req = GenerateKeyRequest {
-            label: "my-key".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("label"));
-        assert!(json.contains("my-key"));
-    }
-
-    #[test]
-    fn test_generate_key_response_deserialization() {
-        let json = r#"{"label": "key-1", "publicKey": "1AAG..."}"#;
-        let resp: GenerateKeyResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.label, "key-1");
-        assert_eq!(resp.public_key, "1AAG...");
-    }
-
-    #[test]
-    fn test_public_key_response_deserialization() {
-        let json = r#"{"publicKey": "1AAG..."}"#;
-        let resp: PublicKeyResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.public_key, "1AAG...");
-    }
-
-    #[test]
-    fn test_sign_request_serialization() {
-        let req = SignRequest {
-            data: "base64data".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("data"));
-        assert!(json.contains("base64data"));
-    }
-
-    #[test]
-    fn test_sign_response_deserialization() {
-        let json = r#"{"signature": "0BAA..."}"#;
-        let resp: SignResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.signature, "0BAA...");
-    }
-
-    #[test]
-    fn test_error_response_deserialization() {
-        let json = r#"{"error": "Key not found"}"#;
-        let resp: ErrorResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.error, "Key not found");
     }
 }

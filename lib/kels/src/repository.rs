@@ -22,7 +22,7 @@ pub(crate) fn zip_events_with_signatures(
         })?;
         let sig_pairs: Vec<(String, String)> = sigs
             .iter()
-            .map(|s| (s.public_key.clone(), s.signature.clone()))
+            .map(|s| (s.label.clone(), s.signature.clone()))
             .collect();
         result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
     }

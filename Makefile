@@ -1,6 +1,6 @@
-LIBS_PACKAGES := libkels libkels-derive kels-creds libkels-ffi
+LIBS_PACKAGES := libkels libkels-derive kels-creds libkels-ffi kels-mock-hsm
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive kels-creds kels-ffi
+LIBS_SUBDIRS := kels kels-derive kels-creds kels-ffi kels-mock-hsm
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
@@ -72,7 +72,7 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in hsm identity kels kels-gossip kels-registry; do \
+	@for service in identity kels kels-gossip kels-registry; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done

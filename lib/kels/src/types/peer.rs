@@ -847,9 +847,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
         use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
-        use cesr::{Digest, Matter};
+        use cesr::{Digest, Matter, SigningKeyCode};
 
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 =
+            KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();

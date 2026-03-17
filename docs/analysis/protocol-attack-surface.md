@@ -4,11 +4,11 @@ Analysis of attack vectors against the KELS protocol — cryptographic propertie
 
 ## Trust Model
 
-The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (secp256r1 / ECDSA P-256, 128-bit security), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
+The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (ML-DSA-65 for infrastructure at 192-bit post-quantum security; P-256 / ECDSA at 128-bit classical security for mobile clients), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
 
 **Assumptions:**
 - Clients hold private keys in hardware-backed storage (Secure Enclave, HSM)
-- The signing algorithm is secp256r1 (ECDSA P-256), providing 128 bits of security
+- Infrastructure uses ML-DSA-65 (FIPS 204); the core service accepts both P-256 and ML-DSA-65 KELs
 - Events are version-qualified (`kels/v1/icp`) for future protocol evolution
 
 ## Key Compromise
@@ -128,7 +128,7 @@ A controller of an identity has 3 keys to protect. It's advised that clients onl
 ### Key Extraction
 
 **Attack:** Extract private keys from client storage.
-- **Mitigation:** Hardware-backed keys (Secure Enclave on iOS, SoftHSM2 for services) are designed to be non-extractable. The `kels-ffi` library interfaces with Apple's Secure Enclave; the HSM service wraps SoftHSM2 via PKCS#11.
+- **Mitigation:** Hardware-backed keys (Secure Enclave on iOS, PKCS#11 HSM for services) are designed to be non-extractable. The `kels-ffi` library interfaces with Apple's Secure Enclave; the identity service loads PKCS#11 .so directly via cryptoki (mock HSM in development, real HSM in production).
 - **Residual risk:** Software-only key storage (e.g., file-based `KelStore`) is vulnerable to filesystem access. This is acceptable for development but not production.
 
 ### Local State Manipulation

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use cesr::{KeyCode, PublicKey, Signature, SignatureCode};
+use cesr::{PublicKey, Signature, SignatureCode, SigningKeyCode};
 use security_framework::{
     item::{ItemClass, ItemSearchOptions, KeyClass, Location, Reference, SearchResult},
     key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token},
@@ -114,7 +114,7 @@ impl DefaultSecureEnclave {
         }
 
         let compressed = self.uncompressed_to_compressed(data)?;
-        PublicKey::from_raw(KeyCode::Secp256r1, compressed)
+        PublicKey::from_raw(SigningKeyCode::Secp256r1, compressed)
             .map_err(|e| KelsError::HardwareError(format!("Failed to create PublicKey: {}", e)))
     }
 
