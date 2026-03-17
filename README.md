@@ -50,11 +50,11 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 1. Address GitHub issues
 2. ~~Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)~~ Done: infrastructure uses ML-DSA-65 (FIPS 204); gossip uses ML-KEM-768 (FIPS 203) + ML-DSA-65; core service accepts both P-256 and ML-DSA-65 KELs
 3. Add kels-policy crate
-  - Policy DSL:
-    a. threshold
-    b. weighted
-    c. nested groups
-    d. role-based
+  - Policy DSL
+    - threshold
+    - weighted
+    - nested groups
+    - role-based
   - Self-addressed policy objects anchored in KELs
   - PolicyVerification model similar to others, based on anchoring
 4. Add kels-policy to kels-creds
