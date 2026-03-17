@@ -101,7 +101,7 @@ KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of
 | Property | KERI | KELS |
 |----------|------|------|
 | Pre-rotation hash commitment | SHA-256 or Blake3 (quantum-resistant) | Blake3-256 (quantum-resistant) |
-| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ML-DSA-65 (192-bit post-quantum, FIPS 204) for infrastructure; P-256 (ECDSA) supported for mobile clients |
+| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ML-DSA-65 (192-bit post-quantum, FIPS 204) for infrastructure; P-256/ML-DSA-65 supported for mobile clients |
 | Cryptographic agility | CESR code tables allow algorithm migration | CESR with Blake3; supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) with algorithm upgrade via rotation |
 | Forward secrecy | Implementation-dependent | ML-KEM-768 ephemeral key exchange provides per-session forward secrecy |
 | Key exchange | Implementation-dependent | ML-KEM-768 (FIPS 203, post-quantum) |
