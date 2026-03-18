@@ -419,7 +419,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 
 | Aspect | KERI | KELS |
 |--------|------|------|
-| Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales well without federation |
+| Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales horizontally with Redis |
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
 | Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
