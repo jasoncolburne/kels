@@ -226,9 +226,8 @@ impl KelsPeerVerifier {
             }
         };
 
-        let cesr_pubkey = CesrPublicKey::from_raw(key_code, public_key.to_vec()).map_err(|e| {
-            GossipError::VerificationFailed(format!("Invalid public key: {}", e))
-        })?;
+        let cesr_pubkey = CesrPublicKey::from_raw(key_code, public_key.to_vec())
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)))?;
 
         let cesr_sig = CesrSignature::from_raw(sig_code, signature.to_vec())
             .map_err(|e| GossipError::VerificationFailed(format!("Invalid signature: {}", e)))?;
