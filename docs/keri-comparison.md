@@ -423,7 +423,8 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
 | Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
-| Adding trust anchors | OOBI resolution (seconds) | Recompile + redeploy all binaries (hours to days) |
+| Trusting a participant (identifier) | OOBI resolution (seconds) | Fetch KEL + verify (seconds) |
+| Adding federation infrastructure | N/A (no federated infrastructure layer) | Recompile + redeploy all binaries (hours to days) |
 | Configuration surface | Low (agent config + witness URLs) | High (compile-time vars, runtime env, Redis ACLs, Raft config) |
 | Reproducible dev environment | No (manual setup, no orchestration) | Yes (Garden + Kubernetes, single command) |
 | Kubernetes-native | Possible but not designed for it | Garden-based deployment in repo; naturally fits K8s |
