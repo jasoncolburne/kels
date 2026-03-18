@@ -104,10 +104,10 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_sad_store_roundtrip() {
         let store = InMemorySADStore::new();
-        let value = serde_json::json!({"said": "EAbc", "data": "test"});
+        let value = serde_json::json!({"said": "KAbc", "data": "test"});
 
-        store.store_chunk("EAbc", &value).await.unwrap();
-        let retrieved = store.get_chunk("EAbc").await.unwrap();
+        store.store_chunk("KAbc", &value).await.unwrap();
+        let retrieved = store.get_chunk("KAbc").await.unwrap();
         assert_eq!(retrieved, Some(value));
     }
 
@@ -121,13 +121,13 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_sad_store_overwrite() {
         let store = InMemorySADStore::new();
-        let v1 = serde_json::json!({"said": "EAbc", "data": "first"});
-        let v2 = serde_json::json!({"said": "EAbc", "data": "second"});
+        let v1 = serde_json::json!({"said": "KAbc", "data": "first"});
+        let v2 = serde_json::json!({"said": "KAbc", "data": "second"});
 
-        store.store_chunk("EAbc", &v1).await.unwrap();
-        store.store_chunk("EAbc", &v2).await.unwrap();
+        store.store_chunk("KAbc", &v1).await.unwrap();
+        store.store_chunk("KAbc", &v2).await.unwrap();
 
-        let retrieved = store.get_chunk("EAbc").await.unwrap();
+        let retrieved = store.get_chunk("KAbc").await.unwrap();
         assert_eq!(retrieved, Some(v2));
     }
 
@@ -136,17 +136,17 @@ mod tests {
         let store = InMemorySADStore::new();
         let mut map = HashMap::new();
         map.insert(
-            "EA".to_string(),
-            serde_json::json!({"said": "EA", "data": "a"}),
+            "KA".to_string(),
+            serde_json::json!({"said": "KA", "data": "a"}),
         );
         map.insert(
-            "EB".to_string(),
-            serde_json::json!({"said": "EB", "data": "b"}),
+            "KB".to_string(),
+            serde_json::json!({"said": "KB", "data": "b"}),
         );
 
         store.store_chunks(&map).await.unwrap();
 
-        let set = HashSet::from(["EA".to_string(), "EB".to_string()]);
+        let set = HashSet::from(["KA".to_string(), "KB".to_string()]);
         let retrieved = store.get_chunks(&set).await.unwrap();
         assert_eq!(retrieved.len(), 2);
     }

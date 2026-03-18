@@ -9,7 +9,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cesr::{KemCiphertext, KemKeyCode, KemPublicKey, Matter, generate_ml_kem_768, generate_ml_kem_1024};
+use cesr::{
+    KemCiphertext, KemKeyCode, KemPublicKey, Matter, generate_ml_kem_768, generate_ml_kem_1024,
+};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use socket2::SockRef;
 use tokio::net::TcpStream;

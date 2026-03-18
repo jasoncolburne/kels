@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
-use cesr::{Matter, PublicKey, Signature, SignatureCode, SigningKeyCode};
+use cesr::{Matter, PublicKey, Signature, SignatureCode, VerificationKeyCode};
 use cryptoki::{
     context::{CInitializeArgs, CInitializeFlags, Pkcs11},
     mechanism::{Mechanism, dsa::HedgeType, dsa::SignAdditionalContext},
@@ -140,8 +140,8 @@ impl HsmOperations for Pkcs11Client {
             })?;
 
         let key_code = match value_bytes.len() {
-            2592 => SigningKeyCode::MlDsa87,
-            _ => SigningKeyCode::MlDsa65, // 1952 bytes
+            2592 => VerificationKeyCode::MlDsa87,
+            _ => VerificationKeyCode::MlDsa65, // 1952 bytes
         };
 
         let public_key = PublicKey::from_raw(key_code, value_bytes)
@@ -185,8 +185,8 @@ impl HsmOperations for Pkcs11Client {
             .ok_or_else(|| KelsError::HsmKeyNotFound("CKA_VALUE not found".into()))?;
 
         let key_code = match value_bytes.len() {
-            2592 => SigningKeyCode::MlDsa87,
-            _ => SigningKeyCode::MlDsa65, // 1952 bytes
+            2592 => VerificationKeyCode::MlDsa87,
+            _ => VerificationKeyCode::MlDsa65, // 1952 bytes
         };
 
         PublicKey::from_raw(key_code, value_bytes)
@@ -636,12 +636,12 @@ mod tests {
                 "ml-dsa-87" => {
                     use fips204::ml_dsa_87;
                     let (pk, _sk) = ml_dsa_87::KG::keygen_from_seed(&seed);
-                    (pk.into_bytes().to_vec(), cesr::SigningKeyCode::MlDsa87)
+                    (pk.into_bytes().to_vec(), cesr::VerificationKeyCode::MlDsa87)
                 }
                 _ => {
                     use fips204::ml_dsa_65;
                     let (pk, _sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
-                    (pk.into_bytes().to_vec(), cesr::SigningKeyCode::MlDsa65)
+                    (pk.into_bytes().to_vec(), cesr::VerificationKeyCode::MlDsa65)
                 }
             };
 

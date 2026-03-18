@@ -10,8 +10,8 @@ use cesr::{Digest, Matter};
 use chrono::Utc;
 use ctor::dtor;
 use kels::{
-    KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SigningKeyCode, SoftwareKeyProvider,
-    SubmitEventsResponse,
+    KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider, SubmitEventsResponse,
+    VerificationKeyCode,
 };
 use reqwest::Client;
 use std::{net::TcpListener, sync::OnceLock, time::Duration};
@@ -223,8 +223,10 @@ impl SharedHarness {
 
 /// Helper to create a signed inception event.
 async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvider>) {
-    let mut builder =
-        KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
+    let mut builder = KeyEventBuilder::new(
+        SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+        None,
+    );
     let icp = builder.incept().await.unwrap();
     (icp, builder)
 }

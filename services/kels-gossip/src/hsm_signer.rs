@@ -198,19 +198,39 @@ impl KelsPeerVerifier {
             .map_err(|e| GossipError::VerificationFailed(format!("pubkey for {}: {}", prefix, e)))
     }
 
-    /// Verify signature using ML-DSA-65.
+    /// Verify signature using ML-DSA (auto-detects parameter set from key/signature size).
     fn verify_signature(
         &self,
         data: &[u8],
         signature: &[u8],
         public_key: &[u8],
     ) -> Result<(), GossipError> {
-        let cesr_pubkey =
-            CesrPublicKey::from_raw(cesr::SigningKeyCode::MlDsa65, public_key.to_vec()).map_err(
-                |e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)),
-            )?;
+        let key_code = match public_key.len() {
+            1952 => cesr::VerificationKeyCode::MlDsa65,
+            2592 => cesr::VerificationKeyCode::MlDsa87,
+            _ => {
+                return Err(GossipError::VerificationFailed(format!(
+                    "Unsupported public key size: {} (expected ML-DSA-65 or ML-DSA-87)",
+                    public_key.len()
+                )));
+            }
+        };
+        let sig_code = match signature.len() {
+            3309 => cesr::SignatureCode::MlDsa65,
+            4627 => cesr::SignatureCode::MlDsa87,
+            _ => {
+                return Err(GossipError::VerificationFailed(format!(
+                    "Unsupported signature size: {} (expected ML-DSA-65 or ML-DSA-87)",
+                    signature.len()
+                )));
+            }
+        };
 
-        let cesr_sig = CesrSignature::from_raw(cesr::SignatureCode::MlDsa65, signature.to_vec())
+        let cesr_pubkey = CesrPublicKey::from_raw(key_code, public_key.to_vec()).map_err(|e| {
+            GossipError::VerificationFailed(format!("Invalid public key: {}", e))
+        })?;
+
+        let cesr_sig = CesrSignature::from_raw(sig_code, signature.to_vec())
             .map_err(|e| GossipError::VerificationFailed(format!("Invalid signature: {}", e)))?;
 
         cesr_pubkey.verify(data, &cesr_sig).map_err(|e| {

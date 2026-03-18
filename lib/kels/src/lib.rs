@@ -63,7 +63,7 @@ pub use crypto::HardwareProviderConfig;
 pub use hardware::HardwareKeyProvider;
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
-pub use cesr::SigningKeyCode;
+pub use cesr::VerificationKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,

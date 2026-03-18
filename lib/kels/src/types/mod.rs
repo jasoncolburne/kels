@@ -83,7 +83,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-a".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            "KAuthorizingKel_____________________________".to_string(),
             true,
             "http://node-a:8080".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -105,7 +105,7 @@ mod tests {
         let peer = Peer::create(
             "12D3KooWExample".to_string(),
             "node-a".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            "KAuthorizingKel_____________________________".to_string(),
             true,
             "http://node-a:8080".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -128,7 +128,7 @@ mod tests {
     }
 
     fn make_secp256r1_key() -> String {
-        use cesr::{Matter, PublicKey, SigningKeyCode};
+        use cesr::{Matter, PublicKey, VerificationKeyCode};
         // Valid compressed secp256r1 public key (33 bytes)
         let key_bytes = [
             0x02, // compressed prefix
@@ -136,7 +136,7 @@ mod tests {
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
         ];
-        PublicKey::from_raw(SigningKeyCode::Secp256r1, key_bytes.to_vec())
+        PublicKey::from_raw(VerificationKeyCode::Secp256r1, key_bytes.to_vec())
             .unwrap()
             .qb64()
     }

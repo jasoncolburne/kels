@@ -295,7 +295,7 @@ echo "Initial KEL length on node-a: $INITIAL_LENGTH_A"
 
 # Submit an anchor event via node-d
 # Generate a test SAID (44 chars, starts with E)
-TEST_SAID="ETestAnchorSaid_$(date +%s)_________________________"
+TEST_SAID="KTestAnchorSaid_$(date +%s)_________________________"
 TEST_SAID="${TEST_SAID:0:44}"
 echo "Submitting anchor event via node-d with SAID: $TEST_SAID"
 

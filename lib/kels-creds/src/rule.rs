@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_rules_try_from_rejects_reserved_label() {
         let raw = super::RawRules {
-            said: "EAbc1234567890123456789012345678901234567890".to_string(),
+            said: "KAbc1234567890123456789012345678901234567890".to_string(),
             rules: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_rule());

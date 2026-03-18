@@ -8,7 +8,7 @@ The secure authorization system ensures that only authorized nodes can:
 - Participate in the gossip network
 - Access authenticated endpoints (e.g., prefix listing)
 
-Each node has a persistent ML-DSA-65 identity stored in an HSM (the example implementation uses `kels-mock-hsm`, a PKCS#11 cdylib — don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
+Each node has a persistent ML-DSA-65 or ML-DSA-87 identity stored in an HSM (the example implementation uses `kels-mock-hsm`, a PKCS#11 cdylib — don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
 
 ## Architecture
 
@@ -67,11 +67,11 @@ The registry namespace includes a dedicated identity service (single replica) th
 ### HSM (PKCS#11)
 
 Each node's identity service loads a PKCS#11 .so directly via cryptoki:
-- Persistent ML-DSA-65 key storage
+- Persistent ML-DSA-65/87 key storage
 - Key generation (idempotent - returns existing key if present)
 - Signing operations
 
-The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 via fips204. In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
+The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
 
 **Key label convention:** `kels-gossip-{node_id}` (e.g., `kels-gossip-node-a`)
 
@@ -79,7 +79,7 @@ The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#
 
 The PeerPrefix is cryptographically derived from the node's identity KEL:
 
-1. The identity service manages the node's KEL (backed by HSM ML-DSA-65 keys)
+1. The identity service manages the node's KEL (backed by HSM ML-DSA-65/87 keys)
 2. The PeerPrefix is the prefix of the node's identity KEL (44-char CESR-encoded Blake3 hash)
 3. PeerPrefix is stable across restarts — the identity does not change even if keys rotate
 
@@ -124,7 +124,7 @@ struct SignedRequest<T> {
 
 **Signature computation:**
 1. Serialize payload to JSON (with `preserve_order` for determinism)
-2. Sign the JSON bytes with the node's signing key (ML-DSA-65 for infrastructure)
+2. Sign the JSON bytes with the node's signing key (ML-DSA-65 or ML-DSA-87 for infrastructure)
 3. Encode signature as CESR qb64
 
 ## Verification Flow
@@ -252,11 +252,11 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 In addition to registry authentication, the gossip layer verifies connections during the handshake:
 
 1. Exchange 44-byte prefixes
-2. ML-KEM-768 key exchange — initiator generates keypair and sends encapsulation key (qb64), acceptor encapsulates and sends ciphertext back (qb64), both derive shared secret
-3. Mutual ML-DSA-65 signature exchange — each side signs JSON payload `{our_ek, their_ek, their_prefix}`
+2. ML-KEM-768/1024 key exchange — initiator generates keypair and sends encapsulation key (qb64), acceptor encapsulates and sends ciphertext back (qb64), both derive shared secret
+3. Mutual ML-DSA-65/87 signature exchange — each side signs JSON payload `{our_ek, their_ek, their_prefix}`
 4. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
 5. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
-6. ML-DSA-65 only enforcement — P-256 peers are rejected
+6. ML-DSA-65/87 only enforcement — P-256 peers are rejected
 7. Session keys derived from shared secret via BLAKE3 KDF with context `"kels/gossip/v2/keys/..."`
 8. Unknown peers trigger a one-shot allowlist refresh before rejection
 9. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
@@ -280,17 +280,17 @@ Nodes periodically refresh their allowlist from the registry's `/api/peers` endp
 ### Defense in Depth
 
 1. **Registry layer:** Signature verification + allowlist check
-2. **Gossip layer:** Connection filtering during ML-KEM-768 + ML-DSA-65 handshake
+2. **Gossip layer:** Connection filtering during ML-KEM-768/1024 + ML-DSA-65/87 handshake
 3. **Admin access:** CLI requires kubectl exec (same trust as cluster admin)
 
 ### Signature Algorithm
 
-- **Key type (infrastructure):** ML-DSA-65 (FIPS 204, 192-bit post-quantum security)
-- **Signature:** ML-DSA-65
+- **Key type (infrastructure):** ML-DSA-65 (FIPS 204, 192-bit post-quantum security) or ML-DSA-87 (FIPS 204, 256-bit post-quantum security)
+- **Signature:** ML-DSA-65 or ML-DSA-87
 - **Encoding:** CESR qb64 for public keys and signatures
 - **Payload:** Canonical JSON serialization (`preserve_order` feature)
 
-Note: The KELS core service accepts both P-256 (ECDSA) and ML-DSA-65 KELs, supporting mobile clients that may still use P-256.
+Note: The KELS core service accepts P-256 (ECDSA), ML-DSA-65, and ML-DSA-87 KELs, supporting mobile clients that may still use P-256.
 
 ### Read vs Write Security
 

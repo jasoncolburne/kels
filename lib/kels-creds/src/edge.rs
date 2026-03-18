@@ -97,7 +97,7 @@ mod tests {
 
     fn test_edge() -> Edge {
         Edge::create(
-            "EAbc1234567890123456789012345678901234567890".to_string(),
+            "KAbc1234567890123456789012345678901234567890".to_string(),
             None,
             None,
             None,
@@ -122,10 +122,10 @@ mod tests {
     #[test]
     fn test_edge_with_optional_fields() {
         let edge = Edge::create(
-            "EAbc1234567890123456789012345678901234567890".to_string(),
-            Some("EIssuer123456789012345678901234567890abcde".to_string()),
-            Some("ECred12345678901234567890123456789012abcdef".to_string()),
-            Some("ENonce12345678901234567890123456789012abcde".to_string()),
+            "KAbc1234567890123456789012345678901234567890".to_string(),
+            Some("KIssuer123456789012345678901234567890abcde".to_string()),
+            Some("KCred12345678901234567890123456789012abcdef".to_string()),
+            Some("KNonce12345678901234567890123456789012abcde".to_string()),
             Some(true),
         )
         .unwrap();
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn test_edges_try_from_rejects_reserved_label() {
         let raw = super::RawEdges {
-            said: "EAbc1234567890123456789012345678901234567890".to_string(),
+            said: "KAbc1234567890123456789012345678901234567890".to_string(),
             edges: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_edge());

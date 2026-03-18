@@ -491,8 +491,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         "ml-kem-1024" | "ML-KEM-1024" => cesr::KemKeyCode::MlKem1024,
         _ => cesr::KemKeyCode::MlKem768,
     };
-    let signer =
-        IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str, kem_algorithm)?;
+    let signer = IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str, kem_algorithm)?;
     let verifier_store: std::sync::Arc<dyn kels::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(

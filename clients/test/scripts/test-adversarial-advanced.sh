@@ -143,7 +143,7 @@ echo ""
 PREFIX2=$(kels-cli -u "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX2"
 
-kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX2" --said "EPreAttackAnchor____________________________"
+kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX2" --said "KPreAttackAnchor____________________________"
 
 # Wait for KEL to propagate to all nodes before injecting
 run_test "KEL propagated to all nodes" wait_for_convergence "$PREFIX2"
@@ -192,7 +192,7 @@ echo "Created KEL on node-d: $PREFIX3"
 run_test "KEL exists on all nodes" wait_for_kel_on_all_nodes "$PREFIX3"
 
 # Owner submits anchor on node-d while adversaries inject on node-e and node-f
-kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said "EOwnerAnchor________________________________" &
+kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said "KOwnerAnchor________________________________" &
 PID_OWNER=$!
 kels-cli -u "$NODE_E_URL" adversary inject --prefix "$PREFIX3" --events ixn &
 PID_ADV1=$!

@@ -149,7 +149,7 @@ if [ "$MODE" = "setup" ]; then
 
     # Submit first ixn (sync event) to node-b via FQDN
     echo "Submitting sync anchor (ixn #1) to node-b via FQDN..."
-    SYNC_SAID="EResyncSyncAnchor___________________________"
+    SYNC_SAID="KResyncSyncAnchor___________________________"
     kels-cli -u "$NODE_B_FQDN_URL" anchor --prefix "$PREFIX" --said "$SYNC_SAID"
 
     # Get the sync event's SAID from node-b
@@ -181,7 +181,7 @@ if [ "$MODE" = "setup" ]; then
     # Submit second ixn (test event) to node-b via FQDN.
     # By now, DNS caches and HTTP connection pools should be stale.
     echo "Submitting test anchor (ixn #2) to node-b via FQDN..."
-    TEST_SAID="EResyncTestAnchor___________________________"
+    TEST_SAID="KResyncTestAnchor___________________________"
     kels-cli -u "$NODE_B_FQDN_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
 
     # Get the new SAID from node-b

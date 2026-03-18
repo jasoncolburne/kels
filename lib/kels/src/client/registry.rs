@@ -1032,8 +1032,8 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let peer = Peer {
-            said: "ETestPeerSaid_______________________________".to_string(),
-            prefix: "ETestPeerPrefix_____________________________".to_string(),
+            said: "KTestPeerSaid_______________________________".to_string(),
+            prefix: "KTestPeerPrefix_____________________________".to_string(),
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),

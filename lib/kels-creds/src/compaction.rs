@@ -607,23 +607,23 @@ mod tests {
 
         // Store a chunk that matches the ref_said value
         let ref_value =
-            json!({"said": "ERef_1234567890123456789012345678901234567", "extra": "data"});
+            json!({"said": "KRef_1234567890123456789012345678901234567", "extra": "data"});
         store
-            .store_chunk("ERef_1234567890123456789012345678901234567", &ref_value)
+            .store_chunk("KRef_1234567890123456789012345678901234567", &ref_value)
             .await
             .unwrap();
 
         let child_value =
-            json!({"said": "EChild234567890123456789012345678901234567", "data": "leaf"});
+            json!({"said": "KChild234567890123456789012345678901234567", "data": "leaf"});
         store
-            .store_chunk("EChild234567890123456789012345678901234567", &child_value)
+            .store_chunk("KChild234567890123456789012345678901234567", &child_value)
             .await
             .unwrap();
 
         let mut value = json!({
             "said": "",
-            "ref_said": "ERef_1234567890123456789012345678901234567",
-            "child": "EChild234567890123456789012345678901234567"
+            "ref_said": "KRef_1234567890123456789012345678901234567",
+            "child": "KChild234567890123456789012345678901234567"
         });
 
         expand_with_schema(&mut value, &schema, &store)
@@ -634,7 +634,7 @@ mod tests {
         assert!(value.get("ref_said").unwrap().is_string());
         assert_eq!(
             value.get("ref_said").unwrap().as_str().unwrap(),
-            "ERef_1234567890123456789012345678901234567"
+            "KRef_1234567890123456789012345678901234567"
         );
 
         // child SHOULD be expanded (it's compactable)

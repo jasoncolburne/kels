@@ -44,7 +44,7 @@ PROPOSE_OUTPUT=$(kubectl exec -n "$LEADER_NS" deploy/kels-registry -c kels-regis
 echo "$PROPOSE_OUTPUT" >&2
 
 # Extract proposal ID from "Proposal created: <id>" line
-PROPOSAL_ID=$(echo "$PROPOSE_OUTPUT" | grep "Proposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}')
+PROPOSAL_ID=$(echo "$PROPOSE_OUTPUT" | grep "Proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')
 
 if [ -z "$PROPOSAL_ID" ]; then
     echo "Error: Could not extract proposal ID from output" >&2

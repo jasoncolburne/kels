@@ -23,7 +23,7 @@ Each **gossip node** runs:
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
 
-The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 via fips204). In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
+The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
 ## Deployment Flow
 
@@ -40,7 +40,7 @@ deploy registry-c (standalone)
 ```
 
 At this point each registry has:
-- Generated an ML-DSA-65 keypair via the PKCS#11 HSM
+- Generated an ML-DSA-65 or ML-DSA-87 keypair via the PKCS#11 HSM
 - Created an inception event (KEL) establishing its identity
 - A prefix derived from that inception event
 
@@ -149,6 +149,8 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KEY_HANDLE_PREFIX` | HSM key handle prefix (`kels-registry` or `kels-gossip`) |
 | `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
 | `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/member-kels` for registry, `/api/kels` for nodes) |
+| `NEXT_SIGNING_ALGORITHM` | Algorithm for next signing key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
+| `NEXT_RECOVERY_ALGORITHM` | Algorithm for next recovery key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
 | `RUST_LOG` | Logging level |
 
 ### KELS Service (`kels`)
@@ -175,6 +177,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `REDIS_URL` | Redis for ready state and caching |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
+| `GOSSIP_KEM_ALGORITHM` | KEM algorithm for gossip key exchange (`ml-kem-768` or `ml-kem-1024`, default: `ml-kem-768`) |
 | `RUST_LOG` | Logging level |
 
 ## Peer Lifecycle

@@ -40,11 +40,15 @@ spec:
             - name: DATABASE_URL
               value: "${var.identityDatabaseUrl}"
             - name: PKCS11_LIBRARY
-              value: "/app/libkels_mock_hsm.so"
+              value: "${var.identity.pkcs11Library}"
             - name: KELS_HSM_DATA_DIR
-              value: "/data/hsm"
+              value: "${var.identity.hsmDataDir}"
             - name: HSM_PIN
-              value: "1234"
+              value: "${var.identity.hsmPin}"
+            - name: NEXT_SIGNING_ALGORITHM
+              value: "${var.identity.signingAlgorithm}"
+            - name: NEXT_RECOVERY_ALGORITHM
+              value: "${var.identity.recoveryAlgorithm}"
             - name: KEL_FORWARD_URL
               value: "${var.kelForwardUrl}"
             - name: KEL_FORWARD_PATH_PREFIX

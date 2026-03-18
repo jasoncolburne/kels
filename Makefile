@@ -11,10 +11,10 @@ CLIENTS_DIR := clients
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
 # Read federated registries - just the prefixes (for compile-time trust anchor)
-TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[].prefix] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[].prefix] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
-TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
+TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
 .PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-comprehensive wait-for-gossip
@@ -155,7 +155,7 @@ test-voting:
 	# Test voting
 	garden deploy --env=node-a
 
-	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1a: unauthenticated GET to federation proposals endpoint should succeed (read-only)
 	kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/federation/proposals/$$(cat /tmp/proposal-a.txt)
@@ -173,7 +173,7 @@ test-voting:
 	garden run withdraw-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 
 	# Re-propose (same node, previous proposal was withdrawn)
-	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 4: two rejections kill the proposal, further votes fail
 	garden run reject-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -181,7 +181,7 @@ test-voting:
 	! garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 
 	# Re-propose (same node, previous proposal was rejected)
-	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 5: vote then try to withdraw (has votes — should fail)
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -193,7 +193,7 @@ test-voting:
 	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
 
 	# Remove
-	garden run propose-remove-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
+	garden run propose-remove-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
 	# Vote from all registries
 	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-b
@@ -211,32 +211,32 @@ deploy-nodes:
 	garden deploy --env=node-f
 
 vote-nodes:
-	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
+	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
 
-	garden run propose-add-peer --var node=node-b 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
+	garden run propose-add-peer --var node=node-b 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-b.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-b.txt) --env=registry-c
 
-	garden run propose-add-peer --var node=node-c 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
+	garden run propose-add-peer --var node=node-c 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-c.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-c.txt) --env=registry-c
 
-	garden run propose-add-peer --var node=node-d 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-d.txt
+	garden run propose-add-peer --var node=node-d 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-d.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-d.txt) --env=registry-c
 
-	garden run propose-add-peer --var node=node-e 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-e.txt
+	garden run propose-add-peer --var node=node-e 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-e.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-e.txt) --env=registry-c
 
-	garden run propose-add-peer --var node=node-f 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'E[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-f.txt
+	garden run propose-add-peer --var node=node-f 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-f.txt
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c

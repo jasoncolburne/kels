@@ -112,10 +112,10 @@ When events are submitted, the KEL merge produces one of:
 ### Libraries
 
 - **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with ML-KEM-768 + ML-DSA-65 + AES-GCM-256).
+- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with configurable ML-KEM (ML-KEM-768 or ML-KEM-1024) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
-- **kels-mock-hsm** (`lib/kels-mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.
+- **kels-mock-hsm** (`lib/kels-mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.
 
 ### Clients
 
@@ -160,7 +160,7 @@ The DB cannot be trusted. All operations on KEL data fall into three categories:
 Events are stored in PostgreSQL via the `verifiable-storage` framework (`Stored`, `SignedEvents`, `Chained`, `SelfAddressed` derive macros). Transactional operations use `KelTransaction` (PG transaction + advisory lock).
 
 - All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events. The CASE expression uses `EventKind::sort_priority_mapping()`.
-- `MAX_EVENTS_PER_KEL_QUERY` (64) — page size for database queries and HTTP responses (reduced from 512 due to larger ML-DSA-65 signatures).
+- `MAX_EVENTS_PER_KEL_QUERY` (64) — page size for database queries and HTTP responses (reduced from 512 due to larger ML-DSA-65/ML-DSA-87 signatures).
 - Pre-serialized JSON cache in Redis for KELs ≤ 64 events; Redis pub/sub for cache invalidation.
 - Verifiable data patterns:
     - Creator sends full records as the payload (no wrapper types) and anchors by SAID in their KEL.

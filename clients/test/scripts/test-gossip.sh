@@ -139,7 +139,7 @@ echo "Anchor data on node-a, verify it propagates to node-b"
 echo ""
 
 # Anchor on node-a
-TEST_SAID="EGossipTestAnchor___________________________"
+TEST_SAID="KGossipTestAnchor___________________________"
 run_test "Anchor data on node-a" kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID"
 
 # Verify anchor propagated
@@ -159,11 +159,11 @@ PREFIX4=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $
 echo "Created KEL on node-a: $PREFIX4"
 
 # Submit multiple anchors rapidly
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "EGossipMulti1_______________________________"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "EGossipMulti2_______________________________"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "EGossipMulti3_______________________________"
+kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti1_______________________________"
+kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti2_______________________________"
+kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti3_______________________________"
 kels-cli -u "$NODE_A_URL" rotate --prefix "$PREFIX4"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "EGossipMulti4_______________________________"
+kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti4_______________________________"
 
 COUNT_A=$(get_event_count "$NODE_A_URL" "$PREFIX4")
 echo "Node-a has $COUNT_A events"
@@ -211,7 +211,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     PREFIX6=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
     echo "Created KEL on node-a: $PREFIX6"
 
-    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "EPreDivergence______________________________"
+    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KPreDivergence______________________________"
 
     # Wait for pre-divergence events to propagate
     run_test "Pre-divergence KEL converged" wait_for_convergence "$PREFIX6"
@@ -220,7 +220,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     kels-cli -u "$NODE_A_URL" adversary inject --prefix "$PREFIX6" --events ixn || true
 
     # Owner event creates divergence
-    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "EOwnerCausesDivergence______________________" 2>&1 || true
+    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KOwnerCausesDivergence______________________" 2>&1 || true
 
     # Wait for divergent events to propagate to node-b (4 events: icp, anchor, adv_ixn, owner_ixn)
     run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4"

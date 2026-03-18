@@ -12,11 +12,13 @@ use crate::{error::KelsError, types::SignedKeyEvent};
 
 #[cfg(test)]
 pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
-    use cesr::SigningKeyCode;
+    use cesr::VerificationKeyCode;
 
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
-    let mut builder =
-        KeyEventBuilder::new(SoftwareKeyProvider::new(SigningKeyCode::Secp256r1), None);
+    let mut builder = KeyEventBuilder::new(
+        SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+        None,
+    );
     let icp = builder.incept().await.unwrap();
     let prefix = icp.event.prefix.clone();
     (prefix, vec![icp])

@@ -431,7 +431,7 @@ mod tests {
         json!({
             "said": "",
             "schema": schema.said,
-            "issuer": "EIssuer",
+            "issuer": "KIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
             "claims": {
                 "said": "",
@@ -584,7 +584,7 @@ mod tests {
         let mut credential = json!({
             "said": "",
             "schema": schema.said,
-            "issuer": "EIssuer",
+            "issuer": "KIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
             "claims": {
                 "said": "",
@@ -678,7 +678,7 @@ mod tests {
         let mut credential = json!({
             "said": "",
             "schema": schema.said,
-            "issuer": "EIssuer",
+            "issuer": "KIssuer",
             "issued_at": "2025-01-01T00:00:00Z",
             "claims": {
                 "said": "",

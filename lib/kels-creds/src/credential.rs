@@ -306,8 +306,8 @@ mod tests {
     async fn test_credential() -> (Credential<TestClaims>, String) {
         Credential::build(
             &test_schema(),
-            "EIssuer123456789012345678901234567890abcde".to_string(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -355,7 +355,7 @@ mod tests {
     async fn test_unique_credential() {
         let (cred, _) = Credential::build(
             &test_schema(),
-            "EIssuer123456789012345678901234567890abcde".to_string(),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
             true,
@@ -374,7 +374,7 @@ mod tests {
     async fn test_deterministic_credential() {
         let (cred, _) = Credential::build(
             &test_schema(),
-            "EIssuer123456789012345678901234567890abcde".to_string(),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
             false,
@@ -394,7 +394,7 @@ mod tests {
         use crate::edge::{Edge, Edges};
 
         let edge = Edge::create(
-            "EAbc1234567890123456789012345678901234567890".to_string(),
+            "KAbc1234567890123456789012345678901234567890".to_string(),
             None,
             None,
             None,
@@ -458,7 +458,7 @@ mod tests {
 
         let (cred, _) = Credential::build(
             &schema,
-            "EIssuer123456789012345678901234567890abcde".to_string(),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
             false,
@@ -535,7 +535,7 @@ mod tests {
 
         let (cred, _) = Credential::build(
             &schema,
-            "EIssuer123456789012345678901234567890abcde".to_string(),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
             None,
             test_claims(),
             false,
@@ -569,7 +569,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use kels::{FileKelStore, SigningKeyCode, SoftwareKeyProvider, StoreKelSource};
+    use kels::{FileKelStore, SoftwareKeyProvider, StoreKelSource, VerificationKeyCode};
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
@@ -580,7 +580,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
         let mut builder = KeyEventBuilder::with_dependencies(
-            SoftwareKeyProvider::new(SigningKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
             None,
             Some(kel_store.clone() as Arc<dyn kels::KelStore>),
             None,
@@ -596,7 +596,7 @@ mod tests {
         Credential::build(
             &test_schema(),
             issuer.to_string(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -615,7 +615,7 @@ mod tests {
         let (cred, _) = Credential::issue(
             &schema,
             prefix.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -667,7 +667,7 @@ mod tests {
         let (cred, compacted_said) = Credential::issue(
             &schema,
             prefix.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -807,7 +807,7 @@ mod tests {
         let (cred, _) = Credential::issue(
             &schema,
             prefix.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -843,7 +843,7 @@ mod tests {
         let (cred, _) = Credential::issue(
             &schema,
             prefix.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -895,7 +895,7 @@ mod tests {
         let (cred_a, compacted_said_a) = Credential::issue(
             &schema_a,
             prefix_a.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
@@ -977,7 +977,7 @@ mod tests {
         let (cred_b, _) = Credential::issue(
             &schema_b,
             prefix_b.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             Some(edges),
@@ -1054,7 +1054,7 @@ mod tests {
         let (cred_root, compacted_root) = Credential::issue(
             &root_schema,
             prefix_root.clone(),
-            Some("ESubject23456789012345678901234567890abcde".to_string()),
+            Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,

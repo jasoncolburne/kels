@@ -90,6 +90,7 @@ variables:
     topic: "kels/events/v1"
     listenAddress: "0.0.0.0:${var.gossip.port}"
     antiEntropyIntervalSecs: "10"
+    kemAlgorithm: "ml-kem-1024"
   registry:
     replicas: 1
     port: "80"
@@ -98,3 +99,8 @@ variables:
     port: "80"
     host: identity
     url: http://${var.identity.host}:${var.identity.port}
+    signingAlgorithm: "ml-dsa-87"
+    recoveryAlgorithm: "ml-dsa-87"
+    pkcs11Library: "/app/libkels_mock_hsm.so"
+    hsmDataDir: "/data/hsm"
+    hsmPin: "1234"

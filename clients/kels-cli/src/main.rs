@@ -11,8 +11,8 @@ use colored::Colorize;
 use kels::{EventKind, KelStore};
 use kels::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SigningKeyCode, SoftwareKeyProvider,
-    SoftwareProviderConfig, max_verification_pages,
+    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig, VerificationKeyCode, max_verification_pages,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -180,11 +180,11 @@ enum AdversaryCommands {
     },
 }
 
-fn parse_algorithm(algorithm: &str) -> Result<SigningKeyCode> {
+fn parse_algorithm(algorithm: &str) -> Result<VerificationKeyCode> {
     match algorithm {
-        "secp256r1" => Ok(SigningKeyCode::Secp256r1),
-        "ml-dsa-65" => Ok(SigningKeyCode::MlDsa65),
-        "ml-dsa-87" => Ok(SigningKeyCode::MlDsa87),
+        "secp256r1" => Ok(VerificationKeyCode::Secp256r1),
+        "ml-dsa-65" => Ok(VerificationKeyCode::MlDsa65),
+        "ml-dsa-87" => Ok(VerificationKeyCode::MlDsa87),
         _ => Err(anyhow!(
             "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
             algorithm
@@ -209,7 +209,7 @@ fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     Ok(SoftwareProviderConfig::new(
         key_dir,
-        SigningKeyCode::Secp256r1,
+        VerificationKeyCode::Secp256r1,
     ))
 }
 

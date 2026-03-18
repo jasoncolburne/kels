@@ -15,16 +15,16 @@ use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
 use kels::{
-    HttpKelSource, KelsClient, KeyEventBuilder, SigningKeyCode, SoftwareKeyProvider,
+    HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode,
     DEFAULT_MAX_VERIFICATION_PAGES, MAX_EVENTS_PER_KEL_RESPONSE,
 };
 use verifiable_storage::compute_said;
 
-fn parse_algorithm(algorithm: &str) -> SigningKeyCode {
+fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
     match algorithm {
-        "secp256r1" => SigningKeyCode::Secp256r1,
-        "ml-dsa-65" => SigningKeyCode::MlDsa65,
-        "ml-dsa-87" => SigningKeyCode::MlDsa87,
+        "secp256r1" => VerificationKeyCode::Secp256r1,
+        "ml-dsa-65" => VerificationKeyCode::MlDsa65,
+        "ml-dsa-87" => VerificationKeyCode::MlDsa87,
         other => {
             eprintln!(
                 "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
@@ -216,7 +216,7 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
 async fn create_test_kel(
     client: &KelsClient,
     event_count: usize,
-    algorithm: SigningKeyCode,
+    algorithm: VerificationKeyCode,
 ) -> Result<String> {
     // Build events offline (no client) then batch-submit to avoid per-event rate limits.
     let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(algorithm), None);
@@ -242,7 +242,7 @@ async fn create_test_kel(
 async fn setup_new_kels(
     client: &KelsClient,
     url: &str,
-    algorithm: SigningKeyCode,
+    algorithm: VerificationKeyCode,
 ) -> Result<Vec<TestKelConfig>> {
     println!("{}", "Setting up test KELs...".green().bold());
 

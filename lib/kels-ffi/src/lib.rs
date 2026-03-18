@@ -27,7 +27,7 @@ use kels::{
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 )))]
-use kels::{SigningKeyCode, SoftwareKeyProvider};
+use kels::{SoftwareKeyProvider, VerificationKeyCode};
 use serde::{Deserialize, Serialize};
 
 // ==================== Key State Persistence ====================
@@ -279,11 +279,11 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 )))]
-fn parse_algorithm_option(algo: *const c_char) -> Option<SigningKeyCode> {
+fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
     match from_c_string(algo).as_deref() {
-        Some("ml-dsa-65") | Some("ML-DSA-65") => Some(SigningKeyCode::MlDsa65),
-        Some("ml-dsa-87") | Some("ML-DSA-87") => Some(SigningKeyCode::MlDsa87),
-        Some("secp256r1") | Some("p256") => Some(SigningKeyCode::Secp256r1),
+        Some("ml-dsa-65") | Some("ML-DSA-65") => Some(VerificationKeyCode::MlDsa65),
+        Some("ml-dsa-87") | Some("ML-DSA-87") => Some(VerificationKeyCode::MlDsa87),
+        Some("secp256r1") | Some("p256") => Some(VerificationKeyCode::Secp256r1),
         _ => None, // null, empty, or unrecognized = keep current
     }
 }
@@ -292,8 +292,8 @@ fn parse_algorithm_option(algo: *const c_char) -> Option<SigningKeyCode> {
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 )))]
-fn parse_algorithm(algo: *const c_char) -> SigningKeyCode {
-    parse_algorithm_option(algo).unwrap_or(SigningKeyCode::Secp256r1)
+fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
+    parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::Secp256r1)
 }
 
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
@@ -1746,7 +1746,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             let result = match kind {
                 EventKind::Ixn => {
                     let anchor = format!(
-                        "EAdversaryAnchor{}{}_",
+                        "KAdversaryAnchor{}{}_",
                         counter,
                         "_".repeat(44 - 17 - counter.to_string().len())
                     );
