@@ -396,9 +396,9 @@ However, the KERI ecosystem provides no guidance for deploying the operational i
 
 ### KELS
 
-**Initial setup:** Complex for the full federation, but fully automated and reproducible. A single `make test-comprehensive` command deploys the entire stack (registries, gossip nodes, integration tests) in ~25 minutes. For development, a single KELS node (kels service + PostgreSQL + Redis) can run without gossip or registries, providing the full KEL API without replication — comparable in complexity to KERIA's single-service setup but with a complete feature set (divergence handling, recovery, contest).
+**Initial setup:** Simple for a single node, complex for the full federation. A single KELS node (kels service + PostgreSQL) provides the full KEL API — inception, rotation, interaction, recovery, contest, decommission, divergence handling — without gossip or registries. This is comparable in complexity to any single-service web application. You can scale a single kels deployment horizontally by adding redis.
 
-The full federation deployment requires:
+For the full federation with gossip replication, the deployment is more involved but fully automated and reproducible (`make test-comprehensive` deploys everything in ~25 minutes). The full federation deployment requires:
 1. Deploy 3 registries in standalone mode (each running 4 services: registry, identity, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors
@@ -419,10 +419,10 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 
 | Aspect | KERI | KELS |
 |--------|------|------|
-| Minimum services for a deployment | 2-3 (agent + witnesses) | 12+ (3 registries × 4 services) |
+| Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales well without federation |
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
 | Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
-| Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote + restart (minutes to hours) |
+| Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
 | Adding trust anchors | OOBI resolution (seconds) | Recompile + redeploy all binaries (hours to days) |
 | Configuration surface | Low (agent config + witness URLs) | High (compile-time vars, runtime env, Redis ACLs, Raft config) |
 | Reproducible dev environment | No (manual setup, no orchestration) | Yes (Garden + Kubernetes, single command) |
