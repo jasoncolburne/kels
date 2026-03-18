@@ -95,16 +95,19 @@ pub use types::{
 #[cfg(any(test, feature = "dev-tools"))]
 pub use types::resolve_key_events;
 
+/// Default page size for all KEL operations: submissions, queries, and responses.
+/// ML-DSA-65 signatures are ~3.3KB each, so 32 events ≈ 100KB per page.
+pub const DEFAULT_PAGE_SIZE: usize = 32;
+
 /// Maximum number of events allowed in a single submit_events request.
-/// Shared between the server handler and gossip client chunking logic.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = 64;
+pub const MAX_EVENTS_PER_SUBMISSION: usize = DEFAULT_PAGE_SIZE;
 
 /// Maximum number of events fetched in a single KEL database query or HTTP page.
-pub const MAX_EVENTS_PER_KEL_QUERY: usize = 64;
+pub const MAX_EVENTS_PER_KEL_QUERY: usize = DEFAULT_PAGE_SIZE;
 
 /// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
-/// At 64 events per page, 64 pages = 4096 max events before failing secure.
+/// At 32 events per page, 64 pages = 2048 max events before failing secure.
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
 
 static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {

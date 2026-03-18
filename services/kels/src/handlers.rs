@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 64);
+        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 32);
     }
 
     #[test]
