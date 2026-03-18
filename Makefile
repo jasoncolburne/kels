@@ -340,7 +340,7 @@ test-suite:
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./test-redis-acl.sh
 	# 60 concurrency / 5s duration more or less saturates the primary developer's laptop
-	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 60 5
+	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
