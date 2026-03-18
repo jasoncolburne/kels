@@ -282,6 +282,7 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
 fn parse_algorithm_option(algo: *const c_char) -> Option<SigningKeyCode> {
     match from_c_string(algo).as_deref() {
         Some("ml-dsa-65") | Some("ML-DSA-65") => Some(SigningKeyCode::MlDsa65),
+        Some("ml-dsa-87") | Some("ML-DSA-87") => Some(SigningKeyCode::MlDsa87),
         Some("secp256r1") | Some("p256") => Some(SigningKeyCode::Secp256r1),
         _ => None, // null, empty, or unrecognized = keep current
     }

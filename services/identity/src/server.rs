@@ -50,6 +50,10 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .filter(|u| !u.is_empty());
     let forward_path_prefix =
         std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/kels".to_string());
+    let next_signing_algorithm =
+        std::env::var("NEXT_SIGNING_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
+    let next_recovery_algorithm =
+        std::env::var("NEXT_RECOVERY_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
@@ -106,6 +110,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
             binding.current_key_handle.into(),
             binding.next_key_handle.into(),
             binding.recovery_key_handle.into(),
+            &next_signing_algorithm,
+            &next_recovery_algorithm,
         );
 
         KeyEventBuilder::with_dependencies(
@@ -121,7 +127,14 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         // and registry pulls all member KELs via sync_all_member_kels on startup.
         info!("No existing identity - auto-incepting");
 
-        let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
+        let key_provider = HsmKeyProvider::new(
+            hsm.clone(),
+            &key_handle_prefix,
+            0,
+            0,
+            &next_signing_algorithm,
+            &next_recovery_algorithm,
+        );
 
         let mut builder =
             KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)

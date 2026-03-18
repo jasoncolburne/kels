@@ -43,10 +43,15 @@ fn cesr_pubkey_to_raw(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, SignerError> 
 pub struct IdentityGossipSigner {
     identity_client: kels::IdentityClient,
     node_prefix: NodePrefix,
+    kem_algorithm: cesr::KemKeyCode,
 }
 
 impl IdentityGossipSigner {
-    pub fn new(identity_url: &str, peer_prefix: &str) -> Result<Self, SignerError> {
+    pub fn new(
+        identity_url: &str,
+        peer_prefix: &str,
+        kem_algorithm: cesr::KemKeyCode,
+    ) -> Result<Self, SignerError> {
         let node_prefix = NodePrefix::option_from_str(peer_prefix).ok_or_else(|| {
             SignerError::Key(format!(
                 "Invalid peer prefix (expected 44 chars): {}",
@@ -57,6 +62,7 @@ impl IdentityGossipSigner {
         Ok(Self {
             identity_client: kels::IdentityClient::new(identity_url),
             node_prefix,
+            kem_algorithm,
         })
     }
 }
@@ -64,6 +70,10 @@ impl IdentityGossipSigner {
 impl Signer for IdentityGossipSigner {
     fn node_prefix(&self) -> NodePrefix {
         self.node_prefix
+    }
+
+    fn kem_algorithm(&self) -> cesr::KemKeyCode {
+        self.kem_algorithm
     }
 
     async fn sign(&self, data: &[u8]) -> Result<SignatureBundle, GossipError> {

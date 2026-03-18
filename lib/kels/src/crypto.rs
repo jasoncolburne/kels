@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use cesr::{
     Matter, PrivateKey, PublicKey, Signature, SigningKeyCode, generate_ml_dsa_65,
-    generate_secp256r1,
+    generate_ml_dsa_87, generate_secp256r1,
 };
 
 use crate::{compute_rotation_hash, error::KelsError};
@@ -235,6 +235,9 @@ fn generate_for_algorithm(algorithm: SigningKeyCode) -> Result<(PublicKey, Priva
         }
         SigningKeyCode::MlDsa65 => {
             generate_ml_dsa_65().map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))
+        }
+        SigningKeyCode::MlDsa87 => {
+            generate_ml_dsa_87().map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))
         }
     }
 }

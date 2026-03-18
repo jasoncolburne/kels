@@ -484,7 +484,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Create gossip signer and verifier (signer uses identity service)
-    let signer = IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str)?;
+    let kem_algorithm = match std::env::var("GOSSIP_KEM_ALGORITHM")
+        .unwrap_or_else(|_| "ml-kem-768".to_string())
+        .as_str()
+    {
+        "ml-kem-1024" | "ML-KEM-1024" => cesr::KemKeyCode::MlKem1024,
+        _ => cesr::KemKeyCode::MlKem768,
+    };
+    let signer =
+        IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str, kem_algorithm)?;
     let verifier_store: std::sync::Arc<dyn kels::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(

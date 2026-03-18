@@ -95,6 +95,12 @@ pub trait Signer: Send + Sync + 'static {
 
     /// Sign the given data. Returns the signature and public key as raw bytes.
     fn sign(&self, data: &[u8]) -> impl Future<Output = Result<SignatureBundle, Error>> + Send;
+
+    /// KEM algorithm for handshake key exchange.
+    /// Default: ML-KEM-768. Override with ML-KEM-1024 for security level 5.
+    fn kem_algorithm(&self) -> cesr::KemKeyCode {
+        cesr::KemKeyCode::MlKem768
+    }
 }
 
 /// Trait for verifying peer identity during handshake.

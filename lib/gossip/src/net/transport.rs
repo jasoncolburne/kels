@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cesr::{KemCiphertext, KemPublicKey, Matter, generate_ml_kem_768};
+use cesr::{KemCiphertext, KemKeyCode, KemPublicKey, Matter, generate_ml_kem_768, generate_ml_kem_1024};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use socket2::SockRef;
 use tokio::net::TcpStream;
@@ -57,9 +57,10 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     let their_id = exchange_prefixes(&mut stream, &our_id, is_initiator).await?;
     debug!(peer = %their_id, "prefix exchange complete");
 
-    // Step 2: ML-KEM-768 key exchange.
+    // Step 2: ML-KEM key exchange.
+    let kem_algo = signer.kem_algorithm();
     let (shared_secret, our_ek_qb64, their_ek_qb64) =
-        mlkem_key_exchange(&mut stream, is_initiator).await?;
+        mlkem_key_exchange(&mut stream, is_initiator, kem_algo).await?;
     debug!(peer = %their_id, "ML-KEM key exchange complete");
 
     // Step 3: Sign handshake transcript.
@@ -114,19 +115,23 @@ async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     Ok(NodePrefix(their_bytes))
 }
 
-/// Perform ML-KEM-768 key exchange.
+/// Perform ML-KEM key exchange (ML-KEM-768 or ML-KEM-1024).
 ///
 /// Returns (shared_secret, our_ek_or_ct_qb64, their_ek_or_ct_qb64).
 /// - Initiator: generates keypair, sends ek, receives ct, decapsulates.
-/// - Acceptor: receives ek, encapsulates, sends ct.
+/// - Acceptor: receives ek, encapsulates, sends ct (auto-detects algorithm from received ek).
 async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     stream: &mut S,
     is_initiator: bool,
+    kem_algo: KemKeyCode,
 ) -> Result<([u8; 32], String, String), Error> {
     if is_initiator {
         // Generate ML-KEM keypair
-        let (ek, dk) = generate_ml_kem_768()
-            .map_err(|e| Error::Handshake(format!("ML-KEM keygen failed: {}", e)))?;
+        let (ek, dk) = match kem_algo {
+            KemKeyCode::MlKem768 => generate_ml_kem_768(),
+            KemKeyCode::MlKem1024 => generate_ml_kem_1024(),
+        }
+        .map_err(|e| Error::Handshake(format!("ML-KEM keygen failed: {}", e)))?;
         let ek_qb64 = ek.qb64();
 
         // Send encapsulation key

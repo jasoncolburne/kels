@@ -45,7 +45,7 @@ struct Cli {
 enum Commands {
     /// Create a new KEL (inception event)
     Incept {
-        /// Signing algorithm (secp256r1 or ml-dsa-65)
+        /// Signing algorithm (secp256r1, ml-dsa-65, or ml-dsa-87)
         #[arg(long, default_value = "secp256r1")]
         algorithm: String,
     },
@@ -184,8 +184,9 @@ fn parse_algorithm(algorithm: &str) -> Result<SigningKeyCode> {
     match algorithm {
         "secp256r1" => Ok(SigningKeyCode::Secp256r1),
         "ml-dsa-65" => Ok(SigningKeyCode::MlDsa65),
+        "ml-dsa-87" => Ok(SigningKeyCode::MlDsa87),
         _ => Err(anyhow!(
-            "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65",
+            "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
             algorithm
         )),
     }

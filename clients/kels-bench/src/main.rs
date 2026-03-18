@@ -24,9 +24,10 @@ fn parse_algorithm(algorithm: &str) -> SigningKeyCode {
     match algorithm {
         "secp256r1" => SigningKeyCode::Secp256r1,
         "ml-dsa-65" => SigningKeyCode::MlDsa65,
+        "ml-dsa-87" => SigningKeyCode::MlDsa87,
         other => {
             eprintln!(
-                "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65",
+                "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
                 other
             );
             std::process::exit(1);
@@ -75,7 +76,7 @@ struct Args {
     #[arg(long)]
     throughput_only: bool,
 
-    /// Signing algorithm (secp256r1 or ml-dsa-65)
+    /// Signing algorithm (secp256r1, ml-dsa-65, or ml-dsa-87)
     #[arg(long, default_value = "secp256r1")]
     algorithm: String,
 }

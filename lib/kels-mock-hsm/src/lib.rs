@@ -1,11 +1,14 @@
-//! Mock PKCS#11 provider with ML-DSA-65 support
+//! Mock PKCS#11 provider with ML-DSA-65 and ML-DSA-87 support
 //!
 //! Implements a minimal subset of PKCS#11 3.2 for use as a development HSM.
 //! Keys are stored in memory and do not persist across restarts.
 //!
 //! Supports:
-//! - ML-DSA-65 key generation (`CKM_ML_DSA_KEY_PAIR_GEN`)
-//! - ML-DSA-65 signing (`CKM_ML_DSA`)
+//! - ML-DSA-65 key generation and signing (`CKM_ML_DSA_KEY_PAIR_GEN` / `CKM_ML_DSA`)
+//! - ML-DSA-87 key generation and signing (`CKM_ML_DSA_KEY_PAIR_GEN` / `CKM_ML_DSA`)
+//!
+//! The parameter set (ML-DSA-65 vs ML-DSA-87) is selected via `CKA_PARAMETER_SET`
+//! in the public key template during key generation.
 //!
 //! In production, swap the library path to a real HSM's PKCS#11 `.so`.
 
@@ -26,8 +29,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use fips204::ml_dsa_65;
 use fips204::traits::{KeyGen, SerDes, Signer};
+use fips204::{ml_dsa_65, ml_dsa_87};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -98,8 +101,9 @@ const CKF_TOKEN_INITIALIZED: CkFlags = 0x00000400;
 // Booleans
 const CK_TRUE: CkBbool = 1;
 
-// ML-DSA-65 parameter set value
+// ML-DSA parameter set values
 const CKP_ML_DSA_65: CkUlong = 2;
+const CKP_ML_DSA_87: CkUlong = 3;
 
 // Session magic value
 const SESSION_HANDLE: CkSessionHandle = 0x0001;
@@ -181,6 +185,7 @@ struct StoredObject {
     key_type: CkKeyType,
     label: String,
     value: Vec<u8>, // public key bytes or private key seed
+    parameter_set: CkUlong,
 }
 
 /// Serializable representation of a stored object for disk persistence.
@@ -189,6 +194,12 @@ struct PersistedObject {
     class: u64,
     key_type: u64,
     value: String, // hex-encoded
+    #[serde(default = "default_parameter_set")]
+    parameter_set: u64,
+}
+
+fn default_parameter_set() -> u64 {
+    CKP_ML_DSA_65
 }
 
 /// Serializable state for all objects keyed by label+class.
@@ -221,6 +232,7 @@ fn save_state(state: &HsmState) {
                 class: obj.class,
                 key_type: obj.key_type,
                 value: hex::encode(&obj.value),
+                parameter_set: obj.parameter_set,
             },
         );
     }
@@ -264,6 +276,7 @@ fn load_state(state: &mut HsmState) {
                 key_type: pobj.key_type,
                 label,
                 value,
+                parameter_set: pobj.parameter_set,
             },
         );
     }
@@ -587,15 +600,25 @@ pub unsafe extern "C" fn C_GenerateKeyPair(
         return CKR_MECHANISM_INVALID;
     }
 
-    // Extract label from public key template
+    // Extract label and parameter set from public key template
     let label = extract_label(p_public_key_template, ul_public_key_attribute_count);
+    let parameter_set = extract_parameter_set(p_public_key_template, ul_public_key_attribute_count);
 
     let result = with_state(|state| {
-        // Generate ML-DSA-65 keypair from random seed
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
-        let (pk, _sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
-        let pk_bytes = pk.into_bytes().to_vec();
+
+        let pk_bytes = match parameter_set {
+            CKP_ML_DSA_87 => {
+                let (pk, _sk) = ml_dsa_87::KG::keygen_from_seed(&seed);
+                pk.into_bytes().to_vec()
+            }
+            _ => {
+                // CKP_ML_DSA_65 or default
+                let (pk, _sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
+                pk.into_bytes().to_vec()
+            }
+        };
 
         let pub_handle = state.alloc_handle();
         let priv_handle = state.alloc_handle();
@@ -607,6 +630,7 @@ pub unsafe extern "C" fn C_GenerateKeyPair(
                 key_type: CKK_ML_DSA,
                 label: label.clone(),
                 value: pk_bytes,
+                parameter_set,
             },
         );
         state.objects.insert(
@@ -616,6 +640,7 @@ pub unsafe extern "C" fn C_GenerateKeyPair(
                 key_type: CKK_ML_DSA,
                 label,
                 value: seed.to_vec(),
+                parameter_set,
             },
         );
 
@@ -778,7 +803,7 @@ pub unsafe extern "C" fn C_GetAttributeValue(
                     write_attr_value(attr, &obj.value);
                 }
                 CKA_PARAMETER_SET => {
-                    write_attr_value(attr, &CKP_ML_DSA_65.to_ne_bytes());
+                    write_attr_value(attr, &obj.parameter_set.to_ne_bytes());
                 }
                 CKA_TOKEN => {
                     write_attr_value(attr, &[CK_TRUE]);
@@ -869,16 +894,35 @@ pub unsafe extern "C" fn C_Sign(
         return CKR_ARGUMENTS_BAD;
     }
 
-    const SIG_LEN: CkUlong = 3309;
+    // Determine signature length from the key's parameter set
+    let sig_len_result = with_state(|state| {
+        let sign = state
+            .sign_state
+            .as_ref()
+            .ok_or(CKR_OPERATION_NOT_INITIALIZED)?;
+        let obj = state
+            .objects
+            .get(&sign.key_handle)
+            .ok_or(CKR_KEY_HANDLE_INVALID)?;
+        match obj.parameter_set {
+            CKP_ML_DSA_87 => Ok(4627u64),
+            _ => Ok(3309u64),
+        }
+    });
+
+    let sig_len: CkUlong = match sig_len_result {
+        Ok(len) => len,
+        Err(rv) => return rv,
+    };
 
     // Size query
     if p_signature.is_null() {
-        unsafe { *pul_signature_len = SIG_LEN };
+        unsafe { *pul_signature_len = sig_len };
         return CKR_OK;
     }
 
-    if unsafe { *pul_signature_len } < SIG_LEN {
-        unsafe { *pul_signature_len = SIG_LEN };
+    if unsafe { *pul_signature_len } < sig_len {
+        unsafe { *pul_signature_len = sig_len };
         return CKR_BUFFER_TOO_SMALL;
     }
 
@@ -895,17 +939,26 @@ pub unsafe extern "C" fn C_Sign(
             .get(&sign.key_handle)
             .ok_or(CKR_KEY_HANDLE_INVALID)?;
 
-        // Reconstruct ML-DSA-65 keypair from seed (first 32 bytes of stored value)
         let mut seed = [0u8; 32];
         if obj.value.len() < 32 {
             return Err(CKR_DEVICE_ERROR);
         }
         seed.copy_from_slice(&obj.value[..32]);
-        let (_pk, sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
 
-        let sig = sk.try_sign(data, &[]).map_err(|_| CKR_DEVICE_ERROR)?;
+        let sig_bytes = match obj.parameter_set {
+            CKP_ML_DSA_87 => {
+                let (_pk, sk) = ml_dsa_87::KG::keygen_from_seed(&seed);
+                let sig = sk.try_sign(data, &[]).map_err(|_| CKR_DEVICE_ERROR)?;
+                sig.to_vec()
+            }
+            _ => {
+                let (_pk, sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
+                let sig = sk.try_sign(data, &[]).map_err(|_| CKR_DEVICE_ERROR)?;
+                sig.to_vec()
+            }
+        };
 
-        Ok(sig.to_vec())
+        Ok(sig_bytes)
     });
 
     match result {
@@ -946,6 +999,16 @@ pub unsafe extern "C" fn C_DestroyObject(
 fn copy_padded(dest: &mut [u8], src: &[u8]) {
     let len = src.len().min(dest.len());
     dest[..len].copy_from_slice(&src[..len]);
+}
+
+fn extract_parameter_set(template: *const CkAttribute, count: CkUlong) -> CkUlong {
+    for i in 0..count as usize {
+        let attr = unsafe { &*template.add(i) };
+        if attr.r#type == CKA_PARAMETER_SET && !attr.p_value.is_null() && attr.ul_value_len >= 8 {
+            return unsafe { *(attr.p_value as *const CkUlong) };
+        }
+    }
+    CKP_ML_DSA_65 // default
 }
 
 fn extract_label(template: *const CkAttribute, count: CkUlong) -> String {
