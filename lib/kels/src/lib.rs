@@ -60,7 +60,9 @@ pub use server::shutdown_signal;
 #[cfg(feature = "secure-enclave")]
 pub use crypto::HardwareProviderConfig;
 #[cfg(feature = "secure-enclave")]
-pub use hardware::HardwareKeyProvider;
+pub use hardware::{
+    HardwareKeyProvider, SecureEnclaveKeyHandle, se_delete_all_keys, se_is_available,
+};
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use cesr::VerificationKeyCode;
@@ -70,7 +72,10 @@ pub use client::{
     nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
     verify_peer_anchoring, verify_peer_votes, with_failover,
 };
-pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
+pub use crypto::{
+    FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig,
+};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history};

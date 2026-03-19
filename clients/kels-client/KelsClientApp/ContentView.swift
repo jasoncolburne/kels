@@ -228,7 +228,7 @@ struct KelsTab: View {
                     if !viewModel.isContested && !viewModel.isDecommissioned {
                         Section("Anchor Data") {
                             HStack {
-                                TextField("CESR Blake3 digest (E...)", text: $anchorText)
+                                TextField("CESR Blake3 digest (K...)", text: $anchorText)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
                                     .font(.system(.body, design: .monospaced))
@@ -239,7 +239,7 @@ struct KelsTab: View {
                                 .disabled(!isValidCesrBlake3Digest(anchorText.trimmingCharacters(in: .whitespaces)) || viewModel.isLoading)
                             }
 
-                            Text("44-char CESR-encoded Blake3-256 digest (starts with E)")
+                            Text("44-char CESR-encoded Blake3-256 digest (starts with K)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -249,6 +249,18 @@ struct KelsTab: View {
                 // Create KEL Section
                 if !viewModel.isIncepted {
                     Section("Create KEL") {
+                        Picker("Signing Algorithm", selection: $viewModel.signingAlgorithm) {
+                            ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                                Text(algo).tag(algo)
+                            }
+                        }
+
+                        Picker("Recovery Algorithm", selection: $viewModel.recoveryAlgorithm) {
+                            ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                                Text(algo).tag(algo)
+                            }
+                        }
+
                         Button(action: { Task { await viewModel.incept() } }) {
                             HStack {
                                 Image(systemName: "plus.circle.fill")
@@ -256,10 +268,6 @@ struct KelsTab: View {
                             }
                         }
                         .disabled(viewModel.isLoading)
-
-                        Text("Create a new Key Event Log with inception event")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
                 }
 
@@ -330,7 +338,7 @@ struct KelsTab: View {
     /// Validates that a string is a CESR-encoded Blake3-256 digest
     /// Format: 'E' prefix + 43 base64url characters = 44 total
     private func isValidCesrBlake3Digest(_ text: String) -> Bool {
-        guard text.count == 44, text.hasPrefix("E") else { return false }
+        guard text.count == 44, text.hasPrefix("K") else { return false }
         let base64urlChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         let suffix = text.dropFirst()
         return suffix.unicodeScalars.allSatisfy { base64urlChars.contains($0) }
@@ -423,6 +431,23 @@ struct KeysTab: View {
                                 .foregroundColor(.orange)
                             Text("Recovery Required")
                                 .foregroundColor(.orange)
+                        }
+                    }
+                }
+
+                // Algorithm Selection
+                if !isFrozen && !viewModel.needsContest {
+                    Section("Algorithm") {
+                        Picker("Signing", selection: $viewModel.signingAlgorithm) {
+                            ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                                Text(algo).tag(algo)
+                            }
+                        }
+
+                        Picker("Recovery", selection: $viewModel.recoveryAlgorithm) {
+                            ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                                Text(algo).tag(algo)
+                            }
                         }
                     }
                 }
@@ -835,6 +860,21 @@ struct DeveloperTab: View {
     var body: some View {
         NavigationStack {
             List {
+                // Adversary Algorithm
+                Section("Adversary Algorithm") {
+                    Picker("Signing", selection: $viewModel.signingAlgorithm) {
+                        ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                            Text(algo).tag(algo)
+                        }
+                    }
+
+                    Picker("Recovery", selection: $viewModel.recoveryAlgorithm) {
+                        ForEach(KelsViewModel.availableAlgorithms, id: \.self) { algo in
+                            Text(algo).tag(algo)
+                        }
+                    }
+                }
+
                 // Adversary Injection
                 Section("Adversary Injection") {
                     // Event type buttons
@@ -844,7 +884,7 @@ struct DeveloperTab: View {
                                 if !adversaryEvents.isEmpty {
                                     adversaryEvents += ","
                                 }
-                                adversaryEvents += eventType
+                                adversaryEvents += eventType + algoSuffix(for: eventType)
                             }
                             .buttonStyle(.bordered)
                             .tint(["rec", "ror", "dec"].contains(eventType) ? .red : .accentColor)
@@ -966,8 +1006,28 @@ struct DeveloperTab: View {
 
     private func truncateKel() {
         guard let count = UInt32(truncateToCount), count > 0 else { return }
+        truncateToCount = "\(count)"
         Task {
             await viewModel.truncateLocalKel(keepEvents: count)
+        }
+    }
+
+    private func algoDigit(_ algo: String) -> String {
+        switch algo {
+        case "secp256r1": return "0"
+        case "ml-dsa-65": return "1"
+        case "ml-dsa-87": return "2"
+        default: return "1"
+        }
+    }
+
+    private func algoSuffix(for eventType: String) -> String {
+        let s = algoDigit(viewModel.signingAlgorithm)
+        let r = algoDigit(viewModel.recoveryAlgorithm)
+        switch eventType {
+        case "rot": return s
+        case "ror", "rec": return s + r
+        default: return ""
         }
     }
 

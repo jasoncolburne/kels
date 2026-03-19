@@ -14,7 +14,7 @@ path = "src/lib.rs"
 default = ["native"]
 native = ["tokio/full", "cesr/native", "reqwest/rustls-tls"]
 wasm = ["cesr/wasm", "wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
-secure-enclave = ["security-framework", "security-framework-sys", "core-foundation", "core-foundation-sys"]
+secure-enclave = ["apple-cryptokit-rs"]
 redis = ["dep:redis"]
 server-caching = ["dep:cacheable"]
 server = ["tokio/signal"]  # Server utilities (shutdown signal handling)
@@ -84,10 +84,7 @@ wiremock = "0.6"
 
 # macOS/iOS Secure Enclave support (optional, for HardwareKeyProvider)
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-security-framework = { version = "2.11", optional = true, features = ["OSX_10_15"] }
-security-framework-sys = { version = "2.14", optional = true }
-core-foundation = { version = "0.9", optional = true }
-core-foundation-sys = { version = "0.8", optional = true }
+apple-cryptokit-rs = { git = "https://github.com/jasoncolburne/apple-cryptokit-rs", branch = "se-pq-signing", optional = true }
 
 [lints.clippy]
 unwrap_used = "deny"

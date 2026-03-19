@@ -14,10 +14,8 @@ public final class KelsClient: @unchecked Sendable {
     ///   - stateDir: Directory for storing local state (defaults to app documents)
     ///   - keyNamespace: Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
     ///   - prefix: Optional existing KEL prefix to load
-    ///   - signingAlgorithm: Signing algorithm ("secp256r1" or "ml-dsa-65"). Defaults to "secp256r1".
-    ///                       Only used in software-only builds; ignored when Secure Enclave is available.
-    ///   - recoveryAlgorithm: Recovery key algorithm ("secp256r1" or "ml-dsa-65"). Defaults to "secp256r1".
-    ///                        Only used in software-only builds; ignored when Secure Enclave is available.
+    ///   - signingAlgorithm: Signing algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
+    ///   - recoveryAlgorithm: Recovery key algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
     public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil, signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws {
         let dir = stateDir ?? Self.defaultStateDirectory()
 
@@ -93,17 +91,19 @@ public final class KelsClient: @unchecked Sendable {
         }
     }
 
-    /// Rotate the recovery key
-    /// - Parameter recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
+    /// Rotate both signing and recovery keys
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for the new signing key (nil = keep current)
+    ///   - recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
     /// - Returns: The recovery rotation event
-    public func rotateRecovery(recoveryAlgorithm: String? = nil) throws -> KelEvent {
+    public func rotateRecovery(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_rotate_recovery(ctx, recoveryAlgorithm, &result)
+            kels_rotate_recovery(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
@@ -341,7 +341,7 @@ public final class KelsClient: @unchecked Sendable {
 
     // MARK: - Reset
 
-    /// Reset all local state (KELs, keys)
+    /// Reset all local state (KELs, keys, SE Keychain entries)
     /// This is a static method that can be called without an existing client instance
     /// - Parameter stateDir: Directory containing local state (defaults to app documents)
     public static func reset(stateDir: String? = nil) throws {

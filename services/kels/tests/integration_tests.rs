@@ -224,7 +224,10 @@ impl SharedHarness {
 /// Helper to create a signed inception event.
 async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvider>) {
     let mut builder = KeyEventBuilder::new(
-        SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+        SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        ),
         None,
     );
     let icp = builder.incept().await.unwrap();

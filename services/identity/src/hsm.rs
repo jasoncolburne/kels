@@ -529,6 +529,24 @@ impl KeyProvider for HsmKeyProvider {
 
         self.hsm.sign(handle, data).await
     }
+
+    async fn save_state(
+        &self,
+        _store: &dyn kels::KeyStateStore,
+        _prefix: &str,
+    ) -> Result<(), KelsError> {
+        // HSM keys persist in the hardware module; state is managed externally
+        Ok(())
+    }
+
+    async fn restore_state(
+        &mut self,
+        _store: &dyn kels::KeyStateStore,
+        _prefix: &str,
+    ) -> Result<bool, KelsError> {
+        // HSM keys persist in the hardware module; state is managed externally
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

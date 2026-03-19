@@ -436,7 +436,10 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let signed = builder.incept().await.unwrap();
@@ -466,7 +469,10 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let icp = builder.incept().await.unwrap();
@@ -497,7 +503,10 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let signed = builder.incept().await.unwrap();
@@ -527,7 +536,10 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let signed = builder.incept().await.unwrap();
@@ -554,7 +566,10 @@ mod tests {
                 .await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let signed = builder.incept().await.unwrap();
@@ -570,7 +585,10 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             let mut builder = KeyEventBuilder::new(
-                SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+                SoftwareKeyProvider::new(
+                    VerificationKeyCode::Secp256r1,
+                    VerificationKeyCode::Secp256r1,
+                ),
                 None,
             );
             let icp = builder.incept().await.unwrap();

@@ -6,6 +6,7 @@ use cesr::{
     Matter, PrivateKey, PublicKey, Signature, VerificationKeyCode, generate_ml_dsa_65,
     generate_ml_dsa_87, generate_secp256r1,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{compute_rotation_hash, error::KelsError};
 
@@ -39,15 +40,7 @@ pub struct SoftwareProviderConfig {
 }
 
 impl SoftwareProviderConfig {
-    pub fn new(key_dir: PathBuf, algorithm: VerificationKeyCode) -> Self {
-        Self {
-            key_dir,
-            signing_algorithm: algorithm,
-            recovery_algorithm: algorithm,
-        }
-    }
-
-    pub fn new_mixed(
+    pub fn new(
         key_dir: PathBuf,
         signing_algorithm: VerificationKeyCode,
         recovery_algorithm: VerificationKeyCode,
@@ -68,7 +61,7 @@ impl ProviderConfig for SoftwareProviderConfig {
         if self.key_dir.exists() {
             SoftwareKeyProvider::load_from_dir(&self.key_dir)
         } else {
-            Ok(SoftwareKeyProvider::new_mixed(
+            Ok(SoftwareKeyProvider::new(
                 self.signing_algorithm,
                 self.recovery_algorithm,
             ))
@@ -88,6 +81,8 @@ impl ProviderConfig for SoftwareProviderConfig {
 #[derive(Debug, Clone)]
 pub struct HardwareProviderConfig {
     pub namespace: String,
+    pub signing_algorithm: VerificationKeyCode,
+    pub recovery_algorithm: VerificationKeyCode,
 }
 
 #[cfg(all(
@@ -95,8 +90,16 @@ pub struct HardwareProviderConfig {
     feature = "secure-enclave"
 ))]
 impl HardwareProviderConfig {
-    pub fn new(namespace: String) -> Self {
-        Self { namespace }
+    pub fn new(
+        namespace: String,
+        signing_algorithm: VerificationKeyCode,
+        recovery_algorithm: VerificationKeyCode,
+    ) -> Self {
+        Self {
+            namespace,
+            signing_algorithm,
+            recovery_algorithm,
+        }
     }
 }
 
@@ -109,13 +112,76 @@ impl ProviderConfig for HardwareProviderConfig {
     type Provider = HardwareKeyProvider;
 
     async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
-        HardwareKeyProvider::new(&self.namespace)
-            .ok_or_else(|| KelsError::HardwareError("Secure Enclave not available".into()))
+        HardwareKeyProvider::new(
+            &self.namespace,
+            self.signing_algorithm,
+            self.recovery_algorithm,
+        )
+        .ok_or_else(|| KelsError::HardwareError("Secure Enclave not available".into()))
     }
 
     async fn save_provider(&self, _provider: &Self::Provider) -> Result<(), KelsError> {
         // Hardware keys persist automatically in the Secure Enclave
         Ok(())
+    }
+}
+
+// ==================== KeyStateStore Trait ====================
+
+/// Opaque key state storage backend.
+///
+/// Implementors choose where to persist key state (filesystem, Keychain, CoreData, etc.).
+/// The provider decides the encoding — the store just handles opaque bytes.
+pub trait KeyStateStore: Send + Sync {
+    fn save(&self, key: &str, data: &[u8]) -> Result<(), KelsError>;
+    fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KelsError>;
+    fn delete(&self, key: &str) -> Result<(), KelsError>;
+}
+
+/// File-based key state storage.
+pub struct FileKeyStateStore {
+    dir: PathBuf,
+}
+
+impl FileKeyStateStore {
+    pub fn new(dir: &Path) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+        }
+    }
+}
+
+impl KeyStateStore for FileKeyStateStore {
+    fn save(&self, key: &str, data: &[u8]) -> Result<(), KelsError> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| KelsError::StorageError(format!("Failed to create state dir: {}", e)))?;
+        let path = self.dir.join(format!("{}.keys.json", key));
+        std::fs::write(&path, data)
+            .map_err(|e| KelsError::StorageError(format!("Failed to write key state: {}", e)))
+    }
+
+    fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KelsError> {
+        let path = self.dir.join(format!("{}.keys.json", key));
+        match std::fs::read(&path) {
+            Ok(data) => Ok(Some(data)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(KelsError::StorageError(format!(
+                "Failed to read key state: {}",
+                e
+            ))),
+        }
+    }
+
+    fn delete(&self, key: &str) -> Result<(), KelsError> {
+        let path = self.dir.join(format!("{}.keys.json", key));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(KelsError::StorageError(format!(
+                "Failed to delete key state: {}",
+                e
+            ))),
+        }
     }
 }
 
@@ -228,7 +294,17 @@ pub trait KeyProvider: Send + Sync {
         ))
     }
 
-    // ==================== Convenience Methods ====================
+    // ==================== State Persistence ====================
+
+    /// Save provider state to an opaque store. Each provider encodes its own format.
+    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError>;
+
+    /// Restore provider state from an opaque store. Returns true if state was found.
+    async fn restore_state(
+        &mut self,
+        store: &dyn KeyStateStore,
+        prefix: &str,
+    ) -> Result<bool, KelsError>;
 }
 
 fn generate_for_algorithm(
@@ -259,23 +335,17 @@ pub struct SoftwareKeyProvider {
 
 impl Default for SoftwareKeyProvider {
     fn default() -> Self {
-        Self::new(VerificationKeyCode::Secp256r1)
+        Self::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        )
     }
 }
 
 impl SoftwareKeyProvider {
     // ==================== Constructors ====================
 
-    pub fn new(algorithm: VerificationKeyCode) -> Self {
-        Self {
-            signing_algorithm: algorithm,
-            recovery_algorithm: algorithm,
-            keys: Vec::new(),
-            recovery_keys: Vec::new(),
-        }
-    }
-
-    pub fn new_mixed(
+    pub fn new(
         signing_algorithm: VerificationKeyCode,
         recovery_algorithm: VerificationKeyCode,
     ) -> Self {
@@ -559,6 +629,56 @@ impl KeyProvider for SoftwareKeyProvider {
         self.recovery_algorithm = algorithm;
         Ok(())
     }
+
+    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError> {
+        let state = SoftwareKeyState {
+            keys: self.keys.iter().map(|k| k.qb64()).collect(),
+            recovery_keys: self.recovery_keys.iter().map(|k| k.qb64()).collect(),
+        };
+        let data =
+            serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        store.save(prefix, &data)
+    }
+
+    async fn restore_state(
+        &mut self,
+        store: &dyn KeyStateStore,
+        prefix: &str,
+    ) -> Result<bool, KelsError> {
+        let Some(data) = store.load(prefix)? else {
+            return Ok(false);
+        };
+
+        let state: SoftwareKeyState =
+            serde_json::from_slice(&data).map_err(|e| KelsError::StorageError(e.to_string()))?;
+
+        self.keys = state
+            .keys
+            .iter()
+            .map(|qb64| PrivateKey::from_qb64(qb64))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.recovery_keys = state
+            .recovery_keys
+            .iter()
+            .map(|qb64| PrivateKey::from_qb64(qb64))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Infer algorithms from loaded keys
+        if let Some(key) = self.keys.last() {
+            self.signing_algorithm = key.algorithm();
+        }
+        if let Some(key) = self.recovery_keys.first() {
+            self.recovery_algorithm = key.algorithm();
+        }
+
+        Ok(true)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SoftwareKeyState {
+    keys: Vec<String>,
+    recovery_keys: Vec<String>,
 }
 
 // ==================== Tests ====================
@@ -570,7 +690,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_initial_keys() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert!(provider.current_public_key().await.is_ok());
@@ -587,7 +710,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_initial_keys_ml_dsa_65() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65);
+        let mut provider =
+            SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa65);
 
         let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert_eq!(current.algorithm(), VerificationKeyCode::MlDsa65);
@@ -602,7 +726,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -623,20 +750,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation_without_next_fails() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         // No keys at all - should fail
         assert!(provider.stage_rotation().await.is_err());
     }
 
     #[tokio::test]
     async fn test_sign_without_key_fails() {
-        let provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         assert!(provider.sign(b"test").await.is_err());
     }
 
     #[tokio::test]
     async fn test_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -662,7 +798,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
@@ -673,7 +812,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_ml_dsa_65() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65);
+        let mut provider =
+            SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa65);
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
@@ -702,7 +842,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_rotation() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let (original_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -724,7 +867,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -750,21 +896,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_with_recovery_without_key_fails() {
-        let provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let result = provider.sign_with_recovery(b"test").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_stage_recovery_rotation_without_key_fails() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let result = provider.stage_recovery_rotation().await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_commit_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         provider.generate_initial_keys().await.unwrap();
         let result = provider.commit().await;
         assert!(result.is_err());
@@ -772,7 +927,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         provider.generate_initial_keys().await.unwrap();
         let result = provider.rollback().await;
         assert!(result.is_err());
@@ -780,7 +938,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_public_key_without_next_fails() {
-        let provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let result = provider.current_public_key().await;
         assert!(result.is_err());
     }
@@ -789,7 +950,10 @@ mod tests {
     async fn test_save_and_load_roundtrip() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
 
@@ -807,7 +971,8 @@ mod tests {
     async fn test_save_and_load_roundtrip_ml_dsa_65() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65);
+        let mut provider =
+            SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa65);
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
         assert_eq!(original_pub.algorithm(), VerificationKeyCode::MlDsa65);
@@ -827,7 +992,10 @@ mod tests {
     async fn test_save_without_current_fails() {
         use tempfile::TempDir;
 
-        let provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let temp = TempDir::new().unwrap();
         let result = provider.save_to_dir(temp.path()).await;
         assert!(result.is_err());
@@ -837,7 +1005,10 @@ mod tests {
     async fn test_save_while_staged_fails() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         provider.generate_initial_keys().await.unwrap();
         provider.stage_rotation().await.unwrap();
 
@@ -855,8 +1026,11 @@ mod tests {
 
     #[test]
     fn test_software_provider_config_new() {
-        let config =
-            SoftwareProviderConfig::new(PathBuf::from("/tmp/keys"), VerificationKeyCode::Secp256r1);
+        let config = SoftwareProviderConfig::new(
+            PathBuf::from("/tmp/keys"),
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         assert_eq!(config.key_dir, PathBuf::from("/tmp/keys"));
     }
 
@@ -866,7 +1040,11 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let nonexistent = temp.path().join("nonexistent");
-        let config = SoftwareProviderConfig::new(nonexistent, VerificationKeyCode::Secp256r1);
+        let config = SoftwareProviderConfig::new(
+            nonexistent,
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         let provider = config.load_provider().await.unwrap();
         assert!(!provider.has_current().await);
@@ -878,16 +1056,27 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let key_dir = temp.path().join("keys");
-        let config = SoftwareProviderConfig::new(key_dir.clone(), VerificationKeyCode::Secp256r1);
+        let config = SoftwareProviderConfig::new(
+            key_dir.clone(),
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
 
         // Create and save a provider
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
         config.save_provider(&provider).await.unwrap();
 
         // Load it back
-        let config2 = SoftwareProviderConfig::new(key_dir, VerificationKeyCode::Secp256r1);
+        let config2 = SoftwareProviderConfig::new(
+            key_dir,
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let loaded = config2.load_provider().await.unwrap();
         assert_eq!(
             loaded.current_public_key().await.unwrap().qb64(),
@@ -897,10 +1086,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mixed_algorithm_p256_signing_ml_dsa_recovery() {
-        let mut provider = SoftwareKeyProvider::new_mixed(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::MlDsa65,
-        );
+        let mut provider =
+            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1, VerificationKeyCode::MlDsa65);
 
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert_eq!(current.algorithm(), VerificationKeyCode::Secp256r1);
@@ -918,7 +1105,10 @@ mod tests {
     #[tokio::test]
     async fn test_algorithm_upgrade_p256_to_ml_dsa() {
         // Start with P-256
-        let mut provider = SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1);
+        let mut provider = SoftwareKeyProvider::new(
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::Secp256r1,
+        );
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert_eq!(current.algorithm(), VerificationKeyCode::Secp256r1);
 

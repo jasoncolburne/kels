@@ -219,7 +219,7 @@ async fn create_test_kel(
     algorithm: VerificationKeyCode,
 ) -> Result<String> {
     // Build events offline (no client) then batch-submit to avoid per-event rate limits.
-    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(algorithm), None);
+    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(algorithm, algorithm), None);
     let icp = builder.incept().await?;
     let prefix = icp.event.prefix.clone();
 

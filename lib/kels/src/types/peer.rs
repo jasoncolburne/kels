@@ -850,7 +850,10 @@ mod tests {
         use cesr::{Digest, Matter, VerificationKeyCode};
 
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();

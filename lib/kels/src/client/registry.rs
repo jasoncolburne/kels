@@ -19,9 +19,9 @@ use verifiable_storage::StorageDatetime;
 use crate::{
     error::KelsError,
     types::{
-        CompletedProposalsResponse, ErrorResponse, KelVerification, NodeInfo, NodeStatus, Peer,
-        PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
-        SignedRequest, Vote,
+        CompletedProposalsResponse, ErrorResponse, FederationStatus, KelVerification, NodeInfo,
+        NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
+        ProposalWithVotesMethods, SignedRequest, Vote,
     },
 };
 
@@ -286,13 +286,8 @@ impl KelsRegistryClient {
         let response = self.client.get(&url).send().await?;
 
         if response.status().is_success() {
-            let status: serde_json::Value = response.json().await?;
-            status["self_prefix"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| {
-                    KelsError::RegistryFailure("Missing self_prefix in federation status".into())
-                })
+            let status: FederationStatus = response.json().await?;
+            Ok(status.self_prefix)
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))

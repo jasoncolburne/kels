@@ -1425,7 +1425,10 @@ mod tests {
     async fn test_large_kel_paginated_verification() {
         // Build a 129-event KEL (icp + 128 ixn) — spans 3 pages at 64 events/page
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1474,7 +1477,10 @@ mod tests {
     async fn test_large_kel_with_early_divergence() {
         // Build a long KEL, then inject a divergent event at serial 2
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1538,7 +1544,10 @@ mod tests {
         let missing_anchor = Digest::blake3_256(b"missing-anchor").qb64();
 
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1581,7 +1590,10 @@ mod tests {
     async fn test_max_pages_limit_fails_secure() {
         // Build a KEL larger than max_pages * page_size
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1622,7 +1634,10 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_incomplete_generation_basic() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1677,7 +1692,10 @@ mod tests {
     #[tokio::test]
     async fn test_incept() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
 
@@ -1703,7 +1721,10 @@ mod tests {
     #[tokio::test]
     async fn test_interact() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
 
@@ -1724,7 +1745,10 @@ mod tests {
     #[tokio::test]
     async fn test_rotate() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
 
@@ -1751,7 +1775,10 @@ mod tests {
     #[tokio::test]
     async fn test_interact_before_incept_fails() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let result = builder.interact("some_anchor").await;
@@ -1761,7 +1788,10 @@ mod tests {
     #[tokio::test]
     async fn test_rotate_before_incept_fails() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let result = builder.rotate().await;
@@ -1773,7 +1803,10 @@ mod tests {
         use verifiable_storage::SelfAddressed;
 
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
 
@@ -1787,7 +1820,10 @@ mod tests {
     #[tokio::test]
     async fn test_with_events() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1809,7 +1845,10 @@ mod tests {
     #[tokio::test]
     async fn test_rotation_after_interactions() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1837,7 +1876,10 @@ mod tests {
     #[tokio::test]
     async fn test_json_roundtrip() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1857,7 +1899,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_basic_kel() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -1878,7 +1923,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_with_rotation() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -1912,7 +1960,10 @@ mod tests {
     #[tokio::test]
     async fn test_divergence_two_way() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1937,7 +1988,10 @@ mod tests {
         // The DB can never have 3 events at the same serial — handle_overlap_submission
         // only inserts one divergent event. The verifier must reject this as invalid.
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1963,7 +2017,10 @@ mod tests {
         // Once a KEL is divergent, only 1 event per generation is allowed.
         // A second divergence (2 events at a serial after the divergence point) is invalid.
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -1990,7 +2047,10 @@ mod tests {
     #[tokio::test]
     async fn test_divergent_kel_has_no_single_public_key() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -2010,7 +2070,10 @@ mod tests {
     #[tokio::test]
     async fn test_adversary_rotation_detection() {
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2045,7 +2108,10 @@ mod tests {
     #[tokio::test]
     async fn test_decommissioned_kel() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2059,7 +2125,10 @@ mod tests {
     #[tokio::test]
     async fn test_contested_kel() {
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2080,7 +2149,10 @@ mod tests {
     #[tokio::test]
     async fn test_non_contested_kel_with_ror() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -2102,7 +2174,10 @@ mod tests {
     async fn test_anchor_found() {
         let a = anchor("my-anchor");
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2118,7 +2193,10 @@ mod tests {
         let a = anchor("my-anchor");
         let missing = anchor("missing");
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2133,7 +2211,10 @@ mod tests {
     async fn test_anchor_no_interactions() {
         let missing = anchor("anything");
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2146,7 +2227,10 @@ mod tests {
     async fn test_anchor_before_divergence() {
         let a_pre = anchor("pre-divergence");
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         owner.incept().await.unwrap();
@@ -2177,7 +2261,10 @@ mod tests {
         let a_owner = anchor("owner");
         let a_adv = anchor("adversary");
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         owner.incept().await.unwrap();
@@ -2209,7 +2296,10 @@ mod tests {
         let a_pre = anchor("before");
         let a_post = anchor("after");
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         owner.incept().await.unwrap();
@@ -2240,7 +2330,10 @@ mod tests {
     async fn test_max_pages_exact_boundary_succeeds() {
         // Boundary: KEL fits exactly within max_pages * page_size — should succeed.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -2276,7 +2369,10 @@ mod tests {
     async fn test_max_pages_one_over_boundary_fails() {
         // One event over max_pages * page_size — should fail secure.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -2312,7 +2408,10 @@ mod tests {
     #[tokio::test]
     async fn test_effective_tail_said_non_divergent() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2328,7 +2427,10 @@ mod tests {
     #[tokio::test]
     async fn test_effective_tail_said_divergent() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -2358,7 +2460,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_recovery_event() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2379,7 +2484,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_rotate_recovery() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2402,7 +2510,10 @@ mod tests {
     #[tokio::test]
     async fn test_resume_extends_verification() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2432,7 +2543,10 @@ mod tests {
     #[tokio::test]
     async fn test_from_branch_tip_verifies_extension() {
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2463,7 +2577,10 @@ mod tests {
     #[tokio::test]
     async fn test_builder_with_divergent_events() {
         let mut builder1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder1.incept().await.unwrap();
@@ -2533,7 +2650,10 @@ mod tests {
         // rotations interspersed. Verifies that key state transitions are
         // tracked correctly across page boundaries.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -2593,7 +2713,10 @@ mod tests {
         // Place an anchor in the first page and another in the second page.
         // Verify both are found with completed_verification.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -2654,7 +2777,10 @@ mod tests {
         // Both owner and adversary add events at serial 64, which falls
         // entirely on page 2 — no split generation.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2705,7 +2831,10 @@ mod tests {
         // much longer than the other. The short adversary branch should
         // be carried forward across pages.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2759,7 +2888,10 @@ mod tests {
         // Adversary branch is a single event (the DB invariant).
         // Verifier tracks independent crypto state per branch.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         owner.incept().await.unwrap();
@@ -2803,7 +2935,10 @@ mod tests {
         // Owner incepts, adversary branches, owner recovers.
         // After recovery, the KEL should be non-divergent.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2849,7 +2984,10 @@ mod tests {
         // Adversary reveals recovery key via rotate_recovery.
         // Owner contests. The contested KEL is permanently frozen.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2885,7 +3023,10 @@ mod tests {
     #[tokio::test]
     async fn test_decommission_then_no_more_events() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2908,7 +3049,10 @@ mod tests {
         // Simulate three incremental verifications: page 1, page 2, page 3.
         // Each time resume from the previous Verification and verify the next batch.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -2954,7 +3098,10 @@ mod tests {
         // Diverge at serial 1, then resume and verify the continuing branch extends.
         // The shorter branch is exactly 1 event (DB invariant).
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -2996,7 +3143,10 @@ mod tests {
     #[tokio::test]
     async fn test_delegated_inception_verifies() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let dip = builder
@@ -3028,7 +3178,10 @@ mod tests {
         // Two divergent branches produce the same effective SAID regardless
         // of which order they appear internally.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3072,7 +3225,10 @@ mod tests {
         // removes the lone serial-2 event. Remaining page still has the
         // complete divergent generation at serial 1.
         let mut b1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         b1.incept().await.unwrap();
@@ -3104,7 +3260,10 @@ mod tests {
     async fn test_truncate_no_op_on_complete_generation() {
         // A complete generation should not be truncated.
         let mut b1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = b1.incept().await.unwrap();
@@ -3140,7 +3299,10 @@ mod tests {
         // Truncation: serial 5 has 2 events, no incomplete generation. Full page.
         // Page 2: serials 6-7 (2 events).
         let mut b1 = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = b1.incept().await.unwrap();
@@ -3201,7 +3363,10 @@ mod tests {
         // Full lifecycle test: incept, interact, rotate, adversary branches,
         // verify divergence, owner recovers, verify recovery.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3275,7 +3440,10 @@ mod tests {
         // verify a divergent KEL, pick the owner branch tip, then verify
         // recovery events against that specific branch.
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3316,7 +3484,10 @@ mod tests {
         // Two independent verifications of the same events must produce
         // the same Verification SAID.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -3357,7 +3528,10 @@ mod tests {
     #[tokio::test]
     async fn test_rotate_recovery_changes_recovery_key() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3387,7 +3561,10 @@ mod tests {
     #[tokio::test]
     async fn test_rejects_wrong_prefix() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -3402,7 +3579,10 @@ mod tests {
     #[tokio::test]
     async fn test_rejects_serial_gap() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         builder.incept().await.unwrap();
@@ -3425,7 +3605,10 @@ mod tests {
         // Use page_size=3 to force many page loads. This stress-tests the
         // pagination loop in completed_verification.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3535,7 +3718,10 @@ mod tests {
     #[tokio::test]
     async fn test_verify_key_events_linear() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3562,7 +3748,10 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_key_events_linear() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3580,7 +3769,10 @@ mod tests {
     #[tokio::test]
     async fn test_forward_key_events_linear() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3602,7 +3794,10 @@ mod tests {
         // Owner: icp, o1, o2, o3, o4, o5
         // Adversary: a1 at serial 2 (diverges from o1)
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3645,7 +3840,10 @@ mod tests {
     async fn test_transfer_key_events_divergent_page_boundary() {
         // Test divergence at the end of a page boundary
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3681,7 +3879,10 @@ mod tests {
     async fn test_transfer_key_events_no_verifier() {
         // Structural divergence detection works without crypto verification
         let mut owner = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = owner.incept().await.unwrap();
@@ -3711,7 +3912,10 @@ mod tests {
     #[tokio::test]
     async fn test_transfer_key_events_max_pages() {
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();
@@ -3734,7 +3938,10 @@ mod tests {
         // Phase 1: verify a KEL via completed_verification with anchor checking.
         // Phase 2: add more events with new anchors, resume, verify new anchors.
         let mut builder = KeyEventBuilder::new(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
         );
         let icp = builder.incept().await.unwrap();

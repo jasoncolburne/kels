@@ -580,7 +580,10 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
         let mut builder = KeyEventBuilder::with_dependencies(
-            SoftwareKeyProvider::new(VerificationKeyCode::Secp256r1),
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
             None,
             Some(kel_store.clone() as Arc<dyn kels::KelStore>),
             None,

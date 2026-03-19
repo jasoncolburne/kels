@@ -2,6 +2,12 @@ import SwiftUI
 
 @MainActor
 class KelsViewModel: ObservableObject {
+    // Algorithm selection
+    @Published var signingAlgorithm: String = "ml-dsa-65"
+    @Published var recoveryAlgorithm: String = "ml-dsa-65"
+
+    static let availableAlgorithms = ["secp256r1", "ml-dsa-65", "ml-dsa-87"]
+
     // Status
     @Published var isIncepted = false
     @Published var prefix: String?
@@ -106,6 +112,7 @@ class KelsViewModel: ObservableObject {
         } else {
             currentNodeUrl = defaultNodeUrl
         }
+
 
         loadCachedNodes()
     }
@@ -260,7 +267,7 @@ class KelsViewModel: ObservableObject {
         log("Connecting to: \(currentNodeUrl)")
 
         do {
-            client = try KelsClient(kelsURL: currentNodeUrl, keyNamespace: keyNamespace, prefix: savedPrefix)
+            client = try KelsClient(kelsURL: currentNodeUrl, keyNamespace: keyNamespace, prefix: savedPrefix, signingAlgorithm: signingAlgorithm, recoveryAlgorithm: recoveryAlgorithm)
             log("Client initialized successfully")
             Task {
                 await refreshStatus()
@@ -332,10 +339,10 @@ class KelsViewModel: ObservableObject {
             return
         }
 
-        log("Creating new KEL (inception)...")
+        log("Creating new KEL (signing=\(signingAlgorithm), recovery=\(recoveryAlgorithm))...")
 
         do {
-            let event = try client.incept()
+            let event = try client.incept(signingAlgorithm: signingAlgorithm, recoveryAlgorithm: recoveryAlgorithm)
             log("KEL created successfully!")
             log("Prefix: \(event.prefix)")
             log("SAID: \(event.said)")
@@ -386,10 +393,10 @@ class KelsViewModel: ObservableObject {
             return
         }
 
-        log("Rotating signing key...")
+        log("Rotating signing key (algorithm=\(signingAlgorithm))...")
 
         do {
-            let event = try client.rotate()
+            let event = try client.rotate(signingAlgorithm: signingAlgorithm)
             log("Key rotated successfully: \(event.said)")
             await refreshStatus()
         } catch {
@@ -412,10 +419,10 @@ class KelsViewModel: ObservableObject {
             return
         }
 
-        log("Rotating recovery key...")
+        log("Rotating recovery key (signing=\(signingAlgorithm), recovery=\(recoveryAlgorithm))...")
 
         do {
-            let event = try client.rotateRecovery()
+            let event = try client.rotateRecovery(signingAlgorithm: signingAlgorithm, recoveryAlgorithm: recoveryAlgorithm)
             log("Recovery key rotated successfully: \(event.said)")
             await refreshStatus()
         } catch {
@@ -441,7 +448,7 @@ class KelsViewModel: ObservableObject {
         log("Attempting recovery...")
 
         do {
-            let (outcome, event) = try client.recover()
+            let (outcome, event) = try client.recover(signingAlgorithm: signingAlgorithm, recoveryAlgorithm: recoveryAlgorithm)
             switch outcome {
             case .recovered:
                 log("Recovery successful: \(event.said)")
@@ -541,10 +548,11 @@ class KelsViewModel: ObservableObject {
             try KelsClient.reset()
             log("Local state reset successfully")
 
-            // Clear saved prefix
+            // Clear saved settings
             UserDefaults.standard.removeObject(forKey: prefixKey)
-
             // Reset local state
+            signingAlgorithm = "ml-dsa-65"
+            recoveryAlgorithm = "ml-dsa-65"
             isIncepted = false
             prefix = nil
             eventCount = 0
@@ -635,7 +643,9 @@ class KelsViewModel: ObservableObject {
         do {
             try client.truncateLocalKel(keepEvents: keepEvents)
             log("KEL truncated successfully")
-            await refreshKelEventCount()
+            // Reinitialize client to pick up truncated store state
+            self.client = nil
+            initializeClient()
         } catch {
             log("ERROR: KEL truncation failed: \(error.localizedDescription)")
         }
