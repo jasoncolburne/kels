@@ -196,12 +196,12 @@ class KelsViewModel: ObservableObject {
                 log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
             }
 
-            // Preserve selection if the node is still visible, otherwise auto-select fastest
+            // Preserve selection if the node is still ready, otherwise auto-select fastest
             if let previous = previousSelection,
-               let stillVisible = discoveredNodes.first(where: { $0.nodeId == previous.nodeId }) {
+               let stillReady = discoveredNodes.first(where: { $0.nodeId == previous.nodeId && $0.status == .ready }) {
                 // Update the selection with fresh latency data but don't switch nodes
-                selectedDiscoveredNode = stillVisible
-                log("Preserved selection: \(stillVisible.displayName)")
+                selectedDiscoveredNode = stillReady
+                log("Preserved selection: \(stillReady.displayName)")
             } else {
                 // No previous selection or node not visible, auto-select fastest
                 if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
