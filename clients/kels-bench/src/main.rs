@@ -77,7 +77,7 @@ struct Args {
     throughput_only: bool,
 
     /// Signing algorithm (secp256r1, ml-dsa-65, or ml-dsa-87)
-    #[arg(long, default_value = "secp256r1")]
+    #[arg(long, default_value = "ml-dsa-65")]
     algorithm: String,
 }
 
