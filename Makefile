@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-comprehensive wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-comprehensive wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -349,7 +349,22 @@ test-suite:
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-grow-federation
 	$(MAKE) test-shrink-federation
+	$(MAKE) test-kem-upgrade
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
 	scripts/coredns.sh apply
+
+test-kem-upgrade:
+	# Upgrade node-a identity to ML-DSA-87 and rotate to activate the new algorithm
+	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-87
+	kubectl rollout status deployment/identity -n kels-node-a
+	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
+	# Wait for allowlist refresh on all nodes to detect the ML-DSA-87 peer and switch to ML-KEM-1024
+	sleep 90
+	# Verify gossip mesh reforms with ML-KEM-1024
+	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+	# Restore node-a to ML-DSA-65 for subsequent tests
+	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-65
+	kubectl rollout status deployment/identity -n kels-node-a
+	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
 
 test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-nodes test-suite
