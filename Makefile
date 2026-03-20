@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-comprehensive wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-comprehensive wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -241,13 +241,19 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
-restart-nodes:
-	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl rollout restart deployment/kels-gossip -n kels-node-b && kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c && kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-d && kubectl rollout status deployment/kels-gossip -n kels-node-d
-	kubectl rollout restart deployment/kels-gossip -n kels-node-e && kubectl rollout status deployment/kels-gossip -n kels-node-e
-	kubectl rollout restart deployment/kels-gossip -n kels-node-f && kubectl rollout status deployment/kels-gossip -n kels-node-f
+restart-gossip-services:
+	kubectl rollout restart deployment/kels-gossip -n kels-node-a
+	kubectl rollout restart deployment/kels-gossip -n kels-node-b
+	kubectl rollout restart deployment/kels-gossip -n kels-node-c
+	kubectl rollout restart deployment/kels-gossip -n kels-node-d
+	kubectl rollout restart deployment/kels-gossip -n kels-node-e
+	kubectl rollout restart deployment/kels-gossip -n kels-node-f
+	kubectl rollout status deployment/kels-gossip -n kels-node-a
+	kubectl rollout status deployment/kels-gossip -n kels-node-b
+	kubectl rollout status deployment/kels-gossip -n kels-node-c
+	kubectl rollout status deployment/kels-gossip -n kels-node-d
+	kubectl rollout status deployment/kels-gossip -n kels-node-e
+	kubectl rollout status deployment/kels-gossip -n kels-node-f
 
 test-resync:
 	scripts/coredns.sh break-node-b
@@ -354,17 +360,24 @@ test-suite:
 	scripts/coredns.sh apply
 
 test-kem-upgrade:
-	# Upgrade node-a identity to ML-DSA-87 and rotate to activate the new algorithm
+	# Upgrade node-a identity to ML-DSA-87: first rotation commits the new algorithm,
+	# second rotation makes it the current signing key
 	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-87
 	kubectl rollout status deployment/identity -n kels-node-a
 	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
-	# Wait for allowlist refresh on all nodes to detect the ML-DSA-87 peer and switch to ML-KEM-1024
-	sleep 90
+	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
+	# Restart all gossip pods so they re-handshake with the correct KEM algorithm
+	$(MAKE) restart-gossip-services
+	$(MAKE) wait-for-gossip
 	# Verify gossip mesh reforms with ML-KEM-1024
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
-	# Restore node-a to ML-DSA-65 for subsequent tests
+	# Restore node-a to ML-DSA-65: same two-rotation pattern
 	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-65
 	kubectl rollout status deployment/identity -n kels-node-a
 	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
+	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
+	# Restart gossip pods again to switch back to ML-KEM-768
+	$(MAKE) restart-gossip-services
+	$(MAKE) wait-for-gossip
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-nodes test-suite
+test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite
