@@ -2,9 +2,13 @@ import SwiftUI
 
 @MainActor
 class KelsViewModel: ObservableObject {
-    // Algorithm selection
-    @Published var signingAlgorithm: String = "ml-dsa-65"
-    @Published var recoveryAlgorithm: String = "ml-dsa-65"
+    // Algorithm selection (persisted across launches)
+    @Published var signingAlgorithm: String = UserDefaults.standard.string(forKey: "kels_signing_algorithm") ?? "ml-dsa-65" {
+        didSet { UserDefaults.standard.set(signingAlgorithm, forKey: "kels_signing_algorithm") }
+    }
+    @Published var recoveryAlgorithm: String = UserDefaults.standard.string(forKey: "kels_recovery_algorithm") ?? "ml-dsa-65" {
+        didSet { UserDefaults.standard.set(recoveryAlgorithm, forKey: "kels_recovery_algorithm") }
+    }
 
     static let availableAlgorithms = ["secp256r1", "ml-dsa-65", "ml-dsa-87"]
 
