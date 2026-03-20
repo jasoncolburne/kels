@@ -257,7 +257,7 @@ In addition to registry authentication, the gossip layer verifies connections du
 4. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
 5. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
 6. ML-DSA-65/87 only enforcement — P-256 peers are rejected
-7. Session keys derived from shared secret via BLAKE3 KDF with context `"kels/gossip/v2/keys/..."`
+7. Session keys derived from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
 8. Unknown peers trigger a one-shot allowlist refresh before rejection
 9. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
 

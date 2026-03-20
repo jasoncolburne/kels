@@ -42,11 +42,11 @@ pub fn derive_session_keys(
         (their_prefix, our_prefix)
     };
 
-    let mut init_to_resp_context = b"kels/gossip/v2/keys/init-to-resp/".to_vec();
+    let mut init_to_resp_context = b"kels/gossip/v1/keys/init-to-resp/".to_vec();
     init_to_resp_context.extend_from_slice(init_prefix);
     init_to_resp_context.extend_from_slice(resp_prefix);
 
-    let mut resp_to_init_context = b"kels/gossip/v2/keys/resp-to-init/".to_vec();
+    let mut resp_to_init_context = b"kels/gossip/v1/keys/resp-to-init/".to_vec();
     resp_to_init_context.extend_from_slice(init_prefix);
     resp_to_init_context.extend_from_slice(resp_prefix);
 
