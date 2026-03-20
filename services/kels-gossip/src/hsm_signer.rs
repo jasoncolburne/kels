@@ -12,7 +12,7 @@ use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
 use thiserror::Error;
 
 use gossip::identity::NodePrefix;
-use gossip::net::{Error as GossipError, PeerVerifier, SignatureBundle, Signer};
+use gossip::net::{Error as GossipError, PeerVerifier, Signer};
 
 use crate::allowlist::SharedAllowlist;
 
@@ -24,11 +24,6 @@ pub enum SignerError {
     Cesr(#[from] cesr::CesrError),
     #[error("Key error: {0}")]
     Key(String),
-}
-
-/// Extract raw bytes from a CESR public key.
-fn cesr_pubkey_to_raw(cesr_key: &CesrPublicKey) -> Result<Vec<u8>, SignerError> {
-    Ok(cesr_key.raw().to_vec())
 }
 
 // ============================================================================
@@ -76,7 +71,7 @@ impl Signer for IdentityGossipSigner {
         self.kem_algorithm
     }
 
-    async fn sign(&self, data: &[u8]) -> Result<SignatureBundle, GossipError> {
+    async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, GossipError> {
         // The handshake data is a JSON string (from transport::handshake_payload)
         let data_str = std::str::from_utf8(data)
             .map_err(|e| GossipError::Handshake(format!("Handshake data is not UTF-8: {}", e)))?;
@@ -87,21 +82,8 @@ impl Signer for IdentityGossipSigner {
             .await
             .map_err(|e| GossipError::Handshake(format!("Identity sign failed: {}", e)))?;
 
-        // Decode CESR signature to raw bytes
-        let cesr_sig = CesrSignature::from_qb64(&result.signature)
-            .map_err(|e| GossipError::Handshake(format!("CESR signature decode: {}", e)))?;
-        let signature = cesr_sig.raw().to_vec();
-
-        // Decode CESR public key to raw bytes
-        let cesr_pubkey = CesrPublicKey::from_qb64(&result.public_key)
-            .map_err(|e| GossipError::Handshake(format!("CESR pubkey decode: {}", e)))?;
-        let public_key = cesr_pubkey_to_raw(&cesr_pubkey)
-            .map_err(|e| GossipError::Handshake(format!("pubkey extract: {}", e)))?;
-
-        Ok(SignatureBundle {
-            signature,
-            public_key,
-        })
+        // Return CESR-encoded signature (qb64 bytes) — type is embedded in the encoding
+        Ok(result.signature.into_bytes())
     }
 }
 
@@ -163,9 +145,9 @@ impl KelsPeerVerifier {
         self.is_in_allowlist(prefix).await
     }
 
-    /// Get the current public key from a peer's KEL as raw bytes.
-    async fn public_key_from_key_events(&self, prefix: &str) -> Result<Vec<u8>, GossipError> {
-        // Consuming: verify KEL (paginated) to extract trusted public key for signing
+    /// Get the current public key from a peer's verified KEL.
+    async fn public_key_from_key_events(&self, prefix: &str) -> Result<CesrPublicKey, GossipError> {
+        // Consuming: verify KEL (paginated) to extract trusted public key
         let source = kels::HttpKelSource::new(&self.kels_url, "/api/kels/kel/{prefix}");
         let kel_verification = kels::verify_key_events(
             prefix,
@@ -190,71 +172,43 @@ impl KelsPeerVerifier {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
-        let cesr_pubkey = CesrPublicKey::from_qb64(qb64_key).map_err(|e| {
+        CesrPublicKey::from_qb64(qb64_key).map_err(|e| {
             GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
-        })?;
-
-        cesr_pubkey_to_raw(&cesr_pubkey)
-            .map_err(|e| GossipError::VerificationFailed(format!("pubkey for {}: {}", prefix, e)))
+        })
     }
 
-    /// Verify signature using ML-DSA (auto-detects parameter set from key/signature size).
+    /// Verify a CESR-encoded signature against a public key from the KEL.
     fn verify_signature(
         &self,
         data: &[u8],
-        signature: &[u8],
-        public_key: &[u8],
+        signature_qb64: &[u8],
+        public_key: &CesrPublicKey,
     ) -> Result<(), GossipError> {
-        let key_code = match public_key.len() {
-            1952 => cesr::VerificationKeyCode::MlDsa65,
-            2592 => cesr::VerificationKeyCode::MlDsa87,
-            _ => {
-                return Err(GossipError::VerificationFailed(format!(
-                    "Unsupported public key size: {} (expected ML-DSA-65 or ML-DSA-87)",
-                    public_key.len()
-                )));
-            }
-        };
-        let sig_code = match signature.len() {
-            3309 => cesr::SignatureCode::MlDsa65,
-            4627 => cesr::SignatureCode::MlDsa87,
-            _ => {
-                return Err(GossipError::VerificationFailed(format!(
-                    "Unsupported signature size: {} (expected ML-DSA-65 or ML-DSA-87)",
-                    signature.len()
-                )));
-            }
-        };
+        let sig_str = std::str::from_utf8(signature_qb64)
+            .map_err(|e| GossipError::VerificationFailed(format!("Signature not UTF-8: {}", e)))?;
 
-        let cesr_pubkey = CesrPublicKey::from_raw(key_code, public_key.to_vec())
-            .map_err(|e| GossipError::VerificationFailed(format!("Invalid public key: {}", e)))?;
-
-        let cesr_sig = CesrSignature::from_raw(sig_code, signature.to_vec())
+        let cesr_sig = CesrSignature::from_qb64(sig_str)
             .map_err(|e| GossipError::VerificationFailed(format!("Invalid signature: {}", e)))?;
 
-        cesr_pubkey.verify(data, &cesr_sig).map_err(|e| {
+        public_key.verify(data, &cesr_sig).map_err(|e| {
             GossipError::VerificationFailed(format!("Signature verification failed: {}", e))
         })
     }
 
-    /// Attempt verification: fetch public key from local KEL, compare with handshake
-    /// key, verify signature. Returns Ok(true) on success, Ok(false) on key mismatch
-    /// or KEL not found (so retry_once! will trigger the refresh path).
+    /// Attempt verification: fetch public key from local KEL, verify signature.
+    /// Returns Ok(true) on success, Ok(false) on KEL not found (so retry_once!
+    /// will trigger the refresh path).
     async fn try_verify(
         &self,
         prefix: &str,
         data: &[u8],
         signature: &[u8],
-        handshake_key: &[u8],
     ) -> Result<bool, GossipError> {
         let kel_key = match self.public_key_from_key_events(prefix).await {
             Ok(key) => key,
             Err(_) => return Ok(false), // KEL not found locally — trigger refresh
         };
-        if kel_key != handshake_key {
-            return Ok(false);
-        }
-        self.verify_signature(data, signature, handshake_key)?;
+        self.verify_signature(data, signature, &kel_key)?;
         Ok(true)
     }
 
@@ -264,7 +218,6 @@ impl KelsPeerVerifier {
         prefix: &str,
         data: &[u8],
         signature: &[u8],
-        handshake_key: &[u8],
     ) -> Result<bool, GossipError> {
         // Look up the peer's remote KELS URL from the allowlist
         let peer_kels_url = {
@@ -291,8 +244,7 @@ impl KelsPeerVerifier {
         .await;
 
         // Retry verification with the now-updated local KEL
-        self.try_verify(prefix, data, signature, handshake_key)
-            .await
+        self.try_verify(prefix, data, signature).await
     }
 }
 
@@ -302,7 +254,6 @@ impl PeerVerifier for KelsPeerVerifier {
         peer: &NodePrefix,
         data: &[u8],
         signature: &[u8],
-        public_key: &[u8],
     ) -> Result<(), GossipError> {
         let prefix_str = peer.to_option_string().ok_or_else(|| {
             GossipError::VerificationFailed("Invalid peer prefix encoding".to_string())
@@ -327,9 +278,9 @@ impl PeerVerifier for KelsPeerVerifier {
 
         // Authentication: verify against local KEL, refresh from peer on mismatch
         let verified = kels::retry_once!(
-            self.try_verify(&prefix_str, data, signature, public_key),
+            self.try_verify(&prefix_str, data, signature),
             |ok: &bool| *ok,
-            self.try_verify_refreshed(&prefix_str, data, signature, public_key),
+            self.try_verify_refreshed(&prefix_str, data, signature),
         )
         .map_err(|e| {
             GossipError::VerificationFailed(format!("KEL verification for {}: {}", prefix_str, e))
@@ -425,28 +376,15 @@ mod tests {
         );
     }
 
-    // ==================== cesr_pubkey_to_raw Tests ====================
-
-    #[test]
-    fn test_cesr_pubkey_to_raw_valid() {
-        let (cesr_key, _) = cesr::generate_ml_dsa_65().unwrap();
-
-        let result = cesr_pubkey_to_raw(&cesr_key);
-        assert!(result.is_ok());
-        let bytes = result.unwrap();
-        assert_eq!(bytes.len(), 1952); // ML-DSA-65 public key size
-    }
-
     // ==================== KelsPeerVerifier Tests ====================
 
     #[test]
     fn test_kels_peer_verifier_verify_valid_signature() {
         let (cesr_pubkey, cesr_privkey) = cesr::generate_ml_dsa_65().unwrap();
-        let public_key = cesr_pubkey.raw().to_vec();
 
         let data = b"test data to sign";
         let cesr_sig = cesr_privkey.sign(data).unwrap();
-        let sig_bytes = cesr_sig.raw().to_vec();
+        let sig_qb64 = cesr_sig.qb64().into_bytes();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
@@ -459,16 +397,15 @@ mod tests {
             store,
         );
 
-        let result = verifier.verify_signature(data, &sig_bytes, &public_key);
+        let result = verifier.verify_signature(data, &sig_qb64, &cesr_pubkey);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_kels_peer_verifier_verify_bad_signature() {
         let (cesr_pubkey, _) = cesr::generate_ml_dsa_65().unwrap();
-        let public_key = cesr_pubkey.raw().to_vec();
 
-        let bad_sig = vec![1u8; 3309];
+        let bad_sig = b"0BAAbadbadbadbadbad";
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
@@ -481,7 +418,7 @@ mod tests {
             store,
         );
 
-        let result = verifier.verify_signature(b"test data", &bad_sig, &public_key);
+        let result = verifier.verify_signature(b"test data", bad_sig, &cesr_pubkey);
         assert!(result.is_err());
     }
 }

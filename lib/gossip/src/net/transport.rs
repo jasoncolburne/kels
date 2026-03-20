@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::identity::NodePrefix;
 
 use super::{
-    Error, PeerVerifier, SignatureBundle, Signer,
+    Error, PeerVerifier, Signer,
     crypto::{EncryptedStream, derive_session_keys},
 };
 
@@ -72,15 +72,11 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     // Step 4: Exchange and verify signatures.
     let their_sig = exchange_signatures(&mut stream, &our_sig, is_initiator).await?;
 
-    // Verify peer's signature (they signed with our_ek and their_ek swapped, and our prefix)
+    // Verify peer's signature (they signed with our_ek and their_ek swapped, and our prefix).
+    // The verifier fetches the peer's public key from their KEL — it is never sent over the wire.
     let their_payload = handshake_payload(&their_ek_qb64, &our_ek_qb64, &our_id);
     verifier
-        .verify_peer(
-            &their_id,
-            their_payload.as_bytes(),
-            &their_sig.signature,
-            &their_sig.public_key,
-        )
+        .verify_peer(&their_id, their_payload.as_bytes(), &their_sig)
         .await
         .map_err(|e| Error::Handshake(format!("Peer verification failed: {}", e)))?;
     debug!(peer = %their_id, "peer authenticated");
@@ -173,61 +169,20 @@ async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>
     }
 }
 
-/// Exchange ML-DSA-65 signature bundles between peers.
+/// Exchange signatures between peers.
 async fn exchange_signatures<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     stream: &mut S,
-    our_sig: &SignatureBundle,
+    our_sig: &[u8],
     is_initiator: bool,
-) -> Result<SignatureBundle, Error> {
-    // Serialize our bundle: 4-byte sig_len + sig + 4-byte key_len + key
-    let mut our_payload = Vec::new();
-    our_payload.extend_from_slice(&(our_sig.signature.len() as u32).to_be_bytes());
-    our_payload.extend_from_slice(&our_sig.signature);
-    our_payload.extend_from_slice(&(our_sig.public_key.len() as u32).to_be_bytes());
-    our_payload.extend_from_slice(&our_sig.public_key);
-
+) -> Result<Vec<u8>, Error> {
     if is_initiator {
-        send_length_prefixed(stream, &our_payload).await?;
-        let their_payload = recv_length_prefixed(stream).await?;
-        deserialize_signature_bundle(&their_payload)
+        send_length_prefixed(stream, our_sig).await?;
+        recv_length_prefixed(stream).await
     } else {
-        let their_payload = recv_length_prefixed(stream).await?;
-        send_length_prefixed(stream, &our_payload).await?;
-        deserialize_signature_bundle(&their_payload)
+        let their_sig = recv_length_prefixed(stream).await?;
+        send_length_prefixed(stream, our_sig).await?;
+        Ok(their_sig)
     }
-}
-
-fn deserialize_signature_bundle(data: &[u8]) -> Result<SignatureBundle, Error> {
-    if data.len() < 8 {
-        return Err(Error::Handshake("Signature bundle too short".into()));
-    }
-
-    let sig_len = u32::from_be_bytes(
-        data[..4]
-            .try_into()
-            .map_err(|_| Error::Handshake("bad sig len".into()))?,
-    ) as usize;
-    if data.len() < 4 + sig_len + 4 {
-        return Err(Error::Handshake("Signature bundle truncated".into()));
-    }
-
-    let signature = data[4..4 + sig_len].to_vec();
-    let key_offset = 4 + sig_len;
-    let key_len = u32::from_be_bytes(
-        data[key_offset..key_offset + 4]
-            .try_into()
-            .map_err(|_| Error::Handshake("bad key len".into()))?,
-    ) as usize;
-    if data.len() < key_offset + 4 + key_len {
-        return Err(Error::Handshake("Signature bundle key truncated".into()));
-    }
-
-    let public_key = data[key_offset + 4..key_offset + 4 + key_len].to_vec();
-
-    Ok(SignatureBundle {
-        signature,
-        public_key,
-    })
 }
 
 /// Build the JSON handshake payload that each side signs.

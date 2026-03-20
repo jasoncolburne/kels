@@ -75,15 +75,6 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// Bundle of signature data returned by a [`Signer`].
-#[derive(Debug, Clone)]
-pub struct SignatureBundle {
-    /// The signature bytes.
-    pub signature: Vec<u8>,
-    /// The signing public key bytes.
-    pub public_key: Vec<u8>,
-}
-
 /// Trait for signing handshake data.
 ///
 /// Implementations bridge to KELS signing infrastructure (software keys or HSM).
@@ -93,8 +84,8 @@ pub trait Signer: Send + Sync + 'static {
     /// Our node identity (KELS prefix).
     fn node_prefix(&self) -> NodePrefix;
 
-    /// Sign the given data. Returns the signature and public key as raw bytes.
-    fn sign(&self, data: &[u8]) -> impl Future<Output = Result<SignatureBundle, Error>> + Send;
+    /// Sign the given data. Returns the signature as raw bytes.
+    fn sign(&self, data: &[u8]) -> impl Future<Output = Result<Vec<u8>, Error>> + Send;
 
     /// KEM algorithm for handshake key exchange.
     /// Default: ML-KEM-768. Override with ML-KEM-1024 for security level 5.
@@ -113,14 +104,12 @@ pub trait PeerVerifier: Send + Sync + 'static {
     /// The implementation must:
     /// 1. Check the peer is authorized (prefix in allowlist)
     /// 2. Look up the peer's KEL to get the current public key
-    /// 3. Compare with the `public_key` sent in the handshake
-    /// 4. Verify the signature
-    /// 5. On key mismatch (rotation), re-fetch the KEL and retry
+    /// 3. Verify the signature against the KEL key
+    /// 4. On verification failure (rotation), re-fetch the KEL and retry
     fn verify_peer(
         &self,
         peer: &NodePrefix,
         data: &[u8],
         signature: &[u8],
-        public_key: &[u8],
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
