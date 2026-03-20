@@ -63,7 +63,11 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     let kem_algo = signer.kem_algorithm();
     let (shared_secret, our_ek_qb64, their_ek_qb64) =
         mlkem_key_exchange(&mut stream, is_initiator, kem_algo).await?;
-    debug!(peer = %their_id, "ML-KEM key exchange complete");
+    let kem_name = match kem_algo {
+        KemKeyCode::MlKem768 => "ML-KEM-768",
+        KemKeyCode::MlKem1024 => "ML-KEM-1024",
+    };
+    debug!(peer = %their_id, algorithm = kem_name, "ML-KEM key exchange complete");
 
     // Step 3: Sign handshake transcript.
     let payload = handshake_payload(&our_ek_qb64, &their_ek_qb64, &their_id);
