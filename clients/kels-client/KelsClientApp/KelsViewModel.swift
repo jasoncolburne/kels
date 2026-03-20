@@ -117,7 +117,6 @@ class KelsViewModel: ObservableObject {
             currentNodeUrl = defaultNodeUrl
         }
 
-
         loadCachedNodes()
     }
 
