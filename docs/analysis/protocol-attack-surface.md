@@ -4,7 +4,7 @@ Analysis of attack vectors against the KELS protocol — cryptographic propertie
 
 ## Trust Model
 
-The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (ML-DSA-65 at 192-bit or ML-DSA-87 at 256-bit post-quantum security for all clients and infrastructure; P-256 / ECDSA at 128-bit classical security as a legacy fallback), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
+The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (ML-DSA-65 at 192-bit or ML-DSA-87 at 256-bit post-quantum security for all clients and infrastructure; P-256 / ECDSA at 128-bit classical security as a client fallback), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
 
 **Assumptions:**
 - Clients hold private keys in hardware-backed storage (Secure Enclave, HSM)
