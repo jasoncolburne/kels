@@ -150,7 +150,9 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
 | `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/member-kels` for registry, `/api/kels` for nodes) |
 | `NEXT_SIGNING_ALGORITHM` | Algorithm for next signing key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
-| `NEXT_RECOVERY_ALGORITHM` | Algorithm for next recovery key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
+| `NEXT_RECOVERY_ALGORITHM` | Algorithm for next recovery key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-87`) |
+| `IDENTITY_ROTATION_INTERVAL_DAYS` | Auto-rotation interval in days (default: `180`) |
+| `IDENTITY_ROTATION_CHECK_PERIOD_MINUTES` | How often to check if rotation is due, in minutes (default: `360`) |
 | `RUST_LOG` | Logging level |
 
 ### KELS Service (`kels`)
@@ -160,6 +162,13 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated) |
 | `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
+| `KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE` | Per-prefix submission rate limit (default: `128`) |
+| `KELS_MAX_WRITES_PER_IP_PER_SECOND` | Per-IP write rate limit (default: `200`) |
+| `KELS_IP_RATE_LIMIT_BURST` | Per-IP burst allowance (default: `1000`) |
+| `KELS_NONCE_WINDOW_SECS` | Nonce deduplication window in seconds; `0` disables (default: `60`) |
+| `KELS_PAGE_SIZE` | Page size for KEL queries and responses (default: `32`) |
+| `KELS_MAX_VERIFICATION_PAGES` | Max pages walked during verification (default: `64`) |
+| `KELS_TEST_ENDPOINTS` | Enable unauthenticated test endpoints at `/api/test/*` (default: `false`) |
 | `RUST_LOG` | Logging level |
 
 ### Gossip Service (`kels-gossip`)

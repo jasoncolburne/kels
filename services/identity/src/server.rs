@@ -231,22 +231,27 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-const ROTATION_INTERVAL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
-const LOOP_PERIOD: Duration = Duration::from_secs(6 * 3600); // 6 hours
+fn rotation_interval() -> Duration {
+    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_INTERVAL_DAYS", 30) as u64 * 24 * 3600)
+}
+
+fn rotation_check_period() -> Duration {
+    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_CHECK_PERIOD_MINUTES", 360) as u64 * 60)
+}
 
 async fn auto_rotation_loop(state: Arc<AppState>) {
     // Stabilize on startup
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let mut interval = tokio::time::interval(LOOP_PERIOD);
+    let mut interval = tokio::time::interval(rotation_check_period());
     let mut last_rotation: Option<tokio::time::Instant> = None;
 
     loop {
-        interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
+        interval.tick().await; // first tick is immediate, then every rotation_check_period()
 
-        // Cooldown: skip if we rotated recently (keys are fresh for ROTATION_INTERVAL)
+        // Cooldown: skip if we rotated recently (keys are fresh for rotation_interval())
         if let Some(last) = last_rotation
-            && last.elapsed() < ROTATION_INTERVAL
+            && last.elapsed() < rotation_interval()
         {
             continue;
         }
@@ -611,5 +616,5 @@ fn verify_latest_binding(
         .to_std()
         .unwrap_or(Duration::ZERO);
 
-    Ok(age > ROTATION_INTERVAL)
+    Ok(age > rotation_interval())
 }

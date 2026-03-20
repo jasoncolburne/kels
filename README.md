@@ -251,13 +251,13 @@ All recorded data in KELS is KEL-backed and verified independently before use:
 
 ### Automatic Key Rotation
 
-The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that checks every 6 hours whether the current HSM key binding is older than 30 days. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
+The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that periodically checks whether the current HSM key binding is due for rotation. Both the check period (`IDENTITY_ROTATION_CHECK_PERIOD_MINUTES`, default: 360) and rotation interval (`IDENTITY_ROTATION_INTERVAL_DAYS`, default: 180) are configurable. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
 
 All KEL management operations — automatic and manual — go through a single `perform_kel_operation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The management endpoint (`POST /api/identity/kel/manage`) requires a signed request verified against the identity's own KEL.
 
 ### Proactive Protection
 
-- HSM-backed services rotate signing keys automatically (every 30 days) and recovery keys (every ~90 days)
+- HSM-backed services rotate signing keys automatically (configurable interval, default 180 days) and recovery keys (every third rotation)
 - Manual rotation is available via the admin CLI for immediate key refresh
 - End-user clients should rotate keys regularly (suggested: signing every 1-3 months, recovery every 3-12 months)
 - Use hardware-backed keys (Secure Enclave, HSM) when possible
@@ -266,7 +266,7 @@ All KEL management operations — automatic and manual — go through a single `
 
 KELS uses post-quantum cryptographic algorithms throughout the infrastructure tier:
 
-- **Signing (infrastructure):** ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all registry and gossip node identities. The KELS core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs to support mobile clients during the transition period.
+- **Signing:** ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all clients and infrastructure. Mobile clients may use P-256 as a fallback. The KELS core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs.
 - **Gossip transport:** ML-KEM-768 or ML-KEM-1024 (FIPS 203, configurable via `GOSSIP_KEM_ALGORITHM`) key exchange + ML-DSA-65/87 mutual authentication + BLAKE3 KDF + AES-GCM-256 encryption. Provides forward secrecy via ephemeral ML-KEM keypairs.
 - **HSM:** The `kels-mock-hsm` PKCS#11 cdylib implements ML-DSA-65 and ML-DSA-87 signing via fips204. In production, swap the .so path for a real HSM's PKCS#11 library (CloudHSM, Luna, etc.).
 - **Key provider:** Supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) and algorithm upgrade via rotation.
@@ -280,7 +280,7 @@ Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotatio
 | `GET` | `/health` | Health check |
 | `GET` | `/ready` | Readiness check (gossip sync status) |
 | `POST` | `/api/kels/events` | Submit signed events |
-| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-64) |
+| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32) |
 | `GET` | `/api/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
 | `GET` | `/api/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
 | `GET` | `/api/kels/events/:said/exists` | Check if event exists by SAID |
@@ -334,9 +334,9 @@ Children per Namespace
 
 #### Special cases
 
-- Some nodes are built with the `dev-tools` feature flag enabled. This turns off authentication on the /prefixes endpoint, so an adversary can't scan for known prefixes. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing. 
+- Some nodes have `KELS_TEST_ENDPOINTS=true`, which exposes an unauthenticated `/api/test/prefixes` endpoint. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing without compromising the authenticated `/api/kels/prefixes` endpoint.
 
-Nodes built with `dev-tools` enabled:
+Nodes with test endpoints enabled:
 - `node-a`
 - `node-b`
 - `node-d`

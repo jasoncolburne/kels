@@ -1,7 +1,7 @@
 //! KELS REST API Handlers
 
 use std::{
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -22,6 +22,16 @@ use tracing::warn;
 
 use crate::repository::KelsRepository;
 
+static TEST_ENDPOINTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("KELS_TEST_ENDPOINTS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+});
+
+pub(crate) fn test_endpoints_enabled() -> bool {
+    *TEST_ENDPOINTS_ENABLED
+}
+
 fn max_submissions_per_prefix_per_minute() -> u32 {
     kels::env_usize("KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE", 128) as u32
 }
@@ -40,18 +50,15 @@ fn nonce_window_secs() -> u64 {
 
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
-    #[cfg(not(feature = "dev-tools"))]
     pub(crate) kel_store: Arc<dyn kels::KelStore>,
     pub(crate) kel_cache: ServerKelCache,
     pub(crate) redis_conn: redis::aio::ConnectionManager,
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) nonce_cache: DashMap<String, Instant>,
 }
 
@@ -90,7 +97,6 @@ impl ApiError {
         )
     }
 
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     fn forbidden(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::FORBIDDEN,
@@ -101,7 +107,6 @@ impl ApiError {
         )
     }
 
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     fn internal_error(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -527,77 +532,102 @@ pub(crate) async fn get_effective_said(
 
 // ==================== Prefix Listing ====================
 
+/// Shared query logic for listing prefixes.
+async fn query_prefixes(
+    state: &AppState,
+    since: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Json<PrefixListResponse>, ApiError> {
+    let limit = limit.unwrap_or(100).clamp(1, 1000);
+    let result = state.repo.key_events.list_prefixes(since, limit).await?;
+    Ok(Json(result))
+}
+
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
 ///
 /// Accepts a `SignedRequest<PrefixesRequest>` via POST.
-/// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
+/// Requires peer authentication: timestamp validation, nonce deduplication,
+/// peer allowlist verification, and signed request verification.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
-    #[cfg(not(feature = "dev-tools"))]
-    {
-        if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
-            return Err(ApiError::forbidden("Request timestamp expired"));
-        }
 
-        // Nonce deduplication: evict expired entries, then reject duplicates
-        {
-            let now = Instant::now();
-            state.nonce_cache.retain(|_, seen| {
-                now.duration_since(*seen) < Duration::from_secs(nonce_window_secs())
-            });
-            if state
-                .nonce_cache
-                .insert(signed_request.payload.nonce.clone(), now)
-                .is_some()
-            {
-                return Err(ApiError::forbidden("Duplicate nonce"));
-            }
-        }
-
-        // Look up peer to verify they are in the verified allowlist
-        let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
-        let _peer = match peer {
-            Some(p) => p,
-            None => {
-                refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
-                get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
-                    .await?
-                    .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
-            }
-        };
-
-        // Consuming: verify peer's KEL (paginated) to extract trusted public key
-        let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
-        let kel_verification = kels::completed_verification(
-            &mut loader,
-            &signed_request.peer_prefix,
-            kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-            kels::max_verification_pages(),
-            std::iter::empty::<String>(),
-        )
-        .await
-        .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
-
-        signed_request
-            .verify_signature(&kel_verification)
-            .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+    if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
+        return Err(ApiError::forbidden("Request timestamp expired"));
     }
 
-    let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
-    let result = state
-        .repo
-        .key_events
-        .list_prefixes(signed_request.payload.since.as_deref(), limit)
-        .await?;
-    Ok(Json(result))
+    // Nonce deduplication: evict expired entries, then reject duplicates
+    let window = nonce_window_secs();
+    if window > 0 {
+        let now = Instant::now();
+        state
+            .nonce_cache
+            .retain(|_, seen| now.duration_since(*seen) < Duration::from_secs(window));
+        if state
+            .nonce_cache
+            .insert(signed_request.payload.nonce.clone(), now)
+            .is_some()
+        {
+            return Err(ApiError::forbidden("Duplicate nonce"));
+        }
+    }
+
+    // Look up peer to verify they are in the verified allowlist
+    let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
+    let _peer = match peer {
+        Some(p) => p,
+        None => {
+            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+            get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
+                .await?
+                .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
+        }
+    };
+
+    // Consuming: verify peer's KEL (paginated) to extract trusted public key
+    let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
+    let kel_verification = kels::completed_verification(
+        &mut loader,
+        &signed_request.peer_prefix,
+        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
+        kels::max_verification_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await
+    .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
+
+    signed_request
+        .verify_signature(&kel_verification)
+        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+
+    query_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+}
+
+/// Unauthenticated test endpoint for listing prefixes.
+/// Only available when `KELS_TEST_ENDPOINTS=true`.
+pub(crate) async fn test_list_prefixes(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> Result<Json<PrefixListResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
+    query_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
 }
 
 /// Look up a verified peer from Redis cache, returning the full Peer data.
-#[cfg(not(feature = "dev-tools"))]
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
@@ -619,7 +649,6 @@ async fn get_verified_peer(
 }
 
 /// Fetch verified peers from the registry and store records in Redis.
-#[cfg(not(feature = "dev-tools"))]
 async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],

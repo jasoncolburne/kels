@@ -40,7 +40,7 @@ declare -a NODE_URLS=(
     "http://${NODE_F_KELS_HOST}"
 )
 
-# Nodes with dev-tools enabled (prefixes endpoint accessible without auth via GET)
+# Nodes with KELS_TEST_ENDPOINTS enabled (unauthenticated test prefixes endpoint)
 declare -a PREFIX_NODE_NAMES=(a b d)
 declare -a PREFIX_NODE_URLS=(
     "http://${NODE_A_KELS_HOST}"
@@ -57,10 +57,10 @@ echo -e "${CYAN}  KEL Consistency Verification${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo
 
-# --- Step 1: Fetch all prefixes from dev-tools nodes (a, b, d) ---
-# Dev-tools nodes skip signature verification on the prefixes endpoint.
-# We POST a mock signed request (verification is bypassed with dev-tools).
-echo -e "${YELLOW}Fetching prefixes from dev-tools nodes...${NC}"
+# --- Step 1: Fetch all prefixes from test-endpoint nodes (a, b, d) ---
+# These nodes have KELS_TEST_ENDPOINTS=true, exposing /api/test/prefixes without auth.
+# We POST a mock signed request (auth is skipped on the test endpoint).
+echo -e "${YELLOW}Fetching prefixes from test-endpoint nodes...${NC}"
 
 declare -a REACHABLE_NAMES=()
 declare -a REACHABLE_URLS=()
@@ -82,7 +82,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
             body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:1000},peerPrefix:"test",publicKey:"test",signature:"test"}')
         fi
 
-        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/kels/prefixes" 2>/dev/null)
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/prefixes" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo -e "  node-${name}: ${RED}unreachable${NC}"
             reachable=false

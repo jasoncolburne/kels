@@ -4,11 +4,11 @@ Analysis of attack vectors against the KELS protocol — cryptographic propertie
 
 ## Trust Model
 
-The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (ML-DSA-65 or ML-DSA-87 for infrastructure at 192/256-bit post-quantum security; P-256 / ECDSA at 128-bit classical security for mobile clients), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
+The KELS protocol has no central authority. Security rests entirely on cryptographic properties: signatures (ML-DSA-65 at 192-bit or ML-DSA-87 at 256-bit post-quantum security for all clients and infrastructure; P-256 / ECDSA at 128-bit classical security as a legacy fallback), content-addressable identifiers (SAID via Blake3-256), and forward commitments (rotation/recovery hash chains). Any valid signed event is accepted regardless of source.
 
 **Assumptions:**
 - Clients hold private keys in hardware-backed storage (Secure Enclave, HSM)
-- Infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204); the core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs
+- All clients and infrastructure use ML-DSA-65 or ML-DSA-87 (FIPS 204) by default; clients may use P-256 as a fallback
 - Events are version-qualified (`kels/v1/icp`) for future protocol evolution
 
 ## Key Compromise
@@ -148,9 +148,9 @@ The identity service implements an automatic rotation schedule for HSM-backed se
 
 ### Schedule
 
-- **Check interval:** Every 6 hours, the identity service checks whether the current key binding is due for rotation.
-- **Rotation interval:** 30 days. If the latest HSM key binding is older than 30 days, rotation is triggered.
-- **Mode selection:** Scheduled rotation auto-selects the rotation type based on rotation count. Every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This results in signing keys rotating approximately every 30 days and recovery keys every ~90 days.
+- **Check interval:** Configurable via `IDENTITY_ROTATION_CHECK_PERIOD_MINUTES` (default: 360, i.e. every 6 hours). The identity service checks whether the current key binding is due for rotation.
+- **Rotation interval:** Configurable via `IDENTITY_ROTATION_INTERVAL_DAYS` (default: 180). If the latest HSM key binding is older than this, rotation is triggered. With ML-DSA's post-quantum security, longer rotation intervals are acceptable.
+- **Mode selection:** Scheduled rotation auto-selects the rotation type based on rotation count. Every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This results in recovery keys rotating every third interval.
 
 ### Binding Chain Integrity
 
@@ -162,7 +162,7 @@ The auto-rotation loop performs two levels of binding verification:
 3. Versions increment by exactly 1
 4. All binding SAIDs are anchored in the identity's KEL (prevents a database-only attacker from forging bindings)
 
-If the full chain audit fails, a `SECURITY` warning is logged. This is intentionally separated from the rotation decision because a corrupted historical binding cannot be fixed by rotating — triggering rotation on historical chain corruption would cause the service to rotate every 6 hours indefinitely, since the old corrupted records remain in the database.
+If the full chain audit fails, a `SECURITY` warning is logged. This is intentionally separated from the rotation decision because a corrupted historical binding cannot be fixed by rotating — triggering rotation on historical chain corruption would cause the service to rotate every check period indefinitely, since the old corrupted records remain in the database.
 
 **Latest binding verification** (triggers defensive rotation on failure):
 1. Latest binding's SAID is verified
@@ -184,8 +184,8 @@ This ensures the server's in-memory signing state is always consistent with the 
 
 ### Security Properties
 
-- **Bounded exposure window:** A compromised signing key is useful for at most 30 days before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
-- **Recovery key freshness:** Recovery keys rotate every ~90 days, limiting the window for recovery key compromise.
+- **Bounded exposure window:** A compromised signing key is useful for at most one rotation interval before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
+- **Recovery key freshness:** Recovery keys rotate every third interval, limiting the window for recovery key compromise.
 - **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
 - **Authenticated management endpoint:** The `POST /api/identity/kel/manage` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized KEL operations.
 

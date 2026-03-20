@@ -45,8 +45,8 @@ struct Cli {
 enum Commands {
     /// Create a new KEL (inception event)
     Incept {
-        /// Signing key algorithm (secp256r1, ml-dsa-65, or ml-dsa-87)
-        #[arg(long, default_value = "secp256r1")]
+        /// Signing key algorithm (ml-dsa-65, ml-dsa-87, or secp256r1)
+        #[arg(long, default_value = "ml-dsa-65")]
         signing_algorithm: String,
 
         /// Recovery key algorithm (defaults to signing algorithm)
@@ -233,8 +233,8 @@ fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     Ok(SoftwareProviderConfig::new(
         key_dir,
-        VerificationKeyCode::Secp256r1,
-        VerificationKeyCode::Secp256r1,
+        VerificationKeyCode::MlDsa65,
+        VerificationKeyCode::MlDsa65,
     ))
 }
 

@@ -148,6 +148,13 @@ impl SharedHarness {
 
         let base_url = format!("http://127.0.0.1:{}", port);
 
+        // Enable test endpoints for integration tests (unauthenticated prefixes)
+        // SAFETY: called before spawning threads; no concurrent env reads yet.
+        unsafe {
+            std::env::set_var("KELS_TEST_ENDPOINTS", "true");
+            std::env::set_var("KELS_NONCE_WINDOW_SECS", "0");
+        }
+
         // Start the server in a dedicated thread with its own runtime.
         let db_url = database_url.clone();
         let rd_url = redis_url.clone();
@@ -388,7 +395,7 @@ async fn test_list_prefixes() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/prefixes"))
+        .post(harness.url("/api/test/prefixes"))
         .json(&request)
         .send()
         .await
@@ -531,7 +538,7 @@ async fn test_list_prefixes_with_limit() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/prefixes"))
+        .post(harness.url("/api/test/prefixes"))
         .json(&request)
         .send()
         .await
@@ -667,7 +674,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/prefixes"))
+        .post(harness.url("/api/test/prefixes"))
         .json(&request)
         .send()
         .await
@@ -692,7 +699,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
         let response = harness
             .client()
-            .post(harness.url("/api/kels/prefixes"))
+            .post(harness.url("/api/test/prefixes"))
             .json(&request)
             .send()
             .await

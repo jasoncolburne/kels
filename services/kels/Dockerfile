@@ -20,11 +20,10 @@ COPY services/kels /app/services/kels
 
 # Build with BuildKit cache mounts for cargo registry and target directory
 ARG TRUSTED_REGISTRY_PREFIXES
-ARG CARGO_FEATURES=""
 WORKDIR /app/services/kels
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-target,target=/app/services/kels/target \
-    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin kels ${CARGO_FEATURES} && \
+    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin kels && \
     cp /app/services/kels/target/release/kels /app/kels
 
 # Final stage

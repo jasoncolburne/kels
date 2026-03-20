@@ -53,6 +53,10 @@ spec:
               value: "${var.kelForwardUrl}"
             - name: KEL_FORWARD_PATH_PREFIX
               value: "${var.kelForwardPathPrefix}"
+            - name: IDENTITY_ROTATION_INTERVAL_DAYS
+              value: "${var.identity.rotationIntervalDays}"
+            - name: IDENTITY_ROTATION_CHECK_PERIOD_MINUTES
+              value: "${var.identity.rotationCheckPeriodMinutes}"
           volumeMounts:
             - name: hsm-data
               mountPath: /data/hsm
