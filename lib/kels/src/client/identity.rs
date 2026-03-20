@@ -83,8 +83,7 @@ struct SignRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignResponse {
-    pub signature: String,  // QB64-encoded signature
-    pub public_key: String, // QB64-encoded public key
+    pub signature: String, // QB64-encoded signature
 }
 
 /// Identity service error response (simpler than the kels service's ErrorResponse).
@@ -178,7 +177,7 @@ impl IdentityClient {
     }
 
     /// Sign a JSON string with the registry's identity key.
-    /// Returns signature and public_key as QB64-encoded strings.
+    /// Returns signature as a QB64-encoded string.
     pub async fn sign(&self, data: &str) -> Result<SignResponse, KelsError> {
         let url = format!("{}/api/identity/sign", self.base_url);
 

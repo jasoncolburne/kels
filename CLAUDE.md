@@ -112,7 +112,7 @@ When events are submitted, the KEL merge produces one of:
 ### Libraries
 
 - **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with configurable ML-KEM (ML-KEM-768 or ML-KEM-1024) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
+- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
 - **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
 - **kels-mock-hsm** (`lib/kels-mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.

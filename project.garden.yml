@@ -97,8 +97,6 @@ variables:
     topic: "kels/events/v1"
     listenAddress: "0.0.0.0:${var.gossip.port}"
     antiEntropyIntervalSecs: "10"
-    # if you use ml-dsa-87 for identity.signingAlgorithm, change this to ml-kem-1024
-    kemAlgorithm: "ml-kem-768"
   registry:
     replicas: 1
     port: "80"
@@ -109,7 +107,6 @@ variables:
     url: http://${var.identity.host}:${var.identity.port}
     rotationIntervalDays: "180"
     rotationCheckPeriodMinutes: "360"
-    # ml-dsa-87 should be paired with gossip.kemAlgorithm: ml-kem-1024, ml-dsa-65 with ml-kem-768
     signingAlgorithm: "ml-dsa-65"
     recoveryAlgorithm: "ml-dsa-87"
     pkcs11Library: "/app/libkels_mock_hsm.so"

@@ -98,8 +98,6 @@ spec:
               value: "${var.gossip.topic}"
             - name: ANTI_ENTROPY_INTERVAL_SECS
               value: "${var.gossipAntiEntropyIntervalSecs}"
-            - name: GOSSIP_KEM_ALGORITHM
-              value: "${var.gossip.kemAlgorithm}"
           livenessProbe:
             httpGet:
               path: /healthz

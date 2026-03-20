@@ -186,7 +186,6 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `REDIS_URL` | Redis for ready state and caching |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
-| `GOSSIP_KEM_ALGORITHM` | KEM algorithm for gossip key exchange (`ml-kem-768` or `ml-kem-1024`, default: `ml-kem-768`) |
 | `RUST_LOG` | Logging level |
 
 ## Peer Lifecycle

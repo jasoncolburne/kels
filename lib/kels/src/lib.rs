@@ -68,8 +68,8 @@ pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use cesr::VerificationKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
-    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,
-    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResponse,
+    SignResult, nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
     verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{

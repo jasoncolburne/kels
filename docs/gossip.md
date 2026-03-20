@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
+The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). The KEM algorithm is auto-negotiated: if any peer in the federation uses ML-DSA-87, all connections use ML-KEM-1024; otherwise ML-KEM-768. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
@@ -129,7 +129,6 @@ struct KelAnnouncement {
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval | `60` |
-| `GOSSIP_KEM_ALGORITHM` | KEM algorithm for gossip key exchange (`ml-kem-768` or `ml-kem-1024`) | `ml-kem-768` |
 
 ## Design Decisions
 
@@ -148,7 +147,7 @@ Gossip nodes use persistent HSM-backed identities:
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh
 - Unauthorized peers are rejected during the gossip handshake
 - Only ML-DSA-65/87 peers are accepted (P-256 peers are rejected)
-- The handshake uses ML-KEM-768/1024 key exchange + ML-DSA-65/87 signature authentication:
+- The handshake uses ML-KEM-768/1024 (auto-negotiated) key exchange + ML-DSA-65/87 signature authentication:
   1. Exchange 44-byte prefixes
   2. Initiator generates ML-KEM-768/1024 keypair, sends encapsulation key (qb64)
   3. Acceptor encapsulates, sends ciphertext back (qb64)

@@ -48,7 +48,7 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Address GitHub issues
-2. ~~Post-quantum signature support~~ Done: infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`); gossip uses ML-KEM-768 or ML-KEM-1024 (FIPS 203, configurable via `GOSSIP_KEM_ALGORITHM`) + ML-DSA-65/ML-DSA-87; core service accepts both P-256 and ML-DSA-65/ML-DSA-87 KELs
+2. ~~Post-quantum signature support~~ Done: infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`); gossip uses ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms) + ML-DSA-65/ML-DSA-87; core service accepts both P-256 and ML-DSA-65/ML-DSA-87 KELs
 3. Add kels-policy crate
   - Policy DSL
     - threshold
@@ -107,7 +107,7 @@ kels/
 
 - **Server-side caching**: Optional Redis + W-TinyLFU local caching for high-throughput deployments (enabled by default for the garden example)
 
-- **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) with configurable ML-KEM (ML-KEM-768 or ML-KEM-1024, via `GOSSIP_KEM_ALGORITHM`) key exchange + ML-DSA-65/ML-DSA-87 mutual authentication + AES-GCM-256 encryption synchronizes KELs between independent deployments for high availability
+- **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) key exchange + ML-DSA-65/ML-DSA-87 mutual authentication + AES-GCM-256 encryption synchronizes KELs between independent deployments for high availability
 
 - **Secure node registration**: HSM-backed identities (ML-DSA-65/87) with cryptographic peer allowlist - only authorized nodes can register and participate in gossip
 
@@ -267,7 +267,7 @@ All KEL management operations — automatic and manual — go through a single `
 KELS uses post-quantum cryptographic algorithms throughout the infrastructure tier:
 
 - **Signing:** ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all clients and infrastructure. Mobile clients may use P-256 as a fallback. The KELS core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs.
-- **Gossip transport:** ML-KEM-768 or ML-KEM-1024 (FIPS 203, configurable via `GOSSIP_KEM_ALGORITHM`) key exchange + ML-DSA-65/87 mutual authentication + BLAKE3 KDF + AES-GCM-256 encryption. Provides forward secrecy via ephemeral ML-KEM keypairs.
+- **Gossip transport:** ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms — if any peer uses ML-DSA-87, all connections use ML-KEM-1024) key exchange + ML-DSA-65/87 mutual authentication + BLAKE3 KDF + AES-GCM-256 encryption. Provides forward secrecy via ephemeral ML-KEM keypairs.
 - **HSM:** The `kels-mock-hsm` PKCS#11 cdylib implements ML-DSA-65 and ML-DSA-87 signing via fips204. In production, swap the .so path for a real HSM's PKCS#11 library (CloudHSM, Luna, etc.).
 - **Key provider:** Supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) and algorithm upgrade via rotation.
 

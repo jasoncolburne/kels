@@ -38,14 +38,14 @@ pub enum SignerError {
 pub struct IdentityGossipSigner {
     identity_client: kels::IdentityClient,
     node_prefix: NodePrefix,
-    kem_algorithm: cesr::KemKeyCode,
+    requires_kem_1024: crate::allowlist::RequiresKem1024,
 }
 
 impl IdentityGossipSigner {
     pub fn new(
         identity_url: &str,
         peer_prefix: &str,
-        kem_algorithm: cesr::KemKeyCode,
+        requires_kem_1024: crate::allowlist::RequiresKem1024,
     ) -> Result<Self, SignerError> {
         let node_prefix = NodePrefix::option_from_str(peer_prefix).ok_or_else(|| {
             SignerError::Key(format!(
@@ -57,7 +57,7 @@ impl IdentityGossipSigner {
         Ok(Self {
             identity_client: kels::IdentityClient::new(identity_url),
             node_prefix,
-            kem_algorithm,
+            requires_kem_1024,
         })
     }
 }
@@ -68,7 +68,14 @@ impl Signer for IdentityGossipSigner {
     }
 
     fn kem_algorithm(&self) -> cesr::KemKeyCode {
-        self.kem_algorithm
+        if self
+            .requires_kem_1024
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            cesr::KemKeyCode::MlKem1024
+        } else {
+            cesr::KemKeyCode::MlKem768
+        }
     }
 
     async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, GossipError> {
@@ -104,6 +111,7 @@ pub struct KelsPeerVerifier {
     federation_registry_urls: Vec<String>,
     node_id: String,
     registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
+    requires_kem_1024: crate::allowlist::RequiresKem1024,
 }
 
 impl KelsPeerVerifier {
@@ -113,6 +121,7 @@ impl KelsPeerVerifier {
         federation_registry_urls: Vec<String>,
         node_id: String,
         registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
+        requires_kem_1024: crate::allowlist::RequiresKem1024,
     ) -> Self {
         Self {
             allowlist,
@@ -120,6 +129,7 @@ impl KelsPeerVerifier {
             federation_registry_urls,
             node_id,
             registry_kel_store,
+            requires_kem_1024,
         }
     }
 
@@ -136,6 +146,8 @@ impl KelsPeerVerifier {
             self.registry_kel_store.as_ref(),
             &self.allowlist,
             Some(&self.node_id),
+            &self.requires_kem_1024,
+            &self.kels_url,
         )
         .await
         {
@@ -389,12 +401,14 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
             Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",
             vec![],
             String::new(),
             store,
+            requires_kem_1024,
         );
 
         let result = verifier.verify_signature(data, &sig_qb64, &cesr_pubkey);
@@ -410,12 +424,14 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels::KelStore> =
             Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",
             vec![],
             String::new(),
             store,
+            requires_kem_1024,
         );
 
         let result = verifier.verify_signature(b"test data", bad_sig, &cesr_pubkey);
