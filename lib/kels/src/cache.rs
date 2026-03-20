@@ -30,7 +30,9 @@ use crate::{KelsError, MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEvent};
 /// size so that cached KELs can be returned as a single complete response.
 pub const MAX_CACHED_KEL_EVENTS: usize = MAX_EVENTS_PER_KEL_RESPONSE;
 
-const LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
+fn local_cache_max_entries() -> usize {
+    crate::env_usize("KELS_LOCAL_CACHE_MAX_ENTRIES", 50_000)
+}
 const PUBSUB_CHANNEL: &str = "kel_updates";
 
 // W-TinyLFU configuration (as percentages of total capacity)
@@ -336,7 +338,7 @@ impl ServerKelCache {
         Self {
             conn,
             key_prefix: key_prefix.to_string(),
-            local_cache: Arc::new(RwLock::new(LocalCache::new(LOCAL_CACHE_MAX_ENTRIES))),
+            local_cache: Arc::new(RwLock::new(LocalCache::new(local_cache_max_entries()))),
         }
     }
 

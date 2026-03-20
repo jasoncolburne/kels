@@ -606,7 +606,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_key_events(&prefix, None, 512).await;
+            let result = client.fetch_key_events(&prefix, None, 32).await;
 
             assert!(result.is_ok());
             let page = result.unwrap();
@@ -625,7 +625,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_key_events("nonexistent", None, 512).await;
+            let result = client.fetch_key_events("nonexistent", None, 32).await;
 
             assert!(matches!(result, Err(KelsError::EventNotFound(_))));
         }
@@ -646,7 +646,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri());
-            let result = client.fetch_key_events("prefix", None, 512).await;
+            let result = client.fetch_key_events("prefix", None, 32).await;
 
             assert!(matches!(result, Err(KelsError::ServerError(..))));
         }

@@ -102,7 +102,32 @@ pub use types::resolve_key_events;
 
 /// Default page size for all KEL operations: submissions, queries, and responses.
 /// ML-DSA-65 signatures are ~3.3KB each, so 32 events ≈ 100KB per page.
+/// Override with `KELS_PAGE_SIZE` environment variable.
 pub const DEFAULT_PAGE_SIZE: usize = 32;
+
+pub fn env_usize(name: &str, default: usize) -> usize {
+    match env::var(name) {
+        Ok(s) => match s.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "{} is set but not a valid usize: {:?}, using default {}",
+                    name, s, default
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+static PAGE_SIZE: LazyLock<usize> =
+    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE));
+
+/// Read the page size, cached from env on first access.
+pub fn page_size() -> usize {
+    *PAGE_SIZE
+}
 
 /// Maximum number of events allowed in a single submit_events request.
 pub const MAX_EVENTS_PER_SUBMISSION: usize = DEFAULT_PAGE_SIZE;
@@ -116,19 +141,10 @@ pub const MAX_EVENTS_PER_KEL_QUERY: usize = DEFAULT_PAGE_SIZE;
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
 
 static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
-    match env::var("KELS_MAX_VERIFICATION_PAGES") {
-        Ok(s) => match s.parse() {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "KELS_MAX_VERIFICATION_PAGES is set but not a valid usize: {:?}, using default {}",
-                    s, DEFAULT_MAX_VERIFICATION_PAGES
-                );
-                DEFAULT_MAX_VERIFICATION_PAGES
-            }
-        },
-        Err(_) => DEFAULT_MAX_VERIFICATION_PAGES,
-    }
+    env_usize(
+        "KELS_MAX_VERIFICATION_PAGES",
+        DEFAULT_MAX_VERIFICATION_PAGES,
+    )
 });
 
 /// Read the max verification pages, cached from env on first access.

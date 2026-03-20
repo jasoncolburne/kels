@@ -22,18 +22,21 @@ use tracing::warn;
 
 use crate::repository::KelsRepository;
 
-/// Maximum submissions per prefix per minute (sliding window). Excessive to stop gossip nodes from failing to update kels services. TODO: Provide an optional signed nonce during submit events that identifies the gossip node, stop rate limiting gossip nodes, and then reduce the rate limit
-const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 128;
+fn max_submissions_per_prefix_per_minute() -> u32 {
+    kels::env_usize("KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE", 128) as u32
+}
 
-/// Maximum write requests per IP per second (token bucket: refill rate).
-const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+fn max_writes_per_ip_per_second() -> u32 {
+    kels::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+}
 
-/// Burst capacity for per-IP write rate limiting.
-const IP_RATE_LIMIT_BURST: u32 = 1000;
+fn ip_rate_limit_burst() -> u32 {
+    kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+}
 
-/// Nonce expiry window in seconds (matches the timestamp validation window).
-#[cfg(not(feature = "dev-tools"))]
-const NONCE_WINDOW_SECS: u64 = 60;
+fn nonce_window_secs() -> u64 {
+    kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+}
 
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
@@ -47,7 +50,7 @@ pub(crate) struct AppState {
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
-    /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
+    /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
     #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) nonce_cache: DashMap<String, Instant>,
 }
@@ -131,17 +134,17 @@ impl ApiError {
 }
 
 /// Per-IP write rate limiting using a token bucket.
-/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+/// Tokens refill at max_writes_per_ip_per_second(), up to ip_rate_limit_burst().
 fn check_ip_rate_limit(
     limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
     ip: std::net::IpAddr,
 ) -> Result<(), ApiError> {
     let now = Instant::now();
-    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let mut entry = limits.entry(ip).or_insert((ip_rate_limit_burst(), now));
     let elapsed = now.duration_since(entry.1);
-    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    let refill = (elapsed.as_secs_f64() * max_writes_per_ip_per_second() as f64) as u32;
     if refill > 0 {
-        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.0 = (entry.0 + refill).min(ip_rate_limit_burst());
         entry.1 = now;
     }
     if entry.0 == 0 {
@@ -308,7 +311,7 @@ pub(crate) async fn submit_events(
             entry.1 = now;
         } else {
             entry.0 += 1;
-            if entry.0 > MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+            if entry.0 > max_submissions_per_prefix_per_minute() {
                 return Err(ApiError::rate_limited(
                     "Too many submissions for this prefix",
                 ));
@@ -544,7 +547,7 @@ pub(crate) async fn list_prefixes(
         {
             let now = Instant::now();
             state.nonce_cache.retain(|_, seen| {
-                now.duration_since(*seen) < Duration::from_secs(NONCE_WINDOW_SECS)
+                now.duration_since(*seen) < Duration::from_secs(nonce_window_secs())
             });
             if state
                 .nonce_cache
@@ -750,11 +753,6 @@ mod tests {
     #[test]
     fn test_max_events_per_submission_constant() {
         assert_eq!(MAX_EVENTS_PER_SUBMISSION, 32);
-    }
-
-    #[test]
-    fn test_max_submissions_per_prefix_per_minute_constant() {
-        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 128);
     }
 
     // ==================== health Tests ====================

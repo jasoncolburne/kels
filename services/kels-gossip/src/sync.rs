@@ -104,8 +104,9 @@ pub async fn run_redis_subscriber(
     Ok(())
 }
 
-/// Maximum fetches per peer per minute
-const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
+fn max_fetches_per_peer_per_minute() -> u32 {
+    kels::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 8192) as u32
+}
 
 /// Redis hash key for anti-entropy stale prefix tracking.
 /// Maps kel_prefix → source_node_prefix.
@@ -270,10 +271,11 @@ impl SyncHandler {
                     entry.1 = now;
                 } else {
                     entry.0 += 1;
-                    if entry.0 > MAX_FETCHES_PER_PEER_PER_MINUTE {
+                    if entry.0 > max_fetches_per_peer_per_minute() {
                         debug!(
                             "Rate limiting peer {}: {} fetches/min exceeded",
-                            peer_prefix, MAX_FETCHES_PER_PEER_PER_MINUTE
+                            peer_prefix,
+                            max_fetches_per_peer_per_minute()
                         );
                         continue;
                     }
@@ -977,11 +979,6 @@ mod tests {
     }
 
     // ==================== Constants Tests ====================
-
-    #[test]
-    fn test_max_fetches_per_peer_per_minute_constant() {
-        assert_eq!(MAX_FETCHES_PER_PEER_PER_MINUTE, 8192);
-    }
 
     #[test]
     fn test_pubsub_channel_constant() {

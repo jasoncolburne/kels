@@ -18,7 +18,7 @@ PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 64) and `?since=SAID` for delta fetch
+- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 32) and `?since=SAID` for delta fetch
 - Sign returns qb64-encoded signature + public key
 - Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
@@ -32,7 +32,7 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check (checks `kels:gossip:ready` in Redis) |
 | POST | `/api/kels/events` | None | Submit signed key events (validates signatures, merges KEL); max 500 events per request |
-| GET | `/api/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-64, default 64); returns `SignedKeyEventPage {events, hasMore}` |
+| GET | `/api/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32, default 32); returns `SignedKeyEventPage {events, hasMore}` |
 | GET | `/api/kels/kel/:prefix/audit` | None | Get audit records for prefix (recovery/contest archives) |
 | GET | `/api/kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
 | GET | `/api/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
@@ -41,12 +41,12 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 64 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
+- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Uses Redis cache for KELs ≤ 32 events (larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-32, default 32). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. If the effective SAID matches, both sides have the same state and an empty response is returned.
 - `get_kel_audit` returns `Vec<KelsAuditRecord>` — archived events from recovery/contest operations, separate from the paginated KEL endpoint.
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's a deterministic Blake3 hash of sorted tip SAIDs. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
 - KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
-- `KELS_MAX_VERIFICATION_PAGES` environment variable (default 512) controls maximum pagination loops for callers fetching large KELs.
+- `KELS_MAX_VERIFICATION_PAGES` environment variable (default 64) controls maximum pagination loops for callers fetching large KELs.
 - Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
 
 ## KELS Registry Service

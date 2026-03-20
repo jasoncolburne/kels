@@ -222,7 +222,7 @@ Register SAIDs to check before verification with `verifier.check_anchors(saids)`
 
 ### Paginated Verification Helper
 
-`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `StorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 512 pages = ~262K events).
+`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `StorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events).
 
 ### Checks Per Event
 

@@ -160,8 +160,8 @@ The DB cannot be trusted. All operations on KEL data fall into three categories:
 Events are stored in PostgreSQL via the `verifiable-storage` framework (`Stored`, `SignedEvents`, `Chained`, `SelfAddressed` derive macros). Transactional operations use `KelTransaction` (PG transaction + advisory lock).
 
 - All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events. The CASE expression uses `EventKind::sort_priority_mapping()`.
-- `MAX_EVENTS_PER_KEL_QUERY` (64) — page size for database queries and HTTP responses (reduced from 512 due to larger ML-DSA-65/ML-DSA-87 signatures).
-- Pre-serialized JSON cache in Redis for KELs ≤ 64 events; Redis pub/sub for cache invalidation.
+- `MAX_EVENTS_PER_KEL_QUERY` (32) — page size for database queries and HTTP responses (reduced from 512 due to larger ML-DSA-65/ML-DSA-87 signatures).
+- Pre-serialized JSON cache in Redis for KELs ≤ 32 events; Redis pub/sub for cache invalidation.
 - Verifiable data patterns:
     - Creator sends full records as the payload (no wrapper types) and anchors by SAID in their KEL.
     - Verifier receives full records, verifies structure (SAID/prefix), chain integrity, and anchoring.
