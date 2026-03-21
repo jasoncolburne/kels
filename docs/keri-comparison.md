@@ -601,7 +601,7 @@ KELS uses standard software engineering naming conventions with full English wor
 | `KelTransaction` | Advisory-locked database transaction |
 | `BranchTip` | Verified chain endpoint |
 | `EventKind` | Enum of event types |
-| `KeyEventSignature` | Public key + signature pair |
+| `KeyEventSignature` | Role label ("signing"/"recovery") + signature pair |
 | `MergeTransaction` | Verify-then-write for incoming events |
 | `Peer` | Network peer record |
 | `SignedRequest<T>` | Authenticated request wrapper |
@@ -691,8 +691,8 @@ verfer = Verfer(qb64=pub) # verification key
 KELS:
 ```rust
 let sig = KeyEventSignature {
-    public_key: pub_key,
-    signature: sig_bytes,
+    label: "signing".to_string(),
+    signature: sig_qb64,
 };
 ```
 
