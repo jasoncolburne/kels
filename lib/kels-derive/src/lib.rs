@@ -206,7 +206,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 // After `retain()` removes at most 1 event (the since event), we check
                 // `events.len() > limit` to detect has_more, then truncate to `limit`.
                 // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
-                let clamped_limit = limit.min(kels::MAX_EVENTS_PER_KEL_QUERY as u64);
+                let clamped_limit = limit.min(kels::page_size() as u64);
                 let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .gte_scalar_subquery("serial", subquery)

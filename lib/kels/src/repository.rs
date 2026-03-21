@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use verifiable_storage::{Order, Query, TransactionExecutor};
 
 use crate::{
-    EventKind, EventSignature, KeyEvent, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEvent,
-    error::KelsError, merge::MergeOutcome,
+    EventKind, EventSignature, KeyEvent, SignedKeyEvent, error::KelsError, merge::MergeOutcome,
 };
 
 /// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
@@ -42,7 +41,7 @@ pub async fn load_signed_history(
     limit: u64,
     offset: u64,
 ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-    let clamped_limit = limit.min(MAX_EVENTS_PER_KEL_QUERY as u64);
+    let clamped_limit = limit.min(crate::page_size() as u64);
     let query = Query::<KeyEvent>::for_table(events_table)
         .eq("prefix", prefix)
         .order_by("serial", Order::Asc)

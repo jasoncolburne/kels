@@ -11,8 +11,8 @@ use colored::Colorize;
 use kels::{EventKind, KelStore};
 use kels::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    KeyProvider, MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig, VerificationKeyCode, max_verification_pages,
+    KeyProvider, NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    VerificationKeyCode,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -532,8 +532,8 @@ async fn cmd_recover(
         prefix,
         &source,
         KelVerifier::new(prefix),
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;
@@ -657,8 +657,8 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         prefix,
         &source,
         KelVerifier::new(prefix),
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         |events| {
             for signed_event in events {
                 let event = &signed_event.event;
@@ -740,8 +740,8 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_verification = kels::completed_verification(
         &mut kels::StorePageLoader::new(&kel_store),
         prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         iter::empty(),
     )
     .await?;
@@ -886,15 +886,10 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
 
-    let mut events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let mut events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -921,15 +916,10 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
-    let all_events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let all_events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
 
     if all_events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
@@ -953,15 +943,10 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     // Load the local KEL to get the chain state (dev-tools, not production)
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
-    let events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }

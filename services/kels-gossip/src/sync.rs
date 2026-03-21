@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::{StreamExt, future::join_all};
-use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, PeerSigner};
+use kels::{KelsClient, KelsError, PeerSigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -255,7 +255,7 @@ impl SyncHandler {
             }
         }
 
-        let max_pages = kels::max_verification_pages();
+        let max_pages = kels::max_pages();
         let local_sink = self.kels_client.as_kel_sink();
 
         for (peer_prefix, kels_url) in &peers {
@@ -440,7 +440,7 @@ async fn forward_with_fallback(
             prefix,
             source,
             sink,
-            MAX_EVENTS_PER_KEL_RESPONSE,
+            kels::page_size(),
             max_pages,
             Some(since_said),
         )
@@ -458,15 +458,7 @@ async fn forward_with_fallback(
     }
 
     // Full fetch (no since cursor)
-    kels::forward_key_events(
-        prefix,
-        source,
-        sink,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_pages,
-        None,
-    )
-    .await
+    kels::forward_key_events(prefix, source, sink, kels::page_size(), max_pages, None).await
 }
 
 /// Record a stale prefix for anti-entropy repair.
@@ -641,7 +633,7 @@ pub(crate) async fn sync_prefix(
         &remote_source,
         &local_sink,
         since,
-        kels::max_verification_pages(),
+        kels::max_pages(),
     )
     .await
     {

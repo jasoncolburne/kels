@@ -517,8 +517,8 @@ pub async fn sync_member_kel(
             prefix,
             &source,
             sink,
-            crate::MAX_EVENTS_PER_KEL_RESPONSE,
-            crate::max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             None,
         )
         .await
@@ -546,8 +546,8 @@ pub async fn verify_peer_anchoring(
     let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids(),
     )
     .await;
@@ -566,8 +566,8 @@ pub async fn verify_peer_anchoring(
     let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids(),
     )
     .await?;
@@ -713,8 +713,8 @@ async fn verify_anchors_from_store(
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids.clone(),
     )
     .await;
@@ -733,8 +733,8 @@ async fn verify_anchors_from_store(
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids,
     )
     .await?;
@@ -899,8 +899,8 @@ pub async fn nodes_sorted_by_latency(
         let _ = crate::completed_verification(
             &mut loader,
             prefix,
-            crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-            crate::max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             iter::empty(),
         )
         .await;

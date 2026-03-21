@@ -35,8 +35,8 @@ pub async fn sync_all_member_kels(
                 prefix,
                 &source,
                 &sink,
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
                 None,
             )
             .await
@@ -131,8 +131,8 @@ async fn sync_own_kel(
         &own_prefix,
         &source,
         &sink,
-        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         since.as_deref(),
     )
     .await?;
@@ -195,8 +195,8 @@ async fn push_to_stale_members(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
                 since,
             )
             .await
@@ -208,8 +208,8 @@ async fn push_to_stale_members(
                         &own_prefix,
                         &repo_source,
                         &member_sink,
-                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                        kels::max_verification_pages(),
+                        kels::page_size(),
+                        kels::max_pages(),
                         None,
                     )
                     .await
@@ -221,8 +221,8 @@ async fn push_to_stale_members(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
                 None,
             )
             .await

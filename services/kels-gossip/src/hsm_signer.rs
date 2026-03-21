@@ -166,8 +166,8 @@ impl KelsPeerVerifier {
             prefix,
             &source,
             kels::KelVerifier::new(prefix),
-            kels::MAX_EVENTS_PER_KEL_QUERY,
-            kels::max_verification_pages(),
+            kels::page_size(),
+            kels::max_pages(),
         )
         .await
         .map_err(|e| {
@@ -250,8 +250,8 @@ impl KelsPeerVerifier {
             prefix,
             &source,
             &sink,
-            kels::MAX_EVENTS_PER_KEL_QUERY,
-            kels::max_verification_pages(),
+            kels::page_size(),
+            kels::max_pages(),
             None,
         )
         .await

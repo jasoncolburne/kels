@@ -301,8 +301,8 @@ async fn check_and_rotate(
     let kel_verification = kels::completed_verification(
         &mut tx,
         prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         binding_saids,
     )
     .await?;
@@ -416,8 +416,8 @@ pub(crate) async fn perform_kel_operation(
                     prefix,
                     &source,
                     kels::KelVerifier::new(prefix),
-                    kels::MAX_EVENTS_PER_KEL_QUERY,
-                    kels::max_verification_pages(),
+                    kels::page_size(),
+                    kels::max_pages(),
                 )
                 .await
                 {

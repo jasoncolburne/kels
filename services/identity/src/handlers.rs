@@ -10,9 +10,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use kels::{
-    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
-    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, RepositoryKelStore,
-    SignResponse, SignedKeyEventPage,
+    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
+    ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -158,8 +157,8 @@ pub async fn get_key_events(
 
     let limit = query
         .limit
-        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
-        .min(MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .min(kels::page_size()) as u64;
 
     let page = kels::serve_kel_page(
         state.kel_repo.as_ref(),
@@ -188,8 +187,8 @@ pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
         prefix,
         &source,
         &sink,
-        MAX_EVENTS_PER_KEL_QUERY,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         None,
     )
     .await
@@ -292,8 +291,8 @@ pub async fn manage_kel(
     let kel_verification = kels::completed_verification(
         &mut tx,
         &prefix,
-        MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         iter::empty(),
     )
     .await

@@ -51,9 +51,7 @@ use std::env;
 use std::sync::LazyLock;
 
 #[cfg(feature = "redis")]
-pub use cache::{
-    LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
-};
+pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
 #[cfg(feature = "server")]
 pub use server::shutdown_signal;
 
@@ -129,12 +127,6 @@ pub fn page_size() -> usize {
     *PAGE_SIZE
 }
 
-/// Maximum number of events allowed in a single submit_events request.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = DEFAULT_PAGE_SIZE;
-
-/// Maximum number of events fetched in a single KEL database query or HTTP page.
-pub const MAX_EVENTS_PER_KEL_QUERY: usize = DEFAULT_PAGE_SIZE;
-
 /// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
 /// At 32 events per page, 64 pages = 2048 max events before failing secure.
@@ -148,13 +140,9 @@ static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
 });
 
 /// Read the max verification pages, cached from env on first access.
-pub fn max_verification_pages() -> usize {
+pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
 }
-
-/// Maximum number of events returned in a single KEL response page.
-/// KELs larger than this are not cached server-side.
-pub const MAX_EVENTS_PER_KEL_RESPONSE: usize = MAX_EVENTS_PER_KEL_QUERY;
 
 /// Sentinel limit for loading an entire KEL without pagination.
 /// Only appropriate for client-side local stores (CLI, FFI) and tests —

@@ -165,8 +165,8 @@ async fn push_own_kel_to_members(state: &FederationState) {
         &self_prefix,
         &identity_source,
         &local_sink,
-        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         None,
     )
     .await
@@ -200,8 +200,8 @@ async fn push_own_kel_to_members(state: &FederationState) {
                         &self_prefix,
                         &repo_source,
                         &member_sink,
-                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                        kels::max_verification_pages(),
+                        kels::page_size(),
+                        kels::max_pages(),
                         None,
                     ),
                 )
@@ -248,8 +248,8 @@ pub async fn federation_rpc(
     let local_result = kels::completed_verification(
         &mut kels::StorePageLoader::new(&store),
         &signed_rpc.sender_prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         std::iter::empty::<String>(),
     )
     .await;
@@ -273,8 +273,8 @@ pub async fn federation_rpc(
                 &signed_rpc.sender_prefix,
                 &source,
                 kels::KelVerifier::new(&signed_rpc.sender_prefix),
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
             )
             .await
             .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?
@@ -1187,8 +1187,8 @@ pub async fn get_member_key_events(
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = query
         .limit
-        .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .min(kels::MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .min(kels::page_size()) as u64;
 
     let page = kels::serve_kel_page(
         &state.member_kel_repo,

@@ -14,10 +14,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{
-    HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode,
-    DEFAULT_MAX_VERIFICATION_PAGES, MAX_EVENTS_PER_KEL_RESPONSE,
-};
+use kels::{HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode};
 use verifiable_storage::compute_said;
 
 fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
@@ -195,14 +192,9 @@ impl Stats {
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
     let source = HttpKelSource::new(url, "/api/kels/kel/{prefix}");
-    let events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        DEFAULT_MAX_VERIFICATION_PAGES,
-        None,
-    )
-    .await?;
+    let events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await?;
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
         .unwrap_or(0);
@@ -288,8 +280,8 @@ async fn run_worker(
             BenchmarkType::GetKel { prefix, kel_bytes } => kels::benchmark_key_events(
                 prefix,
                 &source,
-                MAX_EVENTS_PER_KEL_RESPONSE,
-                DEFAULT_MAX_VERIFICATION_PAGES,
+                kels::page_size(),
+                kels::max_pages(),
                 None,
             )
             .await

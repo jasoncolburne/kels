@@ -16,9 +16,8 @@ use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecuto
 
 use crate::{
     BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier,
-    KelsAuditRecord, KelsError, KeyEvent, MAX_EVENTS_PER_KEL_QUERY, SignedKeyEvent,
-    completed_verification, load_signed_history, max_verification_pages,
-    repository::zip_events_with_signatures, types::PageLoader,
+    KelsAuditRecord, KelsError, KeyEvent, SignedKeyEvent, completed_verification,
+    load_signed_history, repository::zip_events_with_signatures, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -116,7 +115,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         since_serial: u64,
         limit: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let clamped_limit = limit.min(crate::MAX_EVENTS_PER_KEL_QUERY as u64);
+        let clamped_limit = limit.min(crate::page_size() as u64);
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .gte("serial", since_serial)
@@ -327,8 +326,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let kel_verification = completed_verification(
             self,
             &prefix,
-            MAX_EVENTS_PER_KEL_QUERY as u64,
-            max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             iter::empty(),
         )
         .await
@@ -556,8 +555,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             let full_kel_verification = completed_verification(
                 self,
                 prefix,
-                MAX_EVENTS_PER_KEL_QUERY as u64,
-                max_verification_pages(),
+                crate::page_size(),
+                crate::max_pages(),
                 iter::empty::<String>(),
             )
             .await
@@ -792,7 +791,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         rec_previous: &str,
     ) -> Result<(SignedKeyEvent, bool), KelsError> {
         let (events, _) = self
-            .get_signed_history_since(diverged_at, MAX_EVENTS_PER_KEL_QUERY as u64)
+            .get_signed_history_since(diverged_at, crate::page_size() as u64)
             .await?;
         // Validate divergence invariant: exactly one serial has 2 events,
         // all others have 1. Rejects tampered DBs with extra injected events.
@@ -865,7 +864,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         adversary_event: SignedKeyEvent,
         diverged_at: u64,
     ) -> Result<(), KelsError> {
-        let max_pages = max_verification_pages();
+        let max_pages = crate::max_pages();
         let mut last_adversary_said = adversary_event.event.said.clone();
 
         let mut from_serial = diverged_at + 1;
@@ -873,7 +872,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         for _ in 0..max_pages {
             let (page, has_more) = self
-                .get_signed_history_since(from_serial, MAX_EVENTS_PER_KEL_QUERY as u64)
+                .get_signed_history_since(from_serial, crate::page_size() as u64)
                 .await?;
 
             let mut page_adversary: Vec<SignedKeyEvent> = Vec::new();
@@ -927,12 +926,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// and after the divergence serial are adversary (owner has no events there).
     /// Audits and deletes page by page.
     async fn archive_all_from_serial(&mut self, from_serial: u64) -> Result<(), KelsError> {
-        let max_pages = max_verification_pages();
+        let max_pages = crate::max_pages();
         let mut serial = from_serial;
 
         for _ in 0..max_pages {
             let (page, has_more) = self
-                .get_signed_history_since(serial, MAX_EVENTS_PER_KEL_QUERY as u64)
+                .get_signed_history_since(serial, crate::page_size() as u64)
                 .await?;
 
             if page.is_empty() {
@@ -997,7 +996,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         start_said: &str,
     ) -> Result<SignedKeyEvent, KelsError> {
-        let max_steps = max_verification_pages() * MAX_EVENTS_PER_KEL_QUERY;
+        let max_steps = crate::max_pages() * crate::page_size();
         let mut current_said = Some(start_said.to_string());
 
         for _ in 0..max_steps {
@@ -1028,10 +1027,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         prefix: &str,
         stop_serial: u64,
     ) -> Result<KelVerifier, KelsError> {
-        let max_pages = max_verification_pages();
+        let max_pages = crate::max_pages();
         let mut verifier = KelVerifier::new(prefix);
         let mut from_serial: u64 = 0;
-        let page_size = MAX_EVENTS_PER_KEL_QUERY as u64;
+        let page_size = crate::page_size() as u64;
 
         for _ in 0..max_pages {
             let (page, has_more) = self
@@ -1075,11 +1074,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         from_serial: u64,
     ) -> Result<bool, KelsError> {
-        let max_pages = max_verification_pages();
+        let max_pages = crate::max_pages();
         let mut serial = from_serial;
         for _ in 0..max_pages {
             let (page, has_more) = self
-                .get_signed_history_since(serial, MAX_EVENTS_PER_KEL_QUERY as u64)
+                .get_signed_history_since(serial, crate::page_size() as u64)
                 .await?;
             if page.is_empty() {
                 return Ok(false);

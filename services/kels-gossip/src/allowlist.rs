@@ -162,8 +162,8 @@ pub async fn refresh_allowlist(
             peer_prefix,
             &source,
             kels::KelVerifier::new(peer_prefix),
-            kels::MAX_EVENTS_PER_KEL_QUERY,
-            kels::max_verification_pages(),
+            kels::page_size(),
+            kels::max_pages(),
         )
         .await
         {

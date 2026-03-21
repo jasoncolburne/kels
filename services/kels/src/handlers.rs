@@ -15,8 +15,7 @@ use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
-    KeyEventsQuery, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
+    KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
 use tracing::warn;
 
@@ -293,10 +292,10 @@ pub(crate) async fn submit_events(
         }));
     }
 
-    if events.len() > MAX_EVENTS_PER_SUBMISSION {
+    if events.len() > kels::page_size() {
         return Err(ApiError::bad_request(format!(
             "Batch exceeds maximum of {} events",
-            MAX_EVENTS_PER_SUBMISSION
+            kels::page_size()
         )));
     }
 
@@ -379,7 +378,7 @@ pub(crate) async fn submit_events(
         match state
             .repo
             .key_events
-            .get_signed_history(&prefix, MAX_CACHED_KEL_EVENTS as u64, 0)
+            .get_signed_history(&prefix, kels::page_size() as u64, 0)
             .await
         {
             Ok((events, has_more)) => {
@@ -436,8 +435,8 @@ pub(crate) async fn get_kel(
 ) -> Result<Response, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
-        .clamp(1, MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
 
     // Delta fetch path — canonical since-resolution
     if params.since.is_some() {
@@ -452,7 +451,7 @@ pub(crate) async fn get_kel(
     }
 
     // Full fetch path — try cache for default limit
-    if limit as usize == MAX_EVENTS_PER_KEL_RESPONSE {
+    if limit as usize == kels::page_size() {
         match state.kel_cache.get_full_serialized(&prefix).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
@@ -592,8 +591,8 @@ pub(crate) async fn list_prefixes(
     let kel_verification = kels::completed_verification(
         &mut loader,
         &signed_request.peer_prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         std::iter::empty::<String>(),
     )
     .await
@@ -781,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 32);
+        assert_eq!(kels::page_size(), 32);
     }
 
     // ==================== health Tests ====================

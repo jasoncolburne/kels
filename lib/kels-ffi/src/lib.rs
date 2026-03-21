@@ -920,8 +920,8 @@ pub unsafe extern "C" fn kels_recover(
                 prefix,
                 &source,
                 kels::KelVerifier::new(prefix),
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
             )
             .await
             {
@@ -1249,7 +1249,7 @@ pub unsafe extern "C" fn kels_get_kel(
     };
 
     // Clamp limit to configured page size
-    let limit = limit.min(kels::MAX_EVENTS_PER_KEL_RESPONSE as u64);
+    let limit = limit.min(kels::page_size() as u64);
 
     // Load a page of events from store
     let result = ctx
@@ -1597,8 +1597,8 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let events = match kels::resolve_key_events(
             &prefix,
             &source,
-            kels::MAX_EVENTS_PER_KEL_RESPONSE,
-            kels::max_verification_pages(),
+            kels::page_size(),
+            kels::max_pages(),
             None,
         )
         .await
@@ -1807,14 +1807,7 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
     // Load events from store
     let events = ctx.runtime.block_on(async {
         let source = kels::StoreKelSource::new(ctx.store.as_ref());
-        kels::resolve_key_events(
-            &prefix,
-            &source,
-            kels::MAX_EVENTS_PER_KEL_RESPONSE,
-            kels::max_verification_pages(),
-            None,
-        )
-        .await
+        kels::resolve_key_events(&prefix, &source, kels::page_size(), kels::max_pages(), None).await
     });
 
     match events {

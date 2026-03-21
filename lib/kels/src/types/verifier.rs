@@ -729,7 +729,7 @@ impl PagedKelSource for StoreKelSource<'_> {
 pub async fn completed_verification(
     loader: &mut dyn PageLoader,
     prefix: &str,
-    page_size: u64,
+    page_size: usize,
     max_pages: usize,
     anchor_saids: impl IntoIterator<Item = String>,
 ) -> Result<KelVerification, KelsError> {
@@ -737,9 +737,10 @@ pub async fn completed_verification(
     verifier.check_anchors(anchor_saids);
     let mut offset: u64 = 0;
     let mut exhausted = false;
+    let limit = page_size as u64;
 
     for _ in 0..max_pages {
-        let (mut events, has_more) = loader.load_page(prefix, page_size, offset).await?;
+        let (mut events, has_more) = loader.load_page(prefix, limit, offset).await?;
 
         if events.is_empty() {
             exhausted = true;

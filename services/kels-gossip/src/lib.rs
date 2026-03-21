@@ -262,7 +262,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .get_key_events(None, kels::page_size())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
     let local_kels_client = kels::KelsClient::new(&config.kels_url);

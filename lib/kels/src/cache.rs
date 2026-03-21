@@ -23,15 +23,15 @@ use tokio::sync::RwLock;
 
 use redis::{AsyncCommands, aio::ConnectionManager};
 
-use crate::{KelsError, MAX_EVENTS_PER_KEL_RESPONSE, SignedKeyEvent};
+use crate::{KelsError, SignedKeyEvent};
 
-/// Maximum number of events in a KEL that will be cached. KELs larger than this
-/// are served directly from DB on each request. Derives from the response page
-/// size so that cached KELs can be returned as a single complete response.
-pub const MAX_CACHED_KEL_EVENTS: usize = MAX_EVENTS_PER_KEL_RESPONSE;
+pub const DEFAULT_LOCAL_CACHE_MAX_ENTRIES: usize = 50_000;
 
 fn local_cache_max_entries() -> usize {
-    crate::env_usize("KELS_LOCAL_CACHE_MAX_ENTRIES", 50_000)
+    crate::env_usize(
+        "KELS_LOCAL_CACHE_MAX_ENTRIES",
+        DEFAULT_LOCAL_CACHE_MAX_ENTRIES,
+    )
 }
 const PUBSUB_CHANNEL: &str = "kel_updates";
 
@@ -363,7 +363,7 @@ impl ServerKelCache {
     /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement).
     /// Skips caching for KELs larger than MAX_CACHED_KEL_EVENTS.
     pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        if events.is_empty() || events.len() > MAX_CACHED_KEL_EVENTS {
+        if events.is_empty() || events.len() > crate::page_size() {
             return Ok(());
         }
 

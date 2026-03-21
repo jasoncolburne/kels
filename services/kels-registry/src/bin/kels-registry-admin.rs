@@ -113,7 +113,7 @@ enum IdentityAction {
         #[arg(short, long)]
         json: bool,
         /// Maximum number of pages to fetch
-        #[arg(long, default_value_t = kels::max_verification_pages())]
+        #[arg(long, default_value_t = kels::max_pages())]
         max_pages: usize,
     },
 }
@@ -717,7 +717,7 @@ async fn show_identity_status(
     for _ in 0..max_pages {
         let page = ctx
             .identity_client
-            .get_key_events(since.as_deref(), kels::MAX_EVENTS_PER_KEL_RESPONSE)
+            .get_key_events(since.as_deref(), kels::page_size())
             .await
             .context("Failed to get identity KEL")?;
         if page.events.is_empty() {

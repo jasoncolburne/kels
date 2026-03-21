@@ -75,8 +75,8 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                 let verification = crate::completed_verification(
                     &mut crate::StorePageLoader::new(store.as_ref()),
                     p,
-                    crate::MAX_EVENTS_PER_KEL_QUERY as u64,
-                    crate::max_verification_pages(),
+                    crate::page_size(),
+                    crate::max_pages(),
                     std::iter::empty::<String>(),
                 )
                 .await?;
@@ -221,8 +221,8 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let verification = crate::completed_verification(
             &mut crate::StorePageLoader::new(store.as_ref()),
             &prefix,
-            crate::MAX_EVENTS_PER_KEL_QUERY as u64,
-            crate::max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             std::iter::empty::<String>(),
         )
         .await?;
