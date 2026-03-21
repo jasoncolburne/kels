@@ -138,6 +138,34 @@ pub trait KeyStateStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), KelsError>;
 }
 
+/// Write a file and restrict its permissions to owner-only (0o600 on Unix).
+fn write_key_file(path: &Path, data: &str) -> Result<(), KelsError> {
+    std::fs::write(path, data)
+        .map_err(|e| KelsError::HardwareError(format!("Failed to write key file: {}", e)))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            KelsError::HardwareError(format!("Failed to set key file permissions: {}", e))
+        })?;
+    }
+    Ok(())
+}
+
+/// Ensure a directory exists with owner-only permissions (0o700 on Unix).
+fn ensure_private_dir(dir: &Path) -> Result<(), KelsError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| KelsError::StorageError(format!("Failed to create dir: {}", e)))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+            KelsError::StorageError(format!("Failed to set dir permissions: {}", e))
+        })?;
+    }
+    Ok(())
+}
+
 /// File-based key state storage.
 pub struct FileKeyStateStore {
     dir: PathBuf,
@@ -153,11 +181,18 @@ impl FileKeyStateStore {
 
 impl KeyStateStore for FileKeyStateStore {
     fn save(&self, key: &str, data: &[u8]) -> Result<(), KelsError> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| KelsError::StorageError(format!("Failed to create state dir: {}", e)))?;
+        ensure_private_dir(&self.dir)?;
         let path = self.dir.join(format!("{}.keys.json", key));
         std::fs::write(&path, data)
-            .map_err(|e| KelsError::StorageError(format!("Failed to write key state: {}", e)))
+            .map_err(|e| KelsError::StorageError(format!("Failed to write key state: {}", e)))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| KelsError::StorageError(format!("Failed to set key state permissions: {}", e)),
+            )?;
+        }
+        Ok(())
     }
 
     fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KelsError> {
@@ -431,32 +466,24 @@ impl SoftwareKeyProvider {
             return Err(KelsError::CurrentlyStaged);
         }
 
-        std::fs::create_dir_all(dir).map_err(|e| {
-            KelsError::HardwareError(format!("Failed to create key directory: {}", e))
-        })?;
+        ensure_private_dir(dir)?;
 
         if let Some(key) = self.keys.first() {
             let path = dir.join("current.key");
-            std::fs::write(&path, key.qb64()).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to write current key: {}", e))
-            })?;
+            write_key_file(&path, &key.qb64())?;
         } else {
             return Err(KelsError::NoCurrentKey);
         }
         if let Some(key) = &self.keys.last() {
             let path = dir.join("next.key");
-            std::fs::write(&path, key.qb64()).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to write next key: {}", e))
-            })?;
+            write_key_file(&path, &key.qb64())?;
         } else {
             return Err(KelsError::NoNextKey);
         }
 
         if let Some(key) = &self.recovery_keys.first() {
             let path = dir.join("recovery.key");
-            std::fs::write(&path, key.qb64()).map_err(|e| {
-                KelsError::HardwareError(format!("Failed to write recovery key: {}", e))
-            })?;
+            write_key_file(&path, &key.qb64())?;
         } else {
             return Err(KelsError::NoRecoveryKey);
         }

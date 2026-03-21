@@ -10,6 +10,7 @@
 
 use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
 use thiserror::Error;
+use tracing::warn;
 
 use gossip::identity::NodePrefix;
 use gossip::net::{Error as GossipError, PeerVerifier, Signer};
@@ -245,7 +246,7 @@ impl KelsPeerVerifier {
         // Forward KEL from peer's KELS to our local KELS (paginated)
         let source = kels::HttpKelSource::new(&peer_kels_url, "/api/kels/kel/{prefix}");
         let sink = kels::HttpKelSink::new(&self.kels_url, "/api/kels/events");
-        let _ = kels::forward_key_events(
+        if let Err(e) = kels::forward_key_events(
             prefix,
             &source,
             &sink,
@@ -253,7 +254,10 @@ impl KelsPeerVerifier {
             kels::max_verification_pages(),
             None,
         )
-        .await;
+        .await
+        {
+            warn!(prefix, error = %e, "failed to refresh peer KEL, retrying verification with cached state");
+        }
 
         // Retry verification with the now-updated local KEL
         self.try_verify(prefix, data, signature).await

@@ -620,11 +620,11 @@ pub unsafe extern "C" fn C_GenerateKeyPair(
                 let (pk, _sk) = ml_dsa_87::KG::keygen_from_seed(&seed);
                 pk.into_bytes().to_vec()
             }
-            _ => {
-                // CKP_ML_DSA_65 or default
+            CKP_ML_DSA_65 => {
                 let (pk, _sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
                 pk.into_bytes().to_vec()
             }
+            _ => return Err(CKR_ARGUMENTS_BAD),
         };
 
         let pub_handle = state.alloc_handle();
@@ -958,11 +958,12 @@ pub unsafe extern "C" fn C_Sign(
                 let sig = sk.try_sign(data, &[]).map_err(|_| CKR_DEVICE_ERROR)?;
                 sig.to_vec()
             }
-            _ => {
+            CKP_ML_DSA_65 => {
                 let (_pk, sk) = ml_dsa_65::KG::keygen_from_seed(&seed);
                 let sig = sk.try_sign(data, &[]).map_err(|_| CKR_DEVICE_ERROR)?;
                 sig.to_vec()
             }
+            _ => return Err(CKR_MECHANISM_INVALID),
         };
 
         Ok(sig_bytes)

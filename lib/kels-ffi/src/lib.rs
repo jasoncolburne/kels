@@ -5,6 +5,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
@@ -29,7 +30,6 @@ use kels::{
     FileKelStore, FileKeyStateStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
     NodeStatus, VerificationKeyCode,
 };
-use serde::{Deserialize, Serialize};
 
 // ==================== Error Handling ====================
 

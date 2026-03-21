@@ -1,7 +1,6 @@
 //! HSM Client - PKCS#11 interface for hardware security modules
 
 use std::sync::Arc;
-
 use tokio::sync::{Mutex, RwLock};
 
 use async_trait::async_trait;
@@ -13,6 +12,7 @@ use cryptoki::{
     session::Session,
     types::AuthPin,
 };
+
 use kels::{KelsError, KeyProvider, compute_rotation_hash};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

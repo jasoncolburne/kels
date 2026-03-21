@@ -6,15 +6,14 @@
 //! 3. ML-KEM-768 key exchange and mutual ML-DSA-65 authentication
 //! 4. Derive AES-GCM-256 session keys and create encrypted stream
 
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
+use tokio::net::TcpStream;
 
 use cesr::{
     KemCiphertext, KemKeyCode, KemPublicKey, Matter, generate_ml_kem_768, generate_ml_kem_1024,
 };
 use futures::{AsyncReadExt, AsyncWriteExt};
 use socket2::SockRef;
-use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use tracing::{debug, warn};
 
