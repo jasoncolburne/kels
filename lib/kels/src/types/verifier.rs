@@ -1438,20 +1438,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_kel_paginated_verification() {
-        // Build a 129-event KEL (icp + 128 ixn) — spans 3 pages at 64 events/page
+        // Build a 65-event KEL (icp + 64 ixn) — spans 3 pages at 32 events/page
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
         let mut events = vec![icp];
-        for i in 0..128 {
+        for i in 0..64 {
             let ixn = builder
                 .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
                 .await
                 .unwrap();
             events.push(ixn);
         }
-        assert_eq!(events.len(), 129);
+        assert_eq!(events.len(), 65);
 
         // Save to MemoryStore
         let store = MemoryStore::new();
@@ -1461,7 +1461,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             100,
             iter::empty(),
         )
@@ -1498,14 +1498,14 @@ mod tests {
 
         // Owner continues building a long chain
         let mut owner_events = vec![icp.clone(), ixn1.clone()];
-        for i in 2..129 {
+        for i in 2..65 {
             let ixn = builder1
                 .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
                 .await
                 .unwrap();
             owner_events.push(ixn);
         }
-        assert_eq!(owner_events.len(), 129);
+        assert_eq!(owner_events.len(), 65);
 
         // Adversary injects one event at serial 2 (divergence)
         let adversary_ixn = builder2
@@ -1527,7 +1527,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             100,
             iter::empty(),
         )
@@ -1558,7 +1558,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             100,
             iter::once(target_anchor.clone()),
         )
@@ -1572,7 +1572,7 @@ mod tests {
         let kel_verification2 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             100,
             iter::once(missing_anchor.clone()),
         )
@@ -2427,15 +2427,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_page_kel_with_rotations() {
-        // Build an 80-event KEL that spans 2 pages (page_size=64), with
+        // Build a 40-event KEL that spans 2 pages (page_size=32), with
         // rotations interspersed. Verifies that key state transitions are
         // tracked correctly across page boundaries.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
-        for i in 0..79 {
-            if i % 20 == 19 {
+        for i in 0..39 {
+            if i % 10 == 9 {
                 builder.rotate().await.unwrap();
             } else {
                 builder
@@ -2446,7 +2446,7 @@ mod tests {
         }
 
         let events = builder.pending_events().to_vec();
-        assert_eq!(events.len(), 80);
+        assert_eq!(events.len(), 40);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &events).await.unwrap();
@@ -2454,7 +2454,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             10,
             iter::empty(),
         )
@@ -2494,8 +2494,8 @@ mod tests {
         let early_anchor = anchor("early-target");
         let late_anchor = anchor("late-target");
 
-        // First page: events 0..64
-        for i in 0..62 {
+        // First page: events 0..31
+        for i in 0..30 {
             if i == 10 {
                 builder.interact(&early_anchor).await.unwrap();
             } else {
@@ -2505,7 +2505,7 @@ mod tests {
                     .unwrap();
             }
         }
-        // Second page: events 64+
+        // Second page: events 32+
         for i in 0..8 {
             if i == 4 {
                 builder.interact(&late_anchor).await.unwrap();
@@ -2518,7 +2518,7 @@ mod tests {
         }
 
         let events = builder.pending_events().to_vec();
-        assert!(events.len() > 64);
+        assert!(events.len() > 32);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &events).await.unwrap();
@@ -2526,7 +2526,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             10,
             vec![early_anchor.clone(), late_anchor.clone()],
         )
@@ -2542,24 +2542,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergence_starts_on_second_page() {
-        // Owner builds exactly 64 events (serials 0..63, filling one page).
-        // Both owner and adversary add events at serial 64, which falls
+        // Owner builds exactly 32 events (serials 0..31, filling one page).
+        // Both owner and adversary add events at serial 32, which falls
         // entirely on page 2 — no split generation.
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
 
-        for i in 0..63 {
+        for i in 0..31 {
             owner.interact(&anchor(&format!("o-{}", i))).await.unwrap();
         }
-        // Owner has 64 events (serial 0..63). Clone for adversary.
+        // Owner has 32 events (serial 0..31). Clone for adversary.
         let mut adversary = owner.clone();
 
-        // Both add an event at serial 64
-        let owner_ixn = owner.interact(&anchor("owner-64")).await.unwrap();
-        let adv_ixn = adversary.interact(&anchor("adv-64")).await.unwrap();
-        assert_eq!(owner_ixn.event.serial, 64);
-        assert_eq!(adv_ixn.event.serial, 64);
+        // Both add an event at serial 32
+        let owner_ixn = owner.interact(&anchor("owner-32")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-32")).await.unwrap();
+        assert_eq!(owner_ixn.event.serial, 32);
+        assert_eq!(adv_ixn.event.serial, 32);
 
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn);
@@ -2571,7 +2571,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             10,
             iter::empty(),
         )
@@ -2579,7 +2579,7 @@ mod tests {
         .unwrap();
 
         assert!(kel_verification.is_divergent());
-        assert_eq!(kel_verification.diverged_at_serial(), Some(64));
+        assert_eq!(kel_verification.diverged_at_serial(), Some(32));
         assert_eq!(kel_verification.branch_tips().len(), 2);
         assert!(kel_verification.current_public_key().is_none());
     }
@@ -2588,7 +2588,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_long_owner_chain_with_early_adversary() {
-        // Owner: icp + 127 ixn (128 events, 2 full pages).
+        // Owner: icp + 63 ixn (64 events, 2 full pages).
         // Adversary: branches after icp, adds 1 ixn at serial 1.
         // Tests: multi-page divergent verification where one branch is
         // much longer than the other. The short adversary branch should
@@ -2599,8 +2599,8 @@ mod tests {
         let mut adversary = owner.clone();
 
         // Owner builds long chain
-        let owner_tip = build_interactions(&mut owner, 127, "owner").await;
-        assert_eq!(owner_tip.event.serial, 127);
+        let owner_tip = build_interactions(&mut owner, 63, "owner").await;
+        assert_eq!(owner_tip.event.serial, 63);
 
         // Adversary injects one event at serial 1
         let adv_ixn = adversary.interact(&anchor("adversary-1")).await.unwrap();
@@ -2609,7 +2609,7 @@ mod tests {
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn.clone());
         sort_events(&mut all_events);
-        assert_eq!(all_events.len(), 129);
+        assert_eq!(all_events.len(), 65);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &all_events).await.unwrap();
@@ -2617,7 +2617,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             10,
             iter::empty(),
         )
@@ -3088,7 +3088,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            64,
+            32,
             10,
             iter::empty(),
         )
@@ -3182,7 +3182,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             "KNonexistent_Prefix_________________________",
-            64,
+            32,
             10,
             iter::empty(),
         )
