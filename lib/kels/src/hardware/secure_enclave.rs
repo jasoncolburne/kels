@@ -3,6 +3,9 @@
 //! Supports secp256r1 (P-256), ML-DSA-65, and ML-DSA-87 key operations
 //! using the Secure Enclave on macOS/iOS.
 
+use apple_cryptokit::asymmetric::SEP256PrivateKey;
+use apple_cryptokit::quantum::{SEMLDsa65PrivateKey, SEMLDsa87PrivateKey, SignaturePublicKey};
+
 use cesr::{PublicKey, Signature, SignatureCode, VerificationKeyCode};
 
 use crate::error::KelsError;
@@ -72,10 +75,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
         label: &str,
         algorithm: VerificationKeyCode,
     ) -> Result<(SecureEnclaveKeyHandle, PublicKey), KelsError> {
-        use apple_cryptokit::quantum::{
-            SEMLDsa65PrivateKey, SEMLDsa87PrivateKey, SignaturePublicKey,
-        };
-
         match algorithm {
             VerificationKeyCode::MlDsa65 => {
                 let se_key = SEMLDsa65PrivateKey::generate()
@@ -110,8 +109,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                 Ok((handle, public_key))
             }
             VerificationKeyCode::Secp256r1 => {
-                use apple_cryptokit::asymmetric::SEP256PrivateKey;
-
                 let se_key = SEP256PrivateKey::generate().map_err(|e| {
                     KelsError::HardwareError(format!("SE P256 keygen failed: {}", e))
                 })?;
@@ -140,10 +137,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
     }
 
     fn get_public_key(&self, handle: &SecureEnclaveKeyHandle) -> Result<PublicKey, KelsError> {
-        use apple_cryptokit::quantum::{
-            SEMLDsa65PrivateKey, SEMLDsa87PrivateKey, SignaturePublicKey,
-        };
-
         match handle.algorithm {
             VerificationKeyCode::MlDsa65 => {
                 let se_key = SEMLDsa65PrivateKey::from_data_representation(&handle.key_data);
@@ -164,8 +157,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))
             }
             VerificationKeyCode::Secp256r1 => {
-                use apple_cryptokit::asymmetric::SEP256PrivateKey;
-
                 let se_key = SEP256PrivateKey::from_data_representation(&handle.key_data);
                 let pub_key = se_key.public_key().map_err(|e| {
                     KelsError::HardwareError(format!("SE P256 public key failed: {}", e))
@@ -186,8 +177,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
     }
 
     fn sign(&self, handle: &SecureEnclaveKeyHandle, data: &[u8]) -> Result<Signature, KelsError> {
-        use apple_cryptokit::quantum::{SEMLDsa65PrivateKey, SEMLDsa87PrivateKey};
-
         match handle.algorithm {
             VerificationKeyCode::MlDsa65 => {
                 let se_key = SEMLDsa65PrivateKey::from_data_representation(&handle.key_data);
@@ -206,8 +195,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .map_err(|e| KelsError::SigningFailed(e.to_string()))
             }
             VerificationKeyCode::Secp256r1 => {
-                use apple_cryptokit::asymmetric::SEP256PrivateKey;
-
                 let se_key = SEP256PrivateKey::from_data_representation(&handle.key_data);
                 let sig = se_key
                     .sign(data)
@@ -221,8 +208,6 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
     fn delete_key(&self, handle: &SecureEnclaveKeyHandle) -> Result<(), KelsError> {
         match handle.algorithm {
             VerificationKeyCode::Secp256r1 => {
-                use apple_cryptokit::asymmetric::SEP256PrivateKey;
-
                 let se_key = SEP256PrivateKey::from_data_representation(&handle.key_data);
                 se_key
                     .delete()
@@ -241,6 +226,6 @@ pub fn se_is_available() -> bool {
 }
 
 pub fn se_delete_all_keys() -> Result<(), KelsError> {
-    apple_cryptokit::asymmetric::se_delete_all_keys()
+    apple_cryptokit::se_delete_all_keys()
         .map_err(|e| KelsError::HardwareError(format!("Failed to delete all SE keys: {}", e)))
 }
