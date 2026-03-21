@@ -3,11 +3,11 @@
 
 -- HSM key bindings - maps KEL state to HSM key handles
 CREATE TABLE IF NOT EXISTS identity_hsm_key_bindings (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     version BIGINT NOT NULL,
-    kel_prefix CHAR(44) NOT NULL,
+    kel_prefix TEXT NOT NULL,
     current_key_handle TEXT NOT NULL,
     next_key_handle TEXT NOT NULL,
     recovery_key_handle TEXT NOT NULL,
@@ -22,13 +22,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_hsm_bindings_prefix_version ON identity_hs
 
 -- Authority mapping - maps name to KEL prefix
 CREATE TABLE IF NOT EXISTS identity_authority (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     version BIGINT NOT NULL,
     name TEXT NOT NULL,
-    kel_prefix CHAR(44) NOT NULL,
-    last_said CHAR(44) NOT NULL,
+    kel_prefix TEXT NOT NULL,
+    last_said TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 
@@ -38,17 +38,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_prefix_version ON identity_autho
 
 -- Key events - local copy of the authority's KEL
 CREATE TABLE IF NOT EXISTS identity_key_events (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     serial BIGINT NOT NULL,
     public_key TEXT,
-    rotation_hash CHAR(44),
+    rotation_hash TEXT,
     kind TEXT NOT NULL,
-    anchor CHAR(44),
-    delegating_prefix CHAR(44),
+    anchor TEXT,
+    delegating_prefix TEXT,
     recovery_key TEXT,
-    recovery_hash CHAR(44)
+    recovery_hash TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_key_events_prefix ON identity_key_events(prefix);
@@ -57,8 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_key_events_prefix_previous ON identity_key_events
 
 -- Signatures for key events
 CREATE TABLE IF NOT EXISTS identity_key_event_signatures (
-    said CHAR(44) PRIMARY KEY,
-    event_said CHAR(44) NOT NULL,
+    said TEXT PRIMARY KEY,
+    event_said TEXT NOT NULL,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );

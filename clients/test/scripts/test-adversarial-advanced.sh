@@ -58,7 +58,7 @@ wait_for_convergence() {
 get_kel_hash() {
     local url="$1"
     local prefix="$2"
-    fetch_all_events "$url" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}'
+    fetch_all_events "$url" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}'
 }
 
 # Compare KELs across all three nodes

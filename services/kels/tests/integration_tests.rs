@@ -163,7 +163,7 @@ impl SharedHarness {
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(std_listener)
                     .expect("Failed to convert listener");
-                if let Err(e) = kels_service::run(listener, &db_url, &rd_url, vec![]).await {
+                if let Err(e) = kels_service::run(listener, &db_url, Some(&rd_url), vec![]).await {
                     panic!("Server error: {}", e);
                 }
             });

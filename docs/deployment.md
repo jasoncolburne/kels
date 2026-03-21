@@ -2,13 +2,35 @@
 
 ## Overview
 
-A KELS deployment consists of a **federation of registries** and **gossip nodes** that replicate Key Event Logs across the network. The minimum viable deployment requires 3 registries (for consensus quorum) and at least 1 gossip node.
+KELS supports two deployment modes:
+
+- **Standalone** — a single `kels` service + PostgreSQL. No federation, no gossip, no Redis required. Suitable for development, small-scale applications, and environments where a single trusted node is sufficient. All core KEL operations work: inception, rotation, interaction, recovery, contest, decommission, and divergence handling.
+
+- **Federated** — a network of registries and gossip nodes that replicate Key Event Logs across the network. Provides high availability, geographic distribution, and multi-party governance. The minimum viable federation requires 3 registries (for consensus quorum) and at least 1 gossip node.
 
 The Garden configuration in this repository (`project.garden.yml` and per-service `garden.yml` files) is an example used for local testing. It can be used as a guide for understanding the deployment flow, but is not a reference for production deployments.
 
-The `test-comprehensive` Makefile target is the best way to understand the full deployment lifecycle end-to-end.
+- `make test-node` deploys and tests a standalone node (~2 minutes)
+- `make test-federation` deploys and tests a full federation (~22 minutes)
 
-## Architecture
+## Standalone Deployment
+
+A standalone KELS node requires only two components:
+
+- `kels` — KEL storage and retrieval API
+- `postgres` — event and signature storage
+
+This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, contest, and decommission. Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
+
+Standalone mode does not include:
+- Gossip replication (no `kels-gossip`)
+- Federation consensus (no `kels-registry`)
+- Peer authentication for the `/api/kels/prefixes` endpoint (requires Redis for peer verification)
+- KEL caching (served directly from PostgreSQL on every request)
+
+Multiple kels replicas can be deployed against the same PostgreSQL instance for horizontal scaling. Optionally, add Redis (`REDIS_URL` environment variable) to enable KEL caching and pub/sub cache invalidation across replicas for improved read performance.
+
+## Federated Architecture
 
 Each **registry** runs:
 - `kels-registry` — federation consensus and peer management
@@ -25,9 +47,9 @@ Each **gossip node** runs:
 
 The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
-## Deployment Flow
+## Federated Deployment Flow
 
-The deployment follows a specific order because of compile-time trust anchors. `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes) is baked into gossip nodes and CLI clients at compile time via the `federation` feature on libkels. `TRUSTED_REGISTRY_MEMBERS` (JSON) is baked into kels-registry. The kels and identity services do not require either — they can be built without knowing the registry prefixes, avoiding unnecessary recompilation during federation changes.
+The federated deployment follows a specific order because of compile-time trust anchors. `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes) is baked into gossip nodes and CLI clients at compile time via the `federation` feature on libkels. `TRUSTED_REGISTRY_MEMBERS` (JSON) is baked into kels-registry. The kels and identity services do not require either — they can be built without knowing the registry prefixes, avoiding unnecessary recompilation during federation changes.
 
 ### Phase 1: Deploy Registries in Standalone Mode
 

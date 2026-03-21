@@ -3,7 +3,7 @@ name: kels-gossip
 type: container
 
 # Gossip service is not needed in the registry environment
-disabled: ${var.envType == "registry"}
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
   - run.federation-read-prefixes
@@ -32,7 +32,7 @@ name: kels-gossip
 type: kubernetes
 
 # Gossip service is not needed in the registry environment
-disabled: ${var.envType == "registry"}
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
   - run.federation-read-urls
@@ -61,7 +61,7 @@ kind: Run
 name: fetch-gossip-identity
 type: exec
 
-disabled: ${var.envType == "registry"}
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
   - deploy.kels-gossip

@@ -47,7 +47,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
 pub async fn run(
     listener: tokio::net::TcpListener,
     database_url: &str,
-    redis_url: &str,
+    redis_url: Option<&str>,
     registry_urls: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to database");
@@ -60,13 +60,20 @@ pub async fn run(
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database connected");
 
-    info!("Connecting to Redis");
-    let redis_client = RedisClient::open(redis_url)
-        .map_err(|e| format!("Failed to create Redis client: {}", e))?;
-    let redis_conn = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
-    info!("Connected to Redis");
+    let (redis_conn, kel_cache) = if let Some(redis_url) = redis_url {
+        info!("Connecting to Redis");
+        let redis_client = RedisClient::open(redis_url)
+            .map_err(|e| format!("Failed to create Redis client: {}", e))?;
+        let conn = redis::aio::ConnectionManager::new(redis_client)
+            .await
+            .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
+        info!("Connected to Redis");
+        let cache = ServerKelCache::new(conn.clone(), "kels:kel");
+        (Some(conn), Some(cache))
+    } else {
+        info!("Running without Redis (standalone mode)");
+        (None, None)
+    };
 
     let repo = Arc::new(repo);
     let kel_store: Arc<dyn kels::KelStore> = {
@@ -75,7 +82,6 @@ pub async fn run(
         ));
         Arc::new(kels::RepositoryKelStore::new(kel_event_repo))
     };
-    let kel_cache = ServerKelCache::new(redis_conn.clone(), "kels:kel");
     let state = Arc::new(AppState {
         repo,
         kel_store,
@@ -87,8 +93,10 @@ pub async fn run(
         nonce_cache: dashmap::DashMap::new(),
     });
 
-    let local_cache = state.kel_cache.local_cache();
-    tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
+    if let (Some(cache), Some(redis_url)) = (&state.kel_cache, redis_url) {
+        let local_cache = cache.local_cache();
+        tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
+    }
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 

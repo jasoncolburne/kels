@@ -2,6 +2,8 @@ kind: Deploy
 name: redis
 type: kubernetes
 
+disabled: ${var.envType == "standalone" || var.envType == "registry"}
+
 spec:
   manifestTemplates:
     - manifests.yml.tpl

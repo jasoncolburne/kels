@@ -27,8 +27,8 @@ kind: Deploy
 name: test-client
 type: kubernetes
 
-# Only deploy test-client in node-a environment
-disabled: ${environment.name != "node-a"}
+# Only deploy test-client in node-a and standalone environments
+disabled: ${environment.name != "node-a" && environment.name != "standalone"}
 
 dependencies:
   - build.test-client
