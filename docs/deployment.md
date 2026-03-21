@@ -23,7 +23,7 @@ Each **gossip node** runs:
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
 
-The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
+The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
 ## Deployment Flow
 
@@ -142,7 +142,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection URL |
-| `PKCS11_LIBRARY` | Path to PKCS#11 .so (mock HSM or real HSM) |
+| `PKCS11_LIBRARY_PATH` | Path to PKCS#11 .so (mock HSM or real HSM) |
 | `KELS_HSM_DATA_DIR` | HSM key persistence directory |
 | `HSM_SLOT` | PKCS#11 slot number |
 | `HSM_PIN` | PKCS#11 PIN |

@@ -39,7 +39,7 @@ spec:
               value: "${var.identityKeyHandlePrefix}"
             - name: DATABASE_URL
               value: "${var.identityDatabaseUrl}"
-            - name: PKCS11_LIBRARY
+            - name: PKCS11_LIBRARY_PATH
               value: "${var.identity.pkcs11Library}"
             - name: KELS_HSM_DATA_DIR
               value: "${var.identity.hsmDataDir}"

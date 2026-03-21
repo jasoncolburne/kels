@@ -116,7 +116,7 @@ struct KelAnnouncement {
 | `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
-| `PKCS11_LIBRARY` | Path to PKCS#11 .so (mock HSM or real HSM) | (required) |
+| `PKCS11_LIBRARY_PATH` | Path to PKCS#11 .so (mock HSM or real HSM) | (required) |
 | `KELS_HSM_DATA_DIR` | HSM key persistence directory | (required) |
 | `HSM_SLOT` | PKCS#11 slot number | (required) |
 | `HSM_PIN` | PKCS#11 PIN | (required) |

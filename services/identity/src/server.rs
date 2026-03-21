@@ -36,7 +36,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
-    let pkcs11_library = std::env::var("PKCS11_LIBRARY")
+    let pkcs11_library = std::env::var("PKCS11_LIBRARY_PATH")
         .unwrap_or_else(|_| "/usr/lib/kels/libkels_mock_hsm.so".to_string());
     let hsm_slot: usize = std::env::var("HSM_SLOT")
         .unwrap_or_else(|_| "0".to_string())

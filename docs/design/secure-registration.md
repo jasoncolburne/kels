@@ -71,7 +71,7 @@ Each node's identity service loads a PKCS#11 .so directly via cryptoki:
 - Key generation (idempotent - returns existing key if present)
 - Signing operations
 
-The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. In production, swap the `PKCS11_LIBRARY` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
+The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
 
 **Key label convention:** `kels-gossip-{node_id}` (e.g., `kels-gossip-node-a`)
 

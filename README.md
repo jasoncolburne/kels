@@ -429,7 +429,7 @@ The provided Garden configuration is a test harness, not a production deployment
 
 ### Infrastructure hardening
 
-- **Real HSMs**: The current deployment uses `kels-mock-hsm` (a PKCS#11 cdylib) with hardcoded PINs. Production requires swapping the PKCS#11 .so path (`PKCS11_LIBRARY`) to a real HSM's PKCS#11 library (CloudHSM, YubiHSM, Thales Luna, etc.)
+- **Real HSMs**: The current deployment uses `kels-mock-hsm` (a PKCS#11 cdylib) with hardcoded PINs. Production requires swapping the PKCS#11 .so path (`PKCS11_LIBRARY_PATH`) to a real HSM's PKCS#11 library (CloudHSM, YubiHSM, Thales Luna, etc.)
 - **Secrets management**: Database credentials, HSM PINs, and other secrets are hardcoded or passed as plain environment variables. Use a secrets manager (Vault, AWS Secrets Manager, etc.)
 - **Database hardening**: PostgreSQL runs with default superuser credentials, no replication, no backup strategy, and no encryption at rest. Connection pool sizing is unconfigured
 - **Redis credentials**: Redis uses per-service ACL users with least-privilege command sets and key pattern isolation, and RDB persistence is enabled. However, ACL passwords are configured via Garden template variables — production should use a secrets manager for Redis credentials
