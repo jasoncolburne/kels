@@ -257,7 +257,7 @@ All recorded data in KELS is KEL-backed and verified independently before use:
 
 The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that periodically checks whether the current HSM key binding is due for rotation. Both the check period (`IDENTITY_ROTATION_CHECK_PERIOD_MINUTES`, default: 360) and rotation interval (`IDENTITY_ROTATION_INTERVAL_DAYS`, default: 180) are configurable. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
 
-All KEL management operations — automatic and manual — go through a single `perform_kel_operation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The management endpoint (`POST /api/identity/kel/manage`) requires a signed request verified against the identity's own KEL.
+All KEL management operations — automatic and manual — go through a single `perform_kel_operation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The management endpoint (`POST /api/v1/identity/kel/manage`) requires a signed request verified against the identity's own KEL.
 
 ### Proactive Protection
 
@@ -283,13 +283,13 @@ Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotatio
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `GET` | `/ready` | Readiness check (gossip sync status) |
-| `POST` | `/api/kels/events` | Submit signed events |
-| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32) |
-| `GET` | `/api/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
-| `GET` | `/api/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
-| `GET` | `/api/kels/events/:said/exists` | Check if event exists by SAID |
-| `POST` | `/api/kels/kels` | Batch fetch multiple KELs (max 64 prefixes) |
-| `POST` | `/api/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
+| `POST` | `/api/v1/kels/events` | Submit signed events |
+| `GET` | `/api/v1/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32) |
+| `GET` | `/api/v1/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
+| `GET` | `/api/v1/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
+| `GET` | `/api/v1/kels/events/:said/exists` | Check if event exists by SAID |
+| `POST` | `/api/v1/kels/kels` | Batch fetch multiple KELs (max 64 prefixes) |
+| `POST` | `/api/v1/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
 ## Deploying Locally
 
@@ -338,7 +338,7 @@ Children per Namespace
 
 #### Special cases
 
-- Some nodes have `KELS_TEST_ENDPOINTS=true`, which exposes an unauthenticated `/api/test/prefixes` endpoint. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing without compromising the authenticated `/api/kels/prefixes` endpoint.
+- Some nodes have `KELS_TEST_ENDPOINTS=true`, which exposes an unauthenticated `/api/test/prefixes` endpoint. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing without compromising the authenticated `/api/v1/kels/prefixes` endpoint.
 
 Nodes with test endpoints enabled:
 - `node-a`

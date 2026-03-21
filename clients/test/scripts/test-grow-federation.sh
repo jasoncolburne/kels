@@ -55,7 +55,7 @@ LEADER_ID=""
 for attempt in {1..60}; do
     for i in "${!REGISTRY_URLS[@]}"; do
         url="${REGISTRY_URLS[$i]}"
-        STATUS=$(curl -sf "${url}/api/federation/status" 2>/dev/null || echo "{}")
+        STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
         IS_LEADER=$(echo "$STATUS" | jq -r '.isLeader // false')
         if [ "$IS_LEADER" = "true" ]; then
             LEADER_ID=$(echo "$STATUS" | jq -r '.nodeId // empty')
@@ -79,7 +79,7 @@ echo
 for i in "${!REGISTRY_URLS[@]}"; do
     url="${REGISTRY_URLS[$i]}"
     name="${REGISTRY_NAMES[$i]}"
-    STATUS=$(curl -sf "${url}/api/federation/status" 2>/dev/null || echo "{}")
+    STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
     MEMBER_COUNT=$(echo "$STATUS" | jq -r '.members | length // 0')
     echo "  registry-${name}: ${MEMBER_COUNT} members"
     run_test "registry-${name} reports 4 members" [ "$MEMBER_COUNT" -eq 4 ]
@@ -98,7 +98,7 @@ LEADERS=()
 for i in "${!REGISTRY_URLS[@]}"; do
     url="${REGISTRY_URLS[$i]}"
     name="${REGISTRY_NAMES[$i]}"
-    STATUS=$(curl -sf "${url}/api/federation/status" 2>/dev/null || echo "{}")
+    STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
     REPORTED_LEADER=$(echo "$STATUS" | jq -r '.leaderId // empty')
     echo "  registry-${name} reports leader: $REPORTED_LEADER"
     LEADERS+=("$REPORTED_LEADER")
@@ -123,7 +123,7 @@ echo -e "${CYAN}=== Scenario 5: Node 0 Self-Report ===${NC}"
 echo "Verifying node 0 reports its own ID correctly..."
 echo
 
-STATUS_0=$(curl -sf "${REGISTRY_URLS[0]}/api/federation/status" 2>/dev/null || echo "{}")
+STATUS_0=$(curl -sf "${REGISTRY_URLS[0]}/api/v1/federation/status" 2>/dev/null || echo "{}")
 NODE_ID_0=$(echo "$STATUS_0" | jq -r '.nodeId // empty')
 echo "  Node 0 reports nodeId: $NODE_ID_0"
 run_test "Node 0 reports nodeId 0" [ "$NODE_ID_0" = "0" ]

@@ -231,7 +231,7 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ### Member KEL Sync
 
-- Identity and completion handlers push KEL events directly to `POST /api/member-kels/events` using `KelsClient`
+- Identity and completion handlers push KEL events directly to `POST /api/v1/member-kels/events` using `KelsClient`
 - The submit endpoint fans out to all federation peers synchronously (best-effort, with 5s timeout)
 - A periodic anti-entropy loop (every 30s) syncs own KEL from identity, then compares effective SAIDs with each peer and pushes deltas
 - KELs survive registry restarts since they are stored in the local PostgreSQL database
@@ -284,21 +284,21 @@ This split ensures that no peer change can be approved with fewer than 3 verifie
 
 ### Federation Status
 ```
-GET /api/federation/status
+GET /api/v1/federation/status
 ```
 
 Returns current federation state including leader, term, and membership.
 
 ### List Peers (Federated Mode)
 ```
-GET /api/peers
+GET /api/v1/peers
 ```
 
 Returns the peer set from the Raft state machine.
 
 ### Member Key Events (per-prefix)
 ```
-GET /api/member-kels/:prefix?limit=N&since=SAID
+GET /api/v1/member-kels/:prefix?limit=N&since=SAID
 ```
 
 Returns a specific member's KEL with pagination support.
@@ -308,15 +308,15 @@ Returns a specific member's KEL with pagination support.
 Peer proposal management:
 
 ```
-POST   /api/admin/addition-proposals              # Propose a new peer (addition)
-POST   /api/admin/removal-proposals              # Propose removal of a peer
-GET    /api/federation/proposals/:proposal_id     # Get proposal details (unauthenticated)
-POST   /api/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
+POST   /api/v1/admin/addition-proposals              # Propose a new peer (addition)
+POST   /api/v1/admin/removal-proposals              # Propose removal of a peer
+GET    /api/v1/federation/proposals/:proposal_id     # Get proposal details (unauthenticated)
+POST   /api/v1/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
 ```
 
 ### Federation RPC (Internal)
 ```
-POST /api/federation/rpc
+POST /api/v1/federation/rpc
 ```
 
 Internal endpoint for Raft protocol messages between registries. Not intended for external use.

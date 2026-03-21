@@ -134,13 +134,13 @@ impl IdentityClient {
     }
 
     pub async fn get_status(&self) -> Result<IdentityStatus, KelsError> {
-        let url = format!("{}/api/identity/status", self.base_url);
+        let url = format!("{}/api/v1/identity/status", self.base_url);
         let response = self.client.get(&url).send().await?;
         self.parse_response(response).await
     }
 
     pub async fn get_prefix(&self) -> Result<String, KelsError> {
-        let url = format!("{}/api/identity", self.base_url);
+        let url = format!("{}/api/v1/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
         let info: IdentityInfo = self.parse_response(response).await?;
         Ok(info.prefix)
@@ -151,7 +151,7 @@ impl IdentityClient {
         since: Option<&str>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
-        let mut url = format!("{}/api/identity/kel?limit={}", self.base_url, limit);
+        let mut url = format!("{}/api/v1/identity/kel?limit={}", self.base_url, limit);
         if let Some(since) = since {
             url.push_str(&format!("&since={}", since));
         }
@@ -160,7 +160,7 @@ impl IdentityClient {
     }
 
     pub async fn anchor(&self, said: &str) -> Result<String, KelsError> {
-        let url = format!("{}/api/identity/anchor", self.base_url);
+        let url = format!("{}/api/v1/identity/anchor", self.base_url);
 
         let response = self
             .client
@@ -179,7 +179,7 @@ impl IdentityClient {
     /// Sign a JSON string with the registry's identity key.
     /// Returns signature as a QB64-encoded string.
     pub async fn sign(&self, data: &str) -> Result<SignResponse, KelsError> {
-        let url = format!("{}/api/identity/sign", self.base_url);
+        let url = format!("{}/api/v1/identity/sign", self.base_url);
 
         let response = self
             .client
@@ -211,7 +211,7 @@ impl IdentityClient {
             signature: sign_result.signature,
         };
 
-        let url = format!("{}/api/identity/kel/manage", self.base_url);
+        let url = format!("{}/api/v1/identity/kel/manage", self.base_url);
         let response = self.client.post(&url).json(&signed).send().await?;
         self.parse_response(response).await
     }

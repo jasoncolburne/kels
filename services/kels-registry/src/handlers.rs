@@ -155,7 +155,7 @@ async fn push_own_kel_to_members(state: &FederationState) {
 
     // Fetch own events from identity service (source of truth)
     let identity_source =
-        kels::HttpKelSource::new(state.identity_client.base_url(), "/api/identity/kel");
+        kels::HttpKelSource::new(state.identity_client.base_url(), "/api/v1/identity/kel");
     let local_sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
@@ -193,7 +193,7 @@ async fn push_own_kel_to_members(state: &FederationState) {
                     crate::raft_store::MemberKelRepository::new(pool),
                 ));
                 let repo_source = kels::StoreKelSource::new(&repo_store);
-                let member_sink = kels::HttpKelSink::new(&member_url, "/api/member-kels/events");
+                let member_sink = kels::HttpKelSink::new(&member_url, "/api/v1/member-kels/events");
                 match tokio::time::timeout(
                     Duration::from_secs(5),
                     kels::forward_key_events(
@@ -267,7 +267,7 @@ pub async fn federation_rpc(
                 })?;
             let source = kels::HttpKelSource::new(
                 &member.url,
-                &format!("/api/member-kels/kel/{}", signed_rpc.sender_prefix),
+                &format!("/api/v1/member-kels/kel/{}", signed_rpc.sender_prefix),
             );
             kels::verify_key_events(
                 &signed_rpc.sender_prefix,
@@ -1126,7 +1126,7 @@ pub async fn submit_member_key_events(
                 let url = member.url.clone();
                 let member_prefix = member.prefix.clone();
                 async move {
-                    let client = kels::KelsClient::with_path_prefix(&url, "/api/member-kels");
+                    let client = kels::KelsClient::with_path_prefix(&url, "/api/v1/member-kels");
                     match tokio::time::timeout(
                         Duration::from_secs(5),
                         client.submit_events(&events),

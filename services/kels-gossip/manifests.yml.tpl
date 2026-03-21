@@ -100,7 +100,7 @@ spec:
               value: "${var.gossipAntiEntropyIntervalSecs}"
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             initialDelaySeconds: 2
             periodSeconds: 10

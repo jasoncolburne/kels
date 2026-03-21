@@ -51,13 +51,13 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 
 ### Node Startup (Bootstrap Sync)
 
-1. Node starts, queries registry for peers: `GET /api/peers`
+1. Node starts, queries registry for peers: `GET /api/v1/peers`
 2. If no peers exist:
    - Start normal gossip operation immediately
 3. If peers exist:
    - Start listening for gossip updates
    - For each bootstrap peer (in parallel):
-     - Fetch prefix list: `POST /api/kels/prefixes` (signed request)
+     - Fetch prefix list: `POST /api/v1/kels/prefixes` (signed request)
      - For each prefix not in local DB:
        - Fetch KEL via gossip request-response
        - Submit to local KELS
@@ -65,7 +65,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 
 ### Client Node Discovery
 
-1. Client queries registry for peers: `GET /api/peers`
+1. Client queries registry for peers: `GET /api/v1/peers`
 2. Client extracts active peers with their `kels_url` endpoints
 3. Client tests readiness of each node via `/ready` endpoint
 4. Client tests latency to each Ready node via `/health` endpoint
@@ -116,27 +116,27 @@ Peer discovery:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/peers` | Get peer allowlist (from Raft) |
-| `POST` | `/api/member-kels/events` | Submit member key events (push model); fans out only when prefix matches receiver's own |
-| `GET` | `/api/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
-| `GET` | `/api/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
+| `GET` | `/api/v1/peers` | Get peer allowlist (from Raft) |
+| `POST` | `/api/v1/member-kels/events` | Submit member key events (push model); fans out only when prefix matches receiver's own |
+| `GET` | `/api/v1/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
+| `GET` | `/api/v1/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
 
 Federation protocol:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/federation/status` | Get federation status (leader, term, members) |
-| `GET` | `/api/federation/proposals` | Completed proposals with votes (for independent verification) |
-| `POST` | `/api/federation/rpc` | Internal Raft RPC between registries |
+| `GET` | `/api/v1/federation/status` | Get federation status (leader, term, members) |
+| `GET` | `/api/v1/federation/proposals` | Completed proposals with votes (for independent verification) |
+| `POST` | `/api/v1/federation/rpc` | Internal Raft RPC between registries |
 
 Admin API (signed requests):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/admin/addition-proposals` | Propose a new peer (addition) |
-| `POST` | `/api/admin/removal-proposals` | Propose removal of a peer |
-| `GET` | `/api/federation/proposals/:proposal_id` | Get proposal details |
-| `POST` | `/api/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
+| `POST` | `/api/v1/admin/addition-proposals` | Propose a new peer (addition) |
+| `POST` | `/api/v1/admin/removal-proposals` | Propose removal of a peer |
+| `GET` | `/api/v1/federation/proposals/:proposal_id` | Get proposal details |
+| `POST` | `/api/v1/admin/proposals/:proposal_id/vote` | Vote on a proposal (addition or removal) |
 
 > **Note:** Peer discovery, federation, and admin endpoints are only available when federation is configured. See [Secure Peer Authorization](./design/secure-registration.md) for details.
 
@@ -144,7 +144,7 @@ Admin API (signed requests):
 
 Added to the KELS service for bootstrap sync:
 
-`POST /api/kels/prefixes`
+`POST /api/v1/kels/prefixes`
 
 Accepts a `SignedRequest<PrefixesRequest>` body. Signature and peer verification is enforced unless the `dev-tools` feature is enabled.
 

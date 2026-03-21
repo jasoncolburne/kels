@@ -55,12 +55,12 @@ The registry namespace includes a dedicated identity service (single replica) th
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/identity` | Get registry prefix |
-| `GET` | `/api/identity/kel` | Get registry's KEL (paginated; `?limit=N&since=SAID`) |
-| `POST` | `/api/identity/anchor` | Anchor a SAID in the registry's KEL |
-| `POST` | `/api/identity/sign` | Sign data with registry's current key |
-| `GET` | `/api/identity/status` | Get registry identity status |
-| `POST` | `/api/identity/kel/manage` | Manage registry's KEL (rotate, recover, contest, decommission) |
+| `GET` | `/api/v1/identity` | Get registry prefix |
+| `GET` | `/api/v1/identity/kel` | Get registry's KEL (paginated; `?limit=N&since=SAID`) |
+| `POST` | `/api/v1/identity/anchor` | Anchor a SAID in the registry's KEL |
+| `POST` | `/api/v1/identity/sign` | Sign data with registry's current key |
+| `GET` | `/api/v1/identity/status` | Get registry identity status |
+| `POST` | `/api/v1/identity/kel/manage` | Manage registry's KEL (rotate, recover, contest, decommission) |
 
 ## Components
 
@@ -261,7 +261,7 @@ In addition to registry authentication, the gossip layer verifies connections du
 8. Unknown peers trigger a one-shot allowlist refresh before rejection
 9. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
 
-Nodes periodically refresh their allowlist from the registry's `/api/peers` endpoint (default: every 60 seconds).
+Nodes periodically refresh their allowlist from the registry's `/api/v1/peers` endpoint (default: every 60 seconds).
 
 ## Security Considerations
 

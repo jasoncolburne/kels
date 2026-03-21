@@ -24,12 +24,12 @@ use crate::{
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
-        .route("/api/identity", get(handlers::get_identity))
-        .route("/api/identity/status", get(handlers::get_status))
-        .route("/api/identity/anchor", post(handlers::anchor))
-        .route("/api/identity/kel", get(handlers::get_key_events))
-        .route("/api/identity/kel/manage", post(handlers::manage_kel))
-        .route("/api/identity/sign", post(handlers::sign))
+        .route("/api/v1/identity", get(handlers::get_identity))
+        .route("/api/v1/identity/status", get(handlers::get_status))
+        .route("/api/v1/identity/kel", get(handlers::get_key_events))
+        .route("/api/v1/identity/kel/manage", post(handlers::manage_kel))
+        .route("/api/v1/identity/anchor", post(handlers::anchor))
+        .route("/api/v1/identity/sign", post(handlers::sign))
         .with_state(state)
 }
 
@@ -49,7 +49,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .ok()
         .filter(|u| !u.is_empty());
     let forward_path_prefix =
-        std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/kels".to_string());
+        std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/v1/kels".to_string());
     let next_signing_algorithm =
         std::env::var("NEXT_SIGNING_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
     let next_recovery_algorithm =

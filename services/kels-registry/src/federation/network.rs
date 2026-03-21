@@ -101,7 +101,7 @@ impl FederationNetwork {
             FederationError::NetworkError(format!("Unknown target node: {}", target))
         })?;
 
-        let url = format!("{}/api/federation/rpc", member.url.trim_end_matches('/'));
+        let url = format!("{}/api/v1/federation/rpc", member.url.trim_end_matches('/'));
 
         debug!(
             "Sending RPC to {} ({}): {:?}",

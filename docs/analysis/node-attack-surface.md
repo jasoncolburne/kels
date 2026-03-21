@@ -80,7 +80,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 
 ### Denial of Service — Event Submission Flood
 
-**Attack:** Flood `POST /api/kels/events` with valid-looking but ultimately invalid events.
+**Attack:** Flood `POST /api/v1/kels/events` with valid-looking but ultimately invalid events.
 - **Mitigation:** Signature format validation happens upfront (before acquiring advisory lock). Invalid signatures are rejected quickly. Per-IP rate limiting (token bucket: 200 req/s refill, 1000 burst) on write endpoints prevents volumetric floods. Per-prefix rate limiting (32 submissions/min) prevents targeted abuse of a single prefix. Max event count per submission (500) and body size limit (5 MiB) bound individual request cost.
 - **Residual risk:** Valid-format signatures that fail later verification still consume database resources within the rate limits.
 

@@ -8,7 +8,7 @@ The database cannot be trusted — it may have been altered. All operations on K
 
 Returning data to a client or peer. **No verification needed** — the receiver is responsible for verifying what they get.
 
-Examples: `GET /api/kels/kel/:prefix`, `get_effective_said`, `get_key_events`
+Examples: `GET /api/v1/kels/kel/:prefix`, `get_effective_said`, `get_key_events`
 
 ### 2. Consuming
 

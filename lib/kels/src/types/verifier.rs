@@ -814,7 +814,7 @@ pub trait PagedKelSink: Send + Sync {
 /// `resolve_key_events` to abstract over different service endpoints.
 pub struct HttpKelSource {
     base_url: String,
-    /// Path template, e.g. "/api/kels/kel/{prefix}" or "/api/identity/kel"
+    /// Path template, e.g. "/api/v1/kels/kel/{prefix}" or "/api/v1/identity/kel"
     path: String,
     client: reqwest::Client,
 }
@@ -920,7 +920,7 @@ impl PagedKelSink for CollectSink {
 /// The path template may contain `{prefix}` which is replaced with the actual prefix.
 pub struct HttpKelSink {
     base_url: String,
-    /// Path, e.g. "/api/kels/events"
+    /// Path, e.g. "/api/v1/kels/events"
     path: String,
     client: reqwest::Client,
 }

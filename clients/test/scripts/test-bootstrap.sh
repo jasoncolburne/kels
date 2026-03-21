@@ -47,12 +47,12 @@ check_registry_health() {
 
 get_peer_count() {
     # Get active peers from the allowlist
-    curl -s "$REGISTRY_URL/api/peers" | jq '[.peers[].records[-1] | select(.active == true)] | length'
+    curl -s "$REGISTRY_URL/api/v1/peers" | jq '[.peers[].records[-1] | select(.active == true)] | length'
 }
 
 peer_exists() {
     local peer_prefix="$1"
-    curl -s "$REGISTRY_URL/api/peers" | jq -e ".peers[].records[-1] | select(.peerPrefix == \"$peer_prefix\")" > /dev/null
+    curl -s "$REGISTRY_URL/api/v1/peers" | jq -e ".peers[].records[-1] | select(.peerPrefix == \"$peer_prefix\")" > /dev/null
 }
 
 get_prefix_count() {
@@ -69,7 +69,7 @@ wait_for_kel_on_node() {
     local prefix="$2"
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        if curl -s -w "\n%{http_code}" "$url/api/kels/kel/$prefix" | tail -n1 | grep -q "200"; then
+        if curl -s -w "\n%{http_code}" "$url/api/v1/kels/kel/$prefix" | tail -n1 | grep -q "200"; then
             return 0
         fi
         sleep 1
@@ -198,7 +198,7 @@ if check_registry_health; then
     # List all peers
     echo ""
     echo "Allowlist peers:"
-    curl -s "$REGISTRY_URL/api/peers" | jq -r '.peers[].records[-1] | select(.active == true) | "  \(.nodeId) - \(.kelsUrl)"'
+    curl -s "$REGISTRY_URL/api/v1/peers" | jq -r '.peers[].records[-1] | select(.active == true) | "  \(.nodeId) - \(.kelsUrl)"'
     echo ""
 fi
 

@@ -212,7 +212,7 @@ CREATE TABLE kels_audit_records (
 ### Submit Events
 
 ```
-POST /api/kels/events
+POST /api/v1/kels/events
 Content-Type: application/json
 
 [{ signed_event }, ...]
@@ -229,7 +229,7 @@ Where `divergedAt` is the serial number (0-indexed position in chain) where dive
 ### Fetch KEL (paginated)
 
 ```
-GET /api/kels/kel/:prefix?limit=32&since=<SAID>
+GET /api/v1/kels/kel/:prefix?limit=32&since=<SAID>
 
 Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 ```
@@ -239,7 +239,7 @@ Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after 
 ### Fetch Audit Records
 
 ```
-GET /api/kels/kel/:prefix/audit
+GET /api/v1/kels/kel/:prefix/audit
 
 Response: [KelsAuditRecord, ...]
 ```

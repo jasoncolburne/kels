@@ -1,7 +1,7 @@
 //! HTTP server for health and ready status endpoints.
 //!
 //! Exposes:
-//! - `/healthz` — liveness: always returns 200 if the process is running
+//! - `/health` — liveness: always returns 200 if the process is running
 //! - `/ready` — readiness: returns 200 only after bootstrap completes
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
@@ -19,8 +19,8 @@ pub struct ReadyResponse {
     pub ready: bool,
 }
 
-/// GET /healthz handler — always returns 200
-async fn healthz_handler() -> StatusCode {
+/// GET /health handler — always returns 200
+async fn health_handler() -> StatusCode {
     StatusCode::OK
 }
 
@@ -40,7 +40,7 @@ async fn ready_handler(
 /// Create the HTTP router
 pub fn create_router(ready_state: SharedReadyState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz_handler))
+        .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
         .with_state(ready_state)
 }

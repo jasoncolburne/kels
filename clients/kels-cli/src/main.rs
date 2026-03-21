@@ -527,7 +527,7 @@ async fn cmd_recover(
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels::HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
     let server_verification = kels::verify_key_events(
         prefix,
         &source,
@@ -643,7 +643,7 @@ fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
 
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
-    let source = HttpKelSource::new(client.base_url(), "/api/kels/kel/{prefix}");
+    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
 
     let msg = if audit {
         format!("Fetching KEL {} with audit records...", prefix)
