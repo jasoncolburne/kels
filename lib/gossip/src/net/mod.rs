@@ -88,9 +88,10 @@ pub trait Signer: Send + Sync + 'static {
     fn sign(&self, data: &[u8]) -> impl Future<Output = Result<Vec<u8>, Error>> + Send;
 
     /// KEM algorithm for handshake key exchange.
-    /// Default: ML-KEM-768. Override with ML-KEM-1024 for security level 5.
+    /// Default: ML-KEM-1024 (fail secure). Implementations may relax to ML-KEM-768
+    /// after verifying no peer in the federation uses ML-DSA-87.
     fn kem_algorithm(&self) -> cesr::KemKeyCode {
-        cesr::KemKeyCode::MlKem768
+        cesr::KemKeyCode::MlKem1024
     }
 }
 
