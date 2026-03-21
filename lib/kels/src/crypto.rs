@@ -735,12 +735,22 @@ mod tests {
     use super::*;
     use cesr::Matter;
 
+    fn random_provider() -> SoftwareKeyProvider {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let algorithms = [
+            VerificationKeyCode::Secp256r1,
+            VerificationKeyCode::MlDsa65,
+            VerificationKeyCode::MlDsa87,
+        ];
+        let signing_idx = rng.random_range(0..algorithms.len());
+        let recovery_idx = rng.random_range(signing_idx..algorithms.len());
+        SoftwareKeyProvider::new(algorithms[signing_idx], algorithms[recovery_idx])
+    }
+
     #[tokio::test]
     async fn test_generate_initial_keys() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
 
         let (current, next_hash, recovery_hash) = provider.generate_initial_keys().await.unwrap();
         assert!(provider.current_public_key().await.is_ok());
@@ -773,10 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -797,29 +804,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotation_without_next_fails() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         // No keys at all - should fail
         assert!(provider.stage_rotation().await.is_err());
     }
 
     #[tokio::test]
     async fn test_sign_without_key_fails() {
-        let provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let provider = random_provider();
         assert!(provider.sign(b"test").await.is_err());
     }
 
     #[tokio::test]
     async fn test_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -845,10 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         let (current, _next_hash, _recovery_hash) = provider.generate_initial_keys().await.unwrap();
 
         let message = b"test message";
@@ -889,10 +884,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_rotation() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
 
         let (original_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -914,10 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_recovery_rotation() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
 
         let (_current, _next_hash, _recovery_hash) =
             provider.generate_initial_keys().await.unwrap();
@@ -943,30 +932,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_with_recovery_without_key_fails() {
-        let provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let provider = random_provider();
         let result = provider.sign_with_recovery(b"test").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_stage_recovery_rotation_without_key_fails() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         let result = provider.stage_recovery_rotation().await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_commit_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         provider.generate_initial_keys().await.unwrap();
         let result = provider.commit().await;
         assert!(result.is_err());
@@ -974,10 +954,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_without_staged_fails() {
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         provider.generate_initial_keys().await.unwrap();
         let result = provider.rollback().await;
         assert!(result.is_err());
@@ -985,10 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_public_key_without_next_fails() {
-        let provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let provider = random_provider();
         let result = provider.current_public_key().await;
         assert!(result.is_err());
     }
@@ -997,10 +971,7 @@ mod tests {
     async fn test_save_and_load_roundtrip() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
 
@@ -1039,10 +1010,7 @@ mod tests {
     async fn test_save_without_current_fails() {
         use tempfile::TempDir;
 
-        let provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let provider = random_provider();
         let temp = TempDir::new().unwrap();
         let result = provider.save_to_dir(temp.path()).await;
         assert!(result.is_err());
@@ -1052,10 +1020,7 @@ mod tests {
     async fn test_save_while_staged_fails() {
         use tempfile::TempDir;
 
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         provider.generate_initial_keys().await.unwrap();
         provider.stage_rotation().await.unwrap();
 
@@ -1110,10 +1075,7 @@ mod tests {
         );
 
         // Create and save a provider
-        let mut provider = SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        );
+        let mut provider = random_provider();
         provider.generate_initial_keys().await.unwrap();
         let original_pub = provider.current_public_key().await.unwrap();
         config.save_provider(&provider).await.unwrap();
