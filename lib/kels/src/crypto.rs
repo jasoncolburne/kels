@@ -370,10 +370,7 @@ pub struct SoftwareKeyProvider {
 
 impl Default for SoftwareKeyProvider {
     fn default() -> Self {
-        Self::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        )
+        Self::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa65)
     }
 }
 
