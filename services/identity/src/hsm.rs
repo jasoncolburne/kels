@@ -144,8 +144,9 @@ impl HsmOperations for Pkcs11Client {
         let session = self.session.lock().await;
 
         let parameter_set = match algorithm {
+            "ml-dsa-65" => MlDsaParameterSetType::ML_DSA_65,
             "ml-dsa-87" => MlDsaParameterSetType::ML_DSA_87,
-            _ => MlDsaParameterSetType::ML_DSA_65,
+            _ => return Err(KelsError::UnsupportedAlgorithm(algorithm.to_string())),
         };
 
         let pub_template = vec![
@@ -284,14 +285,14 @@ impl std::fmt::Debug for HsmKeyProvider {
     }
 }
 
-impl Clone for HsmKeyProvider {
-    fn clone(&self) -> Self {
-        let signing_algo = self.signing_algorithm.blocking_read().clone();
-        let recovery_algo = self.recovery_algorithm.blocking_read().clone();
-        let signing_gen = *self.signing_generation.blocking_read();
-        let recovery_gen = *self.recovery_generation.blocking_read();
-        let key_handles = self.key_handles.blocking_read().clone();
-        let recovery_handles = self.recovery_handles.blocking_read().clone();
+impl HsmKeyProvider {
+    pub async fn clone_async(&self) -> Self {
+        let signing_algo = self.signing_algorithm.read().await.clone();
+        let recovery_algo = self.recovery_algorithm.read().await.clone();
+        let signing_gen = *self.signing_generation.read().await;
+        let recovery_gen = *self.recovery_generation.read().await;
+        let key_handles = self.key_handles.read().await.clone();
+        let recovery_handles = self.recovery_handles.read().await.clone();
 
         Self {
             hsm: Arc::clone(&self.hsm),

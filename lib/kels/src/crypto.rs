@@ -652,24 +652,41 @@ impl KeyProvider for SoftwareKeyProvider {
         let state: SoftwareKeyState =
             serde_json::from_slice(&data).map_err(|e| KelsError::StorageError(e.to_string()))?;
 
-        self.keys = state
+        let keys: Vec<PrivateKey> = state
             .keys
             .iter()
             .map(|qb64| PrivateKey::from_qb64(qb64))
             .collect::<Result<Vec<_>, _>>()?;
-        self.recovery_keys = state
+        let recovery_keys: Vec<PrivateKey> = state
             .recovery_keys
             .iter()
             .map(|qb64| PrivateKey::from_qb64(qb64))
             .collect::<Result<Vec<_>, _>>()?;
 
+        if keys.len() < 2 {
+            return Err(KelsError::StorageError(format!(
+                "Corrupted key state: expected at least 2 signing keys, found {}",
+                keys.len()
+            )));
+        }
+        if recovery_keys.is_empty() {
+            return Err(KelsError::StorageError(
+                "Corrupted key state: no recovery key".to_string(),
+            ));
+        }
+
         // Infer algorithms from loaded keys
-        if let Some(key) = self.keys.last() {
-            self.signing_algorithm = key.algorithm();
-        }
-        if let Some(key) = self.recovery_keys.first() {
-            self.recovery_algorithm = key.algorithm();
-        }
+        self.signing_algorithm = keys
+            .last()
+            .map(|k| k.algorithm())
+            .unwrap_or(self.signing_algorithm);
+        self.recovery_algorithm = recovery_keys
+            .first()
+            .map(|k| k.algorithm())
+            .unwrap_or(self.recovery_algorithm);
+
+        self.keys = keys;
+        self.recovery_keys = recovery_keys;
 
         Ok(true)
     }

@@ -31,7 +31,7 @@ pub fn should_rotate_with_recovery(
     server_verification.rotation_count() > owner_rotation_count
 }
 
-pub struct KeyEventBuilder<K: KeyProvider + Clone> {
+pub struct KeyEventBuilder<K: KeyProvider> {
     key_provider: K,
     kels_client: Option<KelsClient>,
     kel_store: Option<std::sync::Arc<dyn KelStore>>,
@@ -51,7 +51,7 @@ impl<K: KeyProvider + Clone> Clone for KeyEventBuilder<K> {
     }
 }
 
-impl<K: KeyProvider + Clone> KeyEventBuilder<K> {
+impl<K: KeyProvider> KeyEventBuilder<K> {
     // ==================== Constructors ====================
 
     pub fn new(key_provider: K, kels_client: Option<KelsClient>) -> Self {

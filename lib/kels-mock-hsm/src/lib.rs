@@ -238,8 +238,15 @@ fn save_state(state: &HsmState) {
     }
 
     let path = format!("{}/keys.json", data_dir);
-    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(&path, json);
+    match serde_json::to_string_pretty(&persisted) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("kels-mock-hsm: failed to persist keys to {}: {}", path, e);
+            }
+        }
+        Err(e) => {
+            eprintln!("kels-mock-hsm: failed to serialize state: {}", e);
+        }
     }
 }
 

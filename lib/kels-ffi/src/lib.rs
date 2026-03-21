@@ -256,7 +256,7 @@ fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
 }
 
 fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
-    parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::Secp256r1)
+    parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::MlDsa65)
 }
 
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
