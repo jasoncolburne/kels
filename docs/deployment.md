@@ -276,7 +276,7 @@ make deploy-all-nodes          # Phase 4: deploy and authorize nodes
 Or run everything including tests:
 
 ```bash
-make test-comprehensive
+make test-federation
 ```
 
 ## Adding a Registry

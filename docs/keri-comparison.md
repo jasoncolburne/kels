@@ -398,7 +398,7 @@ However, the KERI ecosystem provides no guidance for deploying the operational i
 
 **Initial setup:** Simple for a single node, complex for the full federation. A single KELS node (kels service + PostgreSQL) provides the full KEL API — inception, rotation, interaction, recovery, contest, decommission, divergence handling — without gossip or registries. This is comparable in complexity to any single-service web application. You can scale a single kels deployment horizontally by adding redis.
 
-For the full federation with gossip replication, the deployment is more involved but fully automated and reproducible (`make test-comprehensive` deploys everything in ~25 minutes). The full federation deployment requires:
+For the full federation with gossip replication, the deployment is more involved but fully automated and reproducible (`make test-federation` deploys everything in ~25 minutes). The full federation deployment requires:
 1. Deploy 3 registries in standalone mode (each running 4 services: registry, identity, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors
@@ -420,7 +420,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 | Aspect | KERI | KELS |
 |--------|------|------|
 | Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales horizontally with Redis |
-| Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
+| Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-federation` deploys everything) |
 | Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
 | Trusting a participant (identifier) | OOBI resolution (seconds) | Fetch KEL + verify (seconds) |

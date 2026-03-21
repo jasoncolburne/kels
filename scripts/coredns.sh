@@ -12,7 +12,7 @@ set -e
 #
 # Environment:
 #   DNS_CACHE_TTL — CoreDNS cache and record TTL in seconds (default: 30).
-#                   Set low (e.g. 2) during test-comprehensive so node-level
+#                   Set low (e.g. 2) during test-federation so node-level
 #                   DNS caches expire quickly after break/repair transitions.
 
 MODE="${1:?Usage: coredns.sh <apply|reset|break-node-b>}"

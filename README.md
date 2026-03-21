@@ -133,12 +133,16 @@ Event kind values are version-qualified in serialized form (e.g. `kels/v1/icp`).
 For development, a single KELS node can run without gossip or registries — just the kels service, PostgreSQL, and Redis. This provides the full KEL API (event submission, verification, divergence handling, recovery, contest) without replication, and is comparable in complexity to a single-service setup.
 
 ```bash
-garden deploy kels --env=node-a
+garden deploy --env=standalone
 ```
+
+`make test-node` deploys the standalone node and runs some tests against it, leaving it running to inspect.
+
+Notably, with caching turned off, the Federation benchmarks run considerably faster.
 
 ### Full Federation
 
-`make test-comprehensive` deploys the entire federation (3 registries, 6 gossip nodes, integration tests) in ~25 minutes and leaves a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
+`make test-federation` deploys the entire federation (3+1 registries, 6 gossip nodes, integration tests) in ~25 minutes and leaves a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
 
 ### Building
 
@@ -158,10 +162,10 @@ make deny         # Check dependencies (requires cargo-deny)
 make clean        # Clean build artifacts
 
 # Comprehensive integration tests (requires Garden + Kubernetes)
-make test-comprehensive   # Deploy all services and run full test suite
+make test-federation   # Deploy all services and run full test suite
 ```
 
-`make test-comprehensive` leaves a working stack running in Kubernetes. You can play with it, or
+`make test-federation` leaves a working stack running in Kubernetes. You can play with it, or
 bring it down entirely with:
 
 ```bash
@@ -174,7 +178,7 @@ Deploy to a local Kubernetes cluster using [Garden](https://garden.io):
 
 #### Deployment
 
-We won't duplicate the deployment commands here. Examine the `test-comprehensive` make target. This
+We won't duplicate the deployment commands here. Examine the `test-federation` make target. This
 deploys 10 independent Kubernetes namespaces, finishing with 9 running for you to poke at.
 
 This is the flow:
@@ -297,7 +301,7 @@ Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotatio
 ### Getting Started
 
 ```shell
-make test-comprehensive
+make test-federation
 ```
 
 Comprehensive tests take a while to run (~20m on my laptop), but they are an easy way to protect against regression and set up a development environment. They leave your kubernetes cluster in this state:
@@ -374,7 +378,7 @@ This provides rust-analyzer with required environment variables (like `TRUSTED_R
 
 ```bash
 # Full integration test suite (requires Garden + Kubernetes)
-make && make test-comprehensive
+make && make test-federation
 
 # Stress test (repeats adversarial, gossip, and bootstrap tests)
 for i in {1..10}; do echo && echo "run $i" && echo &&
