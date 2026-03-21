@@ -5,9 +5,6 @@ type: container
 # KELS service is not needed in the registry environment
 disabled: ${var.envType == "registry"}
 
-dependencies:
-  - run.federation-read-prefixes
-
 source:
   path: ../..  # Set build context to repository root
 
@@ -16,13 +13,9 @@ include:
   - lib/kels-derive/**/*
   - services/kels/**/*
   - project.garden.yml
-  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/kels/Dockerfile
-  buildArgs:
-    # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
 
 ---
 

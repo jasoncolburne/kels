@@ -18,6 +18,7 @@ secure-enclave = ["apple-cryptokit-rs"]
 redis = ["dep:redis"]
 server-caching = ["dep:cacheable"]
 server = ["tokio/signal"]  # Server utilities (shutdown signal handling)
+federation = []  # Compile-time trusted registry prefixes (requires TRUSTED_REGISTRY_PREFIXES env var)
 dev-tools = []  # Developer-only tools - DO NOT enable in production
 
 [dependencies]

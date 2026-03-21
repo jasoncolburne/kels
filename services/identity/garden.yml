@@ -2,9 +2,6 @@ kind: Build
 name: identity
 type: container
 
-dependencies:
-  - run.federation-read-prefixes
-
 source:
   path: ../..  # Set build context to repository root
 
@@ -14,13 +11,9 @@ include:
   - lib/kels-mock-hsm/**/*
   - services/identity/**/*
   - project.garden.yml
-  - .kels/federated-registries.json
 
 spec:
   dockerfile: services/identity/Dockerfile
-  buildArgs:
-    # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
 
 ---
 

@@ -28,7 +28,7 @@ blake3 = "1"
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 
 # KELS library for types and server utilities (shutdown_signal)
-libkels = { path = "../../lib/kels", features = ["server"] }
+libkels = { path = "../../lib/kels", features = ["server", "federation"] }
 
 # Verifiable storage for Chained trait and PostgreSQL backend
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
