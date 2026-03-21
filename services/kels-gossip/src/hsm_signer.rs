@@ -161,7 +161,7 @@ impl KelsPeerVerifier {
     /// Get the current public key from a peer's verified KEL.
     async fn public_key_from_key_events(&self, prefix: &str) -> Result<CesrPublicKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
-        let source = kels::HttpKelSource::new(&self.kels_url, "/api/kels/kel/{prefix}");
+        let source = kels::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}");
         let kel_verification = kels::verify_key_events(
             prefix,
             &source,
@@ -244,8 +244,8 @@ impl KelsPeerVerifier {
         };
 
         // Forward KEL from peer's KELS to our local KELS (paginated)
-        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/kels/kel/{prefix}");
-        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/kels/events");
+        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}");
+        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events");
         if let Err(e) = kels::forward_key_events(
             prefix,
             &source,

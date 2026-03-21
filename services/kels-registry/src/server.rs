@@ -27,45 +27,48 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
     let federation_router = if let Some(fed_state) = federation_state {
         // Peer discovery and member KEL endpoints
         let discovery_router = Router::new()
-            .route("/api/peers", get(handlers::list_peers_federated))
+            .route("/api/v1/peers", get(handlers::list_peers_federated))
             .route(
-                "/api/member-kels/events",
+                "/api/v1/member-kels/events",
                 post(handlers::submit_member_key_events),
             )
             .route(
-                "/api/member-kels/kel/:prefix",
+                "/api/v1/member-kels/kel/:prefix",
                 get(handlers::get_member_key_events),
             )
             .route(
-                "/api/member-kels/kel/:prefix/effective-said",
+                "/api/v1/member-kels/kel/:prefix/effective-said",
                 get(handlers::get_member_effective_said),
             );
 
         // Federation protocol
         let federation_router = Router::new()
-            .route("/api/federation/rpc", post(handlers::federation_rpc))
-            .route("/api/federation/status", get(handlers::federation_status))
+            .route("/api/v1/federation/rpc", post(handlers::federation_rpc))
             .route(
-                "/api/federation/proposals",
+                "/api/v1/federation/status",
+                get(handlers::federation_status),
+            )
+            .route(
+                "/api/v1/federation/proposals",
                 get(handlers::list_completed_proposals),
             )
             .route(
-                "/api/federation/proposals/:proposal_id",
+                "/api/v1/federation/proposals/:proposal_id",
                 get(handlers::get_proposal),
             );
 
         // Admin API (localhost only) for proposal and peer management
         let admin_router = Router::new()
             .route(
-                "/api/admin/addition-proposals",
+                "/api/v1/admin/addition-proposals",
                 post(handlers::admin_submit_addition_proposal),
             )
             .route(
-                "/api/admin/removal-proposals",
+                "/api/v1/admin/removal-proposals",
                 post(handlers::admin_submit_removal_proposal),
             )
             .route(
-                "/api/admin/proposals/:proposal_id/vote",
+                "/api/v1/admin/proposals/:proposal_id/vote",
                 post(handlers::admin_vote_proposal),
             );
 

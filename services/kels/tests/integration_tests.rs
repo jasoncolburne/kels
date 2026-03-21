@@ -285,7 +285,7 @@ async fn test_submit_and_get_kel() {
     // Submit the event
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception.clone()])
         .send()
         .await
@@ -299,7 +299,7 @@ async fn test_submit_and_get_kel() {
     // Retrieve the KEL
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -327,7 +327,7 @@ async fn test_submit_multiple_events() {
     let events = vec![inception.clone(), ixn1.clone(), ixn2.clone()];
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&events)
         .send()
         .await
@@ -340,7 +340,7 @@ async fn test_submit_multiple_events() {
     // Retrieve and verify
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -357,7 +357,7 @@ async fn test_get_nonexistent_kel() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/kels/kel/Enonexistent_prefix_that_does_not_exist"))
+        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_that_does_not_exist"))
         .send()
         .await
         .expect("Failed to send request");
@@ -375,7 +375,7 @@ async fn test_list_prefixes() {
     let (inception, _) = create_inception().await;
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -420,7 +420,7 @@ async fn test_idempotent_submit() {
     for _ in 0..2 {
         let response = harness
             .client()
-            .post(harness.url("/api/kels/events"))
+            .post(harness.url("/api/v1/kels/events"))
             .json(&vec![inception.clone()])
             .send()
             .await
@@ -434,7 +434,7 @@ async fn test_idempotent_submit() {
     // Should still only have one event
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -451,7 +451,7 @@ async fn test_submit_empty_events() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&Vec::<SignedKeyEvent>::new())
         .send()
         .await
@@ -474,7 +474,7 @@ async fn test_get_kel_with_audit() {
     // Submit
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -483,7 +483,7 @@ async fn test_get_kel_with_audit() {
     // Get KEL
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -495,7 +495,7 @@ async fn test_get_kel_with_audit() {
     // Get audit records from separate endpoint
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}/audit", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}/audit", prefix)))
         .send()
         .await
         .expect("Failed to get audit records");
@@ -517,7 +517,7 @@ async fn test_list_prefixes_with_limit() {
         let (inception, _) = create_inception().await;
         harness
             .client()
-            .post(harness.url("/api/kels/events"))
+            .post(harness.url("/api/v1/kels/events"))
             .json(&vec![inception])
             .send()
             .await
@@ -561,7 +561,7 @@ async fn test_submit_event_missing_signature() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -582,7 +582,7 @@ async fn test_submit_event_invalid_signature_format() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -606,7 +606,7 @@ async fn test_submit_rotation_event() {
     // Submit inception
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -618,7 +618,7 @@ async fn test_submit_rotation_event() {
     // Submit rotation
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![rot])
         .send()
         .await
@@ -631,7 +631,7 @@ async fn test_submit_rotation_event() {
     // Verify KEL now has 2 events
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -653,7 +653,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
         prefixes.push(inception.event.prefix.clone());
         harness
             .client()
-            .post(harness.url("/api/kels/events"))
+            .post(harness.url("/api/v1/kels/events"))
             .json(&vec![inception])
             .send()
             .await
@@ -727,7 +727,7 @@ async fn test_submit_decommission_event() {
     // Submit inception
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -743,7 +743,7 @@ async fn test_submit_decommission_event() {
     // Submit decommission
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![signed_dec])
         .send()
         .await
@@ -756,7 +756,7 @@ async fn test_submit_decommission_event() {
     // Verify KEL now has 2 events (icp + dec)
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -773,7 +773,7 @@ async fn test_get_kel_not_found_with_audit() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
+        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
         .send()
         .await
         .expect("Failed to send request");
@@ -793,7 +793,7 @@ async fn test_submit_recovery_event_requires_dual_signature() {
     // Submit inception
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception])
         .send()
         .await
@@ -812,7 +812,7 @@ async fn test_submit_recovery_event_requires_dual_signature() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![signed_rec])
         .send()
         .await
@@ -842,7 +842,7 @@ async fn test_divergence_creation() {
     // Submit icp + 2 interactions
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception, ixn1, ixn2])
         .send()
         .await
@@ -861,7 +861,7 @@ async fn test_divergence_creation() {
     // Submit builder A's interaction
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn3_a])
         .send()
         .await
@@ -877,7 +877,7 @@ async fn test_divergence_creation() {
     // Submit builder B's conflicting interaction — should cause divergence
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn3_b])
         .send()
         .await
@@ -890,7 +890,7 @@ async fn test_divergence_creation() {
     // GET the KEL and verify divergence: two events at serial 3
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -918,7 +918,7 @@ async fn test_recovery_from_divergence() {
 
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception, ixn1, ixn2])
         .send()
         .await
@@ -931,7 +931,7 @@ async fn test_recovery_from_divergence() {
     let ixn3_a = create_interaction(&mut builder_a, &make_anchor("rec-branch-a")).await;
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn3_a])
         .send()
         .await
@@ -940,7 +940,7 @@ async fn test_recovery_from_divergence() {
     let ixn3_b = create_interaction(&mut builder_b, &make_anchor("rec-branch-b")).await;
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn3_b])
         .send()
         .await
@@ -961,7 +961,7 @@ async fn test_recovery_from_divergence() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&recovery_events)
         .send()
         .await
@@ -973,7 +973,7 @@ async fn test_recovery_from_divergence() {
     // GET KEL — should show the recovered chain
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -986,7 +986,7 @@ async fn test_recovery_from_divergence() {
     let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-recovery")).await;
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn_after])
         .send()
         .await
@@ -1017,7 +1017,7 @@ async fn test_contest_freezes_kel() {
 
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception, ixn1, ixn2])
         .send()
         .await
@@ -1030,7 +1030,7 @@ async fn test_contest_freezes_kel() {
     let ror_event = builder_a.rotate_recovery().await.unwrap();
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ror_event])
         .send()
         .await
@@ -1042,7 +1042,7 @@ async fn test_contest_freezes_kel() {
 
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![contest_event])
         .send()
         .await
@@ -1055,7 +1055,7 @@ async fn test_contest_freezes_kel() {
     // GET KEL — should contain contest event
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();
@@ -1067,7 +1067,7 @@ async fn test_contest_freezes_kel() {
     let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-contest")).await;
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn_after])
         .send()
         .await
@@ -1101,7 +1101,7 @@ async fn test_overlap_submission_creates_divergence() {
     // Submit full chain from builder A: icp + ixn1 + ixn2 + ixn3_a
     harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![inception, ixn1.clone(), ixn2.clone(), ixn3_a])
         .send()
         .await
@@ -1114,7 +1114,7 @@ async fn test_overlap_submission_creates_divergence() {
     // Server deduplicates ixn1 and ixn2, then detects ixn3_b diverges from ixn3_a.
     let response = harness
         .client()
-        .post(harness.url("/api/kels/events"))
+        .post(harness.url("/api/v1/kels/events"))
         .json(&vec![ixn1, ixn2, ixn3_b])
         .send()
         .await
@@ -1127,7 +1127,7 @@ async fn test_overlap_submission_creates_divergence() {
     // Verify the KEL has divergent events
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/kels/kel/{}", prefix)))
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
         .send()
         .await
         .unwrap();

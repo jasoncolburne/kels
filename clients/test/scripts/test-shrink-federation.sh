@@ -67,7 +67,7 @@ echo "Verifying registry-b is not serving federation requests..."
 echo
 
 run_test_expect_fail "registry-b federation status unreachable" \
-    curl -sf --connect-timeout 5 "${DECOMMISSIONED_URL}/api/federation/status"
+    curl -sf --connect-timeout 5 "${DECOMMISSIONED_URL}/api/v1/federation/status"
 
 echo
 
@@ -82,7 +82,7 @@ LEADER_ID=""
 for attempt in {1..60}; do
     for i in "${!ACTIVE_REGISTRY_URLS[@]}"; do
         url="${ACTIVE_REGISTRY_URLS[$i]}"
-        STATUS=$(curl -sf "${url}/api/federation/status" 2>/dev/null || echo "{}")
+        STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
         IS_LEADER=$(echo "$STATUS" | jq -r '.isLeader // false')
         if [ "$IS_LEADER" = "true" ]; then
             LEADER_ID=$(echo "$STATUS" | jq -r '.nodeId // empty')
@@ -106,7 +106,7 @@ echo
 for i in "${!ACTIVE_REGISTRY_URLS[@]}"; do
     url="${ACTIVE_REGISTRY_URLS[$i]}"
     name="${ACTIVE_REGISTRY_NAMES[$i]}"
-    STATUS=$(curl -sf "${url}/api/federation/status" 2>/dev/null || echo "{}")
+    STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
     MEMBER_COUNT=$(echo "$STATUS" | jq -r '.members | length // 0')
     echo "  registry-${name}: ${MEMBER_COUNT} members"
     run_test "registry-${name} reports 3 members" [ "$MEMBER_COUNT" -eq 3 ]
@@ -129,7 +129,7 @@ done
 PREFIX=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX"
 
-run_test "KEL exists on node-a" curl -sf "$NODE_A_URL/api/kels/kel/$PREFIX"
+run_test "KEL exists on node-a" curl -sf "$NODE_A_URL/api/v1/kels/kel/$PREFIX"
 
 run_test "KEL propagated to all nodes after shrink" \
     wait_for_propagation "$PREFIX" 90 "${NODE_URLS[@]}"

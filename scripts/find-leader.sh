@@ -8,7 +8,7 @@ REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
 
 for ns in "${REGISTRIES[@]}"; do
     LEADER_INFO=$(kubectl exec -n kels-node-a test-client -- \
-        curl -s "http://kels-registry.${ns}.kels/api/federation/status" 2>/dev/null || echo "{}")
+        curl -s "http://kels-registry.${ns}.kels/api/v1/federation/status" 2>/dev/null || echo "{}")
     IS_LEADER=$(echo "$LEADER_INFO" | jq -r '.isLeader // false')
 
     if [ "$IS_LEADER" = "true" ]; then

@@ -191,7 +191,7 @@ impl Stats {
 
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
-    let source = HttpKelSource::new(url, "/api/kels/kel/{prefix}");
+    let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}");
     let events =
         kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
             .await?;
@@ -271,7 +271,7 @@ async fn run_worker(
     benchmark_type: BenchmarkType,
 ) {
     let client = KelsClient::new(&url);
-    let source = HttpKelSource::new(&url, "/api/kels/kel/{prefix}");
+    let source = HttpKelSource::new(&url, "/api/v1/kels/kel/{prefix}");
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();

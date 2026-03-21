@@ -49,7 +49,7 @@ Active and inactive peers are stored in separate HashMaps, both keyed by `peer_p
 
 ### Member KELs
 
-Member KELs are stored locally in `MemberKelRepository` (PostgreSQL), **not** in Raft state. Raft has no involvement in member KEL synchronization. The submit handler (`POST /api/member-kels/events`) fans out to other registries only when the submitted prefix matches the receiver's own prefix — this means identity pushes to the local registry, which fans out, and other members just store. If fan-out fails for any member, the background sync loop fills in gaps — each node periodically fetches its own KEL from the identity service, compares effective SAIDs with each member's view, and pushes deltas to stale members. This decoupled design supports natural propagation of all KEL operations (including divergence resolution) without any Raft interaction. See [recovery-workflow.md](recovery-workflow.md).
+Member KELs are stored locally in `MemberKelRepository` (PostgreSQL), **not** in Raft state. Raft has no involvement in member KEL synchronization. The submit handler (`POST /api/v1/member-kels/events`) fans out to other registries only when the submitted prefix matches the receiver's own prefix — this means identity pushes to the local registry, which fans out, and other members just store. If fan-out fails for any member, the background sync loop fills in gaps — each node periodically fetches its own KEL from the identity service, compares effective SAIDs with each member's view, and pushes deltas to stale members. This decoupled design supports natural propagation of all KEL operations (including divergence resolution) without any Raft interaction. See [recovery-workflow.md](recovery-workflow.md).
 
 ### Proposals and Votes
 
@@ -167,7 +167,7 @@ The peer set flows to multiple consumers:
 | Consumer | How It Gets Peers | Verification |
 |----------|-------------------|--------------|
 | State machine `apply()` | Direct Raft log entries | KEL anchoring, vote verification |
-| Registry API (`/api/peers`) | Reads from state machine | Pre-verified by state machine |
+| Registry API (`/api/v1/peers`) | Reads from state machine | Pre-verified by state machine |
 | Gossip allowlist refresh | Fetches from registry API | KEL verification of peer SAIDs |
 | Registry client library | Fetches from registry API | KEL verification of peer SAIDs |
 
@@ -184,7 +184,7 @@ Every node runs a background KEL sync loop (`sync.rs`) that periodically:
 
 1. Fetches its own identity KEL using `forward_key_events` (HttpKelSource → RepositoryKelStore)
 2. Compares its local effective SAID with each member's view
-3. Pushes delta events directly to members with stale state via `POST /api/member-kels/events`
+3. Pushes delta events directly to members with stale state via `POST /api/v1/member-kels/events`
 
 Each node only pushes its own KEL — every node pushes its own, so all member KELs get distributed. The sync loop fills in gaps when the submit handler's eager fan-out fails to reach a member.
 

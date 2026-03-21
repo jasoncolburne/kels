@@ -168,7 +168,7 @@ impl KelsRegistryClient {
     ) -> Result<(PeersResponse, HashMap<String, NodeStatus>), KelsError> {
         let response = self
             .client
-            .get(format!("{}/api/peers", self.base_url))
+            .get(format!("{}/api/v1/peers", self.base_url))
             .send()
             .await?;
 
@@ -289,7 +289,7 @@ impl KelsRegistryClient {
 
     /// Fetch the registry's own prefix from federation status.
     pub async fn fetch_registry_prefix(&self) -> Result<String, KelsError> {
-        let url = format!("{}/api/federation/status", self.base_url);
+        let url = format!("{}/api/v1/federation/status", self.base_url);
         let response = self.client.get(&url).send().await?;
 
         if response.status().is_success() {
@@ -309,7 +309,7 @@ impl KelsRegistryClient {
         limit: usize,
     ) -> Result<crate::SignedKeyEventPage, KelsError> {
         let mut url = format!(
-            "{}/api/member-kels/kel/{}?limit={}",
+            "{}/api/v1/member-kels/kel/{}?limit={}",
             self.base_url, prefix, limit
         );
         if let Some(since) = since {
@@ -329,7 +329,7 @@ impl KelsRegistryClient {
     pub async fn fetch_completed_proposals(&self) -> Result<CompletedProposalsResponse, KelsError> {
         let response = self
             .client
-            .get(format!("{}/api/federation/proposals", self.base_url))
+            .get(format!("{}/api/v1/federation/proposals", self.base_url))
             .send()
             .await?;
 
@@ -348,7 +348,7 @@ impl KelsRegistryClient {
         let response = self
             .client
             .get(format!(
-                "{}/api/federation/proposals?audit=true",
+                "{}/api/v1/federation/proposals?audit=true",
                 self.base_url
             ))
             .send()
@@ -366,7 +366,7 @@ impl KelsRegistryClient {
     pub async fn fetch_federation_status(&self) -> Result<crate::FederationStatus, KelsError> {
         let response = self
             .client
-            .get(format!("{}/api/federation/status", self.base_url))
+            .get(format!("{}/api/v1/federation/status", self.base_url))
             .send()
             .await?;
 
@@ -382,7 +382,7 @@ impl KelsRegistryClient {
     pub async fn fetch_all_peers(&self) -> Result<crate::PeersResponse, KelsError> {
         let response = self
             .client
-            .get(format!("{}/api/peers?all=true", self.base_url))
+            .get(format!("{}/api/v1/peers?all=true", self.base_url))
             .send()
             .await?;
 
@@ -401,7 +401,7 @@ impl KelsRegistryClient {
     ) -> Result<crate::ProposalResponse, KelsError> {
         let response = self
             .client
-            .post(format!("{}/api/admin/addition-proposals", self.base_url))
+            .post(format!("{}/api/v1/admin/addition-proposals", self.base_url))
             .json(proposal)
             .send()
             .await?;
@@ -421,7 +421,7 @@ impl KelsRegistryClient {
     ) -> Result<crate::ProposalResponse, KelsError> {
         let response = self
             .client
-            .post(format!("{}/api/admin/removal-proposals", self.base_url))
+            .post(format!("{}/api/v1/admin/removal-proposals", self.base_url))
             .json(proposal)
             .send()
             .await?;
@@ -443,7 +443,7 @@ impl KelsRegistryClient {
         let response = self
             .client
             .post(format!(
-                "{}/api/admin/proposals/{}/vote",
+                "{}/api/v1/admin/proposals/{}/vote",
                 self.base_url, proposal_id
             ))
             .json(vote)
@@ -466,7 +466,7 @@ impl KelsRegistryClient {
         let response = self
             .client
             .get(format!(
-                "{}/api/federation/proposals/{}",
+                "{}/api/v1/federation/proposals/{}",
                 self.base_url, proposal_id
             ))
             .send()
@@ -519,7 +519,7 @@ pub async fn sync_member_kel(
     sink: &(dyn crate::PagedKelSink + Sync),
 ) {
     for url in registry_urls {
-        let source = crate::HttpKelSource::new(url, "/api/member-kels/kel/{prefix}");
+        let source = crate::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}");
         if crate::forward_key_events(
             prefix,
             &source,
@@ -1055,7 +1055,7 @@ mod tests {
         };
 
         Mock::given(method("GET"))
-            .and(path("/api/peers"))
+            .and(path("/api/v1/peers"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&mock_server)
             .await;
@@ -1101,7 +1101,7 @@ mod tests {
         };
 
         Mock::given(method("GET"))
-            .and(path("/api/peers"))
+            .and(path("/api/v1/peers"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&mock_server)
             .await;
@@ -1119,7 +1119,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/peers"))
+            .and(path("/api/v1/peers"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": "Error",
                 "code": "internal_error"

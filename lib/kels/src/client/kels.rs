@@ -24,10 +24,10 @@ pub struct KelsClient {
 
 impl KelsClient {
     pub fn new(base_url: &str) -> Self {
-        Self::with_path_prefix(base_url, "/api/kels")
+        Self::with_path_prefix(base_url, "/api/v1/kels")
     }
 
-    /// Create a client with a custom path prefix (e.g., "/api/member-kels").
+    /// Create a client with a custom path prefix (e.g., "/api/v1/member-kels").
     pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
@@ -50,7 +50,7 @@ impl KelsClient {
             .unwrap_or_default();
         KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
-            path_prefix: "/api/kels".to_string(),
+            path_prefix: "/api/v1/kels".to_string(),
             client,
         }
     }
@@ -355,9 +355,9 @@ mod tests {
 
     #[test]
     fn test_client_with_path_prefix() {
-        let client = KelsClient::with_path_prefix("http://registry:8080", "/api/member-kels");
+        let client = KelsClient::with_path_prefix("http://registry:8080", "/api/v1/member-kels");
         assert_eq!(client.base_url(), "http://registry:8080");
-        assert_eq!(client.path_prefix, "/api/member-kels");
+        assert_eq!(client.path_prefix, "/api/v1/member-kels");
     }
 
     // ==================== HTTP Client Tests with Mock Server ====================
@@ -429,7 +429,7 @@ mod tests {
             };
 
             Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
+                .and(path("/api/v1/kels/events"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .expect(1)
                 .mount(&mock_server)
@@ -462,7 +462,7 @@ mod tests {
             };
 
             Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
+                .and(path("/api/v1/kels/events"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .expect(3)
                 .mount(&mock_server)
@@ -497,7 +497,7 @@ mod tests {
             };
 
             Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
+                .and(path("/api/v1/kels/events"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .mount(&mock_server)
                 .await;
@@ -530,7 +530,7 @@ mod tests {
             };
 
             Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
+                .and(path("/api/v1/kels/events"))
                 .respond_with(ResponseTemplate::new(410).set_body_json(&error))
                 .mount(&mock_server)
                 .await;
@@ -560,7 +560,7 @@ mod tests {
             };
 
             Mock::given(method("POST"))
-                .and(path("/api/kels/events"))
+                .and(path("/api/v1/kels/events"))
                 .respond_with(ResponseTemplate::new(400).set_body_json(&error))
                 .mount(&mock_server)
                 .await;
@@ -600,7 +600,7 @@ mod tests {
             };
 
             Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
+                .and(path_regex(r"/api/v1/kels/kel/.*"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .mount(&mock_server)
                 .await;
@@ -619,7 +619,7 @@ mod tests {
             let mock_server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
+                .and(path_regex(r"/api/v1/kels/kel/.*"))
                 .respond_with(ResponseTemplate::new(404))
                 .mount(&mock_server)
                 .await;
@@ -640,7 +640,7 @@ mod tests {
             };
 
             Mock::given(method("GET"))
-                .and(path_regex(r"/api/kels/kel/.*"))
+                .and(path_regex(r"/api/v1/kels/kel/.*"))
                 .respond_with(ResponseTemplate::new(500).set_body_json(&error))
                 .mount(&mock_server)
                 .await;

@@ -89,11 +89,11 @@ If an attacker gains access to the HSM (via the identity service's PKCS#11 inter
 ### ~~Localhost Bypass~~
 
 ~~**Attack:** If an attacker can reach the registry from localhost (e.g., SSRF, container escape), they can use the admin API.~~
-- **Mitigated:** Admin write endpoints (proposals, votes) use KEL anchoring — you need the actual signing key to create a valid record. The proposal query endpoint is now at `GET /api/federation/proposals/:id` (unauthenticated, alongside the proposals listing).
+- **Mitigated:** Admin write endpoints (proposals, votes) use KEL anchoring — you need the actual signing key to create a valid record. The proposal query endpoint is now at `GET /api/v1/federation/proposals/:id` (unauthenticated, alongside the proposals listing).
 
 ### Proposal/Vote Endpoints (No Localhost Check — By Design)
 
-`admin_submit_addition_proposal`, `admin_submit_removal_proposal`, and `admin_vote_proposal` are exposed at `/api/admin/addition-proposals` (POST), `/api/admin/removal-proposals` (POST), and `/api/admin/proposals/:id/vote` (POST) without a localhost check.
+`admin_submit_addition_proposal`, `admin_submit_removal_proposal`, and `admin_vote_proposal` are exposed at `/api/v1/admin/addition-proposals` (POST), `/api/v1/admin/removal-proposals` (POST), and `/api/v1/admin/proposals/:id/vote` (POST) without a localhost check.
 - **By design:** These are the federation RPC path — remote registries submit proposals and votes over the network. A localhost check would break federation. Both handlers verify SAID integrity (`verify()` / `verify_said()`) and KEL anchoring (`verify_anchoring()`) before submitting to Raft — you need the proposer's or voter's actual signing key to create a valid record with an anchored SAID, which is unforgeable.
 
 ## Unauthenticated Endpoints
@@ -102,14 +102,14 @@ These endpoints have no authentication and return potentially sensitive informat
 
 | Endpoint | Risk | Justification |
 |----------|------|---------------|
-| `GET /api/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
-| `GET /api/member-kels/:prefix` | Exposes a member's full KEL history | KELs are public by design — verifiability requires availability |
-| `POST /api/member-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
-| `GET /api/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
-| `GET /api/federation/proposals` | Exposes completed proposals and votes | Required for independent verification by gossip nodes |
-| `GET /api/federation/proposals/:id` | Exposes a specific proposal with votes | Same data available via proposals listing; needed by admin CLI |
-| `POST /api/kels/events` | Accepts event submissions from anyone | Events are cryptographically validated (signatures checked against KEL) |
-| `GET /api/kels/kel/:prefix` | Exposes any stored KEL | KELs are public; this is the data-plane read path |
+| `GET /api/v1/peers` | Enumerates all active peers with peer_prefixes, node_ids, gossip addresses | Needed for peer discovery; peer_prefixes are public (derived from identity KELs) |
+| `GET /api/v1/member-kels/:prefix` | Exposes a member's full KEL history | KELs are public by design — verifiability requires availability |
+| `POST /api/v1/member-kels` | Exposes all federation member KELs | Same as above; HA design requires any registry to serve all KELs |
+| `GET /api/v1/federation/status` | Reveals leader, term, member list | Status information; member prefixes are compile-time constants |
+| `GET /api/v1/federation/proposals` | Exposes completed proposals and votes | Required for independent verification by gossip nodes |
+| `GET /api/v1/federation/proposals/:id` | Exposes a specific proposal with votes | Same data available via proposals listing; needed by admin CLI |
+| `POST /api/v1/kels/events` | Accepts event submissions from anyone | Events are cryptographically validated (signatures checked against KEL) |
+| `GET /api/v1/kels/kel/:prefix` | Exposes any stored KEL | KELs are public; this is the data-plane read path |
 
 These are intentionally public. The security model relies on cryptographic verification, not access control.
 

@@ -161,10 +161,10 @@ test-voting:
 	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1a: unauthenticated GET to federation proposals endpoint should succeed (read-only)
-	kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1b: POST to federation proposals endpoint should fail (method not allowed)
-	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://kels-registry.kels-registry-a.kels/api/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1c: proposal-status via admin CLI should succeed
 	garden run proposal-status --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a

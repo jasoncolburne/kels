@@ -187,7 +187,7 @@ This ensures the server's in-memory signing state is always consistent with the 
 - **Bounded exposure window:** A compromised signing key is useful for at most one rotation interval before automatic rotation obsoletes it. The adversary must then compromise the new key (which they cannot predict due to pre-rotation commitment).
 - **Recovery key freshness:** Recovery keys rotate every third interval, limiting the window for recovery key compromise.
 - **Defensive rotation:** If the binding chain is tampered with, immediate rotation limits the damage window.
-- **Authenticated management endpoint:** The `POST /api/identity/kel/manage` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized KEL operations.
+- **Authenticated management endpoint:** The `POST /api/v1/identity/kel/manage` endpoint requires a `SignedRequest` verified against the identity's own KEL, preventing unauthorized KEL operations.
 
 ## DB Compromise + Key Compromise
 

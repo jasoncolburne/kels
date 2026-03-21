@@ -30,7 +30,7 @@ pub async fn sync_all_member_kels(
 
     for prefix in &config.trusted_prefixes {
         for url in &urls {
-            let source = kels::HttpKelSource::new(url, "/api/member-kels/kel/{prefix}");
+            let source = kels::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}");
             if kels::forward_key_events(
                 prefix,
                 &source,
@@ -122,7 +122,7 @@ async fn sync_own_kel(
         .ok()
         .flatten();
 
-    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/identity/kel");
+    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/v1/identity/kel");
     let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
     )));
@@ -171,7 +171,7 @@ async fn push_to_stale_members(
             continue;
         }
 
-        let client = kels::KelsClient::with_path_prefix(&member.url, "/api/member-kels");
+        let client = kels::KelsClient::with_path_prefix(&member.url, "/api/v1/member-kels");
 
         // Check member's view of our effective SAID
         let member_said = match client.fetch_effective_said(&own_prefix).await {
@@ -186,7 +186,7 @@ async fn push_to_stale_members(
             continue; // Member is up to date
         }
 
-        let member_sink = kels::HttpKelSink::new(&member.url, "/api/member-kels/events");
+        let member_sink = kels::HttpKelSink::new(&member.url, "/api/v1/member-kels/events");
 
         // Delta fetch with fallback: try since=member_said, fall back to full
         let since = member_said.as_deref();

@@ -39,9 +39,9 @@ ALL_EVENTS="[]"
 SINCE=""
 while true; do
     if [ -z "$SINCE" ]; then
-        PAGE=$(curl -s -f "$IDENTITY_URL/api/identity/kel")
+        PAGE=$(curl -s -f "$IDENTITY_URL/api/v1/identity/kel")
     else
-        PAGE=$(curl -s -f "$IDENTITY_URL/api/identity/kel?since=$SINCE")
+        PAGE=$(curl -s -f "$IDENTITY_URL/api/v1/identity/kel?since=$SINCE")
     fi
 
     if [ $? -ne 0 ]; then

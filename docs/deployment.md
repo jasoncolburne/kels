@@ -25,7 +25,7 @@ This provides the full KEL API: event submission, paginated retrieval, divergenc
 Standalone mode does not include:
 - Gossip replication (no `kels-gossip`)
 - Federation consensus (no `kels-registry`)
-- Peer authentication for the `/api/kels/prefixes` endpoint (requires Redis for peer verification)
+- Peer authentication for the `/api/v1/kels/prefixes` endpoint (requires Redis for peer verification)
 - KEL caching (served directly from PostgreSQL on every request)
 
 Multiple kels replicas can be deployed against the same PostgreSQL instance for horizontal scaling. Optionally, add Redis (`REDIS_URL` environment variable) to enable KEL caching and pub/sub cache invalidation across replicas for improved read performance.
@@ -105,7 +105,7 @@ Deploy gossip nodes. Each node needs to be authorized in the peer allowlist befo
 ### Phase 5: Verify
 
 Run integration tests or manually verify:
-- Nodes appear in peer discovery (`GET /api/peers`)
+- Nodes appear in peer discovery (`GET /api/v1/peers`)
 - KELs replicate across nodes via gossip
 - Client discovery works (latency-sorted node selection)
 
@@ -174,7 +174,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `HSM_PIN` | PKCS#11 PIN |
 | `KEY_HANDLE_PREFIX` | HSM key handle prefix (`kels-registry` or `kels-gossip`) |
 | `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
-| `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/member-kels` for registry, `/api/kels` for nodes) |
+| `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/v1/member-kels` for registry, `/api/v1/kels` for nodes) |
 | `NEXT_SIGNING_ALGORITHM` | Algorithm for next signing key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
 | `NEXT_RECOVERY_ALGORITHM` | Algorithm for next recovery key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-87`) |
 | `IDENTITY_ROTATION_INTERVAL_DAYS` | Auto-rotation interval in days (default: `180`) |

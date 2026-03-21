@@ -915,7 +915,7 @@ pub unsafe extern "C" fn kels_recover(
                     ));
                 }
             };
-            let source = kels::HttpKelSource::new(&kels_url, "/api/kels/kel/{prefix}");
+            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}");
             match kels::verify_key_events(
                 prefix,
                 &source,

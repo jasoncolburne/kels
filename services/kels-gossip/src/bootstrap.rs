@@ -6,7 +6,7 @@
 //!
 //! # Algorithm
 //!
-//! 1. **Authorization check**: Check if peer is in allowlist via `/api/peers`
+//! 1. **Authorization check**: Check if peer is in allowlist via `/api/v1/peers`
 //! 2. **If NOT authorized**: Loop:
 //!    - Log alert with PeerId (so admin can add it)
 //!    - **preload_kels()**: Sync KELs from Ready peers (read-only via HTTP)
