@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// across the entire chain lifetime.
 ///
 /// The 44 bytes are the raw UTF-8 bytes of the CESR qb64 string (e.g.,
-/// `EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a`). CESR Base64 uses URL-safe characters
+/// `KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a`). CESR Base64 uses URL-safe characters
 /// (`A-Za-z0-9-_`), so every byte is a valid ASCII character.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodePrefix(pub [u8; 44]);
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn node_prefix_from_prefix_str() {
-        let prefix = "EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
+        let prefix = "KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
         assert_eq!(prefix.len(), 44);
         let node_prefix = NodePrefix::option_from_str(prefix);
         assert!(node_prefix.is_some());
@@ -144,17 +144,17 @@ mod tests {
 
     #[test]
     fn node_prefix_debug_format() {
-        let prefix = "EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
+        let prefix = "KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
         let node_prefix =
             NodePrefix::option_from_str(prefix).unwrap_or_else(|| NodePrefix::from_bytes([0; 44]));
         let debug = format!("{node_prefix:?}");
-        assert!(debug.starts_with("NodePrefix(EBfx"));
+        assert!(debug.starts_with("NodePrefix(KBfx"));
         assert!(debug.ends_with("Y_a)"));
     }
 
     #[test]
     fn node_prefix_display_format() {
-        let prefix = "EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
+        let prefix = "KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
         let node_prefix =
             NodePrefix::option_from_str(prefix).unwrap_or_else(|| NodePrefix::from_bytes([0; 44]));
         assert_eq!(format!("{node_prefix}"), prefix);
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn node_prefix_serde_roundtrip() {
-        let prefix = "EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
+        let prefix = "KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a";
         let node_prefix =
             NodePrefix::option_from_str(prefix).unwrap_or_else(|| NodePrefix::from_bytes([0; 44]));
         let serialized = postcard::to_stdvec(&node_prefix);

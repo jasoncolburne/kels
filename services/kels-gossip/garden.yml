@@ -40,7 +40,6 @@ dependencies:
   - deploy.postgres
   - deploy.kels
   - deploy.redis
-  - deploy.hsm
   - deploy.identity
 
 variables:

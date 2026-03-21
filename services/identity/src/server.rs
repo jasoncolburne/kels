@@ -17,7 +17,7 @@ use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
 
 use crate::{
     handlers::{self, AppState},
-    hsm::{HsmClient, HsmKeyProvider},
+    hsm::{HsmKeyProvider, HsmKeyProviderConfig, Pkcs11Client},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
 
@@ -27,7 +27,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/identity", get(handlers::get_identity))
         .route("/api/identity/status", get(handlers::get_status))
         .route("/api/identity/anchor", post(handlers::anchor))
-        .route("/api/identity/ecdh", post(handlers::ecdh))
         .route("/api/identity/kel", get(handlers::get_key_events))
         .route("/api/identity/kel/manage", post(handlers::manage_kel))
         .route("/api/identity/sign", post(handlers::sign))
@@ -37,7 +36,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
-    let hsm_url = std::env::var("HSM_URL").unwrap_or_else(|_| "http://hsm:80".to_string());
+    let pkcs11_library = std::env::var("PKCS11_LIBRARY_PATH")
+        .unwrap_or_else(|_| "/usr/lib/kels/libkels_mock_hsm.so".to_string());
+    let hsm_slot: usize = std::env::var("HSM_SLOT")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse()
+        .unwrap_or(0);
+    let hsm_pin = std::env::var("HSM_PIN").unwrap_or_else(|_| "1234".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
     let forward_url = std::env::var("KEL_FORWARD_URL")
@@ -45,6 +50,10 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .filter(|u| !u.is_empty());
     let forward_path_prefix =
         std::env::var("KEL_FORWARD_PATH_PREFIX").unwrap_or_else(|_| "/api/kels".to_string());
+    let next_signing_algorithm =
+        std::env::var("NEXT_SIGNING_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
+    let next_recovery_algorithm =
+        std::env::var("NEXT_RECOVERY_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
@@ -62,8 +71,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
     info!("Database connected");
 
-    info!("Connecting to HSM service at {}", hsm_url);
-    let hsm = Arc::new(HsmClient::new(&hsm_url));
+    info!("Connecting to PKCS#11 HSM at {}", pkcs11_library);
+    let hsm = Arc::new(
+        Pkcs11Client::new(&pkcs11_library, hsm_slot, &hsm_pin)
+            .map_err(|e| format!("Failed to connect to PKCS#11 HSM: {}", e))?,
+    );
 
     let kel_repo = Arc::new(crate::repository::KeyEventRepository::new(
         repo.pool().clone(),
@@ -90,15 +102,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
             binding.recovery_generation
         );
 
-        let key_provider = HsmKeyProvider::with_handles(
-            hsm.clone(),
-            &key_handle_prefix,
-            binding.signing_generation,
-            binding.recovery_generation,
-            binding.current_key_handle.into(),
-            binding.next_key_handle.into(),
-            binding.recovery_key_handle.into(),
-        );
+        let key_provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: hsm.clone(),
+            label_prefix: key_handle_prefix.clone(),
+            signing_generation: binding.signing_generation,
+            recovery_generation: binding.recovery_generation,
+            signing_algorithm: next_signing_algorithm.clone(),
+            recovery_algorithm: next_recovery_algorithm.clone(),
+            current_handle: Some(binding.current_key_handle.into()),
+            next_handle: Some(binding.next_key_handle.into()),
+            recovery_handle: Some(binding.recovery_key_handle.into()),
+        });
 
         KeyEventBuilder::with_dependencies(
             key_provider,
@@ -113,7 +127,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         // and registry pulls all member KELs via sync_all_member_kels on startup.
         info!("No existing identity - auto-incepting");
 
-        let key_provider = HsmKeyProvider::new(hsm.clone(), &key_handle_prefix, 0, 0);
+        let key_provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: hsm.clone(),
+            label_prefix: key_handle_prefix.clone(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: next_signing_algorithm.clone(),
+            recovery_algorithm: next_recovery_algorithm.clone(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         let mut builder =
             KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)
@@ -210,22 +234,27 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-const ROTATION_INTERVAL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
-const LOOP_PERIOD: Duration = Duration::from_secs(6 * 3600); // 6 hours
+fn rotation_interval() -> Duration {
+    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_INTERVAL_DAYS", 30) as u64 * 24 * 3600)
+}
+
+fn rotation_check_period() -> Duration {
+    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_CHECK_PERIOD_MINUTES", 360) as u64 * 60)
+}
 
 async fn auto_rotation_loop(state: Arc<AppState>) {
     // Stabilize on startup
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let mut interval = tokio::time::interval(LOOP_PERIOD);
+    let mut interval = tokio::time::interval(rotation_check_period());
     let mut last_rotation: Option<tokio::time::Instant> = None;
 
     loop {
-        interval.tick().await; // first tick is immediate, then every LOOP_PERIOD
+        interval.tick().await; // first tick is immediate, then every rotation_check_period()
 
-        // Cooldown: skip if we rotated recently (keys are fresh for ROTATION_INTERVAL)
+        // Cooldown: skip if we rotated recently (keys are fresh for rotation_interval())
         if let Some(last) = last_rotation
-            && last.elapsed() < ROTATION_INTERVAL
+            && last.elapsed() < rotation_interval()
         {
             continue;
         }
@@ -272,8 +301,8 @@ async fn check_and_rotate(
     let kel_verification = kels::completed_verification(
         &mut tx,
         prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         binding_saids,
     )
     .await?;
@@ -387,8 +416,8 @@ pub(crate) async fn perform_kel_operation(
                     prefix,
                     &source,
                     kels::KelVerifier::new(prefix),
-                    kels::MAX_EVENTS_PER_KEL_QUERY,
-                    kels::max_verification_pages(),
+                    kels::page_size(),
+                    kels::max_pages(),
                 )
                 .await
                 {
@@ -590,5 +619,5 @@ fn verify_latest_binding(
         .to_std()
         .unwrap_or(Duration::ZERO);
 
-    Ok(age > ROTATION_INTERVAL)
+    Ok(age > rotation_interval())
 }

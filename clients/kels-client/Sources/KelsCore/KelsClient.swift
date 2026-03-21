@@ -14,10 +14,12 @@ public final class KelsClient: @unchecked Sendable {
     ///   - stateDir: Directory for storing local state (defaults to app documents)
     ///   - keyNamespace: Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
     ///   - prefix: Optional existing KEL prefix to load
-    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil) throws {
+    ///   - signingAlgorithm: Signing algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
+    ///   - recoveryAlgorithm: Recovery key algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
+    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil, signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws {
         let dir = stateDir ?? Self.defaultStateDirectory()
 
-        context = kels_init(kelsURL, dir, keyNamespace, prefix)
+        context = kels_init(kelsURL, dir, keyNamespace, prefix, signingAlgorithm, recoveryAlgorithm)
         if context == nil {
             let error = Self.getLastError()
             throw KelsClientError.unknown(error ?? "Failed to initialize KELS context")
@@ -54,15 +56,18 @@ public final class KelsClient: @unchecked Sendable {
     // MARK: - KEL Operations
 
     /// Create an inception event (start a new KEL)
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for signing keys (NULL = keep current from init)
+    ///   - recoveryAlgorithm: Algorithm for recovery keys (NULL = keep current from init)
     /// - Returns: The inception event
-    public func incept() throws -> KelEvent {
+    public func incept(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_incept(ctx, &result)
+            kels_incept(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
@@ -70,31 +75,35 @@ public final class KelsClient: @unchecked Sendable {
     }
 
     /// Rotate the signing key
+    /// - Parameter signingAlgorithm: Algorithm for the new signing key (nil = keep current)
     /// - Returns: The rotation event
-    public func rotate() throws -> KelEvent {
+    public func rotate(signingAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_rotate(ctx, &result)
+            kels_rotate(ctx, signingAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
         }
     }
 
-    /// Rotate the recovery key
+    /// Rotate both signing and recovery keys
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for the new signing key (nil = keep current)
+    ///   - recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
     /// - Returns: The recovery rotation event
-    public func rotateRecovery() throws -> KelEvent {
+    public func rotateRecovery(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_rotate_recovery(ctx, &result)
+            kels_rotate_recovery(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
@@ -119,15 +128,18 @@ public final class KelsClient: @unchecked Sendable {
     }
 
     /// Attempt recovery from divergence or adversary attack
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for the new signing key (nil = keep current)
+    ///   - recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
     /// - Returns: The recovery outcome and event
-    public func recover() throws -> (RecoveryOutcome, KelEvent) {
+    public func recover(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> (RecoveryOutcome, KelEvent) {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsRecoveryResult()
-            kels_recover(ctx, &result)
+            kels_recover(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_recovery_result_free(&result) }
 
             if result.status != KELS_STATUS_OK {
@@ -145,15 +157,18 @@ public final class KelsClient: @unchecked Sendable {
     /// Contest a malicious recovery by submitting a contest event (cnt)
     /// Use this when an adversary has revealed your recovery key.
     /// The KEL will be permanently frozen after contesting.
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for the new signing key (nil = keep current)
+    ///   - recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
     /// - Returns: The contest event
-    public func contest() throws -> KelEvent {
+    public func contest(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_contest(ctx, &result)
+            kels_contest(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
@@ -161,15 +176,18 @@ public final class KelsClient: @unchecked Sendable {
     }
 
     /// Decommission a KEL (permanently disable it)
+    /// - Parameters:
+    ///   - signingAlgorithm: Algorithm for the new signing key (nil = keep current)
+    ///   - recoveryAlgorithm: Algorithm for the new recovery key (nil = keep current)
     /// - Returns: The decommission event
-    public func decommission() throws -> KelEvent {
+    public func decommission(signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws -> KelEvent {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
             }
 
             var result = KelsEventResult()
-            kels_decommission(ctx, &result)
+            kels_decommission(ctx, signingAlgorithm, recoveryAlgorithm, &result)
             defer { kels_event_result_free(&result) }
 
             return try parseEventResult(result)
@@ -213,7 +231,7 @@ public final class KelsClient: @unchecked Sendable {
     ///   - limit: Maximum events per page (clamped to server max)
     ///   - offset: Event offset to start from
     /// - Returns: JSON string `{"events": [...], "has_more": bool}`
-    public func getKel(prefix: String? = nil, limit: UInt64 = 512, offset: UInt64 = 0) throws -> String {
+    public func getKel(prefix: String? = nil, limit: UInt64 = 32, offset: UInt64 = 0) throws -> String {
         try lock.withLock {
             guard let ctx = context else {
                 throw KelsClientError.notInitialized
@@ -323,7 +341,7 @@ public final class KelsClient: @unchecked Sendable {
 
     // MARK: - Reset
 
-    /// Reset all local state (KELs, keys)
+    /// Reset all local state (KELs, keys, SE Keychain entries)
     /// This is a static method that can be called without an existing client instance
     /// - Parameter stateDir: Directory containing local state (defaults to app documents)
     public static func reset(stateDir: String? = nil) throws {

@@ -13,7 +13,7 @@ mod tests {
 
     #[test]
     fn test_revocation_hash_deterministic() {
-        let said = "EAbc1234567890123456789012345678901234567890";
+        let said = "KAbc1234567890123456789012345678901234567890";
         let h1 = revocation_hash(said);
         let h2 = revocation_hash(said);
         assert_eq!(h1, h2);
@@ -21,22 +21,22 @@ mod tests {
 
     #[test]
     fn test_revocation_hash_length() {
-        let said = "EAbc1234567890123456789012345678901234567890";
+        let said = "KAbc1234567890123456789012345678901234567890";
         let hash = revocation_hash(said);
         assert_eq!(hash.len(), 44);
     }
 
     #[test]
     fn test_revocation_hash_differs_from_said() {
-        let said = "EAbc1234567890123456789012345678901234567890";
+        let said = "KAbc1234567890123456789012345678901234567890";
         let hash = revocation_hash(said);
         assert_ne!(hash, said);
     }
 
     #[test]
     fn test_revocation_hash_different_inputs() {
-        let h1 = revocation_hash("EAbc1234567890123456789012345678901234567890");
-        let h2 = revocation_hash("EXyz1234567890123456789012345678901234567890");
+        let h1 = revocation_hash("KAbc1234567890123456789012345678901234567890");
+        let h2 = revocation_hash("KXyz1234567890123456789012345678901234567890");
         assert_ne!(h1, h2);
     }
 }

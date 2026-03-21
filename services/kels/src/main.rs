@@ -15,9 +15,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting KELS - Key Event Log Service");
 
-    #[cfg(feature = "dev-tools")]
-    tracing::warn!("DEV-TOOLS FEATURE ENABLED — DO NOT USE IN PRODUCTION");
-
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "80".to_string())
         .parse()

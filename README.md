@@ -48,13 +48,13 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Address GitHub issues
-2. Post-quantum signature support (ML-DSA-65, 192-bit security — supported by Apple Secure Enclave, Thales Luna, AWS KMS)
+2. ~~Post-quantum signature support~~ Done: infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`); gossip uses ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms) + ML-DSA-65/ML-DSA-87; core service accepts both P-256 and ML-DSA-65/ML-DSA-87 KELs
 3. Add kels-policy crate
-  - Policy DSL:
-    a. threshold
-    b. weighted
-    c. nested groups
-    d. role-based
+  - Policy DSL
+    - threshold
+    - weighted
+    - nested groups
+    - role-based
   - Self-addressed policy objects anchored in KELs
   - PolicyVerification model similar to others, based on anchoring
 4. Add kels-policy to kels-creds
@@ -77,13 +77,13 @@ kels/
 │   ├── kels/           # Core library (libkels)
 │   ├── kels-derive/    # Derive macros for storage traits
 │   ├── kels-ffi/       # FFI bindings (Swift/C interop)
-│   └── gossip/         # Custom gossip protocol library
+│   ├── gossip/         # Custom gossip protocol library
+│   └── kels-mock-hsm/  # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
 ├── services/
 │   ├── kels/           # HTTP API server
 │   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
 │   ├── kels-registry/  # Node registration and discovery service
 │   ├── identity/       # Registry identity service (single replica)
-│   ├── hsm/            # HSM service (SoftHSM2 wrapper)
 │   ├── postgres/       # PostgreSQL configuration
 │   └── redis/          # Redis configuration
 ├── clients/
@@ -107,9 +107,9 @@ kels/
 
 - **Server-side caching**: Optional Redis + W-TinyLFU local caching for high-throughput deployments (enabled by default for the garden example)
 
-- **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) synchronizes KELs between independent deployments for high availability
+- **Cross-deployment gossip**: Custom gossip protocol (HyParView + PlumTree) with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) key exchange + ML-DSA-65/ML-DSA-87 mutual authentication + AES-GCM-256 encryption synchronizes KELs between independent deployments for high availability
 
-- **Secure node registration**: HSM-backed identities with cryptographic peer allowlist - only authorized nodes can register and participate in gossip
+- **Secure node registration**: HSM-backed identities (ML-DSA-65/87) with cryptographic peer allowlist - only authorized nodes can register and participate in gossip
 
 ## Event Types
 
@@ -251,32 +251,27 @@ All recorded data in KELS is KEL-backed and verified independently before use:
 
 ### Automatic Key Rotation
 
-The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that checks every 6 hours whether the current HSM key binding is older than 30 days. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
+The identity service (used by registries and gossip nodes with HSM-backed keys) runs an automatic rotation loop that periodically checks whether the current HSM key binding is due for rotation. Both the check period (`IDENTITY_ROTATION_CHECK_PERIOD_MINUTES`, default: 360) and rotation interval (`IDENTITY_ROTATION_INTERVAL_DAYS`, default: 180) are configurable. When rotation is due, it uses a scheduled mode that auto-selects the rotation type: every third rotation is a recovery key rotation (`ror`), the rest are standard signing key rotations (`rot`). This ensures both signing and recovery keys are refreshed regularly without manual intervention.
 
 All KEL management operations — automatic and manual — go through a single `perform_kel_operation` code path that updates the in-memory key provider in-place, keeping the server's signing state consistent. The management endpoint (`POST /api/identity/kel/manage`) requires a signed request verified against the identity's own KEL.
 
 ### Proactive Protection
 
-- HSM-backed services rotate signing keys automatically (every 30 days) and recovery keys (every ~90 days)
+- HSM-backed services rotate signing keys automatically (configurable interval, default 180 days) and recovery keys (every third rotation)
 - Manual rotation is available via the admin CLI for immediate key refresh
 - End-user clients should rotate keys regularly (suggested: signing every 1-3 months, recovery every 3-12 months)
 - Use hardware-backed keys (Secure Enclave, HSM) when possible
 
-### Post-Quantum Considerations
+### Post-Quantum Cryptography
 
-Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotation hash (128-bit effective security under Grover's algorithm) reveals nothing about the next key until rotation occurs, so a quantum adversary cannot derive future keys from the current KEL. Regular key rotation forces a quantum adversary to start from scratch with each new key, limiting their window of attack to the current rotation period.
+KELS uses post-quantum cryptographic algorithms throughout the infrastructure tier:
 
-The current signing keys (ECDSA/P-256) are quantum-vulnerable — a sufficiently powerful quantum computer could derive the private key from the exposed public key without needing physical access. Breaking a single P-256 key via Shor's algorithm requires ~2,330 logical qubits (millions of physical qubits with error correction) and ~1.26 × 10^11 Toffoli gates (Roetteler et al., 2017), translating to hours to weeks per key depending on gate speed:
+- **Signing:** ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all clients and infrastructure. Mobile clients may use P-256 as a fallback. The KELS core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs.
+- **Gossip transport:** ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms — if any peer uses ML-DSA-87, all connections use ML-KEM-1024) key exchange + ML-DSA-65/87 mutual authentication + BLAKE3 KDF + AES-GCM-256 encryption. Provides forward secrecy via ephemeral ML-KEM keypairs.
+- **HSM:** The `kels-mock-hsm` PKCS#11 cdylib implements ML-DSA-65 and ML-DSA-87 signing via fips204. In production, swap the .so path for a real HSM's PKCS#11 library (CloudHSM, Luna, etc.).
+- **Key provider:** Supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) and algorithm upgrade via rotation.
 
-| Error-corrected gate speed | Time to break one P-256 key |
-|---|---|
-| 100 ns (very optimistic) | ~3.5 hours |
-| 1 μs (optimistic) | ~35 hours |
-| 10 μs (more realistic) | ~15 days |
-
-Even in the most optimistic quantum scenario, a monthly rotation period provides an enormous safety margin — the adversary breaks one key only to find the next is behind a fresh BLAKE3 hash they can't touch.
-
-While these protocols could be upgraded with quantum-safe signature algorithms, such algorithms are not yet widely supported by hardware security modules. Today, hardware-backed keys with pre-commitment provide the strongest practical security against classical adversaries, while frequent rotation provides meaningful mitigation against future quantum threats until PQ hardware support matures.
+Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotation hash (128-bit effective security under Grover's algorithm) reveals nothing about the next key until rotation occurs, so a quantum adversary cannot derive future keys from the current KEL.
 
 ## API Endpoints
 
@@ -285,7 +280,7 @@ While these protocols could be upgraded with quantum-safe signature algorithms, 
 | `GET` | `/health` | Health check |
 | `GET` | `/ready` | Readiness check (gossip sync status) |
 | `POST` | `/api/kels/events` | Submit signed events |
-| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-512) |
+| `GET` | `/api/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32) |
 | `GET` | `/api/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
 | `GET` | `/api/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
 | `GET` | `/api/kels/events/:said/exists` | Check if event exists by SAID |
@@ -315,7 +310,6 @@ Namespaces
 - kels-registry-d
 
 Children per Namespace
-- hsm
 - identity
 - kels-registry
 - postgres
@@ -332,7 +326,6 @@ Namespaces
 - kels-node-f
 
 Children per Namespace
-- hsm
 - identity
 - kels (2)
 - kels-gossip
@@ -341,9 +334,9 @@ Children per Namespace
 
 #### Special cases
 
-- Some nodes are built with the `dev-tools` feature flag enabled. This turns off authentication on the /prefixes endpoint, so an adversary can't scan for known prefixes. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing. 
+- Some nodes have `KELS_TEST_ENDPOINTS=true`, which exposes an unauthenticated `/api/test/prefixes` endpoint. This allows inspection of prefixes during consistency checking (`test-consistency.sh`) and other testing without compromising the authenticated `/api/kels/prefixes` endpoint.
 
-Nodes built with `dev-tools` enabled:
+Nodes with test endpoints enabled:
 - `node-a`
 - `node-b`
 - `node-d`
@@ -436,13 +429,13 @@ The provided Garden configuration is a test harness, not a production deployment
 
 ### Infrastructure hardening
 
-- **Real HSMs**: The current deployment uses SoftHSM2 with hardcoded PINs. Production requires hardware-backed key storage (CloudHSM, YubiHSM, Thales, etc.)
+- **Real HSMs**: The current deployment uses `kels-mock-hsm` (a PKCS#11 cdylib) with hardcoded PINs. Production requires swapping the PKCS#11 .so path (`PKCS11_LIBRARY_PATH`) to a real HSM's PKCS#11 library (CloudHSM, YubiHSM, Thales Luna, etc.)
 - **Secrets management**: Database credentials, HSM PINs, and other secrets are hardcoded or passed as plain environment variables. Use a secrets manager (Vault, AWS Secrets Manager, etc.)
 - **Database hardening**: PostgreSQL runs with default superuser credentials, no replication, no backup strategy, and no encryption at rest. Connection pool sizing is unconfigured
 - **Redis credentials**: Redis uses per-service ACL users with least-privilege command sets and key pattern isolation, and RDB persistence is enabled. However, ACL passwords are configured via Garden template variables — production should use a secrets manager for Redis credentials
 - **Container security**: All containers run as root with no `securityContext`, no read-only filesystem, and no resource quotas beyond memory limits
-- **Network policies**: No Kubernetes NetworkPolicies are defined — all services are reachable from anywhere in the cluster. The security model does not depend on network isolation for data integrity (all data is end-verifiable), but network policies are still recommended to limit blast radius and protect pod-internal services (HSM, identity)
-- **TLS for internal services**: Data plane communication is plaintext HTTP, which is acceptable by design — all data is public and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC uses `SignedFederationRpc` for integrity, and gossip uses three-DH P-256 + AES-GCM-256 for authenticated encryption. TLS is only needed for defense-in-depth on internal services that carry secrets (HSM, Redis, PostgreSQL connections)
+- **Network policies**: No Kubernetes NetworkPolicies are defined — all services are reachable from anywhere in the cluster. The security model does not depend on network isolation for data integrity (all data is end-verifiable), but network policies are still recommended to limit blast radius and protect pod-internal services (identity)
+- **TLS for internal services**: Data plane communication is plaintext HTTP, which is acceptable by design — all data is public and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC uses `SignedFederationRpc` for integrity, and gossip uses ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption. TLS is only needed for defense-in-depth on internal services that carry secrets (Redis, PostgreSQL connections)
 
 ### Operational gaps
 

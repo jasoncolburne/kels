@@ -16,9 +16,18 @@ RUN apt-get update && \
 # Copy all source code
 COPY lib/kels-derive /app/lib/kels-derive
 COPY lib/kels /app/lib/kels
+COPY lib/kels-mock-hsm /app/lib/kels-mock-hsm
 COPY services/identity /app/services/identity
 
-# Build with BuildKit cache mounts for cargo registry and target directory
+# Build mock HSM shared library
+WORKDIR /app/lib/kels-mock-hsm
+RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=mock-hsm-target,target=/app/lib/kels-mock-hsm/target \
+    cargo build --release && \
+    cp /app/lib/kels-mock-hsm/target/release/libkels_mock_hsm.so /app/libkels_mock_hsm.so 2>/dev/null || \
+    cp /app/lib/kels-mock-hsm/target/release/libkels_mock_hsm.dylib /app/libkels_mock_hsm.so 2>/dev/null || true
+
+# Build identity service
 ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/services/identity
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
@@ -38,11 +47,14 @@ RUN apt-get update && \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy built binaries
+# Copy built binaries and mock HSM library
 COPY --from=builder /app/identity /app/identity
 COPY --from=builder /app/identity-admin /app/identity-admin
-
+COPY --from=builder /app/libkels_mock_hsm.so /app/libkels_mock_hsm.so
 COPY --from=builder /app/services/identity/migrations /app/services/identity/migrations
+
+# Create HSM data directory
+RUN mkdir -p /data/hsm
 
 EXPOSE 80
 

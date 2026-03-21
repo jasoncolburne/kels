@@ -41,7 +41,7 @@ echo "Created KEL with prefix: $PREFIX"
 run_test "Rotate signing key" kels-cli -u "$KELS_URL" rotate --prefix "$PREFIX"
 
 # Test 3: Anchor a SAID
-TEST_SAID="EBk8ZjTMvX4UJ9K5b_XQNJ1a9K_8QNsKJ1a9K_8QNsKJ"
+TEST_SAID="KBk8ZjTMvX4UJ9K5b_XQNJ1a9K_8QNsKJ1a9K_8QNsKJ"
 run_test "Anchor SAID (interaction)" kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX" --said "$TEST_SAID"
 
 # Test 4: Rotate recovery key

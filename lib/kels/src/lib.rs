@@ -51,25 +51,29 @@ use std::env;
 use std::sync::LazyLock;
 
 #[cfg(feature = "redis")]
-pub use cache::{
-    LocalCache, MAX_CACHED_KEL_EVENTS, ServerKelCache, parse_pubsub_message, pubsub_channel,
-};
+pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
 #[cfg(feature = "server")]
 pub use server::shutdown_signal;
 
 #[cfg(feature = "secure-enclave")]
 pub use crypto::HardwareProviderConfig;
 #[cfg(feature = "secure-enclave")]
-pub use hardware::HardwareKeyProvider;
+pub use hardware::{
+    HardwareKeyProvider, SecureEnclaveKeyHandle, se_delete_all_keys, se_is_available,
+};
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
+pub use cesr::VerificationKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
-    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResult,
-    nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
+    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResponse,
+    SignResult, nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
     verify_peer_anchoring, verify_peer_votes, with_failover,
 };
-pub use crypto::{KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig};
+pub use crypto::{
+    FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
+    SoftwareProviderConfig,
+};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history};
@@ -94,42 +98,51 @@ pub use types::{
 #[cfg(any(test, feature = "dev-tools"))]
 pub use types::resolve_key_events;
 
-/// Maximum number of events allowed in a single submit_events request.
-/// Shared between the server handler and gossip client chunking logic.
-pub const MAX_EVENTS_PER_SUBMISSION: usize = 512;
+/// Default page size for all KEL operations: submissions, queries, and responses.
+/// ML-DSA-65 signatures are ~3.3KB each, so 32 events ≈ 100KB per page.
+/// Override with `KELS_PAGE_SIZE` environment variable.
+pub const DEFAULT_PAGE_SIZE: usize = 32;
 
-/// Maximum number of events fetched in a single KEL database query or HTTP page.
-pub const MAX_EVENTS_PER_KEL_QUERY: usize = 512;
-
-/// Default maximum number of pages to walk during `completed_verification()`.
-/// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
-/// At 512 events per page, 512 pages = ~262K events before failing secure.
-pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 512;
-
-static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
-    match env::var("KELS_MAX_VERIFICATION_PAGES") {
+pub fn env_usize(name: &str, default: usize) -> usize {
+    match env::var(name) {
         Ok(s) => match s.parse() {
             Ok(v) => v,
             Err(_) => {
                 eprintln!(
-                    "KELS_MAX_VERIFICATION_PAGES is set but not a valid usize: {:?}, using default {}",
-                    s, DEFAULT_MAX_VERIFICATION_PAGES
+                    "{} is set but not a valid usize: {:?}, using default {}",
+                    name, s, default
                 );
-                DEFAULT_MAX_VERIFICATION_PAGES
+                default
             }
         },
-        Err(_) => DEFAULT_MAX_VERIFICATION_PAGES,
+        Err(_) => default,
     }
+}
+
+static PAGE_SIZE: LazyLock<usize> =
+    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE));
+
+/// Read the page size, cached from env on first access.
+pub fn page_size() -> usize {
+    *PAGE_SIZE
+}
+
+/// Default maximum number of pages to walk during `completed_verification()`.
+/// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
+/// At 32 events per page, 64 pages = 2048 max events before failing secure.
+pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
+
+static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
+    env_usize(
+        "KELS_MAX_VERIFICATION_PAGES",
+        DEFAULT_MAX_VERIFICATION_PAGES,
+    )
 });
 
 /// Read the max verification pages, cached from env on first access.
-pub fn max_verification_pages() -> usize {
+pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
 }
-
-/// Maximum number of events returned in a single KEL response page.
-/// KELs larger than this are not cached server-side.
-pub const MAX_EVENTS_PER_KEL_RESPONSE: usize = MAX_EVENTS_PER_KEL_QUERY;
 
 /// Sentinel limit for loading an entire KEL without pagination.
 /// Only appropriate for client-side local stores (CLI, FFI) and tests —

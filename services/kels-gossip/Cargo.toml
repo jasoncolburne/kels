@@ -15,7 +15,7 @@ name = "kels_gossip"
 path = "src/lib.rs"
 
 [dependencies]
-# Custom gossip protocol (HyParView + PlumTree over TCP with ECDH + AES-GCM-256)
+# Custom gossip protocol (HyParView + PlumTree over TCP with ML-KEM + AES-GCM-256)
 gossip = { package = "kels-gossip-proto", path = "../../lib/gossip" }
 
 # Bytes for gossip API message content
@@ -24,11 +24,8 @@ bytes = "1"
 # Blake3 for topic ID derivation
 blake3 = "1"
 
-# CESR for decoding identity service responses
+# CESR for decoding identity service responses and ML-DSA-65 verification
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
-
-# p256 for signature verification
-p256 = { version = "0.13", features = ["ecdsa"] }
 
 # KELS library for types and server utilities (shutdown_signal)
 libkels = { path = "../../lib/kels", features = ["server"] }

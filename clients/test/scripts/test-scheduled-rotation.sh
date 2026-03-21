@@ -29,19 +29,41 @@ wait_for_health "$IDENTITY_URL" "Identity service" || exit 1
 echo ""
 
 # ========================================
-# Fetch KEL and extract rotation event kinds
+# Fetch all KEL pages and extract rotation event kinds
 # ========================================
 echo -e "${CYAN}=== Verifying KEL Structure After Rotations ===${NC}"
 echo ""
 
-KEL=$(curl -s -f "$IDENTITY_URL/api/identity/kel")
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Failed to fetch identity KEL${NC}"
-    exit 1
-fi
+# Paginate through all KEL pages using 'since'
+ALL_EVENTS="[]"
+SINCE=""
+while true; do
+    if [ -z "$SINCE" ]; then
+        PAGE=$(curl -s -f "$IDENTITY_URL/api/identity/kel")
+    else
+        PAGE=$(curl -s -f "$IDENTITY_URL/api/identity/kel?since=$SINCE")
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to fetch identity KEL${NC}"
+        exit 1
+    fi
+
+    PAGE_EVENTS=$(echo "$PAGE" | jq '.events')
+    HAS_MORE=$(echo "$PAGE" | jq -r '.hasMore')
+
+    ALL_EVENTS=$(echo "$ALL_EVENTS $PAGE_EVENTS" | jq -s '.[0] + .[1]')
+
+    if [ "$HAS_MORE" != "true" ]; then
+        break
+    fi
+
+    # Get the SAID of the last event for 'since' pagination
+    SINCE=$(echo "$PAGE_EVENTS" | jq -r '.[-1].event.said')
+done
 
 # Extract rotation event kinds in order (rot, ror)
-ROTATION_KINDS=$(echo "$KEL" | jq -r '[.events[] | .event | select(.kind == "kels/v1/rot" or .kind == "kels/v1/ror") | .kind] | .[]')
+ROTATION_KINDS=$(echo "$ALL_EVENTS" | jq -r '[.[] | .event | select(.kind == "kels/v1/rot" or .kind == "kels/v1/ror") | .kind] | .[]')
 echo "Rotation event kinds:"
 echo "$ROTATION_KINDS" | nl
 echo ""

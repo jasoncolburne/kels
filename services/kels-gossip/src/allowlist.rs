@@ -4,12 +4,16 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use cesr::Matter;
 use thiserror::Error;
 use verifiable_storage::Chained;
 
@@ -24,6 +28,10 @@ pub enum AllowlistRefreshError {
 /// Shared allowlist type - maps peer_prefix (KELS prefix string) to full Peer data
 pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
 
+/// Shared flag: true if any peer in the federation uses ML-DSA-87, requiring ML-KEM-1024.
+/// Initialized to `true` (fail secure — use KEM-1024 until federation algorithms are known).
+pub type RequiresKem1024 = Arc<AtomicBool>;
+
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
 /// This performs cryptographic verification:
@@ -33,12 +41,17 @@ pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
 /// 4. For peers: verifies an approved proposal exists with sufficient votes,
 ///    where each vote passes SAID integrity (`verify()`) and KEL anchoring checks
 ///
+/// Also checks each authorized peer's KEL signing algorithm via the local KELS service.
+/// If any peer uses ML-DSA-87, sets `requires_kem_1024` to true (all connections use ML-KEM-1024).
+///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
     registry_urls: &[String],
     registry_kel_store: &(dyn kels::KelStore + Sync),
     allowlist: &SharedAllowlist,
     exclude_node_id: Option<&str>,
+    requires_kem_1024: &RequiresKem1024,
+    kels_url: &str,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
@@ -140,6 +153,54 @@ pub async fn refresh_allowlist(
         }
     }
 
+    // Check all authorized peers' signing algorithms (including self, before exclusion).
+    // If any peer uses ML-DSA-87, all connections must use ML-KEM-1024.
+    let mut any_dsa_87 = false;
+    for peer_prefix in authorized_peers.keys() {
+        let source = kels::HttpKelSource::new(kels_url, "/api/kels/kel/{prefix}");
+        match kels::verify_key_events(
+            peer_prefix,
+            &source,
+            kels::KelVerifier::new(peer_prefix),
+            kels::page_size(),
+            kels::max_pages(),
+        )
+        .await
+        {
+            Ok(verification) => {
+                if let Some(qb64_key) = verification.current_public_key()
+                    && let Ok(pk) = cesr::PublicKey::from_qb64(qb64_key)
+                    && pk.code() == cesr::VerificationKeyCode::MlDsa87.code()
+                {
+                    debug!(peer_prefix, "Peer uses ML-DSA-87, requiring ML-KEM-1024");
+                    any_dsa_87 = true;
+                }
+            }
+            Err(e) => {
+                warn!(peer_prefix, error = %e, "Failed to verify peer KEL for algorithm check, assuming ML-DSA-87 (fail secure)");
+                any_dsa_87 = true;
+            }
+        }
+
+        if any_dsa_87 {
+            break;
+        }
+    }
+
+    let previous = requires_kem_1024.load(Ordering::Relaxed);
+    requires_kem_1024.store(any_dsa_87, Ordering::Relaxed);
+    if previous != any_dsa_87 {
+        info!(
+            "KEM algorithm updated: {} (any peer ML-DSA-87: {})",
+            if any_dsa_87 {
+                "ML-KEM-1024"
+            } else {
+                "ML-KEM-768"
+            },
+            any_dsa_87,
+        );
+    }
+
     // Filter out the excluded node (e.g., self) from the authorized peers
     if let Some(excluded) = exclude_node_id {
         authorized_peers.retain(|_, peer| peer.node_id != excluded);
@@ -180,6 +241,8 @@ pub async fn run_allowlist_refresh_loop(
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
     node_id: &str,
+    requires_kem_1024: RequiresKem1024,
+    kels_url: &str,
 ) {
     info!(
         "Starting allowlist refresh loop (interval: {:?})",
@@ -187,7 +250,15 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(registry_urls, registry_kel_store, &allowlist, Some(node_id)).await
+        match refresh_allowlist(
+            registry_urls,
+            registry_kel_store,
+            &allowlist,
+            Some(node_id),
+            &requires_kem_1024,
+            kels_url,
+        )
+        .await
         {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);

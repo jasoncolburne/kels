@@ -20,7 +20,7 @@ use crate::{
 };
 
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/api/kels/events", post(handlers::submit_events))
         .route("/api/kels/prefixes", post(handlers::list_prefixes))
         .route("/health", get(handlers::health))
@@ -32,7 +32,14 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/kels/kel/:prefix/effective-said",
             get(handlers::get_effective_said),
-        )
+        );
+
+    if handlers::test_endpoints_enabled() {
+        tracing::warn!("KELS_TEST_ENDPOINTS enabled — unauthenticated test endpoints active");
+        router = router.route("/api/test/prefixes", post(handlers::test_list_prefixes));
+    }
+
+    router
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
 }
@@ -62,7 +69,6 @@ pub async fn run(
     info!("Connected to Redis");
 
     let repo = Arc::new(repo);
-    #[cfg(not(feature = "dev-tools"))]
     let kel_store: Arc<dyn kels::KelStore> = {
         let kel_event_repo = Arc::new(crate::repository::KeyEventRepository::new(
             repo.key_events.pool.clone(),
@@ -72,7 +78,6 @@ pub async fn run(
     let kel_cache = ServerKelCache::new(redis_conn.clone(), "kels:kel");
     let state = Arc::new(AppState {
         repo,
-        #[cfg(not(feature = "dev-tools"))]
         kel_store,
         kel_cache,
         redis_conn,

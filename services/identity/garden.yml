@@ -11,6 +11,7 @@ source:
 include:
   - lib/kels/**/*
   - lib/kels-derive/**/*
+  - lib/kels-mock-hsm/**/*
   - services/identity/**/*
   - project.garden.yml
   - .kels/federated-registries.json
@@ -30,7 +31,6 @@ type: kubernetes
 dependencies:
   - build.identity
   - deploy.postgres
-  - deploy.hsm
 
 variables:
   identityDatabaseUrl: ${var.postgres.url}/identity

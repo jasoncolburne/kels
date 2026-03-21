@@ -19,9 +19,9 @@ use verifiable_storage::StorageDatetime;
 use crate::{
     error::KelsError,
     types::{
-        CompletedProposalsResponse, ErrorResponse, KelVerification, NodeInfo, NodeStatus, Peer,
-        PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
-        SignedRequest, Vote,
+        CompletedProposalsResponse, ErrorResponse, FederationStatus, KelVerification, NodeInfo,
+        NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
+        ProposalWithVotesMethods, SignedRequest, Vote,
     },
 };
 
@@ -286,13 +286,8 @@ impl KelsRegistryClient {
         let response = self.client.get(&url).send().await?;
 
         if response.status().is_success() {
-            let status: serde_json::Value = response.json().await?;
-            status["self_prefix"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| {
-                    KelsError::RegistryFailure("Missing self_prefix in federation status".into())
-                })
+            let status: FederationStatus = response.json().await?;
+            Ok(status.self_prefix)
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -522,8 +517,8 @@ pub async fn sync_member_kel(
             prefix,
             &source,
             sink,
-            crate::MAX_EVENTS_PER_KEL_RESPONSE,
-            crate::max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             None,
         )
         .await
@@ -551,8 +546,8 @@ pub async fn verify_peer_anchoring(
     let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids(),
     )
     .await;
@@ -571,8 +566,8 @@ pub async fn verify_peer_anchoring(
     let kel_verification = crate::completed_verification(
         &mut loader,
         &peer.authorizing_kel,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids(),
     )
     .await?;
@@ -718,8 +713,8 @@ async fn verify_anchors_from_store(
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids.clone(),
     )
     .await;
@@ -738,8 +733,8 @@ async fn verify_anchors_from_store(
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
-        crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-        crate::max_verification_pages(),
+        crate::page_size(),
+        crate::max_pages(),
         saids,
     )
     .await?;
@@ -904,8 +899,8 @@ pub async fn nodes_sorted_by_latency(
         let _ = crate::completed_verification(
             &mut loader,
             prefix,
-            crate::MAX_EVENTS_PER_KEL_RESPONSE as u64,
-            crate::max_verification_pages(),
+            crate::page_size(),
+            crate::max_pages(),
             iter::empty(),
         )
         .await;
@@ -1032,8 +1027,8 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let peer = Peer {
-            said: "ETestPeerSaid_______________________________".to_string(),
-            prefix: "ETestPeerPrefix_____________________________".to_string(),
+            said: "KTestPeerSaid_______________________________".to_string(),
+            prefix: "KTestPeerPrefix_____________________________".to_string(),
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),

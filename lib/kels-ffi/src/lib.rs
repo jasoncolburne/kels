@@ -5,10 +5,11 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, RwLock},
 };
 use tokio::runtime::Runtime;
@@ -26,41 +27,9 @@ use kels::HardwareKeyProvider;
 )))]
 use kels::SoftwareKeyProvider;
 use kels::{
-    FileKelStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider, NodeStatus,
+    FileKelStore, FileKeyStateStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
+    NodeStatus, VerificationKeyCode,
 };
-use serde::{Deserialize, Serialize};
-
-// ==================== Key State Persistence ====================
-
-/// Persisted key state for restoring Secure Enclave keys
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct KeyState {
-    signing_generation: u64,
-    recovery_generation: u64,
-}
-
-impl KeyState {
-    #[allow(dead_code)] // Used only on macos/ios with secure-enclave feature
-    fn load(state_dir: &Path, prefix: &str) -> Option<Self> {
-        let path = state_dir.join(format!("{}.keys.json", prefix));
-        let data = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&data).ok()
-    }
-
-    fn save(&self, state_dir: &Path, prefix: &str) -> Result<(), KelsError> {
-        let path = state_dir.join(format!("{}.keys.json", prefix));
-        let data = serde_json::to_string_pretty(self)
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        std::fs::write(&path, data).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn delete(state_dir: &Path, prefix: &str) {
-        let path = state_dir.join(format!("{}.keys.json", prefix));
-        let _ = std::fs::remove_file(&path);
-    }
-}
 
 // ==================== Error Handling ====================
 
@@ -242,6 +211,7 @@ impl Default for KelsRecoveryResult {
 pub struct KelsContext {
     builder: Arc<Mutex<KeyEventBuilder<HardwareKeyProvider>>>,
     store: Arc<FileKelStore>,
+    key_state_store: FileKeyStateStore,
     runtime: Runtime,
     kels_url: RwLock<String>,
     state_dir: PathBuf,
@@ -255,6 +225,7 @@ pub struct KelsContext {
 pub struct KelsContext {
     builder: Arc<Mutex<KeyEventBuilder<SoftwareKeyProvider>>>,
     store: Arc<FileKelStore>,
+    key_state_store: FileKeyStateStore,
     runtime: Runtime,
     kels_url: RwLock<String>,
     state_dir: PathBuf,
@@ -275,6 +246,19 @@ fn from_c_string(ptr: *const c_char) -> Option<String> {
     unsafe { CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_string()) }
 }
 
+fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
+    match from_c_string(algo).as_deref() {
+        Some("ml-dsa-65") | Some("ML-DSA-65") => Some(VerificationKeyCode::MlDsa65),
+        Some("ml-dsa-87") | Some("ML-DSA-87") => Some(VerificationKeyCode::MlDsa87),
+        Some("secp256r1") | Some("p256") => Some(VerificationKeyCode::Secp256r1),
+        _ => None, // null, empty, or unrecognized = keep current
+    }
+}
+
+fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
+    parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::MlDsa65)
+}
+
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
         KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
@@ -292,15 +276,13 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
 /// Save key state from the builder's key provider
 async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
-    state_dir: &Path,
+    key_state_store: &FileKeyStateStore,
     prefix: &str,
 ) -> Result<(), KelsError> {
-    let key_provider = builder.key_provider();
-    let key_state = KeyState {
-        signing_generation: key_provider.signing_generation().await,
-        recovery_generation: key_provider.recovery_generation().await,
-    };
-    key_state.save(state_dir, prefix)
+    builder
+        .key_provider()
+        .save_state(key_state_store, prefix)
+        .await
 }
 
 // ==================== Context Management ====================
@@ -312,6 +294,10 @@ async fn save_key_state<K: KeyProvider + Clone>(
 /// * `state_dir` - Directory for storing local state (KELs, keys)
 /// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
+/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). NULL defaults to "secp256r1".
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Recovery key algorithm. NULL defaults to "secp256r1".
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Returns
 /// Pointer to context, or NULL on error. Check kels_last_error() for details.
@@ -321,6 +307,8 @@ pub extern "C" fn kels_init(
     state_dir: *const c_char,
     key_namespace: *const c_char,
     prefix: *const c_char,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
 ) -> *mut KelsContext {
     clear_last_error();
 
@@ -352,6 +340,9 @@ pub extern "C" fn kels_init(
     )))]
     let _ = key_namespace; // Unused in software-only builds
 
+    let signing_algo = parse_algorithm(signing_algorithm);
+    let recovery_algo = parse_algorithm(recovery_algorithm);
+
     let prefix_opt = from_c_string(prefix);
     let state_path = PathBuf::from(&state_dir_str);
 
@@ -370,47 +361,58 @@ pub extern "C" fn kels_init(
         }
     };
 
-    // Create key provider
+    // Create key state store and key provider
+    let key_state_store = FileKeyStateStore::new(&state_path);
+
     #[cfg(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     ))]
     let key_provider = {
-        // Try to load existing key state for this prefix
-        let key_state = prefix_opt
-            .as_deref()
-            .and_then(|p| KeyState::load(&state_path, p));
-
-        if let Some(ks) = key_state {
-            // Restore key provider with saved handles
-            match HardwareKeyProvider::with_all_handles(
-                &namespace,
-                ks.signing_generation,
-                ks.recovery_generation,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    set_last_error(&format!("Failed to restore key provider: {}", e));
-                    return std::ptr::null_mut();
-                }
+        let mut provider = match HardwareKeyProvider::new(&namespace, signing_algo, recovery_algo) {
+            Some(p) => p,
+            None => {
+                set_last_error("Secure Enclave not available");
+                return std::ptr::null_mut();
             }
-        } else {
-            // No saved state, create fresh provider
-            match HardwareKeyProvider::new(&namespace) {
-                Some(p) => p,
-                None => {
-                    set_last_error("Secure Enclave not available");
+        };
+
+        // Restore persisted state if a prefix exists
+        if let Some(ref pfx) = prefix_opt {
+            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+                Ok(true) => {}  // State restored
+                Ok(false) => {} // No saved state, fresh provider
+                Err(e) => {
+                    set_last_error(&format!("Failed to restore key state: {}", e));
                     return std::ptr::null_mut();
                 }
             }
         }
+
+        provider
     };
 
     #[cfg(not(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
     )))]
-    let key_provider = SoftwareKeyProvider::new();
+    let key_provider = {
+        let mut provider = SoftwareKeyProvider::new(signing_algo, recovery_algo);
+
+        // Restore persisted state if a prefix exists
+        if let Some(ref pfx) = prefix_opt {
+            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+                Ok(true) => {}  // State restored
+                Ok(false) => {} // No saved state, fresh provider
+                Err(e) => {
+                    set_last_error(&format!("Failed to restore key state: {}", e));
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+
+        provider
+    };
 
     // Create KELS client
     let client = KelsClient::new(&url);
@@ -437,6 +439,7 @@ pub extern "C" fn kels_init(
     let ctx = Box::new(KelsContext {
         builder: Arc::new(Mutex::new(builder)),
         store,
+        key_state_store,
         runtime,
         kels_url: RwLock::new(url),
         state_dir: state_path,
@@ -549,11 +552,22 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 
 /// Create an inception event (start a new KEL)
 ///
+/// # Arguments
+/// * `signing_algorithm` - Signing algorithm for this inception (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Recovery algorithm for this inception (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_incept(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -576,7 +590,22 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
         return;
     };
 
-    let incept_result = ctx.runtime.block_on(async { builder_guard.incept().await });
+    let incept_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
+        builder_guard.incept().await
+    });
 
     match incept_result {
         Ok(icp) => {
@@ -586,7 +615,7 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
             // Save key state for future restarts
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
-                &ctx.state_dir,
+                &ctx.key_state_store,
                 &icp.event.prefix,
             ));
             if let Err(e) = save_result {
@@ -608,11 +637,19 @@ pub unsafe extern "C" fn kels_incept(ctx: *mut KelsContext, result: *mut KelsEve
 
 /// Rotate the signing key
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_rotate(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -635,14 +672,23 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
         return;
     };
 
-    let rotate_result = ctx.runtime.block_on(async { builder_guard.rotate().await });
+    let rotate_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+
+        builder_guard.rotate().await
+    });
 
     match rotate_result {
         Ok(rot) => {
             // Save key state after rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
-                &ctx.state_dir,
+                &ctx.key_state_store,
                 &rot.event.prefix,
             ));
             if let Err(e) = save_result {
@@ -663,11 +709,22 @@ pub unsafe extern "C" fn kels_rotate(ctx: *mut KelsContext, result: *mut KelsEve
 
 /// Rotate the recovery key (requires dual signature)
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_rotate_recovery(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -690,16 +747,29 @@ pub unsafe extern "C" fn kels_rotate_recovery(ctx: *mut KelsContext, result: *mu
         return;
     };
 
-    let rotate_result = ctx
-        .runtime
-        .block_on(async { builder_guard.rotate_recovery().await });
+    let rotate_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
+        builder_guard.rotate_recovery().await
+    });
 
     match rotate_result {
         Ok(ror) => {
             // Save key state after recovery rotation
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
-                &ctx.state_dir,
+                &ctx.key_state_store,
                 &ror.event.prefix,
             ));
             if let Err(e) = save_result {
@@ -781,11 +851,22 @@ pub unsafe extern "C" fn kels_interact(
 
 /// Attempt recovery from divergence or adversary attack
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsRecoveryResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRecoveryResult) {
+pub unsafe extern "C" fn kels_recover(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsRecoveryResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -811,6 +892,19 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
     };
 
     let recover_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
         // Verify server KEL to detect if adversary revealed the rotation key
         let add_rot = if let Some(prefix) = builder_guard.prefix() {
             let kels_url = match ctx.kels_url.read() {
@@ -826,8 +920,8 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
                 prefix,
                 &source,
                 kels::KelVerifier::new(prefix),
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
             )
             .await
             {
@@ -856,7 +950,7 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
             // Save key state after recovery
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
-                &ctx.state_dir,
+                &ctx.key_state_store,
                 &rec.event.prefix,
             ));
             if let Err(e) = save_result {
@@ -882,11 +976,22 @@ pub unsafe extern "C" fn kels_recover(ctx: *mut KelsContext, result: *mut KelsRe
 /// Use this when an adversary has revealed your recovery key.
 /// The KEL will be permanently frozen after contesting.
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_contest(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -909,16 +1014,29 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
         return;
     };
 
-    let contest_result = ctx
-        .runtime
-        .block_on(async { builder_guard.contest().await });
+    let contest_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
+        builder_guard.contest().await
+    });
 
     match contest_result {
         Ok(cnt) => {
             // Save key state after contest (keys rotated during contest)
             let save_result = ctx.runtime.block_on(save_key_state(
                 &builder_guard,
-                &ctx.state_dir,
+                &ctx.key_state_store,
                 &cnt.event.prefix,
             ));
             if let Err(e) = save_result {
@@ -939,11 +1057,22 @@ pub unsafe extern "C" fn kels_contest(ctx: *mut KelsContext, result: *mut KelsEv
 
 /// Decommission a KEL (permanently disable it)
 ///
+/// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
+///
 /// # Safety
 /// - `ctx` must be a valid context pointer
 /// - `result` must be a valid pointer to a KelsEventResult
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut KelsEventResult) {
+pub unsafe extern "C" fn kels_decommission(
+    ctx: *mut KelsContext,
+    signing_algorithm: *const c_char,
+    recovery_algorithm: *const c_char,
+    result: *mut KelsEventResult,
+) {
     clear_last_error();
 
     if ctx.is_null() || result.is_null() {
@@ -966,9 +1095,22 @@ pub unsafe extern "C" fn kels_decommission(ctx: *mut KelsContext, result: *mut K
         return;
     };
 
-    let decommission_result = ctx
-        .runtime
-        .block_on(async { builder_guard.decommission().await });
+    let decommission_result = ctx.runtime.block_on(async {
+        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_signing_algorithm(algo)
+                .await?;
+        }
+        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
+            builder_guard
+                .key_provider_mut()
+                .set_recovery_algorithm(algo)
+                .await?;
+        }
+
+        builder_guard.decommission().await
+    });
 
     match decommission_result {
         Ok(dec) => {
@@ -1045,7 +1187,7 @@ pub unsafe extern "C" fn kels_status(
         feature = "secure-enclave"
     ))]
     {
-        result.use_hardware = true;
+        result.use_hardware = kels::se_is_available();
     }
 
     #[cfg(not(all(
@@ -1107,7 +1249,7 @@ pub unsafe extern "C" fn kels_get_kel(
     };
 
     // Clamp limit to configured page size
-    let limit = limit.min(kels::MAX_EVENTS_PER_KEL_RESPONSE as u64);
+    let limit = limit.min(kels::page_size() as u64);
 
     // Load a page of events from store
     let result = ctx
@@ -1455,8 +1597,8 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let events = match kels::resolve_key_events(
             &prefix,
             &source,
-            kels::MAX_EVENTS_PER_KEL_RESPONSE,
-            kels::max_verification_pages(),
+            kels::page_size(),
+            kels::max_pages(),
             None,
         )
         .await
@@ -1476,8 +1618,21 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
 
         let mut counter = 0u32;
 
-        for event_type in types {
-            let kind = match EventKind::from_short_name(event_type) {
+        let algo_from_digit = |d: char| -> Option<VerificationKeyCode> {
+            match d {
+                '0' => Some(VerificationKeyCode::Secp256r1),
+                '1' => Some(VerificationKeyCode::MlDsa65),
+                '2' => Some(VerificationKeyCode::MlDsa87),
+                _ => None,
+            }
+        };
+
+        for token in types {
+            // Parse: "ixn", "rot1", "ror02", "dec", "rec"
+            let kind_str = token.trim_end_matches(|c: char| c.is_ascii_digit());
+            let algo_suffix = &token[kind_str.len()..];
+
+            let kind = match EventKind::from_short_name(kind_str) {
                 Ok(k) => k,
                 Err(e) => {
                     set_last_error(&format!("{}", e));
@@ -1488,20 +1643,46 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             let result = match kind {
                 EventKind::Ixn => {
                     let anchor = format!(
-                        "EAdversaryAnchor{}{}_",
+                        "KAdversaryAnchor{}{}_",
                         counter,
                         "_".repeat(44 - 17 - counter.to_string().len())
                     );
                     counter += 1;
                     adversary_builder.interact(&anchor).await
                 }
-                EventKind::Rot => adversary_builder.rotate().await,
-                EventKind::Rec => adversary_builder.recover(false).await,
-                EventKind::Ror => adversary_builder.rotate_recovery().await,
+                EventKind::Rot | EventKind::Ror | EventKind::Rec => {
+                    let chars: Vec<char> = algo_suffix.chars().collect();
+                    if let Some(&d) = chars.first()
+                        && let Some(algo) = algo_from_digit(d)
+                        && let Err(e) = adversary_builder
+                            .key_provider_mut()
+                            .set_signing_algorithm(algo)
+                            .await
+                    {
+                        set_last_error(&format!("Failed to set algorithm: {}", e));
+                        return -1;
+                    }
+                    if let Some(&d) = chars.get(1)
+                        && let Some(algo) = algo_from_digit(d)
+                        && let Err(e) = adversary_builder
+                            .key_provider_mut()
+                            .set_recovery_algorithm(algo)
+                            .await
+                    {
+                        set_last_error(&format!("Failed to set algorithm: {}", e));
+                        return -1;
+                    }
+                    match kind {
+                        EventKind::Rot => adversary_builder.rotate().await,
+                        EventKind::Ror => adversary_builder.rotate_recovery().await,
+                        EventKind::Rec => adversary_builder.recover(false).await,
+                        _ => unreachable!(),
+                    }
+                }
                 EventKind::Dec => adversary_builder.decommission().await,
                 other => {
                     set_last_error(&format!(
-                        "Unsupported event type: {}. Valid: ixn, rot, rec, ror, dec",
+                        "Unsupported event type: {}. Valid: ixn, rot[0-2], rec[0-2][0-2], ror[0-2][0-2], dec",
                         other
                     ));
                     return -1;
@@ -1509,7 +1690,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             };
 
             if let Err(e) = result {
-                set_last_error(&format!("Failed to inject {} event: {}", event_type, e));
+                set_last_error(&format!("Failed to inject {} event: {}", token, e));
                 return -1;
             }
         }
@@ -1626,14 +1807,7 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
     // Load events from store
     let events = ctx.runtime.block_on(async {
         let source = kels::StoreKelSource::new(ctx.store.as_ref());
-        kels::resolve_key_events(
-            &prefix,
-            &source,
-            kels::MAX_EVENTS_PER_KEL_RESPONSE,
-            kels::max_verification_pages(),
-            None,
-        )
-        .await
+        kels::resolve_key_events(&prefix, &source, kels::page_size(), kels::max_pages(), None).await
     });
 
     match events {
@@ -1690,6 +1864,15 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
             return -1;
         }
     };
+
+    // Delete all SE keys from the app's Keychain before removing state files
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "secure-enclave"
+    ))]
+    {
+        let _ = kels::se_delete_all_keys();
+    }
 
     let mut error_count = 0;
 
@@ -1831,8 +2014,9 @@ pub unsafe extern "C" fn kels_discover_nodes(
     };
 
     let discover_result = runtime.block_on(async {
-        // Use a temp directory for the store during node discovery
+        // Use a fresh temp directory for each discovery to avoid stale data
         let store_dir = std::env::temp_dir().join("kels-ffi-discovery");
+        let _ = std::fs::remove_dir_all(&store_dir);
         let store = FileKelStore::new(&store_dir)?;
 
         let nodes =
@@ -2268,58 +2452,6 @@ mod tests {
     }
 
     // ==================== KeyState Tests ====================
-
-    #[test]
-    fn test_key_state_default() {
-        let state = KeyState::default();
-        assert_eq!(state.signing_generation, 0);
-        assert_eq!(state.recovery_generation, 0);
-    }
-
-    #[test]
-    fn test_key_state_serialization() {
-        let state = KeyState {
-            signing_generation: 42,
-            recovery_generation: 7,
-        };
-
-        let json = serde_json::to_string(&state).expect("serialization failed");
-        assert!(json.contains("42"));
-        assert!(json.contains("7"));
-
-        let parsed: KeyState = serde_json::from_str(&json).expect("deserialization failed");
-        assert_eq!(parsed.signing_generation, 42);
-        assert_eq!(parsed.recovery_generation, 7);
-    }
-
-    #[test]
-    fn test_key_state_save_and_load() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-
-        let state = KeyState {
-            signing_generation: 100,
-            recovery_generation: 50,
-        };
-
-        // Save
-        state
-            .save(temp_dir.path(), "test_prefix")
-            .expect("save failed");
-
-        // Load
-        let loaded = KeyState::load(temp_dir.path(), "test_prefix");
-        assert!(loaded.is_some());
-        let loaded = loaded.expect("should load");
-        assert_eq!(loaded.signing_generation, 100);
-        assert_eq!(loaded.recovery_generation, 50);
-    }
-
-    #[test]
-    fn test_key_state_load_nonexistent() {
-        let temp_dir = std::env::temp_dir().join("kels_ffi_nonexistent");
-        let loaded = KeyState::load(&temp_dir, "nonexistent_prefix");
-        assert!(loaded.is_none());
-    }
 
     // ==================== kels_last_error Tests ====================
 

@@ -229,12 +229,12 @@ Where `divergedAt` is the serial number (0-indexed position in chain) where dive
 ### Fetch KEL (paginated)
 
 ```
-GET /api/kels/kel/:prefix?limit=512&since=<SAID>
+GET /api/kels/kel/:prefix?limit=32&since=<SAID>
 
 Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 ```
 
-Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-512, default 512). Loop with `hasMore` for full retrieval.
+Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-32, default 32). Loop with `hasMore` for full retrieval.
 
 ### Fetch Audit Records
 

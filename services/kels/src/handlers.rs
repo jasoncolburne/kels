@@ -1,7 +1,7 @@
 //! KELS REST API Handlers
 
 use std::{
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -15,40 +15,49 @@ use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
-    KeyEventsQuery, MAX_CACHED_KEL_EVENTS, MAX_EVENTS_PER_KEL_RESPONSE, MAX_EVENTS_PER_SUBMISSION,
-    PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
+    KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
 use tracing::warn;
 
 use crate::repository::KelsRepository;
 
-/// Maximum submissions per prefix per minute (sliding window). Excessive to stop gossip nodes from failing to update kels services. TODO: Provide an optional signed nonce during submit events that identifies the gossip node, stop rate limiting gossip nodes, and then reduce the rate limit
-const MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 128;
+static TEST_ENDPOINTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("KELS_TEST_ENDPOINTS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+});
 
-/// Maximum write requests per IP per second (token bucket: refill rate).
-const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+pub(crate) fn test_endpoints_enabled() -> bool {
+    *TEST_ENDPOINTS_ENABLED
+}
 
-/// Burst capacity for per-IP write rate limiting.
-const IP_RATE_LIMIT_BURST: u32 = 1000;
+fn max_submissions_per_prefix_per_minute() -> u32 {
+    kels::env_usize("KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE", 128) as u32
+}
 
-/// Nonce expiry window in seconds (matches the timestamp validation window).
-#[cfg(not(feature = "dev-tools"))]
-const NONCE_WINDOW_SECS: u64 = 60;
+fn max_writes_per_ip_per_second() -> u32 {
+    kels::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+}
+
+fn ip_rate_limit_burst() -> u32 {
+    kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+}
+
+fn nonce_window_secs() -> u64 {
+    kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+}
 
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
-    #[cfg(not(feature = "dev-tools"))]
     pub(crate) kel_store: Arc<dyn kels::KelStore>,
     pub(crate) kel_cache: ServerKelCache,
     pub(crate) redis_conn: redis::aio::ConnectionManager,
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
-    /// Nonce deduplication: maps nonce -> first_seen. Entries older than NONCE_WINDOW_SECS are evicted.
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
+    /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
     pub(crate) nonce_cache: DashMap<String, Instant>,
 }
 
@@ -87,7 +96,6 @@ impl ApiError {
         )
     }
 
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     fn forbidden(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::FORBIDDEN,
@@ -98,7 +106,6 @@ impl ApiError {
         )
     }
 
-    #[cfg_attr(feature = "dev-tools", allow(dead_code))]
     fn internal_error(msg: impl Into<String>) -> Self {
         ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -131,17 +138,17 @@ impl ApiError {
 }
 
 /// Per-IP write rate limiting using a token bucket.
-/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+/// Tokens refill at max_writes_per_ip_per_second(), up to ip_rate_limit_burst().
 fn check_ip_rate_limit(
     limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
     ip: std::net::IpAddr,
 ) -> Result<(), ApiError> {
     let now = Instant::now();
-    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let mut entry = limits.entry(ip).or_insert((ip_rate_limit_burst(), now));
     let elapsed = now.duration_since(entry.1);
-    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    let refill = (elapsed.as_secs_f64() * max_writes_per_ip_per_second() as f64) as u32;
     if refill > 0 {
-        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.0 = (entry.0 + refill).min(ip_rate_limit_burst());
         entry.1 = now;
     }
     if entry.0 == 0 {
@@ -285,10 +292,10 @@ pub(crate) async fn submit_events(
         }));
     }
 
-    if events.len() > MAX_EVENTS_PER_SUBMISSION {
+    if events.len() > kels::page_size() {
         return Err(ApiError::bad_request(format!(
             "Batch exceeds maximum of {} events",
-            MAX_EVENTS_PER_SUBMISSION
+            kels::page_size()
         )));
     }
 
@@ -308,7 +315,7 @@ pub(crate) async fn submit_events(
             entry.1 = now;
         } else {
             entry.0 += 1;
-            if entry.0 > MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+            if entry.0 > max_submissions_per_prefix_per_minute() {
                 return Err(ApiError::rate_limited(
                     "Too many submissions for this prefix",
                 ));
@@ -371,7 +378,7 @@ pub(crate) async fn submit_events(
         match state
             .repo
             .key_events
-            .get_signed_history(&prefix, MAX_CACHED_KEL_EVENTS as u64, 0)
+            .get_signed_history(&prefix, kels::page_size() as u64, 0)
             .await
         {
             Ok((events, has_more)) => {
@@ -428,8 +435,8 @@ pub(crate) async fn get_kel(
 ) -> Result<Response, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
-        .clamp(1, MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
 
     // Delta fetch path — canonical since-resolution
     if params.since.is_some() {
@@ -444,7 +451,7 @@ pub(crate) async fn get_kel(
     }
 
     // Full fetch path — try cache for default limit
-    if limit as usize == MAX_EVENTS_PER_KEL_RESPONSE {
+    if limit as usize == kels::page_size() {
         match state.kel_cache.get_full_serialized(&prefix).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
@@ -524,77 +531,102 @@ pub(crate) async fn get_effective_said(
 
 // ==================== Prefix Listing ====================
 
+/// Shared query logic for listing prefixes.
+async fn query_prefixes(
+    state: &AppState,
+    since: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Json<PrefixListResponse>, ApiError> {
+    let limit = limit.unwrap_or(100).clamp(1, 1000);
+    let result = state.repo.key_events.list_prefixes(since, limit).await?;
+    Ok(Json(result))
+}
+
 /// List all unique prefixes with their latest SAIDs for bootstrap sync.
 ///
 /// Accepts a `SignedRequest<PrefixesRequest>` via POST.
-/// When the `dev-tools` feature is enabled, signature and peer verification is skipped.
+/// Requires peer authentication: timestamp validation, nonce deduplication,
+/// peer allowlist verification, and signed request verification.
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
-    #[cfg(not(feature = "dev-tools"))]
-    {
-        if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
-            return Err(ApiError::forbidden("Request timestamp expired"));
-        }
 
-        // Nonce deduplication: evict expired entries, then reject duplicates
-        {
-            let now = Instant::now();
-            state.nonce_cache.retain(|_, seen| {
-                now.duration_since(*seen) < Duration::from_secs(NONCE_WINDOW_SECS)
-            });
-            if state
-                .nonce_cache
-                .insert(signed_request.payload.nonce.clone(), now)
-                .is_some()
-            {
-                return Err(ApiError::forbidden("Duplicate nonce"));
-            }
-        }
-
-        // Look up peer to verify they are in the verified allowlist
-        let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
-        let _peer = match peer {
-            Some(p) => p,
-            None => {
-                refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
-                get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
-                    .await?
-                    .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
-            }
-        };
-
-        // Consuming: verify peer's KEL (paginated) to extract trusted public key
-        let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
-        let kel_verification = kels::completed_verification(
-            &mut loader,
-            &signed_request.peer_prefix,
-            kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-            kels::max_verification_pages(),
-            std::iter::empty::<String>(),
-        )
-        .await
-        .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
-
-        signed_request
-            .verify_signature(&kel_verification)
-            .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+    if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
+        return Err(ApiError::forbidden("Request timestamp expired"));
     }
 
-    let limit = signed_request.payload.limit.unwrap_or(100).clamp(1, 1000);
-    let result = state
-        .repo
-        .key_events
-        .list_prefixes(signed_request.payload.since.as_deref(), limit)
-        .await?;
-    Ok(Json(result))
+    // Nonce deduplication: evict expired entries, then reject duplicates
+    let window = nonce_window_secs();
+    if window > 0 {
+        let now = Instant::now();
+        state
+            .nonce_cache
+            .retain(|_, seen| now.duration_since(*seen) < Duration::from_secs(window));
+        if state
+            .nonce_cache
+            .insert(signed_request.payload.nonce.clone(), now)
+            .is_some()
+        {
+            return Err(ApiError::forbidden("Duplicate nonce"));
+        }
+    }
+
+    // Look up peer to verify they are in the verified allowlist
+    let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
+    let _peer = match peer {
+        Some(p) => p,
+        None => {
+            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
+            get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
+                .await?
+                .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
+        }
+    };
+
+    // Consuming: verify peer's KEL (paginated) to extract trusted public key
+    let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
+    let kel_verification = kels::completed_verification(
+        &mut loader,
+        &signed_request.peer_prefix,
+        kels::page_size(),
+        kels::max_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await
+    .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
+
+    signed_request
+        .verify_signature(&kel_verification)
+        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+
+    query_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+}
+
+/// Unauthenticated test endpoint for listing prefixes.
+/// Only available when `KELS_TEST_ENDPOINTS=true`.
+pub(crate) async fn test_list_prefixes(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> Result<Json<PrefixListResponse>, ApiError> {
+    check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
+    query_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
 }
 
 /// Look up a verified peer from Redis cache, returning the full Peer data.
-#[cfg(not(feature = "dev-tools"))]
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
@@ -616,7 +648,6 @@ async fn get_verified_peer(
 }
 
 /// Fetch verified peers from the registry and store records in Redis.
-#[cfg(not(feature = "dev-tools"))]
 async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],
@@ -749,12 +780,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(MAX_EVENTS_PER_SUBMISSION, 512);
-    }
-
-    #[test]
-    fn test_max_submissions_per_prefix_per_minute_constant() {
-        assert_eq!(MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE, 128);
+        assert_eq!(kels::page_size(), 32);
     }
 
     // ==================== health Tests ====================

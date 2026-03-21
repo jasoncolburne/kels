@@ -31,11 +31,13 @@ use crate::federation::{
     SignedFederationRpc,
 };
 
-/// Maximum write requests per IP per second (token bucket: refill rate).
-const MAX_WRITES_PER_IP_PER_SECOND: u32 = 200;
+fn max_writes_per_ip_per_second() -> u32 {
+    kels::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+}
 
-/// Burst capacity for per-IP write rate limiting.
-const IP_RATE_LIMIT_BURST: u32 = 1000;
+fn ip_rate_limit_burst() -> u32 {
+    kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+}
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
@@ -102,17 +104,17 @@ impl ApiError {
 }
 
 /// Per-IP write rate limiting using a token bucket.
-/// Tokens refill at MAX_WRITES_PER_IP_PER_SECOND, up to IP_RATE_LIMIT_BURST.
+/// Tokens refill at max_writes_per_ip_per_second(), up to ip_rate_limit_burst().
 fn check_ip_rate_limit(
     limits: &DashMap<std::net::IpAddr, (u32, Instant)>,
     ip: std::net::IpAddr,
 ) -> Result<(), ApiError> {
     let now = Instant::now();
-    let mut entry = limits.entry(ip).or_insert((IP_RATE_LIMIT_BURST, now));
+    let mut entry = limits.entry(ip).or_insert((ip_rate_limit_burst(), now));
     let elapsed = now.duration_since(entry.1);
-    let refill = (elapsed.as_secs_f64() * MAX_WRITES_PER_IP_PER_SECOND as f64) as u32;
+    let refill = (elapsed.as_secs_f64() * max_writes_per_ip_per_second() as f64) as u32;
     if refill > 0 {
-        entry.0 = (entry.0 + refill).min(IP_RATE_LIMIT_BURST);
+        entry.0 = (entry.0 + refill).min(ip_rate_limit_burst());
         entry.1 = now;
     }
     if entry.0 == 0 {
@@ -163,8 +165,8 @@ async fn push_own_kel_to_members(state: &FederationState) {
         &self_prefix,
         &identity_source,
         &local_sink,
-        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         None,
     )
     .await
@@ -198,8 +200,8 @@ async fn push_own_kel_to_members(state: &FederationState) {
                         &self_prefix,
                         &repo_source,
                         &member_sink,
-                        kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                        kels::max_verification_pages(),
+                        kels::page_size(),
+                        kels::max_pages(),
                         None,
                     ),
                 )
@@ -246,8 +248,8 @@ pub async fn federation_rpc(
     let local_result = kels::completed_verification(
         &mut kels::StorePageLoader::new(&store),
         &signed_rpc.sender_prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         std::iter::empty::<String>(),
     )
     .await;
@@ -271,8 +273,8 @@ pub async fn federation_rpc(
                 &signed_rpc.sender_prefix,
                 &source,
                 kels::KelVerifier::new(&signed_rpc.sender_prefix),
-                kels::MAX_EVENTS_PER_KEL_RESPONSE,
-                kels::max_verification_pages(),
+                kels::page_size(),
+                kels::max_pages(),
             )
             .await
             .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?
@@ -1005,7 +1007,9 @@ pub async fn list_peers_federated(
 }
 
 /// Per-prefix rate limit constants for member KEL submissions.
-const MAX_MEMBER_SUBMISSIONS_PER_PREFIX_PER_MINUTE: u32 = 60;
+fn max_member_submissions_per_prefix_per_minute() -> u32 {
+    kels::env_usize("KELS_max_member_submissions_per_prefix_per_minute()", 60) as u32
+}
 
 /// Submit member key events (push model).
 ///
@@ -1060,7 +1064,7 @@ pub async fn submit_member_key_events(
             entry.1 = now;
         } else {
             entry.0 += 1;
-            if entry.0 > MAX_MEMBER_SUBMISSIONS_PER_PREFIX_PER_MINUTE {
+            if entry.0 > max_member_submissions_per_prefix_per_minute() {
                 return Err(ApiError::rate_limited(
                     "Too many submissions for this prefix",
                 ));
@@ -1183,8 +1187,8 @@ pub async fn get_member_key_events(
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = query
         .limit
-        .unwrap_or(kels::MAX_EVENTS_PER_KEL_RESPONSE)
-        .min(kels::MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .min(kels::page_size()) as u64;
 
     let page = kels::serve_kel_page(
         &state.member_kel_repo,

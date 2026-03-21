@@ -23,7 +23,6 @@ spec:
   buildArgs:
     # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
     TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
-    CARGO_FEATURES: "${var.devTools ? '--features dev-tools' : ''}"
 
 ---
 
@@ -44,6 +43,11 @@ variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
   redisUrl: "${var.redis.kelsUrl}"
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
+  maxSubmissionsPerPrefixPerMinute: "${var.kels.maxSubmissionsPerPrefixPerMinute}"
+  maxWritesPerIpPerSecond: "${var.kels.maxWritesPerIpPerSecond}"
+  ipRateLimitBurst: "${var.kels.ipRateLimitBurst}"
+  nonceWindowSecs: "${var.kels.nonceWindowSecs}"
+  testEndpoints: "${var.kels.testEndpoints}"
 
 spec:
   manifestTemplates:

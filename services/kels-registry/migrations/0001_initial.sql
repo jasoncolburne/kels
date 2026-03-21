@@ -102,7 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_previous ON member_key_e
 CREATE TABLE IF NOT EXISTS member_key_event_signatures (
     said CHAR(44) PRIMARY KEY,
     event_said CHAR(44) NOT NULL,
-    public_key TEXT NOT NULL,
+    label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
 

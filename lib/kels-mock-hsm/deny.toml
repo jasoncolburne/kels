@@ -1,4 +1,4 @@
-# cargo-deny configuration for hsm
+# cargo-deny configuration for kels-mock-hsm
 
 [graph]
 targets = []
@@ -9,9 +9,7 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = [
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained - transitive dependency via cryptoki" },
-]
+ignore = []
 
 [licenses]
 allow = [
@@ -19,22 +17,11 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
-    "BSD-3-Clause",
-    "CC0-1.0",
-    "ISC",
-    "Unlicense",
     "Unicode-3.0",
+    "Unlicense",
 ]
 confidence-threshold = 0.8
 exceptions = []
-
-[[licenses.clarify]]
-name = "addr"
-version = "*"
-expression = "MIT OR Apache-2.0"
-license-files = [
-    { path = "LICENSE-MIT", hash = 0xac32a0a3 }
-]
 
 [licenses.private]
 ignore = false
@@ -56,8 +43,3 @@ unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
-
-[sources.allow-org]
-github = ["jasoncolburne"]
-gitlab = []
-bitbucket = []

@@ -22,4 +22,6 @@ pub use provider::HardwareKeyProvider;
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 ))]
-pub use secure_enclave::{SecureEnclaveKeyHandle, SecureEnclaveOperations};
+pub use secure_enclave::{
+    SecureEnclaveKeyHandle, SecureEnclaveOperations, se_delete_all_keys, se_is_available,
+};

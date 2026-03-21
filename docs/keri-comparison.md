@@ -24,7 +24,7 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 
 ### KELS
 
-KELS is a federated key event system that shares KERI's foundational concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust. KELS **stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem. It introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics. Replication uses a custom gossip protocol (HyParView + PlumTree over three-DH P-256 + AES-GCM-256) rather than witness receipts. Trust anchors are compile-time registry prefixes with multi-party voting for peer lifecycle.
+KELS is a federated key event system that shares KERI's foundational concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust. KELS **stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem. It introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics. Replication uses a custom gossip protocol (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts. Trust anchors are compile-time registry prefixes with multi-party voting for peer lifecycle.
 
 KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification attacks.
 
@@ -72,12 +72,12 @@ KELS's approach is more mechanical and auditable: divergence is a protocol state
 | Replication model | Designated witness pools + receipts | Gossip (HyParView + PlumTree) + HTTP fetch |
 | Consistency model | Receipt threshold (e.g., 2-of-3 witnesses) | Eventual consistency via gossip + anti-entropy |
 | Availability guarantee | Witness liveness required | Any gossip peer can serve; registry manages peer set |
-| Transport security | Varies by implementation | Three-DH P-256 + AES-GCM-256 (forward secrecy, mutual auth) |
+| Transport security | Varies by implementation | ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 (forward secrecy, mutual auth, PQ-secure) |
 | Discovery | OOBIs (Out-of-Band Introductions) | Registry-managed peer allowlists (compile-time trust roots) |
 
 **Analysis:** KERI's witness model provides stronger consistency guarantees at the cost of availability — if witnesses are offline, events cannot be receipted. KELS's gossip model prioritizes availability and partition tolerance, accepting eventual consistency. The tradeoff is that KELS nodes may temporarily have stale views, but anti-entropy repair (every 10s by default) bounds staleness.
 
-KELS's transport security is notably stronger: the three-DH handshake with HSM-backed static keys provides forward secrecy and mutual authentication tied to KEL identities. KERI's transport security is implementation-dependent.
+KELS's transport security is notably stronger: the ML-KEM-768/1024 key exchange with ML-DSA-65/87 mutual authentication provides forward secrecy, mutual authentication tied to KEL identities, and post-quantum security. KERI's transport security is implementation-dependent.
 
 **2026 consideration:** The shift toward mesh and edge computing favors gossip-based replication. KELS's model works better in environments with intermittent connectivity or where designated infrastructure (witnesses) cannot be guaranteed. However, KERI's witness model is simpler to reason about for compliance and audit purposes.
 
@@ -101,15 +101,16 @@ KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of
 | Property | KERI | KELS |
 |----------|------|------|
 | Pre-rotation hash commitment | SHA-256 or Blake3 (quantum-resistant) | Blake3-256 (quantum-resistant) |
-| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ECDSA P-256 (128-bit classical); ML-DSA-65 (192-bit post-quantum) on roadmap |
-| Cryptographic agility | CESR code tables allow algorithm migration | CESR with Blake3; ML-DSA-65 planned via CESR code extension |
-| Forward secrecy | Implementation-dependent | Three-DH provides per-session forward secrecy |
+| Signature algorithm | Configurable (Ed25519, secp256k1, etc.) | ML-DSA-65/87 (192/256-bit post-quantum, FIPS 204) for infrastructure; P-256/ML-DSA-65/ML-DSA-87 supported for mobile clients |
+| Cryptographic agility | CESR code tables allow algorithm migration | CESR with Blake3; supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) with algorithm upgrade via rotation |
+| Forward secrecy | Implementation-dependent | ML-KEM-768/1024 ephemeral key exchange provides per-session forward secrecy |
+| Key exchange | Implementation-dependent | ML-KEM-768/1024 (FIPS 203, post-quantum) |
 
-**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. Neither currently uses post-quantum signature algorithms in production, but KELS has ML-DSA-65 on its roadmap — a 192-bit post-quantum signature algorithm already supported by Apple Secure Enclave (iOS 26+), Thales Luna HSMs, and AWS KMS.
+**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. KELS now uses ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all infrastructure identities (registries, gossip nodes), with ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated based on peer signing algorithms) for gossip transport key exchange. The core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs, supporting mobile clients during the transition period. The key provider supports mixed algorithms and algorithm upgrade via rotation, enabling gradual migration.
 
-KERI has broader cryptographic agility via CESR code tables that can accommodate new algorithms. KELS targets a specific post-quantum algorithm (ML-DSA-65) chosen for hardware availability — Apple's Secure Enclave supports ML-DSA-65 and ML-DSA-87 but not ML-DSA-44, making ML-DSA-65 the practical floor for consumer device compatibility.
+KERI has broader cryptographic agility via CESR code tables that can accommodate new algorithms. KELS targets specific post-quantum algorithms (ML-DSA-65/87, ML-KEM-768/1024) chosen for hardware availability — Apple's Secure Enclave supports ML-DSA-65 and ML-DSA-87 but not ML-DSA-44, making ML-DSA-65 the practical floor for consumer device compatibility.
 
-**2026 consideration:** With NIST PQC standards finalized and hardware support arriving (Apple Secure Enclave, Thales Luna, AWS KMS), the migration path from classical to post-quantum signatures is becoming concrete. KELS's planned ML-DSA-65 support aligns with the hardware ecosystem. KERI's algorithm agility theoretically allows any PQ algorithm, but without a specific commitment, the migration timeline is less clear. For the hash-based pre-rotation commitment — the most critical quantum-resistance property — both protocols are already prepared.
+**2026 consideration:** KELS has completed its post-quantum migration for infrastructure, using FIPS 203/204 algorithms with hardware support from Apple Secure Enclave (iOS 26+), Thales Luna HSMs, and AWS KMS. KERI's algorithm agility theoretically allows any PQ algorithm, but without a specific implementation, the migration timeline is less clear. For the hash-based pre-rotation commitment — the most critical quantum-resistance property — both protocols are already prepared.
 
 ### 6. Verification Model
 
@@ -263,7 +264,7 @@ For airgapped high-security deployments (e.g., root key ceremonies), both protoc
 |----------|------|------|
 | Native mobile client | None (signify-ts is browser-based) | Swift client (`kels-client`) for iOS/macOS; Android SDK on roadmap |
 | FFI bindings | None | C bindings (`kels-ffi`) usable from any language |
-| Hardware key integration | signify-ts uses libsodium (software keys) | Secure Enclave (iOS/macOS), HSM service (server-side) |
+| Hardware key integration | signify-ts uses libsodium (software keys) | Secure Enclave (iOS/macOS), PKCS#11 HSM (server-side, ML-DSA-65/87) |
 | Client SDK languages | TypeScript (signify-ts), Python (signifypy) | Swift, C (via FFI), Rust (native), Android (on roadmap) |
 | Edge signing | Browser-based (signify-ts + KERIA cloud agent) | On-device (Secure Enclave or software keys) |
 
@@ -271,7 +272,7 @@ For airgapped high-security deployments (e.g., root key ceremonies), both protoc
 
 KELS provides native device integration through two paths: a Swift client (`kels-client`) with direct Secure Enclave support for iOS/macOS, and C FFI bindings (`kels-ffi`) that enable integration from any language with C interop. An Android SDK (Kotlin/JNI over the C FFI) is on the roadmap. On-device signing uses hardware-backed keys (Secure Enclave) rather than software keys, providing stronger key protection without a cloud agent dependency.
 
-**2026 consideration:** Mobile-first identity is increasingly important as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet, Google Wallet) become primary credential containers. KELS's native Swift client and Secure Enclave integration position it well for this trend. The planned ML-DSA-65 support aligns with Apple's Secure Enclave PQ capabilities (iOS 26+), providing a clear path to post-quantum mobile identity. KERI's browser-based approach works for web applications but requires additional work for native mobile experiences.
+**2026 consideration:** Mobile-first identity is increasingly important as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet, Google Wallet) become primary credential containers. KELS's native Swift client and Secure Enclave integration position it well for this trend. ML-DSA-65 and ML-DSA-87 support is implemented for infrastructure and available for clients, aligning with Apple's Secure Enclave PQ capabilities (iOS 26+). KERI's browser-based approach works for web applications but requires additional work for native mobile experiences.
 
 ---
 
@@ -281,7 +282,7 @@ KELS provides native device integration through two paths: a Swift client (`kels
 
 **Recommended: Context-dependent**
 
-- **For mobile wallets with hardware-backed keys**: **KELS**. Native Swift client with Secure Enclave integration provides on-device signing without cloud agent dependency. The planned ML-DSA-65 support aligns with Apple's Secure Enclave PQ capabilities. A single KELS node can serve as the backend — no federation required for personal use.
+- **For mobile wallets with hardware-backed keys**: **KELS**. Native Swift client with Secure Enclave integration provides on-device signing without cloud agent dependency. ML-DSA-65/87 support aligns with Apple's Secure Enclave PQ capabilities. A single KELS node can serve as the backend — no federation required for personal use.
 - **For fully decentralized, infrastructure-independent identity**: **KERI**. Self-certifying identifiers with controller-selected witnesses and OOBI discovery require no specific backend infrastructure. The social accountability model for duplicity aligns with how personal reputation works.
 
 KERI's browser-based client (signify-ts) works well for web applications but lacks native mobile SDK support or hardware key integration. KELS's native device support is a significant advantage as digital wallets (eIDAS 2.0 EUDI Wallet, Apple Wallet) become primary credential containers.
@@ -319,7 +320,7 @@ High-value contexts need:
 - **Zero-trust verification** — KELS's explicit "DB cannot be trusted" model and type-safe verification align with the assumption that any component may be compromised.
 - **Forensic preservation** — Contest events preserve all divergent branches for dispute resolution.
 
-**Caveat:** KELS's P-256 curve choice is adequate but not optimal for blockchain interoperability (where Ed25519 and secp256k1 dominate). KERI's algorithm flexibility is an advantage here.
+**Caveat:** KELS's algorithm choices (ML-DSA-65/87 for infrastructure, P-256 for mobile clients) are not optimal for blockchain interoperability (where Ed25519 and secp256k1 dominate). KERI's algorithm flexibility is an advantage here.
 
 ### 5. Government / Regulated Identity (e.g., eIDAS, national identity)
 
@@ -328,7 +329,7 @@ High-value contexts need:
 - **For closed federations** (e.g., inter-agency trust within a government): **KELS**. The compile-time trust anchors, multi-party voting, and deterministic recovery map well to regulated environments with defined participants and formal change control processes.
 - **For open ecosystems** (e.g., citizen-facing credentials): **KERI**. The decentralized trust model and witness flexibility better serve environments where the credential holder must be able to verify against any infrastructure.
 
-Both protocols need post-quantum signature migration for government use cases, given typical 15-30 year data protection requirements.
+KELS has completed its post-quantum signature migration for infrastructure (ML-DSA-65/87, FIPS 204). KERI still needs post-quantum signature migration. For government use cases with typical 15-30 year data protection requirements, KELS's PQ support is a significant advantage.
 
 ### 6. Supply Chain Provenance / Verifiable Data
 
@@ -395,14 +396,14 @@ However, the KERI ecosystem provides no guidance for deploying the operational i
 
 ### KELS
 
-**Initial setup:** Complex for the full federation, but fully automated and reproducible. A single `make test-comprehensive` command deploys the entire stack (registries, gossip nodes, integration tests) in ~25 minutes. For development, a single KELS node (kels service + PostgreSQL + Redis) can run without gossip or registries, providing the full KEL API without replication — comparable in complexity to KERIA's single-service setup but with a complete feature set (divergence handling, recovery, contest).
+**Initial setup:** Simple for a single node, complex for the full federation. A single KELS node (kels service + PostgreSQL) provides the full KEL API — inception, rotation, interaction, recovery, contest, decommission, divergence handling — without gossip or registries. This is comparable in complexity to any single-service web application. You can scale a single kels deployment horizontally by adding redis.
 
-The full federation deployment requires:
-1. Deploy 3 registries in standalone mode (each running 5 services: registry, identity, HSM, PostgreSQL, Redis)
+For the full federation with gossip replication, the deployment is more involved but fully automated and reproducible (`make test-comprehensive` deploys everything in ~25 minutes). The full federation deployment requires:
+1. Deploy 3 registries in standalone mode (each running 4 services: registry, identity, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors
 4. Redeploy registries in federation mode (Raft cluster forms)
-5. Deploy gossip nodes (each running 6 services)
+5. Deploy gossip nodes (each running 5 services)
 6. Propose and vote (minimum 3 votes) to authorize each gossip node
 7. Restart gossip nodes to pick up authorization
 
@@ -418,11 +419,12 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 
 | Aspect | KERI | KELS |
 |--------|------|------|
-| Minimum services for a deployment | 2-3 (agent + witnesses) | 15+ (3 registries × 5 services) |
+| Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales horizontally with Redis |
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-comprehensive` deploys everything) |
 | Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
-| Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote + restart (minutes to hours) |
-| Adding trust anchors | OOBI resolution (seconds) | Recompile + redeploy all binaries (hours to days) |
+| Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
+| Trusting a participant (identifier) | OOBI resolution (seconds) | Fetch KEL + verify (seconds) |
+| Adding federation infrastructure | N/A (no federated infrastructure layer) | Recompile + redeploy all binaries (hours to days) |
 | Configuration surface | Low (agent config + witness URLs) | High (compile-time vars, runtime env, Redis ACLs, Raft config) |
 | Reproducible dev environment | No (manual setup, no orchestration) | Yes (Garden + Kubernetes, single command) |
 | Kubernetes-native | Possible but not designed for it | Garden-based deployment in repo; naturally fits K8s |
@@ -443,7 +445,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 - **Key rotation:** Automatic for services (every 30 days signing, 90 days recovery via identity service). Manual for end-user KELs via CLI or client.
 - **Peer management:** Proposing and voting on peers requires coordination across registry operators. Minimum 3 operators must act for any peer change.
 - **Monitoring:** Divergence is visible in the KEL and propagated via gossip — monitoring is built into the data model. Anti-entropy runs every 10 seconds by default, providing continuous consistency checking.
-- **Backup/recovery:** PostgreSQL databases are the primary data store. HSM key material must be backed up separately. Redis is reconstructable from PostgreSQL on restart (cache + operational state rebuilt via anti-entropy).
+- **Backup/recovery:** PostgreSQL databases are the primary data store. HSM key material must be backed up separately (PVC for mock HSM, native persistence for real HSMs). Redis is reconstructable from PostgreSQL on restart (cache + operational state rebuilt via anti-entropy).
 - **Federation health:** Raft cluster health must be monitored. Leader election failures, log replication lag, and split-brain scenarios are possible failure modes.
 
 ### Incident Response
@@ -599,7 +601,7 @@ KELS uses standard software engineering naming conventions with full English wor
 | `KelTransaction` | Advisory-locked database transaction |
 | `BranchTip` | Verified chain endpoint |
 | `EventKind` | Enum of event types |
-| `KeyEventSignature` | Public key + signature pair |
+| `KeyEventSignature` | Role label ("signing"/"recovery") + signature pair |
 | `MergeTransaction` | Verify-then-write for incoming events |
 | `Peer` | Network peer record |
 | `SignedRequest<T>` | Authenticated request wrapper |
@@ -689,8 +691,8 @@ verfer = Verfer(qb64=pub) # verification key
 KELS:
 ```rust
 let sig = KeyEventSignature {
-    public_key: pub_key,
-    signature: sig_bytes,
+    label: "signing".to_string(),
+    signature: sig_qb64,
 };
 ```
 
@@ -795,8 +797,8 @@ The terminology gap compounds the architectural differences. KERIpy's custom voc
 
 The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy for a minimal setup but lacks reproducible orchestration and deployable implementations of its full architecture. KELS is heavier to deploy in full federation mode but provides a single-node development path (~30 seconds to first identifier with divergence, reconciliation, and contest features) and a fully automated federation deployment (~25 minutes including integration tests). The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
 
-Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, HSM-backed service identities, and an Android SDK on the roadmap reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and planned ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
+Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, HSM-backed service identities (ML-DSA-65/87 via PKCS#11), and an Android SDK on the roadmap reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
 
-On post-quantum readiness, KELS has a concrete migration plan: ML-DSA-65 is on the roadmap, chosen for compatibility with Apple Secure Enclave, Thales Luna HSMs, and AWS KMS. KERI's broader cryptographic agility theoretically accommodates any PQ algorithm, but without a specific commitment, the migration timeline is less defined. Both protocols' pre-rotation hash commitments are already quantum-resistant.
+On post-quantum readiness, KELS has completed its infrastructure migration: ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all infrastructure signing, ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated based on peer signing algorithms) for gossip transport key exchange, and support for mixed algorithms with upgrade via rotation. The core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs, enabling gradual client migration. KERI's broader cryptographic agility theoretically accommodates any PQ algorithm, but without a specific implementation, the migration timeline is less defined. Both protocols' pre-rotation hash commitments are already quantum-resistant.
 
-KELS's roadmap — ML-DSA-65, kels-policy (multi-party governance DSL), Android SDK, kels-exchange, exhaustive proof of divergence reconciliation, a standards proposal, and a DID method specification — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.
+KELS's roadmap — kels-policy (multi-party governance DSL), Android SDK, kels-exchange, exhaustive proof of divergence reconciliation, a standards proposal, and a DID method specification — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.

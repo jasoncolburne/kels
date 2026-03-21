@@ -25,8 +25,8 @@ async fn verify_member_anchoring_from_repo(
     let kel_verification = kels::completed_verification(
         &mut kels::StorePageLoader::new(&store),
         member_prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         iter::once(said.to_string()),
     )
     .await

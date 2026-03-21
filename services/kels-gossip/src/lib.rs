@@ -2,7 +2,7 @@
 //!
 //! Synchronizes KELs between independent KELS deployments using a custom
 //! gossip protocol (HyParView membership + PlumTree broadcast over TCP
-//! with ECDH P-256 + AES-GCM-256 encryption).
+//! with auto-negotiated ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 encryption).
 //!
 //! # Architecture
 //!
@@ -262,7 +262,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
-        .get_key_events(None, kels::MAX_EVENTS_PER_KEL_RESPONSE)
+        .get_key_events(None, kels::page_size())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
     let local_kels_client = kels::KelsClient::new(&config.kels_url);
@@ -419,6 +419,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
+    // Create shared flag for KEM algorithm auto-negotiation.
+    // Initialized to `true` (fail secure — use ML-KEM-1024 until federation algorithms are known).
+    let requires_kem_1024: allowlist::RequiresKem1024 =
+        Arc::new(std::sync::atomic::AtomicBool::new(true));
+
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
     let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
     match allowlist::refresh_allowlist(
@@ -426,6 +431,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         &allowlist_store,
         &allowlist,
         Some(&config.node_id),
+        &requires_kem_1024,
+        &config.kels_url,
     )
     .await
     {
@@ -484,7 +491,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Create gossip signer and verifier (signer uses identity service)
-    let signer = IdentityGossipSigner::new(&config.identity_url, &peer_prefix_str)?;
+    let signer = IdentityGossipSigner::new(
+        &config.identity_url,
+        &peer_prefix_str,
+        requires_kem_1024.clone(),
+    )?;
     let verifier_store: std::sync::Arc<dyn kels::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
@@ -493,6 +504,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         federation_registry_urls.clone(),
         config.node_id.clone(),
         verifier_store,
+        requires_kem_1024.clone(),
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -620,6 +632,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let refresh_urls = federation_registry_urls.clone();
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
+    let refresh_kem_flag = requires_kem_1024.clone();
+    let refresh_kels_url = config.kels_url.clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &refresh_urls,
@@ -627,6 +641,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             allowlist,
             refresh_interval,
             &refresh_node_id,
+            refresh_kem_flag,
+            &refresh_kels_url,
         )
         .await;
     });

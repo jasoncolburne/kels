@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use futures::{StreamExt, future::join_all};
-use kels::{KelsClient, KelsError, MAX_EVENTS_PER_KEL_RESPONSE, PeerSigner};
+use kels::{KelsClient, KelsError, PeerSigner};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
@@ -104,8 +104,9 @@ pub async fn run_redis_subscriber(
     Ok(())
 }
 
-/// Maximum fetches per peer per minute
-const MAX_FETCHES_PER_PEER_PER_MINUTE: u32 = 8192;
+fn max_fetches_per_peer_per_minute() -> u32 {
+    kels::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 8192) as u32
+}
 
 /// Redis hash key for anti-entropy stale prefix tracking.
 /// Maps kel_prefix → source_node_prefix.
@@ -254,7 +255,7 @@ impl SyncHandler {
             }
         }
 
-        let max_pages = kels::max_verification_pages();
+        let max_pages = kels::max_pages();
         let local_sink = self.kels_client.as_kel_sink();
 
         for (peer_prefix, kels_url) in &peers {
@@ -270,10 +271,11 @@ impl SyncHandler {
                     entry.1 = now;
                 } else {
                     entry.0 += 1;
-                    if entry.0 > MAX_FETCHES_PER_PEER_PER_MINUTE {
+                    if entry.0 > max_fetches_per_peer_per_minute() {
                         debug!(
                             "Rate limiting peer {}: {} fetches/min exceeded",
-                            peer_prefix, MAX_FETCHES_PER_PEER_PER_MINUTE
+                            peer_prefix,
+                            max_fetches_per_peer_per_minute()
                         );
                         continue;
                     }
@@ -438,7 +440,7 @@ async fn forward_with_fallback(
             prefix,
             source,
             sink,
-            MAX_EVENTS_PER_KEL_RESPONSE,
+            kels::page_size(),
             max_pages,
             Some(since_said),
         )
@@ -456,15 +458,7 @@ async fn forward_with_fallback(
     }
 
     // Full fetch (no since cursor)
-    kels::forward_key_events(
-        prefix,
-        source,
-        sink,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_pages,
-        None,
-    )
-    .await
+    kels::forward_key_events(prefix, source, sink, kels::page_size(), max_pages, None).await
 }
 
 /// Record a stale prefix for anti-entropy repair.
@@ -639,7 +633,7 @@ pub(crate) async fn sync_prefix(
         &remote_source,
         &local_sink,
         since,
-        kels::max_verification_pages(),
+        kels::max_pages(),
     )
     .await
     {
@@ -977,11 +971,6 @@ mod tests {
     }
 
     // ==================== Constants Tests ====================
-
-    #[test]
-    fn test_max_fetches_per_peer_per_minute_constant() {
-        assert_eq!(MAX_FETCHES_PER_PEER_PER_MINUTE, 8192);
-    }
 
     #[test]
     fn test_pubsub_channel_constant() {

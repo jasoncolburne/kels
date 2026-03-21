@@ -50,17 +50,6 @@ spec:
                 sleep 2;
               done;
               echo "Redis is ready!";
-        - name: wait-for-hsm
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z ${var.hsm.host} ${var.hsm.port}; do
-                echo "Waiting for HSM...";
-                sleep 2;
-              done;
-              echo "HSM is ready!";
         - name: wait-for-identity
           image: busybox:1.36
           command:
@@ -97,8 +86,6 @@ spec:
               value: "${var.kelsAdvertiseUrl}"
             - name: REDIS_URL
               value: "${var.redisUrl}"
-            - name: HSM_URL
-              value: "${var.hsm.url}"
             - name: IDENTITY_URL
               value: "${var.identityUrl}"
             - name: FEDERATION_REGISTRY_URLS
@@ -146,4 +133,3 @@ spec:
       name: http
   selector:
     app: kels-gossip
-

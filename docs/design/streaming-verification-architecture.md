@@ -67,7 +67,7 @@ Guard function: pages through a `PageLoader` with `KelVerifier`, calling `trunca
 
 Parameters: `loader`, `prefix`, `page_size`, `max_pages`, `anchors`
 
-The `max_pages` parameter prevents resource exhaustion (default 512 pages = ~262K events). Configurable via `KELS_MAX_VERIFICATION_PAGES`.
+The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events). Configurable via `KELS_MAX_VERIFICATION_PAGES`.
 
 ### truncate_incomplete_generation()
 

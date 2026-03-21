@@ -36,10 +36,10 @@ pub use topic::{Command, Config, Event, IO};
 
 /// The default maximum size in bytes for a gossip message.
 /// This is a sane but arbitrary default and can be changed in the [`Config`].
-pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 4096;
+pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 256;
 
 /// The minimum allowed value for [`Config::max_message_size`].
-pub const MIN_MAX_MESSAGE_SIZE: usize = 512;
+pub const MIN_MAX_MESSAGE_SIZE: usize = 192;
 
 /// The identifier for a peer.
 ///

@@ -778,7 +778,7 @@ mod tests {
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            "ERegistryA",
+            "KRegistryA",
             2,
             &test_expires_at(),
         )
@@ -802,7 +802,7 @@ mod tests {
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            "ERegistryA",
+            "KRegistryA",
             2,
             &test_expires_at(),
         )
@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_removal_history_valid_timestamps() {
-        let v0 = PeerRemovalProposal::empty("peer-1", "ERegistryA", 2, &test_expires_at()).unwrap();
+        let v0 = PeerRemovalProposal::empty("peer-1", "KRegistryA", 2, &test_expires_at()).unwrap();
 
         let mut v1 = v0.clone();
         v1.withdrawn_at = Some(StorageDatetime::now());
@@ -847,9 +847,15 @@ mod tests {
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
         use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
-        use cesr::{Digest, Matter};
+        use cesr::{Digest, Matter, VerificationKeyCode};
 
-        let mut builder1 = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+        let mut builder1 = KeyEventBuilder::new(
+            SoftwareKeyProvider::new(
+                VerificationKeyCode::Secp256r1,
+                VerificationKeyCode::Secp256r1,
+            ),
+            None,
+        );
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
@@ -894,7 +900,7 @@ mod tests {
 
     #[test]
     fn test_removal_history_non_monotonic_timestamp_fails() {
-        let v0 = PeerRemovalProposal::empty("peer-1", "ERegistryA", 2, &test_expires_at()).unwrap();
+        let v0 = PeerRemovalProposal::empty("peer-1", "KRegistryA", 2, &test_expires_at()).unwrap();
 
         let mut v1 = v0.clone();
         v1.withdrawn_at = Some(StorageDatetime::now());

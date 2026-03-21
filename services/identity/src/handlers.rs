@@ -9,11 +9,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use base64::Engine;
 use kels::{
-    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, MAX_EVENTS_PER_KEL_QUERY,
-    MAX_EVENTS_PER_KEL_RESPONSE, ManageKelRequest, ManageKelResponse, RepositoryKelStore,
-    SignedKeyEventPage,
+    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
+    ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,13 +36,6 @@ pub struct AnchorResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SignRequest {
     pub data: String, // JSON string to sign
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignResponse {
-    pub signature: String,  // QB64-encoded signature
-    pub public_key: String, // QB64-encoded public key used for signing
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,8 +157,8 @@ pub async fn get_key_events(
 
     let limit = query
         .limit
-        .unwrap_or(MAX_EVENTS_PER_KEL_RESPONSE)
-        .min(MAX_EVENTS_PER_KEL_RESPONSE) as u64;
+        .unwrap_or(kels::page_size())
+        .min(kels::page_size()) as u64;
 
     let page = kels::serve_kel_page(
         state.kel_repo.as_ref(),
@@ -196,8 +187,8 @@ pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
         prefix,
         &source,
         &sink,
-        MAX_EVENTS_PER_KEL_QUERY,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         None,
     )
     .await
@@ -250,7 +241,7 @@ pub async fn anchor(
 /// Sign arbitrary data with the registry's current signing key.
 ///
 /// Used by federation to sign Raft RPC messages.
-/// Data is a JSON string, signature and public_key are returned as QB64 (CESR).
+/// Data is a JSON string, signature is returned as QB64 (CESR).
 pub async fn sign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SignRequest>,
@@ -266,55 +257,8 @@ pub async fn sign(
         .await
         .map_err(|e| ApiError::internal(format!("Signing failed: {}", e)))?;
 
-    let public_key = key_provider
-        .current_public_key()
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get public key: {}", e)))?;
-
     Ok(Json(SignResponse {
         signature: signature.qb64(),
-        public_key: public_key.qb64(),
-    }))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EcdhRequest {
-    pub peer_public_key: String, // base64url-encoded compressed SEC1
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EcdhResponse {
-    pub shared_secret: String, // base64url-encoded 32-byte secret
-}
-
-/// Perform ECDH key agreement using the registry's current signing key.
-///
-/// Used by gossip to compute static-ephemeral DH via the HSM.
-/// peer_public_key is base64url-encoded compressed SEC1 (33 bytes).
-pub async fn ecdh(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<EcdhRequest>,
-) -> Result<Json<EcdhResponse>, ApiError> {
-    let peer_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&request.peer_public_key)
-        .map_err(|e| ApiError::bad_request(format!("Invalid base64 peer public key: {}", e)))?;
-
-    tracing::debug!("ECDH: peer public key {} bytes", peer_public_key.len());
-
-    let builder = state.builder.read().await;
-    let key_provider = builder.key_provider();
-
-    let shared_secret = key_provider.ecdh(&peer_public_key).await.map_err(|e| {
-        tracing::error!("ECDH failed: {}", e);
-        ApiError::internal(format!("ECDH failed: {}", e))
-    })?;
-
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&shared_secret);
-
-    Ok(Json(EcdhResponse {
-        shared_secret: encoded,
     }))
 }
 
@@ -347,8 +291,8 @@ pub async fn manage_kel(
     let kel_verification = kels::completed_verification(
         &mut tx,
         &prefix,
-        MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         iter::empty(),
     )
     .await

@@ -12,18 +12,18 @@ The `test-comprehensive` Makefile target is the best way to understand the full 
 
 Each **registry** runs:
 - `kels-registry` — federation consensus and peer management
-- `identity` — the registry's own cryptographic identity (KEL + signing)
-- `hsm` — hardware security module for key storage
+- `identity` — the registry's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
 - `postgres` — database for federation state, peer records, and the registry's KEL
 - `redis` — node registration storage
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
 - `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
-- `identity` — the node's own cryptographic identity (KEL + signing + ECDH)
-- `hsm` — key storage for gossip peer identity
+- `identity` — the node's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
 - `postgres` — KEL storage and gossip peer cache
 - `redis` — KEL caching and pub/sub invalidation
+
+The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
 ## Deployment Flow
 
@@ -40,7 +40,7 @@ deploy registry-c (standalone)
 ```
 
 At this point each registry has:
-- Generated a keypair via HSM
+- Generated an ML-DSA-65 or ML-DSA-87 keypair via the PKCS#11 HSM
 - Created an inception event (KEL) establishing its identity
 - A prefix derived from that inception event
 
@@ -73,7 +73,7 @@ The registries now form a Raft cluster. Node 0 (the registry whose `id` is 0 in 
 
 Deploy gossip nodes. Each node needs to be authorized in the peer allowlist before it can join the gossip network.
 
-1. Deploy the node's infrastructure (kels, kels-gossip, identity, hsm, postgres, redis)
+1. Deploy the node's infrastructure (kels, kels-gossip, identity, postgres, redis)
 2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
 3. Vote from enough registries to approve (`kels-registry-admin peer vote`)
 4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
@@ -142,10 +142,17 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection URL |
-| `HSM_URL` | HSM service URL |
+| `PKCS11_LIBRARY_PATH` | Path to PKCS#11 .so (mock HSM or real HSM) |
+| `KELS_HSM_DATA_DIR` | HSM key persistence directory |
+| `HSM_SLOT` | PKCS#11 slot number |
+| `HSM_PIN` | PKCS#11 PIN |
 | `KEY_HANDLE_PREFIX` | HSM key handle prefix (`kels-registry` or `kels-gossip`) |
 | `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
 | `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/member-kels` for registry, `/api/kels` for nodes) |
+| `NEXT_SIGNING_ALGORITHM` | Algorithm for next signing key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
+| `NEXT_RECOVERY_ALGORITHM` | Algorithm for next recovery key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-87`) |
+| `IDENTITY_ROTATION_INTERVAL_DAYS` | Auto-rotation interval in days (default: `180`) |
+| `IDENTITY_ROTATION_CHECK_PERIOD_MINUTES` | How often to check if rotation is due, in minutes (default: `360`) |
 | `RUST_LOG` | Logging level |
 
 ### KELS Service (`kels`)
@@ -155,6 +162,13 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated) |
 | `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
+| `KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE` | Per-prefix submission rate limit (default: `128`) |
+| `KELS_MAX_WRITES_PER_IP_PER_SECOND` | Per-IP write rate limit (default: `200`) |
+| `KELS_IP_RATE_LIMIT_BURST` | Per-IP burst allowance (default: `1000`) |
+| `KELS_NONCE_WINDOW_SECS` | Nonce deduplication window in seconds; `0` disables (default: `60`) |
+| `KELS_PAGE_SIZE` | Page size for KEL queries and responses (default: `32`) |
+| `KELS_MAX_VERIFICATION_PAGES` | Max pages walked during verification (default: `64`) |
+| `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints at `/api/test/*` that bypass timestamp validation, nonce deduplication, peer allowlist, and signature verification. A startup warning is logged when enabled. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
 ### Gossip Service (`kels-gossip`)
@@ -168,7 +182,6 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |
 | `GOSSIP_TOPIC` | Gossip topic name |
-| `HSM_URL` | HSM service URL for gossip peer identity |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |

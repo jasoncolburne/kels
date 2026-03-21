@@ -14,11 +14,23 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{
-    HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider,
-    DEFAULT_MAX_VERIFICATION_PAGES, MAX_EVENTS_PER_KEL_RESPONSE,
-};
+use kels::{HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode};
 use verifiable_storage::compute_said;
+
+fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
+    match algorithm {
+        "secp256r1" => VerificationKeyCode::Secp256r1,
+        "ml-dsa-65" => VerificationKeyCode::MlDsa65,
+        "ml-dsa-87" => VerificationKeyCode::MlDsa87,
+        other => {
+            eprintln!(
+                "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
+                other
+            );
+            std::process::exit(1);
+        }
+    }
+}
 
 fn test_said(name: &str) -> String {
     compute_said(&name.to_string()).expect("valid said computation")
@@ -60,6 +72,10 @@ struct Args {
     /// Skip latency tracking for maximum throughput measurement
     #[arg(long)]
     throughput_only: bool,
+
+    /// Signing algorithm (secp256r1, ml-dsa-65, or ml-dsa-87)
+    #[arg(long, default_value = "ml-dsa-65")]
+    algorithm: String,
 }
 
 struct TestKelConfig {
@@ -176,14 +192,9 @@ impl Stats {
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
     let source = HttpKelSource::new(url, "/api/kels/kel/{prefix}");
-    let events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        DEFAULT_MAX_VERIFICATION_PAGES,
-        None,
-    )
-    .await?;
+    let events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await?;
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
         .unwrap_or(0);
@@ -194,9 +205,13 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
     })
 }
 
-async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<String> {
+async fn create_test_kel(
+    client: &KelsClient,
+    event_count: usize,
+    algorithm: VerificationKeyCode,
+) -> Result<String> {
     // Build events offline (no client) then batch-submit to avoid per-event rate limits.
-    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(), None);
+    let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(algorithm, algorithm), None);
     let icp = builder.incept().await?;
     let prefix = icp.event.prefix.clone();
 
@@ -216,14 +231,18 @@ async fn create_test_kel(client: &KelsClient, event_count: usize) -> Result<Stri
     Ok(prefix)
 }
 
-async fn setup_new_kels(client: &KelsClient, url: &str) -> Result<Vec<TestKelConfig>> {
+async fn setup_new_kels(
+    client: &KelsClient,
+    url: &str,
+    algorithm: VerificationKeyCode,
+) -> Result<Vec<TestKelConfig>> {
     println!("{}", "Setting up test KELs...".green().bold());
 
-    let lengths = [1, 8, 32, 64, 128, 256, 512];
+    let lengths = [1, 2, 4, 8, 16, 32];
     let mut singular_kels = Vec::new();
     for &len in &lengths {
         println!("  Creating {}-event KEL...", len);
-        let prefix = create_test_kel(client, len).await?;
+        let prefix = create_test_kel(client, len, algorithm).await?;
         println!("    Created: {}", prefix);
         let config = measure_kel(url, &prefix).await?;
         singular_kels.push(config);
@@ -261,8 +280,8 @@ async fn run_worker(
             BenchmarkType::GetKel { prefix, kel_bytes } => kels::benchmark_key_events(
                 prefix,
                 &source,
-                MAX_EVENTS_PER_KEL_RESPONSE,
-                DEFAULT_MAX_VERIFICATION_PAGES,
+                kels::page_size(),
+                kels::max_pages(),
                 None,
             )
             .await
@@ -374,6 +393,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    let algorithm = parse_algorithm(&args.algorithm);
+
     let singular_kels = if args.skip_setup {
         let prefix = args
             .prefix
@@ -381,7 +402,7 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("--skip-setup requires --prefix to be specified"))?;
         setup_existing_kels(&args.url, prefix).await?
     } else {
-        setup_new_kels(&client, &args.url).await?
+        setup_new_kels(&client, &args.url, algorithm).await?
     };
 
     run_benchmarks(&args, &singular_kels).await?;

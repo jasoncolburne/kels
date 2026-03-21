@@ -1,9 +1,9 @@
 //! `kels://` URI scheme for peer addressing.
 //!
 //! Peer addresses use the format `kels://prefix@host:port`:
-//! - `kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001` (IPv4)
-//! - `kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@gossip.example.com:4001` (DNS)
-//! - `kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001` (IPv6)
+//! - `kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001` (IPv4)
+//! - `kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@gossip.example.com:4001` (DNS)
+//! - `kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001` (IPv6)
 //!
 //! CESR Base64 uses URL-safe characters (`A-Za-z0-9-_`), so the prefix is valid in URI
 //! userinfo without escaping.
@@ -119,13 +119,13 @@ mod tests {
     use super::*;
 
     fn test_prefix() -> NodePrefix {
-        NodePrefix::option_from_str("EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
+        NodePrefix::option_from_str("KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
     }
 
     #[test]
     fn parse_ipv4() {
         let addr =
-            PeerAddr::parse("kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001")
+            PeerAddr::parse("kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001")
                 .unwrap();
         assert_eq!(addr.prefix, test_prefix());
         assert_eq!(addr.host, "192.168.1.1");
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn parse_dns() {
         let addr = PeerAddr::parse(
-            "kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@gossip.example.com:4001",
+            "kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@gossip.example.com:4001",
         )
         .unwrap();
         assert_eq!(addr.host, "gossip.example.com");
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn parse_ipv6() {
         let addr =
-            PeerAddr::parse("kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001")
+            PeerAddr::parse("kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001")
                 .unwrap();
         assert_eq!(addr.host, "::1");
         assert_eq!(addr.port, 4001);
@@ -153,14 +153,14 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let original = "kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001";
+        let original = "kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@192.168.1.1:4001";
         let addr = PeerAddr::parse(original).unwrap();
         assert_eq!(addr.to_uri(), original);
     }
 
     #[test]
     fn roundtrip_ipv6() {
-        let original = "kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001";
+        let original = "kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@[::1]:4001";
         let addr = PeerAddr::parse(original).unwrap();
         assert_eq!(addr.to_uri(), original);
     }
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn missing_port() {
         assert_eq!(
-            PeerAddr::parse("kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@host"),
+            PeerAddr::parse("kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@host"),
             Err(AddrError::MissingPort)
         );
     }
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn resolve_localhost() {
         let addr =
-            PeerAddr::parse("kels://EBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@127.0.0.1:4001")
+            PeerAddr::parse("kels://KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a@127.0.0.1:4001")
                 .unwrap();
         let socket_addr = addr.to_socket_addr().unwrap();
         assert_eq!(socket_addr.port(), 4001);

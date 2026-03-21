@@ -11,8 +11,8 @@ use colored::Colorize;
 use kels::{EventKind, KelStore};
 use kels::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    MAX_EVENTS_PER_KEL_RESPONSE, NodeStatus, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig, max_verification_pages,
+    KeyProvider, NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
+    VerificationKeyCode,
 };
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
@@ -44,20 +44,40 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Create a new KEL (inception event)
-    Incept,
+    Incept {
+        /// Signing key algorithm (ml-dsa-65, ml-dsa-87, or secp256r1)
+        #[arg(long, default_value = "ml-dsa-65")]
+        signing_algorithm: String,
+
+        /// Recovery key algorithm (defaults to signing algorithm)
+        #[arg(long)]
+        recovery_algorithm: Option<String>,
+    },
 
     /// Rotate the signing key
     Rotate {
         /// KEL prefix to rotate
         #[arg(long)]
         prefix: String,
+
+        /// Algorithm for the new signing key (defaults to current)
+        #[arg(long)]
+        algorithm: Option<String>,
     },
 
-    /// Rotate the recovery key (requires dual signatures)
+    /// Rotate both signing and recovery keys (requires dual signatures)
     RotateRecovery {
         /// KEL prefix
         #[arg(long)]
         prefix: String,
+
+        /// Algorithm for the new signing key (defaults to current)
+        #[arg(long)]
+        signing_algorithm: Option<String>,
+
+        /// Algorithm for the new recovery key (defaults to current)
+        #[arg(long)]
+        recovery_algorithm: Option<String>,
     },
 
     /// Anchor a SAID in the KEL (interaction event)
@@ -76,6 +96,14 @@ enum Commands {
         /// KEL prefix to recover
         #[arg(long)]
         prefix: String,
+
+        /// Algorithm for the new signing key (defaults to current)
+        #[arg(long)]
+        signing_algorithm: Option<String>,
+
+        /// Algorithm for the new recovery key (defaults to current)
+        #[arg(long)]
+        recovery_algorithm: Option<String>,
     },
 
     /// Contest a malicious recovery by submitting a contest event (cnt).
@@ -176,6 +204,18 @@ enum AdversaryCommands {
     },
 }
 
+fn parse_algorithm(algorithm: &str) -> Result<VerificationKeyCode> {
+    match algorithm {
+        "secp256r1" => Ok(VerificationKeyCode::Secp256r1),
+        "ml-dsa-65" => Ok(VerificationKeyCode::MlDsa65),
+        "ml-dsa-87" => Ok(VerificationKeyCode::MlDsa87),
+        _ => Err(anyhow!(
+            "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
+            algorithm
+        )),
+    }
+}
+
 fn config_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(ref dir) = cli.config_dir {
         return Ok(dir.clone());
@@ -191,7 +231,11 @@ fn kel_dir(cli: &Cli) -> Result<PathBuf> {
 
 fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    Ok(SoftwareProviderConfig::new(key_dir))
+    Ok(SoftwareProviderConfig::new(
+        key_dir,
+        VerificationKeyCode::MlDsa65,
+        VerificationKeyCode::MlDsa65,
+    ))
 }
 
 /// Parse comma-separated registry URLs into a Vec.
@@ -296,11 +340,15 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_incept(cli: &Cli) -> Result<()> {
+async fn cmd_incept(
+    cli: &Cli,
+    signing: VerificationKeyCode,
+    recovery: VerificationKeyCode,
+) -> Result<()> {
     println!("{}", "Creating new KEL...".green());
 
     let client = create_client(cli).await?;
-    let key_provider = SoftwareKeyProvider::new();
+    let key_provider = SoftwareKeyProvider::new(signing, recovery);
 
     // Pass a kel_store to the builder so add_and_flush saves automatically
     let kel_dir = kel_dir(cli)?;
@@ -326,7 +374,7 @@ async fn cmd_incept(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
+async fn cmd_rotate(cli: &Cli, prefix: &str, algorithm: Option<VerificationKeyCode>) -> Result<()> {
     println!(
         "{}",
         format!("Rotating signing key for {}...", prefix).green()
@@ -344,6 +392,13 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
         Some(prefix),
     )
     .await?;
+
+    if let Some(algo) = algorithm {
+        builder
+            .key_provider_mut()
+            .set_signing_algorithm(algo)
+            .await?;
+    }
 
     match builder.rotate().await {
         Ok(rot) => {
@@ -367,10 +422,15 @@ async fn cmd_rotate(cli: &Cli, prefix: &str) -> Result<()> {
     }
 }
 
-async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
+async fn cmd_rotate_recovery(
+    cli: &Cli,
+    prefix: &str,
+    signing_algorithm: Option<VerificationKeyCode>,
+    recovery_algorithm: Option<VerificationKeyCode>,
+) -> Result<()> {
     println!(
         "{}",
-        format!("Rotating recovery key for {}...", prefix).green()
+        format!("Rotating signing and recovery keys for {}...", prefix).green()
     );
 
     let config = provider_config(cli, prefix)?;
@@ -385,6 +445,19 @@ async fn cmd_rotate_recovery(cli: &Cli, prefix: &str) -> Result<()> {
         Some(prefix),
     )
     .await?;
+
+    if let Some(algo) = signing_algorithm {
+        builder
+            .key_provider_mut()
+            .set_signing_algorithm(algo)
+            .await?;
+    }
+    if let Some(algo) = recovery_algorithm {
+        builder
+            .key_provider_mut()
+            .set_recovery_algorithm(algo)
+            .await?;
+    }
 
     let ror = builder
         .rotate_recovery()
@@ -422,12 +495,27 @@ async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
+async fn cmd_recover(
+    cli: &Cli,
+    prefix: &str,
+    signing_algorithm: Option<&str>,
+    recovery_algorithm: Option<&str>,
+) -> Result<()> {
     println!("{}", format!("Recovering KEL {}...", prefix).yellow());
 
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
-    let key_provider = config.load_provider().await?;
+    let mut key_provider = config.load_provider().await?;
+
+    if let Some(algo) = signing_algorithm {
+        let algo = parse_algorithm(algo)?;
+        key_provider.set_signing_algorithm(algo).await?;
+    }
+    if let Some(algo) = recovery_algorithm {
+        let algo = parse_algorithm(algo)?;
+        key_provider.set_recovery_algorithm(algo).await?;
+    }
+
     let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
@@ -444,8 +532,8 @@ async fn cmd_recover(cli: &Cli, prefix: &str) -> Result<()> {
         prefix,
         &source,
         KelVerifier::new(prefix),
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;
@@ -569,8 +657,8 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         prefix,
         &source,
         KelVerifier::new(prefix),
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         |events| {
             for signed_event in events {
                 let event = &signed_event.event;
@@ -652,8 +740,8 @@ async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_verification = kels::completed_verification(
         &mut kels::StorePageLoader::new(&kel_store),
         prefix,
-        kels::MAX_EVENTS_PER_KEL_QUERY as u64,
-        kels::max_verification_pages(),
+        kels::page_size(),
+        kels::max_pages(),
         iter::empty(),
     )
     .await?;
@@ -798,15 +886,10 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
 
-    let mut events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let mut events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -833,15 +916,10 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
-    let all_events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let all_events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
 
     if all_events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
@@ -865,15 +943,10 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     // Load the local KEL to get the chain state (dev-tools, not production)
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels::StoreKelSource::new(&kel_store);
-    let events = kels::resolve_key_events(
-        prefix,
-        &source,
-        MAX_EVENTS_PER_KEL_RESPONSE,
-        max_verification_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
+    let events =
+        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -949,11 +1022,50 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&config_dir)?;
 
     match &cli.command {
-        Commands::Incept => cmd_incept(&cli).await,
-        Commands::Rotate { prefix } => cmd_rotate(&cli, prefix).await,
-        Commands::RotateRecovery { prefix } => cmd_rotate_recovery(&cli, prefix).await,
+        Commands::Incept {
+            signing_algorithm,
+            recovery_algorithm,
+        } => {
+            let signing = parse_algorithm(signing_algorithm)?;
+            let recovery = match recovery_algorithm.as_deref() {
+                Some(a) => parse_algorithm(a)?,
+                None => signing,
+            };
+            cmd_incept(&cli, signing, recovery).await
+        }
+        Commands::Rotate { prefix, algorithm } => {
+            let algo = algorithm.as_deref().map(parse_algorithm).transpose()?;
+            cmd_rotate(&cli, prefix, algo).await
+        }
+        Commands::RotateRecovery {
+            prefix,
+            signing_algorithm,
+            recovery_algorithm,
+        } => {
+            let signing = signing_algorithm
+                .as_deref()
+                .map(parse_algorithm)
+                .transpose()?;
+            let recovery = recovery_algorithm
+                .as_deref()
+                .map(parse_algorithm)
+                .transpose()?;
+            cmd_rotate_recovery(&cli, prefix, signing, recovery).await
+        }
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
-        Commands::Recover { prefix } => cmd_recover(&cli, prefix).await,
+        Commands::Recover {
+            prefix,
+            signing_algorithm,
+            recovery_algorithm,
+        } => {
+            cmd_recover(
+                &cli,
+                prefix,
+                signing_algorithm.as_deref(),
+                recovery_algorithm.as_deref(),
+            )
+            .await
+        }
         Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
         Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
         Commands::Get { prefix, audit } => cmd_get(&cli, prefix, *audit).await,

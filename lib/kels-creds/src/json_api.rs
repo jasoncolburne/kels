@@ -229,7 +229,7 @@ mod tests {
         claims.derive_said().unwrap();
         let (cred, _) = crate::credential::Credential::build(
             &schema,
-            "EIssuer123456789012345678901234567890abcde".to_string(),
+            "KIssuer123456789012345678901234567890abcde".to_string(),
             None,
             claims,
             false,
@@ -271,9 +271,9 @@ mod tests {
     async fn test_parse_edges() {
         let json = r#"{
             "license": {
-                "schema": "EAbc1234567890123456789012345678901234567890",
-                "issuer": "EIssuer123456789012345678901234567890abcde",
-                "credential": "ECred12345678901234567890123456789012abcdef"
+                "schema": "KAbc1234567890123456789012345678901234567890",
+                "issuer": "KIssuer123456789012345678901234567890abcde",
+                "credential": "KCred12345678901234567890123456789012abcdef"
             }
         }"#;
 

@@ -24,32 +24,32 @@ environments:
     defaultNamespace: kels-node-a
     variables:
       envType: node
-      devTools: true # testing
+      kels:
+        testEndpoints: "true"
   - name: node-b
     defaultNamespace: kels-node-b
     variables:
       envType: node
-      devTools: true # testing
+      kels:
+        testEndpoints: "true"
   - name: node-c
     defaultNamespace: kels-node-c
     variables:
       envType: node
-      devTools: false
   - name: node-d
     defaultNamespace: kels-node-d
     variables:
       envType: node
-      devTools: true # testing
+      kels:
+        testEndpoints: "true"
   - name: node-e
     defaultNamespace: kels-node-e
     variables:
       envType: node
-      devTools: false
   - name: node-f
     defaultNamespace: kels-node-f
     variables:
       envType: node
-      devTools: false
 
 providers:
   - name: local-kubernetes
@@ -82,6 +82,13 @@ variables:
     host: kels
     port: "80"
     url: http://${var.kels.host}:${var.kels.port}
+    # Rate limiting
+    maxSubmissionsPerPrefixPerMinute: "128"
+    maxWritesPerIpPerSecond: "200"
+    ipRateLimitBurst: "1000"
+    nonceWindowSecs: "60"
+    # Test config (remove for production)
+    testEndpoints: "false"
   gossip:
     replicas: 1
     port: 4001
@@ -94,11 +101,14 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
-  hsm:
-    port: "80"
-    host: hsm
-    url: http://${var.hsm.host}:${var.hsm.port}
   identity:
     port: "80"
     host: identity
     url: http://${var.identity.host}:${var.identity.port}
+    rotationIntervalDays: "180"
+    rotationCheckPeriodMinutes: "360"
+    signingAlgorithm: "ml-dsa-65"
+    recoveryAlgorithm: "ml-dsa-87"
+    pkcs11Library: "/app/libkels_mock_hsm.so"
+    hsmDataDir: "/data/hsm"
+    hsmPin: "1234"
