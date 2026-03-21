@@ -17,6 +17,8 @@ use aes_gcm::{
 use futures::{AsyncRead, AsyncWrite};
 use pin_project_lite::pin_project;
 
+use super::Error;
+
 /// Maximum plaintext frame size (64 KiB).
 const MAX_FRAME_SIZE: usize = 64 * 1024;
 
@@ -35,7 +37,7 @@ pub fn derive_session_keys(
     our_prefix: &[u8; 44],
     their_prefix: &[u8; 44],
     is_initiator: bool,
-) -> (Aes256Gcm, Aes256Gcm) {
+) -> Result<(Aes256Gcm, Aes256Gcm), Error> {
     let (init_prefix, resp_prefix) = if is_initiator {
         (our_prefix, their_prefix)
     } else {
@@ -51,11 +53,13 @@ pub fn derive_session_keys(
     resp_to_init_context.extend_from_slice(resp_prefix);
 
     let init_to_resp_key = blake3::derive_key(
-        &String::from_utf8_lossy(&init_to_resp_context),
+        &String::from_utf8(init_to_resp_context)
+            .map_err(|e| Error::Handshake(format!("non-UTF-8 prefix in KDF context: {e}")))?,
         shared_secret,
     );
     let resp_to_init_key = blake3::derive_key(
-        &String::from_utf8_lossy(&resp_to_init_context),
+        &String::from_utf8(resp_to_init_context)
+            .map_err(|e| Error::Handshake(format!("non-UTF-8 prefix in KDF context: {e}")))?,
         shared_secret,
     );
 
@@ -68,7 +72,7 @@ pub fn derive_session_keys(
     let send_cipher = Aes256Gcm::new(&send_key.into());
     let recv_cipher = Aes256Gcm::new(&recv_key.into());
 
-    (send_cipher, recv_cipher)
+    Ok((send_cipher, recv_cipher))
 }
 
 /// Build a 12-byte AES-GCM nonce from a 64-bit counter.
@@ -395,7 +399,7 @@ mod tests {
             let (stream, _) = listener.accept().await.map_err(|_| "accept failed")?;
             let compat = stream.compat();
             let (send_cipher, recv_cipher) =
-                derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false);
+                derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false).unwrap();
             let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
             let mut buf = vec![0u8; 1024];
@@ -414,7 +418,7 @@ mod tests {
         let stream = TcpStream::connect(addr).await.unwrap();
         let compat = stream.compat();
         let (send_cipher, recv_cipher) =
-            derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true);
+            derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true).unwrap();
         let mut encrypted = EncryptedStream::new(compat, send_cipher, recv_cipher);
 
         let msg = b"hello encrypted world";
@@ -436,8 +440,10 @@ mod tests {
         let init_prefix = [0x11u8; 44];
         let resp_prefix = [0x22u8; 44];
 
-        let (send1, recv1) = derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true);
-        let (send2, recv2) = derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false);
+        let (send1, recv1) =
+            derive_session_keys(&shared_secret, &init_prefix, &resp_prefix, true).unwrap();
+        let (send2, recv2) =
+            derive_session_keys(&shared_secret, &resp_prefix, &init_prefix, false).unwrap();
 
         // Initiator's send key should match acceptor's recv key.
         let nonce = nonce_from_counter(0);

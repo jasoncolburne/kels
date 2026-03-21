@@ -168,7 +168,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KELS_NONCE_WINDOW_SECS` | Nonce deduplication window in seconds; `0` disables (default: `60`) |
 | `KELS_PAGE_SIZE` | Page size for KEL queries and responses (default: `32`) |
 | `KELS_MAX_VERIFICATION_PAGES` | Max pages walked during verification (default: `64`) |
-| `KELS_TEST_ENDPOINTS` | Enable unauthenticated test endpoints at `/api/test/*` (default: `false`) |
+| `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints at `/api/test/*` that bypass timestamp validation, nonce deduplication, peer allowlist, and signature verification. A startup warning is logged when enabled. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
 ### Gossip Service (`kels-gossip`)

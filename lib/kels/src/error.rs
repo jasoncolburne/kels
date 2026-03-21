@@ -37,6 +37,9 @@ pub enum KelsError {
     #[error("Invalid KEL: {0}")]
     InvalidKel(String),
 
+    #[error("Invalid algorithm: {0}")]
+    UnsupportedAlgorithm(String),
+
     #[error("Not yet incepted")]
     NotIncepted,
 

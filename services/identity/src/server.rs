@@ -17,7 +17,7 @@ use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
 
 use crate::{
     handlers::{self, AppState},
-    hsm::{HsmKeyProvider, Pkcs11Client},
+    hsm::{HsmKeyProvider, HsmKeyProviderConfig, Pkcs11Client},
     repository::{AUTHORITY_IDENTITY_NAME, AuthorityMapping, HsmKeyBinding, IdentityRepository},
 };
 
@@ -102,17 +102,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
             binding.recovery_generation
         );
 
-        let key_provider = HsmKeyProvider::with_handles(
-            hsm.clone(),
-            &key_handle_prefix,
-            binding.signing_generation,
-            binding.recovery_generation,
-            binding.current_key_handle.into(),
-            binding.next_key_handle.into(),
-            binding.recovery_key_handle.into(),
-            &next_signing_algorithm,
-            &next_recovery_algorithm,
-        );
+        let key_provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: hsm.clone(),
+            label_prefix: key_handle_prefix.clone(),
+            signing_generation: binding.signing_generation,
+            recovery_generation: binding.recovery_generation,
+            signing_algorithm: next_signing_algorithm.clone(),
+            recovery_algorithm: next_recovery_algorithm.clone(),
+            current_handle: Some(binding.current_key_handle.into()),
+            next_handle: Some(binding.next_key_handle.into()),
+            recovery_handle: Some(binding.recovery_key_handle.into()),
+        });
 
         KeyEventBuilder::with_dependencies(
             key_provider,
@@ -127,14 +127,17 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         // and registry pulls all member KELs via sync_all_member_kels on startup.
         info!("No existing identity - auto-incepting");
 
-        let key_provider = HsmKeyProvider::new(
-            hsm.clone(),
-            &key_handle_prefix,
-            0,
-            0,
-            &next_signing_algorithm,
-            &next_recovery_algorithm,
-        );
+        let key_provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: hsm.clone(),
+            label_prefix: key_handle_prefix.clone(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: next_signing_algorithm.clone(),
+            recovery_algorithm: next_recovery_algorithm.clone(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         let mut builder =
             KeyEventBuilder::with_dependencies(key_provider, None, Some(kel_store.clone()), None)

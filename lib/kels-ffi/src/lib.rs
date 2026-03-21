@@ -295,9 +295,9 @@ async fn save_key_state<K: KeyProvider + Clone>(
 /// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
 /// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). NULL defaults to "secp256r1".
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Recovery key algorithm. NULL defaults to "secp256r1".
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Returns
 /// Pointer to context, or NULL on error. Check kels_last_error() for details.
@@ -558,9 +558,9 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
 ///
 /// # Arguments
 /// * `signing_algorithm` - Signing algorithm for this inception (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Recovery algorithm for this inception (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
@@ -643,7 +643,7 @@ pub unsafe extern "C" fn kels_incept(
 ///
 /// # Arguments
 /// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
@@ -714,8 +714,10 @@ pub unsafe extern "C" fn kels_rotate(
 /// Rotate the recovery key (requires dual signature)
 ///
 /// # Arguments
+/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
@@ -855,9 +857,9 @@ pub unsafe extern "C" fn kels_interact(
 ///
 /// # Arguments
 /// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
@@ -980,9 +982,9 @@ pub unsafe extern "C" fn kels_recover(
 ///
 /// # Arguments
 /// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer
@@ -1061,9 +1063,9 @@ pub unsafe extern "C" fn kels_contest(
 ///
 /// # Arguments
 /// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 /// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Only used in software-only builds; ignored when Secure Enclave is available.
+///   Supported on all platforms including Secure Enclave.
 ///
 /// # Safety
 /// - `ctx` must be a valid context pointer

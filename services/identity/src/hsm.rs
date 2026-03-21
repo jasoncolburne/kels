@@ -1,8 +1,8 @@
 //! HSM Client - PKCS#11 interface for hardware security modules
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use async_trait::async_trait;
 use cesr::{Matter, PublicKey, Signature, SignatureCode, VerificationKeyCode};
@@ -86,6 +86,54 @@ impl Pkcs11Client {
     }
 }
 
+/// Determine the verification key code from a PKCS#11 `CKA_PARAMETER_SET` attribute.
+fn key_code_from_parameter_set(attrs: &[Attribute]) -> Result<VerificationKeyCode, KelsError> {
+    for attr in attrs {
+        if let Attribute::ParameterSet(ps) = attr {
+            let ps_type: MlDsaParameterSetType = (*ps).into();
+            return match ps_type {
+                MlDsaParameterSetType::ML_DSA_65 => Ok(VerificationKeyCode::MlDsa65),
+                MlDsaParameterSetType::ML_DSA_87 => Ok(VerificationKeyCode::MlDsa87),
+                _ => Err(KelsError::UnsupportedAlgorithm(ps_type.to_string())),
+            };
+        }
+    }
+    Err(KelsError::HardwareError(
+        "CKA_PARAMETER_SET not found on key object".into(),
+    ))
+}
+
+/// Determine the signature code from a PKCS#11 `CKA_PARAMETER_SET` attribute.
+fn sig_code_from_parameter_set(attrs: &[Attribute]) -> Result<SignatureCode, KelsError> {
+    for attr in attrs {
+        if let Attribute::ParameterSet(ps) = attr {
+            let ps_type: MlDsaParameterSetType = (*ps).into();
+            return match ps_type {
+                MlDsaParameterSetType::ML_DSA_65 => Ok(SignatureCode::MlDsa65),
+                MlDsaParameterSetType::ML_DSA_87 => Ok(SignatureCode::MlDsa87),
+                _ => Err(KelsError::UnsupportedAlgorithm(ps_type.to_string())),
+            };
+        }
+    }
+    Err(KelsError::HardwareError(
+        "CKA_PARAMETER_SET not found on key object".into(),
+    ))
+}
+
+/// Extract `CKA_VALUE` bytes from a list of attributes.
+fn extract_value(attrs: Vec<Attribute>) -> Result<Vec<u8>, KelsError> {
+    attrs
+        .into_iter()
+        .find_map(|a| {
+            if let Attribute::Value(v) = a {
+                Some(v)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| KelsError::HardwareError("CKA_VALUE not found".into()))
+}
+
 #[async_trait]
 impl HsmOperations for Pkcs11Client {
     async fn generate_keypair(
@@ -93,10 +141,7 @@ impl HsmOperations for Pkcs11Client {
         label: &str,
         algorithm: &str,
     ) -> Result<(KeyHandle, PublicKey), KelsError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
+        let session = self.session.lock().await;
 
         let parameter_set = match algorithm {
             "ml-dsa-87" => MlDsaParameterSetType::ML_DSA_87,
@@ -121,28 +166,16 @@ impl HsmOperations for Pkcs11Client {
             .map_err(|e| KelsError::KeyGenerationFailed(format!("PKCS#11 keygen failed: {}", e)))?;
 
         let attrs = session
-            .get_attributes(pub_handle, &[AttributeType::Value])
+            .get_attributes(
+                pub_handle,
+                &[AttributeType::Value, AttributeType::ParameterSet],
+            )
             .map_err(|e| {
-                KelsError::KeyGenerationFailed(format!("Failed to get public key: {}", e))
+                KelsError::KeyGenerationFailed(format!("Failed to get public key attrs: {}", e))
             })?;
 
-        let value_bytes = attrs
-            .into_iter()
-            .find_map(|a| {
-                if let Attribute::Value(v) = a {
-                    Some(v)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                KelsError::KeyGenerationFailed("CKA_VALUE not found on public key".into())
-            })?;
-
-        let key_code = match value_bytes.len() {
-            2592 => VerificationKeyCode::MlDsa87,
-            _ => VerificationKeyCode::MlDsa65, // 1952 bytes
-        };
+        let key_code = key_code_from_parameter_set(&attrs)?;
+        let value_bytes = extract_value(attrs)?;
 
         let public_key = PublicKey::from_raw(key_code, value_bytes)
             .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
@@ -151,10 +184,7 @@ impl HsmOperations for Pkcs11Client {
     }
 
     async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
+        let session = self.session.lock().await;
 
         let template = vec![
             Attribute::Class(ObjectClass::PUBLIC_KEY),
@@ -170,34 +200,21 @@ impl HsmOperations for Pkcs11Client {
             .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
 
         let attrs = session
-            .get_attributes(*obj_handle, &[AttributeType::Value])
+            .get_attributes(
+                *obj_handle,
+                &[AttributeType::Value, AttributeType::ParameterSet],
+            )
             .map_err(|e| KelsError::HardwareError(format!("Get attributes failed: {}", e)))?;
 
-        let value_bytes = attrs
-            .into_iter()
-            .find_map(|a| {
-                if let Attribute::Value(v) = a {
-                    Some(v)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| KelsError::HsmKeyNotFound("CKA_VALUE not found".into()))?;
-
-        let key_code = match value_bytes.len() {
-            2592 => VerificationKeyCode::MlDsa87,
-            _ => VerificationKeyCode::MlDsa65, // 1952 bytes
-        };
+        let key_code = key_code_from_parameter_set(&attrs)?;
+        let value_bytes = extract_value(attrs)?;
 
         PublicKey::from_raw(key_code, value_bytes)
             .map_err(|e| KelsError::CryptoError(e.to_string()))
     }
 
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|e| KelsError::HardwareError(format!("Session lock failed: {}", e)))?;
+        let session = self.session.lock().await;
 
         let template = vec![
             Attribute::Class(ObjectClass::PRIVATE_KEY),
@@ -212,15 +229,26 @@ impl HsmOperations for Pkcs11Client {
             .first()
             .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
 
+        // Look up the corresponding public key to get the parameter set
+        let pub_template = vec![
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::Label(handle.as_str().as_bytes().to_vec()),
+        ];
+        let pub_objects = session
+            .find_objects(&pub_template)
+            .map_err(|e| KelsError::HsmKeyNotFound(format!("Find public key failed: {}", e)))?;
+        let pub_handle = pub_objects
+            .first()
+            .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
+        let ps_attrs = session
+            .get_attributes(*pub_handle, &[AttributeType::ParameterSet])
+            .map_err(|e| KelsError::HardwareError(format!("Get parameter set failed: {}", e)))?;
+        let sig_code = sig_code_from_parameter_set(&ps_attrs)?;
+
         let ctx = SignAdditionalContext::new(HedgeType::Preferred, None);
         let sig_bytes = session
             .sign(&Mechanism::MlDsa(ctx), *priv_handle, data)
             .map_err(|e| KelsError::SigningFailed(format!("PKCS#11 sign failed: {}", e)))?;
-
-        let sig_code = match sig_bytes.len() {
-            4627 => SignatureCode::MlDsa87,
-            _ => SignatureCode::MlDsa65, // 3309 bytes
-        };
 
         Signature::from_raw(sig_code, sig_bytes)
             .map_err(|e| KelsError::SigningFailed(e.to_string()))
@@ -278,49 +306,41 @@ impl Clone for HsmKeyProvider {
     }
 }
 
-impl HsmKeyProvider {
-    pub fn new(
-        hsm: Arc<dyn HsmOperations>,
-        label_prefix: &str,
-        signing_generation: u64,
-        recovery_generation: u64,
-        signing_algorithm: &str,
-        recovery_algorithm: &str,
-    ) -> Self {
-        Self {
-            hsm,
-            label_prefix: label_prefix.to_string(),
-            signing_algorithm: RwLock::new(signing_algorithm.to_string()),
-            recovery_algorithm: RwLock::new(recovery_algorithm.to_string()),
-            signing_generation: RwLock::new(signing_generation),
-            recovery_generation: RwLock::new(recovery_generation),
-            key_handles: RwLock::new(Vec::new()),
-            recovery_handles: RwLock::new(Vec::new()),
-        }
-    }
+pub struct HsmKeyProviderConfig {
+    pub hsm: Arc<dyn HsmOperations>,
+    pub label_prefix: String,
+    pub signing_generation: u64,
+    pub recovery_generation: u64,
+    pub signing_algorithm: String,
+    pub recovery_algorithm: String,
+    pub current_handle: Option<KeyHandle>,
+    pub next_handle: Option<KeyHandle>,
+    pub recovery_handle: Option<KeyHandle>,
+}
 
-    /// Restore from persisted state.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_handles(
-        hsm: Arc<dyn HsmOperations>,
-        label_prefix: &str,
-        signing_generation: u64,
-        recovery_generation: u64,
-        current_handle: KeyHandle,
-        next_handle: KeyHandle,
-        recovery_handle: KeyHandle,
-        signing_algorithm: &str,
-        recovery_algorithm: &str,
-    ) -> Self {
+impl HsmKeyProvider {
+    pub fn new(config: HsmKeyProviderConfig) -> Self {
+        let mut key_handles = Vec::new();
+        if let Some(current) = config.current_handle {
+            key_handles.push(current);
+        }
+        if let Some(next) = config.next_handle {
+            key_handles.push(next);
+        }
+        let mut recovery_handles = Vec::new();
+        if let Some(recovery) = config.recovery_handle {
+            recovery_handles.push(recovery);
+        }
+
         Self {
-            hsm,
-            label_prefix: label_prefix.to_string(),
-            signing_algorithm: RwLock::new(signing_algorithm.to_string()),
-            recovery_algorithm: RwLock::new(recovery_algorithm.to_string()),
-            signing_generation: RwLock::new(signing_generation),
-            recovery_generation: RwLock::new(recovery_generation),
-            key_handles: RwLock::new(vec![current_handle, next_handle]),
-            recovery_handles: RwLock::new(vec![recovery_handle]),
+            hsm: config.hsm,
+            label_prefix: config.label_prefix,
+            signing_algorithm: RwLock::new(config.signing_algorithm),
+            recovery_algorithm: RwLock::new(config.recovery_algorithm),
+            signing_generation: RwLock::new(config.signing_generation),
+            recovery_generation: RwLock::new(config.recovery_generation),
+            key_handles: RwLock::new(key_handles),
+            recovery_handles: RwLock::new(recovery_handles),
         }
     }
 
@@ -699,10 +719,34 @@ mod tests {
 
     // ==================== HsmKeyProvider Tests ====================
 
+    fn test_provider(mock: Arc<MockHsm>) -> HsmKeyProvider {
+        HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "test".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        })
+    }
+
     #[tokio::test]
     async fn test_hsm_key_provider_new() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "test-prefix", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "test-prefix".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         assert!(!provider.has_current().await);
         assert!(!provider.has_next().await);
@@ -720,17 +764,17 @@ mod tests {
         let _ = mock.generate_keypair("next", "ml-dsa-65").await;
         let _ = mock.generate_keypair("recovery", "ml-dsa-65").await;
 
-        let provider = HsmKeyProvider::with_handles(
-            mock,
-            "test-prefix",
-            2,
-            1,
-            KeyHandle::new("current"),
-            KeyHandle::new("next"),
-            KeyHandle::new("recovery"),
-            "ml-dsa-65",
-            "ml-dsa-65",
-        );
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "test-prefix".to_string(),
+            signing_generation: 2,
+            recovery_generation: 1,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: Some(KeyHandle::new("current")),
+            next_handle: Some(KeyHandle::new("next")),
+            recovery_handle: Some(KeyHandle::new("recovery")),
+        });
 
         assert!(provider.has_current().await);
         assert!(provider.has_next().await);
@@ -742,7 +786,17 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_signing_generation() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "prefix", 42, 10, "ml-dsa-65", "ml-dsa-65");
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "prefix".to_string(),
+            signing_generation: 42,
+            recovery_generation: 10,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         assert_eq!(provider.signing_generation().await, 42);
         assert_eq!(provider.recovery_generation().await, 10);
@@ -751,7 +805,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_generate_initial_keys() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         let result = provider.generate_initial_keys().await;
         assert!(result.is_ok());
@@ -774,17 +828,17 @@ mod tests {
         let _ = mock.generate_keypair("curr", "ml-dsa-65").await;
         let _ = mock.generate_keypair("nxt", "ml-dsa-65").await;
 
-        let provider = HsmKeyProvider::with_handles(
-            mock,
-            "p",
-            2,
-            0,
-            KeyHandle::new("curr"),
-            KeyHandle::new("nxt"),
-            KeyHandle::new("rec"),
-            "ml-dsa-65",
-            "ml-dsa-65",
-        );
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "p".to_string(),
+            signing_generation: 2,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: Some(KeyHandle::new("curr")),
+            next_handle: Some(KeyHandle::new("nxt")),
+            recovery_handle: Some(KeyHandle::new("rec")),
+        });
 
         assert_eq!(provider.current_handle().await, Some("curr".to_string()));
         assert_eq!(provider.next_handle().await, Some("nxt".to_string()));
@@ -793,7 +847,17 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_current_handle_empty() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "p", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "p".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         assert_eq!(provider.current_handle().await, None);
         assert_eq!(provider.next_handle().await, None);
@@ -803,7 +867,17 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_current_public_key_no_key() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "p", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "p".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         let result = provider.current_public_key().await;
         assert!(matches!(result, Err(KelsError::NoCurrentKey)));
@@ -812,7 +886,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_stage_rotation() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         // Initialize first
         provider.generate_initial_keys().await.unwrap();
@@ -828,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_stage_rotation_no_next() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         let result = provider.stage_rotation().await;
         assert!(matches!(result, Err(KelsError::NoNextKey)));
@@ -837,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_commit() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         provider.stage_rotation().await.unwrap();
@@ -853,7 +927,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_commit_no_staged() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
 
@@ -864,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_rollback() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         let gen_before = provider.signing_generation().await;
@@ -881,7 +955,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_rollback_no_staged() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
 
@@ -892,7 +966,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_sign() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
 
@@ -903,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_sign_no_key() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = test_provider(mock);
 
         let result = provider.sign(b"test data").await;
         assert!(matches!(result, Err(KelsError::NoCurrentKey)));
@@ -912,7 +986,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_sign_with_recovery() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
 
@@ -923,7 +997,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_sign_with_recovery_no_key() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = test_provider(mock);
 
         let result = provider.sign_with_recovery(b"test data").await;
         assert!(matches!(result, Err(KelsError::NoRecoveryKey)));
@@ -932,7 +1006,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_stage_recovery_rotation() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         assert!(!provider.has_staged_recovery().await);
@@ -945,7 +1019,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_stage_recovery_rotation_no_recovery() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         let result = provider.stage_recovery_rotation().await;
         assert!(matches!(result, Err(KelsError::NoRecoveryKey)));
@@ -954,7 +1028,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_stage_recovery_rotation_already_staged() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         provider.stage_recovery_rotation().await.unwrap();
@@ -966,7 +1040,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_commit_with_staged_recovery() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         provider.stage_rotation().await.unwrap();
@@ -985,7 +1059,7 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_rollback_with_staged_recovery() {
         let mock = Arc::new(MockHsm::new());
-        let mut provider = HsmKeyProvider::new(mock, "test", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let mut provider = test_provider(mock);
 
         provider.generate_initial_keys().await.unwrap();
         let recovery_gen_before = provider.recovery_generation().await;
@@ -1003,7 +1077,17 @@ mod tests {
     #[tokio::test]
     async fn test_hsm_key_provider_debug() {
         let mock = Arc::new(MockHsm::new());
-        let provider = HsmKeyProvider::new(mock, "my-prefix", 0, 0, "ml-dsa-65", "ml-dsa-65");
+        let provider = HsmKeyProvider::new(HsmKeyProviderConfig {
+            hsm: mock,
+            label_prefix: "my-prefix".to_string(),
+            signing_generation: 0,
+            recovery_generation: 0,
+            signing_algorithm: "ml-dsa-65".to_string(),
+            recovery_algorithm: "ml-dsa-65".to_string(),
+            current_handle: None,
+            next_handle: None,
+            recovery_handle: None,
+        });
 
         let debug_str = format!("{:?}", provider);
         assert!(debug_str.contains("HsmKeyProvider"));

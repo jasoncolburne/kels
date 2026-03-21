@@ -87,7 +87,7 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
 
     // Step 5: Derive session keys from ML-KEM shared secret.
     let (send_cipher, recv_cipher) =
-        derive_session_keys(&shared_secret, &our_id.0, &their_id.0, is_initiator);
+        derive_session_keys(&shared_secret, &our_id.0, &their_id.0, is_initiator)?;
     let encrypted = EncryptedStream::new(stream, send_cipher, recv_cipher);
 
     Ok(PeerConnection {
@@ -160,6 +160,13 @@ async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>
         let ek = KemPublicKey::from_qb64(&ek_qb64)
             .map_err(|e| Error::Handshake(format!("Invalid encapsulation key: {}", e)))?;
 
+        // Reject if peer offered a weaker KEM than we require
+        if kem_algo == KemKeyCode::MlKem1024 && ek.algorithm() == KemKeyCode::MlKem768 {
+            return Err(Error::Handshake(
+                "Peer offered ML-KEM-768 but ML-KEM-1024 is required".into(),
+            ));
+        }
+
         // Encapsulate
         let (ct, shared_secret) = ek
             .encapsulate()
@@ -211,8 +218,8 @@ async fn send_length_prefixed<S: futures::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Maximum handshake message size (8 KiB — larger than any single ML-KEM/ML-DSA artifact).
-const MAX_HANDSHAKE_MSG: usize = 8 * 1024;
+/// Maximum handshake message size (12 KiB — larger than (about double) any single ML-KEM/ML-DSA artifact).
+const MAX_HANDSHAKE_MSG: usize = 12 * 1024;
 
 /// Receive a length-prefixed message (4-byte big-endian length + payload).
 async fn recv_length_prefixed<S: futures::AsyncRead + Unpin>(
