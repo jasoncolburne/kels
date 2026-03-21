@@ -361,11 +361,7 @@ pub extern "C" fn kels_init(
         }
     };
 
-    // Create key provider
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
+    // Create key state store and key provider
     let key_state_store = FileKeyStateStore::new(&state_path);
 
     #[cfg(all(
