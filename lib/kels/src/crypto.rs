@@ -659,6 +659,8 @@ impl KeyProvider for SoftwareKeyProvider {
 
     async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError> {
         let state = SoftwareKeyState {
+            signing_algorithm: Some(self.signing_algorithm),
+            recovery_algorithm: Some(self.recovery_algorithm),
             keys: self.keys.iter().map(|k| k.qb64()).collect(),
             recovery_keys: self.recovery_keys.iter().map(|k| k.qb64()).collect(),
         };
@@ -702,15 +704,12 @@ impl KeyProvider for SoftwareKeyProvider {
             ));
         }
 
-        // Infer algorithms from loaded keys
-        self.signing_algorithm = keys
-            .last()
-            .map(|k| k.algorithm())
-            .unwrap_or(self.signing_algorithm);
-        self.recovery_algorithm = recovery_keys
-            .first()
-            .map(|k| k.algorithm())
-            .unwrap_or(self.recovery_algorithm);
+        if let Some(algo) = state.signing_algorithm {
+            self.signing_algorithm = algo;
+        }
+        if let Some(algo) = state.recovery_algorithm {
+            self.recovery_algorithm = algo;
+        }
 
         self.keys = keys;
         self.recovery_keys = recovery_keys;
@@ -721,6 +720,10 @@ impl KeyProvider for SoftwareKeyProvider {
 
 #[derive(Serialize, Deserialize)]
 struct SoftwareKeyState {
+    #[serde(default)]
+    signing_algorithm: Option<VerificationKeyCode>,
+    #[serde(default)]
+    recovery_algorithm: Option<VerificationKeyCode>,
     keys: Vec<String>,
     recovery_keys: Vec<String>,
 }

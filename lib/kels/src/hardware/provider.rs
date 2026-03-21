@@ -401,8 +401,8 @@ impl KeyProvider for HardwareKeyProvider {
         let state = HardwareKeyState {
             signing_generation: *self.signing_generation.read().await,
             recovery_generation: *self.recovery_generation.read().await,
-            signing_algorithm: algorithm_to_string(self.signing_algorithm),
-            recovery_algorithm: algorithm_to_string(self.recovery_algorithm),
+            signing_algorithm: self.signing_algorithm,
+            recovery_algorithm: self.recovery_algorithm,
 
             key_handles: key_handles
                 .iter()
@@ -434,12 +434,8 @@ impl KeyProvider for HardwareKeyProvider {
         *self.signing_generation.write().await = state.signing_generation;
         *self.recovery_generation.write().await = state.recovery_generation;
 
-        if let Some(algo) = parse_algorithm(&state.signing_algorithm) {
-            self.signing_algorithm = algo;
-        }
-        if let Some(algo) = parse_algorithm(&state.recovery_algorithm) {
-            self.recovery_algorithm = algo;
-        }
+        self.signing_algorithm = state.signing_algorithm;
+        self.recovery_algorithm = state.recovery_algorithm;
 
         let key_handles: Vec<SecureEnclaveKeyHandle> = state
             .key_handles
@@ -465,8 +461,8 @@ impl KeyProvider for HardwareKeyProvider {
 struct HardwareKeyState {
     signing_generation: u64,
     recovery_generation: u64,
-    signing_algorithm: String,
-    recovery_algorithm: String,
+    signing_algorithm: VerificationKeyCode,
+    recovery_algorithm: VerificationKeyCode,
     key_handles: Vec<PersistedHandle>,
     recovery_handles: Vec<PersistedHandle>,
 }
@@ -474,7 +470,7 @@ struct HardwareKeyState {
 #[derive(Serialize, Deserialize)]
 struct PersistedHandle {
     label: String,
-    algorithm: String,
+    algorithm: VerificationKeyCode,
     key_data_b64: String,
 }
 
@@ -482,37 +478,19 @@ impl PersistedHandle {
     fn from_handle(handle: &SecureEnclaveKeyHandle) -> Self {
         Self {
             label: handle.label.clone(),
-            algorithm: algorithm_to_string(handle.algorithm),
+            algorithm: handle.algorithm,
             key_data_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&handle.key_data),
         }
     }
 
     fn to_handle(&self) -> Option<SecureEnclaveKeyHandle> {
-        let algorithm = parse_algorithm(&self.algorithm)?;
         let key_data = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(&self.key_data_b64)
             .ok()?;
         Some(SecureEnclaveKeyHandle {
             label: self.label.clone(),
-            algorithm,
+            algorithm: self.algorithm,
             key_data,
         })
-    }
-}
-
-fn algorithm_to_string(algo: VerificationKeyCode) -> String {
-    match algo {
-        VerificationKeyCode::Secp256r1 => "secp256r1".to_string(),
-        VerificationKeyCode::MlDsa65 => "ml-dsa-65".to_string(),
-        VerificationKeyCode::MlDsa87 => "ml-dsa-87".to_string(),
-    }
-}
-
-fn parse_algorithm(s: &str) -> Option<VerificationKeyCode> {
-    match s {
-        "secp256r1" | "p256" => Some(VerificationKeyCode::Secp256r1),
-        "ml-dsa-65" | "ML-DSA-65" => Some(VerificationKeyCode::MlDsa65),
-        "ml-dsa-87" | "ML-DSA-87" => Some(VerificationKeyCode::MlDsa87),
-        _ => None,
     }
 }
