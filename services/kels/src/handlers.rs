@@ -13,11 +13,13 @@ use axum::{
 };
 use cesr::{Matter, Signature};
 use dashmap::DashMap;
+use redis::AsyncCommands;
+use tracing::warn;
+
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
     KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
-use tracing::warn;
 
 use crate::repository::KelsRepository;
 
@@ -227,7 +229,6 @@ pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Js
         );
     };
 
-    use redis::AsyncCommands;
     let mut conn = redis_conn.clone();
 
     match conn.get::<_, Option<String>>("kels:gossip:ready").await {
@@ -648,7 +649,6 @@ async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
 ) -> Result<Option<kels::Peer>, ApiError> {
-    use redis::AsyncCommands;
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
         .get(format!("kels:verified-peer:{}", peer_prefix))
@@ -669,8 +669,6 @@ async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],
 ) -> Result<(), ApiError> {
-    use redis::AsyncCommands;
-
     if registry_urls.is_empty() {
         warn!("No registry URLs configured, skipping peer verification refresh");
         return Ok(());

@@ -37,6 +37,14 @@ spec:
               value: "${var.rustLogLevel}"
             - name: DATABASE_URL
               value: "${var.kelsDatabaseUrl}"
+            - name: KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE
+              value: "${var.maxSubmissionsPerPrefixPerMinute}"
+            - name: KELS_MAX_WRITES_PER_IP_PER_SECOND
+              value: "${var.maxWritesPerIpPerSecond}"
+            - name: KELS_IP_RATE_LIMIT_BURST
+              value: "${var.ipRateLimitBurst}"
+            - name: KELS_NONCE_WINDOW_SECS
+              value: "${var.nonceWindowSecs}"
             - name: KELS_TEST_ENDPOINTS
               value: "${var.testEndpoints}"
           livenessProbe:
