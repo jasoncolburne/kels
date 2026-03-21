@@ -38,7 +38,7 @@ spec:
             - name: DATABASE_URL
               value: "${var.kelsDatabaseUrl}"
             - name: KELS_TEST_ENDPOINTS
-              value: "true"
+              value: "${var.testEndpoints}"
           livenessProbe:
             httpGet:
               path: /health
