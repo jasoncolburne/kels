@@ -16,10 +16,7 @@ pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
 
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
     let mut builder = KeyEventBuilder::new(
-        SoftwareKeyProvider::new(
-            VerificationKeyCode::Secp256r1,
-            VerificationKeyCode::Secp256r1,
-        ),
+        SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa87),
         None,
     );
     let icp = builder.incept().await.unwrap();
