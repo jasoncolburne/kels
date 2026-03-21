@@ -199,9 +199,9 @@ Archived events preserved for forensics:
 
 ```sql
 CREATE TABLE kels_audit_records (
-    said CHAR(44) PRIMARY KEY,
-    kel_prefix CHAR(44) NOT NULL,
-    kind VARCHAR(32) NOT NULL,  -- 'kels/v1/rec' or 'kels/v1/cnt'
+    said TEXT PRIMARY KEY,
+    kel_prefix TEXT NOT NULL,
+    kind TEXT NOT NULL,  -- 'kels/v1/rec' or 'kels/v1/cnt'
     data_json TEXT NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL
 );

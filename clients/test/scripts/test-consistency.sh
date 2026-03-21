@@ -201,7 +201,7 @@ while IFS= read -r prefix; do
         fi
 
         event_count=$(echo "$all_events" | jq 'length' 2>/dev/null)
-        digest=$(echo "$all_events" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | sha256sum | awk '{print $1}')
+        digest=$(echo "$all_events" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | sha256sum | awk '{print $1}')
 
         # Determine behavioral state from event kinds and structure
         state=$(echo "$all_events" | jq -r '

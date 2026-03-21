@@ -20,6 +20,12 @@ environments:
     defaultNamespace: kels-registry-d
     variables:
       envType: registry
+  - name: standalone
+    defaultNamespace: kels-standalone
+    variables:
+      envType: standalone
+      kels:
+        testEndpoints: "true"
   - name: node-a
     defaultNamespace: kels-node-a
     variables:
@@ -53,7 +59,7 @@ environments:
 
 providers:
   - name: local-kubernetes
-    environments: [registry-a, registry-b, registry-c, registry-d, node-a, node-b, node-c, node-d, node-e, node-f]
+    environments: [standalone, registry-a, registry-b, registry-c, registry-d, node-a, node-b, node-c, node-d, node-e, node-f]
     namespace:
       name: ${environment.namespace}
     setupIngressController: traefik

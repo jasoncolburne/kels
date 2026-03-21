@@ -3,17 +3,17 @@ BEGIN;
 
 -- Key events table
 CREATE TABLE IF NOT EXISTS kels_key_events (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     serial BIGINT NOT NULL,
     public_key TEXT,
-    rotation_hash CHAR(44),
+    rotation_hash TEXT,
     recovery_key TEXT,
-    recovery_hash CHAR(44),
+    recovery_hash TEXT,
     kind TEXT NOT NULL,
-    anchor CHAR(44),
-    delegating_prefix CHAR(44)
+    anchor TEXT,
+    delegating_prefix TEXT
 );
 
 CREATE INDEX IF NOT EXISTS kels_key_events_prefix_idx ON kels_key_events(prefix);
@@ -22,8 +22,8 @@ CREATE INDEX IF NOT EXISTS kels_key_events_prefix_previous_idx ON kels_key_event
 
 -- Signatures table
 CREATE TABLE IF NOT EXISTS kels_key_event_signatures (
-    said CHAR(44) PRIMARY KEY,
-    event_said CHAR(44) NOT NULL,
+    said TEXT PRIMARY KEY,
+    event_said TEXT NOT NULL,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
@@ -33,8 +33,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS kels_key_event_signatures_event_said_label_idx
 
 -- Audit records table
 CREATE TABLE IF NOT EXISTS kels_audit_records (
-    said CHAR(44) PRIMARY KEY,
-    kel_prefix CHAR(44) NOT NULL,
+    said TEXT PRIMARY KEY,
+    kel_prefix TEXT NOT NULL,
     kind TEXT NOT NULL,
     data_json TEXT NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL

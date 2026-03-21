@@ -71,8 +71,8 @@ wait_for_event_count() {
 kels_match() {
     local prefix="$1"
     local hash_a hash_b
-    hash_a=$(fetch_all_events "$NODE_A_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
-    hash_b=$(fetch_all_events "$NODE_B_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.publicKey)]' | md5sum | awk '{print $1}')
+    hash_a=$(fetch_all_events "$NODE_A_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}')
+    hash_b=$(fetch_all_events "$NODE_B_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}')
     [ "$hash_a" = "$hash_b" ]
 }
 

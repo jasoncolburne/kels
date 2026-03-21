@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/kels".to_string());
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
+    let redis_url = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty());
     let registry_urls: Vec<String> = std::env::var("FEDERATION_REGISTRY_URLS")
         .unwrap_or_default()
         .split(',')
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    kels_service::run(listener, &database_url, &redis_url, registry_urls).await?;
+    kels_service::run(listener, &database_url, redis_url.as_deref(), registry_urls).await?;
 
     Ok(())
 }

@@ -6,9 +6,9 @@ BEGIN;
 
 -- Raft vote state (chained by prefix, queryable by node_id)
 CREATE TABLE IF NOT EXISTS raft_vote (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     node_id BIGINT NOT NULL,
@@ -24,9 +24,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_raft_vote_node_version ON raft_vote(node_i
 
 -- Raft log entries (chained by prefix, queryable by node_id)
 CREATE TABLE IF NOT EXISTS raft_log (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     node_id BIGINT NOT NULL,
@@ -46,9 +46,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_raft_log_node_version ON raft_log(node_id,
 
 -- Raft state metadata (chained by prefix, queryable by node_id)
 CREATE TABLE IF NOT EXISTS raft_state (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     node_id BIGINT NOT NULL,
@@ -69,7 +69,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_raft_state_node_version ON raft_state(node
 
 -- Raft log audit records (for truncate/purge operations)
 CREATE TABLE IF NOT EXISTS raft_log_audit (
-    said CHAR(44) PRIMARY KEY,
+    said TEXT PRIMARY KEY,
     node_id BIGINT NOT NULL,
     operation TEXT NOT NULL,
     entries_json TEXT NOT NULL,
@@ -82,17 +82,17 @@ CREATE INDEX IF NOT EXISTS idx_raft_log_audit_recorded_at ON raft_log_audit(reco
 -- Member KELs: stores key events for federation members (replicated via Raft)
 -- Same schema as kels_key_events but in the registry database
 CREATE TABLE IF NOT EXISTS member_key_events (
-    said CHAR(44) PRIMARY KEY,
-    prefix CHAR(44) NOT NULL,
-    previous CHAR(44),
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
     serial BIGINT NOT NULL,
     public_key TEXT,
-    rotation_hash CHAR(44),
+    rotation_hash TEXT,
     recovery_key TEXT,
-    recovery_hash CHAR(44),
+    recovery_hash TEXT,
     kind TEXT NOT NULL,
-    anchor CHAR(44),
-    delegating_prefix CHAR(44)
+    anchor TEXT,
+    delegating_prefix TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix ON member_key_events(prefix);
@@ -100,8 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_serial ON member_key_eve
 CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_previous ON member_key_events(prefix, previous);
 
 CREATE TABLE IF NOT EXISTS member_key_event_signatures (
-    said CHAR(44) PRIMARY KEY,
-    event_said CHAR(44) NOT NULL,
+    said TEXT PRIMARY KEY,
+    event_said TEXT NOT NULL,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );

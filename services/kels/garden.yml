@@ -27,15 +27,16 @@ type: kubernetes
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - run.federation-read-urls
   - build.kels
   - deploy.postgres
-  - deploy.redis
+  # Note: deploy.redis is intentionally not listed as a dependency. Redis is
+  # optional — the kels service runs without it in standalone mode. In federated
+  # deployments, the wait-for-redis initContainer handles startup ordering.
 
 variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
-  redisUrl: "${var.redis.kelsUrl}"
-  federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
+  redisUrl: "${var.envType != 'standalone' ? var.redis.kelsUrl : ''}"
+  federationRegistryUrls: "${var.envType != 'standalone' ? actions.run.federation-read-urls.outputs.log : ''}"
   maxSubmissionsPerPrefixPerMinute: "${var.kels.maxSubmissionsPerPrefixPerMinute}"
   maxWritesPerIpPerSecond: "${var.kels.maxWritesPerIpPerSecond}"
   ipRateLimitBurst: "${var.kels.ipRateLimitBurst}"
@@ -44,4 +45,4 @@ variables:
 
 spec:
   manifestTemplates:
-    - manifests.yml.tpl
+    - "${var.envType == 'standalone' ? 'manifests-standalone.yml.tpl' : 'manifests.yml.tpl'}"

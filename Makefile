@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-comprehensive wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -49,7 +49,10 @@ clean-nodes:
 	garden cleanup namespace --env=node-e
 	garden cleanup namespace --env=node-f
 
-clean-garden: clean-nodes clean-registries
+clean-standalone:
+	garden cleanup namespace --env=standalone
+
+clean-garden: clean-standalone clean-nodes clean-registries
 
 clean-docker:
 	@echo "Cleaning docker caches..."
@@ -380,4 +383,10 @@ test-kem-upgrade:
 	$(MAKE) restart-gossip-services
 	$(MAKE) wait-for-gossip
 
-test-comprehensive: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite
+test-node: clean-standalone
+	garden deploy --env=standalone
+	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
+	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
+
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite

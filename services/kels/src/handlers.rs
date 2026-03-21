@@ -13,11 +13,13 @@ use axum::{
 };
 use cesr::{Matter, Signature};
 use dashmap::DashMap;
+use redis::AsyncCommands;
+use tracing::warn;
+
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
     KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
-use tracing::warn;
 
 use crate::repository::KelsRepository;
 
@@ -50,8 +52,8 @@ fn nonce_window_secs() -> u64 {
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_store: Arc<dyn kels::KelStore>,
-    pub(crate) kel_cache: ServerKelCache,
-    pub(crate) redis_conn: redis::aio::ConnectionManager,
+    pub(crate) kel_cache: Option<ServerKelCache>,
+    pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix rate limiting: maps prefix -> (count, window_start)
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
@@ -215,10 +217,19 @@ pub(crate) struct ReadyResponse {
 }
 
 /// Check if the node is ready by reading gossip service state from Redis.
+/// Without Redis (standalone mode), the node is always ready.
 pub(crate) async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ReadyResponse>) {
-    use redis::AsyncCommands;
+    let Some(ref redis_conn) = state.redis_conn else {
+        return (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                ready: true,
+                status: "standalone".to_string(),
+            }),
+        );
+    };
 
-    let mut conn = state.redis_conn.clone();
+    let mut conn = redis_conn.clone();
 
     match conn.get::<_, Option<String>>("kels:gossip:ready").await {
         Ok(Some(status)) if status == "true" => (
@@ -373,8 +384,8 @@ pub(crate) async fn submit_events(
         KelMergeResult::ContestRequired => unreachable!(),
     };
 
-    // Update cache outside transaction
-    if applied {
+    // Update cache outside transaction (skip if no Redis)
+    if applied && let Some(ref kel_cache) = state.kel_cache {
         match state
             .repo
             .key_events
@@ -383,16 +394,16 @@ pub(crate) async fn submit_events(
         {
             Ok((events, has_more)) => {
                 if !has_more {
-                    if let Err(e) = state.kel_cache.store(&prefix, &events).await {
+                    if let Err(e) = kel_cache.store(&prefix, &events).await {
                         warn!("Failed to cache KEL: {}", e);
                     }
-                } else if let Err(e) = state.kel_cache.invalidate(&prefix).await {
+                } else if let Err(e) = kel_cache.invalidate(&prefix).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
             Err(e) => {
                 warn!("Failed to rebuild cache for {}: {}", prefix, e);
-                if let Err(e) = state.kel_cache.invalidate(&prefix).await {
+                if let Err(e) = kel_cache.invalidate(&prefix).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
@@ -416,7 +427,7 @@ pub(crate) async fn submit_events(
             }
         };
         if let Some(ref said) = effective_said
-            && let Err(e) = state.kel_cache.publish_update(&prefix, said).await
+            && let Err(e) = kel_cache.publish_update(&prefix, said).await
         {
             warn!("Failed to publish cache update: {}", e);
         }
@@ -451,8 +462,10 @@ pub(crate) async fn get_kel(
     }
 
     // Full fetch path — try cache for default limit
-    if limit as usize == kels::page_size() {
-        match state.kel_cache.get_full_serialized(&prefix).await {
+    if limit as usize == kels::page_size()
+        && let Some(ref kel_cache) = state.kel_cache
+    {
+        match kel_cache.get_full_serialized(&prefix).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -474,7 +487,8 @@ pub(crate) async fn get_kel(
 
     // Store in cache (skips if too large per cache logic)
     if !page.has_more
-        && let Err(e) = state.kel_cache.store(&prefix, &page.events).await
+        && let Some(ref kel_cache) = state.kel_cache
+        && let Err(e) = kel_cache.store(&prefix, &page.events).await
     {
         warn!("Failed to cache KEL: {}", e);
     }
@@ -574,13 +588,17 @@ pub(crate) async fn list_prefixes(
         }
     }
 
-    // Look up peer to verify they are in the verified allowlist
-    let peer = get_verified_peer(&state.redis_conn, &signed_request.peer_prefix).await?;
+    // Look up peer to verify they are in the verified allowlist (requires Redis)
+    let redis_conn = state
+        .redis_conn
+        .as_ref()
+        .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
+    let peer = get_verified_peer(redis_conn, &signed_request.peer_prefix).await?;
     let _peer = match peer {
         Some(p) => p,
         None => {
-            refresh_verified_peers(&state.redis_conn, &state.registry_urls).await?;
-            get_verified_peer(&state.redis_conn, &signed_request.peer_prefix)
+            refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+            get_verified_peer(redis_conn, &signed_request.peer_prefix)
                 .await?
                 .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
         }
@@ -631,7 +649,6 @@ async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
 ) -> Result<Option<kels::Peer>, ApiError> {
-    use redis::AsyncCommands;
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
         .get(format!("kels:verified-peer:{}", peer_prefix))
@@ -652,8 +669,6 @@ async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],
 ) -> Result<(), ApiError> {
-    use redis::AsyncCommands;
-
     if registry_urls.is_empty() {
         warn!("No registry URLs configured, skipping peer verification refresh");
         return Ok(());
