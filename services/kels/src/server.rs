@@ -21,18 +21,21 @@ use crate::{
 
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
-        .route("/api/v1/kels/events", post(handlers::submit_events))
-        .route("/api/v1/kels/prefixes", post(handlers::list_prefixes))
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
+        // gossip prefix collection
+        .route("/api/v1/kels/prefixes", post(handlers::list_prefixes))
+        // events
+        .route("/api/v1/kels/events", post(handlers::submit_events))
+        .route(
+            "/api/v1/kels/events/:said/exists",
+            get(handlers::event_exists),
+        )
+        // kels
         .route("/api/v1/kels/kel/:prefix", get(handlers::get_kel))
         .route(
             "/api/v1/kels/kel/:prefix/audit",
             get(handlers::get_kel_audit),
-        )
-        .route(
-            "/api/v1/kels/events/:said/exists",
-            get(handlers::event_exists),
         )
         // RESOLVING ONLY — unverified, for sync comparison. See handler doc.
         .route(

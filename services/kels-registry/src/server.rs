@@ -57,7 +57,7 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 get(handlers::get_proposal),
             );
 
-        // Admin API (localhost only) for proposal and peer management
+        // Admin API for proposal and peer management (requests must be anchored to be valid)
         let admin_router = Router::new()
             .route(
                 "/api/v1/admin/addition-proposals",

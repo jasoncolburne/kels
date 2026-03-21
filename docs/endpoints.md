@@ -105,7 +105,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/ready` | None | Readiness check (has bootstrap completed?) |
-| GET | `/healthz` | None | Liveness probe |
+| GET | `/health` | None | Liveness probe |
 
 ### Gossip Protocols
 
