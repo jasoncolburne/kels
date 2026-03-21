@@ -58,7 +58,7 @@ All services use **compile-time trusted prefixes** for zero-trust security. The 
 
 ### Deployment Impact
 
-Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, all existing services are rebuilt and redeployed with the updated trust anchors (`TRUSTED_REGISTRY_MEMBERS` for kels-registry and `TRUSTED_REGISTRY_PREFIXES` for all services). The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
+Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, gossip nodes and client binaries are rebuilt with the updated `TRUSTED_REGISTRY_PREFIXES`, and kels-registry is rebuilt with updated `TRUSTED_REGISTRY_MEMBERS`. The kels and identity services do not need recompilation — they don't use trusted registry prefixes. The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
 
 ### Registry Configuration
 
@@ -66,9 +66,11 @@ Adding a new registry to the federation is a multi-step process: the new registr
 ```bash
 # Trusted registry members for federation - MUST be set at compile time
 # TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by kels-registry
-# for Raft node identity. This is distinct from TRUSTED_REGISTRY_PREFIXES (comma-separated
-# prefixes used by gossip and identity services).
+# for Raft node identity (compile-time, kels-registry only).
 TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":2,"prefix":"ERegistryBeta...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'
+
+# TRUSTED_REGISTRY_PREFIXES is used by gossip nodes and client binaries (via the
+# `federation` feature on libkels). Not needed by kels or identity services.
 TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
 ```
 
@@ -217,7 +219,7 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ### Federation Membership
 
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip and identity services)
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and client binaries via the `federation` feature on libkels)
 - Only known registry prefixes can participate in consensus
 - Cannot be changed at runtime - must be baked into the binary at build time
 

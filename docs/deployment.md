@@ -27,7 +27,7 @@ The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implemen
 
 ## Deployment Flow
 
-The deployment follows a specific order because of a compile-time trust anchor: `TRUSTED_REGISTRY_PREFIXES`. This is a comma-separated list of registry identity prefixes that gets baked into every binary at compile time. The prefixes aren't known until each registry generates its identity, creating a bootstrap chicken-and-egg that's resolved with a two-phase deployment.
+The deployment follows a specific order because of compile-time trust anchors. `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes) is baked into gossip nodes and CLI clients at compile time via the `federation` feature on libkels. `TRUSTED_REGISTRY_MEMBERS` (JSON) is baked into kels-registry. The kels and identity services do not require either — they can be built without knowing the registry prefixes, avoiding unnecessary recompilation during federation changes.
 
 ### Phase 1: Deploy Registries in Standalone Mode
 
@@ -54,14 +54,15 @@ fetch prefix from registry-b → save
 fetch prefix from registry-c → save
 ```
 
-In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for all services) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id`, `prefix`, and `active` for kels-registry Raft node IDs).
+In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and CLI clients) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id`, `prefix`, and `active` for kels-registry Raft node IDs). The kels and identity services do not need these values and are not recompiled during this phase.
 
 ### Phase 3: Recompile and Redeploy Registries
 
 Rebuild all binaries with the collected prefixes baked in, then redeploy the registries. On this second deployment, the registries detect federation configuration and start the Raft consensus cluster.
 
 ```
-recompile with TRUSTED_REGISTRY_PREFIXES=<prefix-a>,<prefix-b>,<prefix-c>
+recompile kels-registry with TRUSTED_REGISTRY_MEMBERS
+recompile gossip nodes with TRUSTED_REGISTRY_PREFIXES=<prefix-a>,<prefix-b>,<prefix-c>
 redeploy registry-a (federation mode)
 redeploy registry-b (federation mode)
 redeploy registry-c (federation mode)
@@ -88,21 +89,24 @@ Run integration tests or manually verify:
 
 ## Compile-Time Trust Anchor
 
-`TRUSTED_REGISTRY_PREFIXES` is the security foundation of the network. It's compiled into every binary that needs to verify registry identity:
+`TRUSTED_REGISTRY_PREFIXES` is the security foundation of the network. It's compiled into binaries that enable the `federation` feature on libkels:
 
-- `kels-registry` — federation membership, proposal/vote verification
 - `kels-gossip` — peer allowlist verification, registry KEL verification
-- `kels` (service) — signed request verification against peer allowlist
-- Client libraries (`libkels`, `libkels-ffi`) — registry KEL verification during node discovery
+- Client binaries (`kels-cli`, `kels-bench`) — registry KEL verification during node discovery
 
-When this value changes (registries added or removed), **all binaries must be recompiled and redeployed**.
+Services that do **not** need `TRUSTED_REGISTRY_PREFIXES`:
+- `kels` (service) — accepts any valid KEL; does not verify registry identity
+- `identity` — manages its own KEL; does not verify registry identity
+- `kels-registry` — uses `TRUSTED_REGISTRY_MEMBERS` (its own compile-time mechanism) instead
+
+When `TRUSTED_REGISTRY_PREFIXES` changes (registries added or removed), only gossip nodes and client binaries need recompilation. The kels and identity services are unaffected.
 
 ## Federation Configuration
 
 Each registry needs two categories of configuration:
 
 **Compile-time (security — who to trust):**
-- `TRUSTED_REGISTRY_PREFIXES` — comma-separated prefixes, baked into all binaries
+- `TRUSTED_REGISTRY_PREFIXES` — comma-separated prefixes, baked into gossip nodes and client binaries (requires `federation` feature on libkels)
 - `TRUSTED_REGISTRY_MEMBERS` — JSON array of `{id, prefix, active}` objects, baked into kels-registry only (explicit Raft node IDs)
 
 **Runtime (operational — how to connect):**
@@ -259,7 +263,7 @@ To expand the federation with a new registry after initial deployment:
 
 1. **Deploy the new registry standalone** (generates its cryptographic identity on first boot)
 2. **Fetch its prefix** using `federation-fetch.sh` — the script auto-assigns the next sequential `id` in `federated-registries.json`
-3. **Recompile all binaries** with the updated trust anchors (`TRUSTED_REGISTRY_PREFIXES` and `TRUSTED_REGISTRY_MEMBERS`)
+3. **Recompile affected binaries** — kels-registry (with updated `TRUSTED_REGISTRY_MEMBERS`), gossip nodes and client binaries (with updated `TRUSTED_REGISTRY_PREFIXES`). The kels and identity services do not need recompilation
 4. **Deploy updated client software** (iOS, CLI, etc.) — clients verify registry KELs against the compiled-in trust anchor
 5. **Wait for acceptable client deployment coverage** before proceeding
 6. **Update `FEDERATION_URLS`** environment variables to include the new registry's `prefix=url` mapping

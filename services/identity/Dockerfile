@@ -28,11 +28,10 @@ RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     cp /app/lib/kels-mock-hsm/target/release/libkels_mock_hsm.dylib /app/libkels_mock_hsm.so 2>/dev/null || true
 
 # Build identity service
-ARG TRUSTED_REGISTRY_PREFIXES
 WORKDIR /app/services/identity
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=identity-target,target=/app/services/identity/target \
-    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin identity --bin identity-admin && \
+    cargo build --release --bin identity --bin identity-admin && \
     cp /app/services/identity/target/release/identity /app/identity && \
     cp /app/services/identity/target/release/identity-admin /app/identity-admin
 

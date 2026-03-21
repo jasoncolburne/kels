@@ -25,11 +25,10 @@ use crate::{
     },
 };
 
-/// Trusted registry prefixes for verifying registry identity.
-/// MUST be set at compile time via TRUSTED_REGISTRY_PREFIXES environment variable.
-/// Format: "prefix1,prefix2,..." (comma-separated KELS prefixes)
+#[cfg(feature = "federation")]
 const TRUSTED_REGISTRY_PREFIXES: &str = env!("TRUSTED_REGISTRY_PREFIXES");
 
+#[cfg(feature = "federation")]
 fn parse_trusted_prefixes() -> HashSet<&'static str> {
     TRUSTED_REGISTRY_PREFIXES
         .split(',')
@@ -38,8 +37,16 @@ fn parse_trusted_prefixes() -> HashSet<&'static str> {
 }
 
 /// Get the compiled-in trusted registry prefixes.
+#[cfg(feature = "federation")]
 pub fn trusted_prefixes() -> HashSet<&'static str> {
     parse_trusted_prefixes()
+}
+
+/// Get the compiled-in trusted registry prefixes.
+/// Panics: requires the `federation` feature.
+#[cfg(not(feature = "federation"))]
+pub fn trusted_prefixes() -> HashSet<&'static str> {
+    unimplemented!("trusted_prefixes() requires the 'federation' feature")
 }
 
 /// Result of a signing operation, containing all data needed for a SignedRequest.

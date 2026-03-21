@@ -15,7 +15,7 @@ default = []
 dev-tools = ["libkels/dev-tools"]
 
 [dependencies]
-libkels = { path = "../../lib/kels", features = ["native"] }
+libkels = { path = "../../lib/kels", features = ["native", "federation"] }
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 tokio = { version = "1", features = ["full"] }
