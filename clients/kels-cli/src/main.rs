@@ -678,23 +678,27 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     print_kel_status(&kel_verification, !audit);
 
     if audit {
-        let audit_records = client.fetch_kel_audit(prefix).await?;
-        if !audit_records.is_empty() {
+        let recovery_records = client.fetch_kel_audit(prefix).await?;
+        if !recovery_records.is_empty() {
             println!();
-            println!("{}", "Audit Records:".yellow().bold());
-            for (i, record) in audit_records.iter().enumerate() {
+            println!("{}", "Recovery History:".yellow().bold());
+            for (i, record) in recovery_records.iter().enumerate() {
                 println!(
-                    "  [{}] {} - {} ({})",
+                    "  [{}] {} v{} - {} ({})",
                     i,
-                    record.kind.as_str().to_uppercase(),
+                    record.state,
+                    record.version,
                     &record.said[..16],
-                    record.recorded_at
+                    record.created_at
                 );
-                println!("      Data: {}", record.data_json);
+                println!(
+                    "      diverged_at={} recovery_serial={} cursor={}",
+                    record.diverged_at, record.recovery_serial, record.cursor_serial
+                );
             }
         } else {
             println!();
-            println!("{}", "Audit Records: (none)".yellow());
+            println!("{}", "Recovery History: (none)".yellow());
         }
     }
 

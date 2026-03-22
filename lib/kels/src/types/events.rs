@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
+use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::error::KelsError;
 
@@ -685,40 +685,6 @@ pub struct SubmitEventsResponse {
 pub struct EffectiveSaidResponse {
     pub said: String,
     pub divergent: bool,
-}
-
-/// Audit record for tracking archived events during recovery/contest
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "kels_audit_records")]
-#[serde(rename_all = "camelCase")]
-pub struct KelsAuditRecord {
-    #[said]
-    pub said: String,
-    pub kel_prefix: String,
-    pub kind: EventKind, // rec or cnt
-    pub data_json: String,
-    #[created_at]
-    pub recorded_at: StorageDatetime,
-}
-
-impl KelsAuditRecord {
-    pub fn for_recovery(
-        kel_prefix: String,
-        events: &[SignedKeyEvent],
-    ) -> Result<Self, verifiable_storage::StorageError> {
-        Self::create(kel_prefix, EventKind::Rec, serde_json::to_string(events)?)
-    }
-
-    pub fn for_contest(
-        kel_prefix: String,
-        events: &[SignedKeyEvent],
-    ) -> Result<Self, verifiable_storage::StorageError> {
-        Self::create(kel_prefix, EventKind::Cnt, serde_json::to_string(events)?)
-    }
-
-    pub fn as_signed_key_events(&self) -> Result<Vec<SignedKeyEvent>, serde_json::Error> {
-        serde_json::from_str(&self.data_json)
-    }
 }
 
 /// NOTE: `build_page_bytes` in `services/kels/src/handlers.rs` manually constructs

@@ -501,9 +501,9 @@ async fn test_get_kel_with_audit() {
         .expect("Failed to get audit records");
 
     assert_eq!(response.status(), 200);
-    let audit_records: Vec<kels::KelsAuditRecord> = response.json().await.unwrap();
-    // No audit records for a simple KEL
-    assert!(audit_records.is_empty());
+    let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
+    // No recovery records for a simple KEL
+    assert!(recovery_records.is_empty());
 }
 
 #[tokio::test]

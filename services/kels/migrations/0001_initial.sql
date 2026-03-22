@@ -31,18 +31,6 @@ CREATE TABLE IF NOT EXISTS kels_key_event_signatures (
 CREATE INDEX IF NOT EXISTS kels_key_event_signatures_event_said_idx ON kels_key_event_signatures(event_said);
 CREATE UNIQUE INDEX IF NOT EXISTS kels_key_event_signatures_event_said_label_idx ON kels_key_event_signatures(event_said, label);
 
--- Audit records table
-CREATE TABLE IF NOT EXISTS kels_audit_records (
-    said TEXT PRIMARY KEY,
-    kel_prefix TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    data_json TEXT NOT NULL,
-    recorded_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS kels_audit_records_kel_prefix_idx ON kels_audit_records(kel_prefix);
-CREATE INDEX IF NOT EXISTS kels_audit_records_kind_idx ON kels_audit_records(kind);
-
 -- Recovery tracking: chained records for async adversary archival.
 -- Each state transition creates a new version; records are never deleted.
 CREATE TABLE IF NOT EXISTS kels_recovery (

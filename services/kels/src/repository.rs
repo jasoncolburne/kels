@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
-use kels::{KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState};
+use kels::{KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord};
 use libkels_derive::SignedEvents;
 
 #[derive(Stored, SignedEvents)]
@@ -19,8 +19,8 @@ pub struct KeyEventRepository {
 }
 
 #[derive(Stored)]
-#[stored(item_type = KelsAuditRecord, table = "kels_audit_records", chained = false)]
-pub struct AuditRecordRepository {
+#[stored(item_type = RecoveryRecord, table = "kels_recovery")]
+pub struct RecoveryRecordRepository {
     pub pool: PgPool,
 }
 
@@ -28,7 +28,7 @@ pub struct AuditRecordRepository {
 #[stored(migrations = "migrations")]
 pub struct KelsRepository {
     pub key_events: KeyEventRepository,
-    pub audit_records: AuditRecordRepository,
+    pub recovery_records: RecoveryRecordRepository,
 }
 
 impl KeyEventRepository {
@@ -137,14 +137,14 @@ impl KeyEventRepository {
     }
 }
 
-impl AuditRecordRepository {
+impl RecoveryRecordRepository {
     pub async fn get_by_kel_prefix(
         &self,
         kel_prefix: &str,
-    ) -> Result<Vec<KelsAuditRecord>, StorageError> {
-        let query = Query::<KelsAuditRecord>::new()
+    ) -> Result<Vec<RecoveryRecord>, StorageError> {
+        let query = Query::<RecoveryRecord>::new()
             .eq("kel_prefix", kel_prefix)
-            .order_by("recorded_at", Order::Asc);
+            .order_by("version", Order::Asc);
         self.pool.fetch(query).await
     }
 }

@@ -17,8 +17,8 @@ use redis::AsyncCommands;
 use tracing::warn;
 
 use kels::{
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
-    KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
+    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
 };
 
 use crate::repository::KelsRepository;
@@ -518,13 +518,17 @@ pub(crate) async fn get_kel(
     Ok(Json(page).into_response())
 }
 
-/// Dedicated audit endpoint — returns only audit records for a prefix.
+/// Dedicated audit endpoint — returns recovery history for a prefix.
 pub(crate) async fn get_kel_audit(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-) -> Result<Json<Vec<KelsAuditRecord>>, ApiError> {
-    let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
-    Ok(Json(audit_records))
+) -> Result<Json<Vec<RecoveryRecord>>, ApiError> {
+    let records = state
+        .repo
+        .recovery_records
+        .get_by_kel_prefix(&prefix)
+        .await?;
+    Ok(Json(records))
 }
 
 // ==================== Event Exists ====================
