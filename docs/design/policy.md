@@ -80,7 +80,7 @@ Same pattern as credential compaction. Strip variable parts (delegates), recompu
 - `threshold`, `weighted`, `policy` recursively compact children
 - `poison` expression is also compacted
 
-Edges reference **compacted policy SAIDs**. The edge says "I accept any credential whose policy compacts to this SAID." The credential carries the full policy (with specific delegates). Verification: compact the credential's policy, check `compacted.said == edge.policy`. The edge doesn't need updating when delegates rotate — only the credential is re-issued with a new full policy that compacts to the same SAID.
+Edges reference **canonical policy SAIDs**. The edge says "I accept any credential whose policy compacts to this canonical SAID." The credential carries the full policy (with specific delegates). Verification: compact the credential's policy to canonical form, check `canonical.said == edge.policy`. The edge doesn't need updating when delegates rotate — only the credential is re-issued with a new full policy that compacts to the same canonical SAID.
 
 ## AST
 

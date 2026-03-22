@@ -1,6 +1,6 @@
 # kels-creds: Credential Framework Design
 
-A purely computational library for issuing, compacting, selectively disclosing, and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `SADStore` as content-addressable chunks keyed by SAID.
+A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `SADStore` as content-addressable chunks keyed by SAID.
 
 All JSON-serializable types use `#[serde(rename_all = "camelCase")]` for consistent field naming across the FFI boundary.
 
@@ -8,7 +8,7 @@ All JSON-serializable types use `#[serde(rename_all = "camelCase")]` for consist
 
 ### Compactable\<T\>
 
-A generic enum representing a field that can be either fully expanded or compacted to its SAID string. Uses `#[serde(untagged)]` so a SAID serializes as a bare JSON string and an expanded value serializes as its object form.
+A generic enum representing a field that can be either expanded or compacted to its SAID string. Uses `#[serde(untagged)]` so a SAID serializes as a bare JSON string and an expanded value serializes as its object form.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ pub struct Credential<T: Claims> {
 }
 ```
 
-The `said` is computed over the fully compacted canonical form — all nested `SelfAddressed` fields replaced by their SAIDs, then the credential's own SAID derived. This means a verifier can always recover the credential SAID from any disclosure state by compacting back down.
+The `said` is computed over the canonical form — all nested `SelfAddressed` fields replaced by their SAIDs, then the credential's own SAID derived. This means a verifier can always recover the credential SAID from any disclosure state by compacting back to canonical form.
 
 Implements `FromStr` for JSON deserialization, which is the primary way credentials are constructed from external input (applications, FFI).
 
@@ -84,7 +84,7 @@ pub struct SchemaField {
 
 Builder methods: `SchemaField::string()`, `::integer()`, `::float()`, `::boolean()`, `::said()`, `::prefix()`, `::datetime()`, `::object(fields, compactable)`, `::array(items)`. Chainable modifiers: `.opt()` (make optional), `.with_constraint(value)` (add value constraint).
 
-`Object` fields have a `compactable` flag: when `true`, the object has a `said` field and can appear as a SAID string when compacted. When `false`, the object is always fully expanded and must not have a `said` field.
+`Object` fields have a `compactable` flag: when `true`, the object has a `said` field and can appear as a SAID string when compacted. When `false`, the object is always expanded and must not have a `said` field.
 
 Implements `FromStr` for JSON deserialization.
 
@@ -142,10 +142,10 @@ Disclosure levels (by expanding/compacting the edge):
 
 | Disclosed fields | What it reveals |
 |---|---|
-| Compact (SAID only) | Nothing — proves edge exists |
+| Canonical (SAID only) | Nothing — proves edge exists |
 | `schema` only | "I have a credential of type X" |
 | `schema` + `policy` | "I have a type X credential under this trust policy" |
-| `schema` + `credential` + `policy` | Full specifics — verifier can fetch and check |
+| `schema` + `credential` + `policy` | Expanded — verifier can fetch and check |
 
 ### Rule/Rules
 
@@ -209,7 +209,7 @@ Any `SelfAddressed` field within a credential can be in one of two states, repre
 }
 ```
 
-**Compacted** (`Compactable::Said(String)`) — replaced by its SAID string:
+**Canonical** (`Compactable::Said(String)`) — replaced by its SAID string:
 ```json
 {
   "address": "EAbc..."
@@ -227,7 +227,7 @@ All compaction and expansion is schema-aware — the schema determines which fie
    b. Compute the node's SAID via `compute_said_from_value` (over its current form — children are now SAIDs)
    c. Set the `said` field on the object, store the object in the accumulator keyed by SAID
    d. Replace the object with its SAID string
-3. The credential's own top-level SAID is derived last, over the fully compacted body
+3. The credential's own top-level SAID is derived last, over the canonical form
 
 Each SAID is a function of its compacted children — a leaf object's SAID is over its raw fields, a parent's SAID is over a mix of raw fields and child SAIDs. This makes every SAID in the tree independently verifiable.
 
@@ -256,13 +256,13 @@ Two levels of entry points:
 
 The fields-level functions exist for disclosure operations that operate on sub-trees of a credential, where only the relevant field definitions are available (not a full `Schema` object).
 
-**Invariant:** A credential's SAID is always computed over the fully compacted canonical form. From any disclosure state, compacting recovers the canonical form and its SAID. Expanding fields then re-compacting must produce the same SAID.
+**Invariant:** A credential's SAID is always computed over the canonical form. From any disclosure state, compacting recovers the canonical form and its SAID. Expanding fields then re-compacting must produce the same SAID.
 
 ### Composability
 
 Because each SAID in the tree is independently verifiable, compacted chunks are self-contained and decoupled from their parent credential:
 
-- **Independent storage** — Schemas, data objects, and edges can be stored as separate blobs, keyed by SAID. There is no requirement to store a credential as a single document. A holder might keep the compact credential in one place and the expanded chunks elsewhere.
+- **Independent storage** — Schemas, data objects, and edges can be stored as separate blobs, keyed by SAID. There is no requirement to store a credential as a single document. A holder might keep the canonical credential in one place and the expanded chunks elsewhere.
 
 - **Schema reuse** — A `Schema` with a given SAID can be shared across many credentials. Verifiers can cache validated schemas by SAID and skip re-validation when they encounter the same schema in a different credential.
 
@@ -270,7 +270,7 @@ Because each SAID in the tree is independently verifiable, compacted chunks are 
 
 - **Forward references** — An edge can reference a credential SAID that the holder doesn't possess yet. The edge is structurally valid (its own SAID is derivable), and the referenced credential can be supplied later for verification. This enables workflows where credential requirements are declared before the credentials are obtained.
 
-- **Selective transmission** — A holder can send the compact credential first (small payload), then transmit individual expanded chunks on demand as the verifier requests them. Each chunk is independently verifiable against the SAID already present in the compact form.
+- **Graduated transmission** — A holder can send the canonical credential first (small payload), then transmit individual expanded chunks on demand as the verifier requests them. Each chunk is independently verifiable against the SAID already present in the canonical form.
 
 - **Cross-credential composition** — The same expanded object (e.g., an address, a qualification) can appear in multiple credentials. Since its SAID is content-derived, identical content produces identical SAIDs regardless of which credential contains it. Verifiers can recognize and deduplicate across credentials without the issuers coordinating.
 
@@ -293,7 +293,7 @@ The `.*` suffix means "expand/compact this field and all compactable fields with
 
 ### Evaluation
 
-1. Start with everything compacted (all compactable fields replaced by SAIDs)
+1. Start with the canonical form (all compactable fields replaced by SAIDs)
 2. Process tokens left to right:
    - `.*` — expand all compactable fields at every level (schema-aware)
    - `path` — expand only the field at that path (children stay compacted)
@@ -311,7 +311,7 @@ Sub-tree operations use `compact_with_fields`/`expand_with_fields` with field de
 | Expression | Effect |
 |---|---|
 | `.*` | Fully expanded — all fields visible |
-| `-.*` | Fully compacted — only SAIDs visible |
+| `-.*` | Canonical — only SAIDs visible |
 | `claims` | Expand only the `claims` field (nested fields stay compacted) |
 | `claims.*` | Expand `claims` and everything inside it |
 | `.* -claims.address` | Expand everything except `claims.address` |
@@ -342,20 +342,20 @@ pub async fn apply_disclosure(
 
 ## Issuance Flow
 
-`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from fully expanded inputs and anchors its compacted SAID in one endorser's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a compacted SAID commits to content the endorser has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
+`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from expanded inputs and anchors its canonical SAID in one endorser's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a canonical SAID commits to content the endorser has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
 
-1. `issue()` takes fully expanded inputs (claims, edges, rules) plus a schema, `Policy`, and `KeyEventBuilder`
+1. `issue()` takes expanded inputs (claims, edges, rules) plus a schema, `Policy`, and `KeyEventBuilder`
 2. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
-3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this compact form
-4. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
-5. The compacted SAID is anchored in the builder's KEL via `builder.interact()` (creates an `ixn` event) — this is one endorsement. Additional endorsers anchor the same SAID in their own KELs separately.
-6. `issue()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID that was anchored
+3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this canonical form
+4. The credential is reconstructed by expanding from the canonical SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
+5. The canonical SAID is anchored in the builder's KEL via `builder.interact()` (creates an `ixn` event) — this is one endorsement. Additional endorsers anchor the same SAID in their own KELs separately.
+6. `issue()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the canonical SAID that was anchored
 7. Endorser stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
-8. Credential delivered to holder (out of band); additional endorsers anchor the compacted SAID independently
+8. Credential delivered to holder (out of band); additional endorsers anchor the canonical SAID independently
 
 ```rust
 // Issuance (atomic: construct + validate + anchor one endorsement)
-let (credential, compacted_said) = Credential::issue(
+let (credential, canonical_said) = Credential::issue(
     &schema, &policy, subject, claims, unique, edges, rules, expires_at, &mut builder,
 ).await?;
 credential.store(&schema, &sad_store).await?;       // store for disclosure
@@ -384,7 +384,7 @@ When `poison` is set on the policy, only prefixes matched by that expression are
 
 To poison:
 ```rust
-let poison_hash = kels_policy::poison_hash(&compacted_said);
+let poison_hash = kels_policy::poison_hash(&canonical_said);
 builder.interact(&poison_hash)?;  // anchor poison hash in endorser's KEL
 ```
 
@@ -402,9 +402,9 @@ All recursive operations share a single depth constant:
 1. **Schema SAID match** — Verify the credential's `schema` field matches the provided schema's SAID.
 2. **Policy SAID match** — Verify `policy.said == credential.policy`.
 3. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
-4. **Compacted SAID integrity** — Compact the credential to canonical form using schema-aware compaction and derive the compacted SAID. This is the SAID that was anchored by endorsers at endorsement time.
+4. **Canonical SAID integrity** — Compact the credential to canonical form using schema-aware compaction and derive the canonical SAID. This is the SAID that was anchored by endorsers at endorsement time.
 5. **Schema validation** — Validate the credential against the schema via `validate_credential_report`. Compacted fields are accepted (type checking is skipped for SAID strings in compactable fields).
-6. **Policy evaluation** — Call `evaluate_policy(policy, &compacted_said, source, resolver)`. This walks the policy AST, checking each endorser's KEL for credential SAID anchoring and (unless immune) poison hash anchoring. Returns a `PolicyVerification` with per-endorser status and overall satisfaction.
+6. **Policy evaluation** — Call `evaluate_policy(policy, &canonical_said, source, resolver)`. This walks the policy AST, checking each endorser's KEL for credential SAID anchoring and (unless immune) poison hash anchoring. Returns a `PolicyVerification` with per-endorser status and overall satisfaction.
 7. **Expiration** — Check if `expires_at` is present and in the past.
 8. **Edge verification** — If a `SADStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
    - Look up the referenced credential by SAID in the SADStore
@@ -447,7 +447,7 @@ pub async fn verify_credential<T: Claims>(
 
 `policy_verification` contains the full result of policy evaluation: per-endorser `EndorsementStatus` (Endorsed, NotEndorsed, Poisoned, KelError) and nested policy verification results.
 
-When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **compacted policy matching**: the presented credential's policy is compacted and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
+When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **canonical policy matching**: the presented credential's policy is compacted to canonical form and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
 
 `Credential::verify()` is a convenience method that delegates to `verify_credential`.
 
@@ -455,9 +455,9 @@ When a `SADStore` is provided, edges with a `credential` SAID reference are look
 
 The `json_api` module provides JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
 
-- `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns compacted SAID
+- `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns canonical SAID
 - `verify(json_credential, json_schema, json_policy, source, sad_store, json_edge_schemas, json_policies)` — verify a credential via policy evaluation, returns verification result JSON. `json_policy` is the policy JSON, `json_policies` is an optional JSON object mapping policy SAIDs to policy objects (for nested policy resolution).
-- `disclose(compacted_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
+- `disclose(canonical_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
 - `validate(json_credential, json_schema)` — validate a credential against a schema, returns `SchemaValidationReport`
 - `parse_edges(json)` — parse edge JSON into `Edges` (for FFI use)
 - `parse_rules(json)` — parse rule JSON into `Rules` (for FFI use)
