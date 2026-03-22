@@ -33,8 +33,8 @@ pub(crate) fn test_endpoints_enabled() -> bool {
     *TEST_ENDPOINTS_ENABLED
 }
 
-fn max_submissions_per_prefix_per_minute() -> u32 {
-    kels::env_usize("KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE", 128) as u32
+fn max_events_per_prefix_per_day() -> u32 {
+    kels::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 64) as u32
 }
 
 fn max_writes_per_ip_per_second() -> u32 {
@@ -49,13 +49,40 @@ fn nonce_window_secs() -> u64 {
     kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
 }
 
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Per-prefix rate limit: counts events (not submissions) in a daily window.
+/// Slows adversary event accumulation. The hard resilience guarantee comes
+/// from async archival (KELS-71), not from this rate limit.
+fn check_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    event_count: u32,
+    max_events: u32,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+
+    if entry.0 + event_count > max_events {
+        return Err(ApiError::rate_limited("Too many events for this prefix"));
+    }
+
+    entry.0 += event_count;
+    Ok(())
+}
+
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_store: Arc<dyn kels::KelStore>,
     pub(crate) kel_cache: Option<ServerKelCache>,
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
-    /// Per-prefix rate limiting: maps prefix -> (count, window_start)
+    /// Per-prefix daily rate limiting: counts events (not submissions).
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
@@ -313,26 +340,13 @@ pub(crate) async fn submit_events(
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
 
-    // Per-prefix rate limiting (before expensive signature validation)
-    {
-        let now = Instant::now();
-        let mut entry = state
-            .prefix_rate_limits
-            .entry(prefix.clone())
-            .or_insert((0, now));
-        if now.duration_since(entry.1) >= Duration::from_secs(60) {
-            // Reset window
-            entry.0 = 1;
-            entry.1 = now;
-        } else {
-            entry.0 += 1;
-            if entry.0 > max_submissions_per_prefix_per_minute() {
-                return Err(ApiError::rate_limited(
-                    "Too many submissions for this prefix",
-                ));
-            }
-        }
-    }
+    // Per-prefix daily rate limiting (counts events, not submissions)
+    check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        &prefix,
+        events.len() as u32,
+        max_events_per_prefix_per_day(),
+    )?;
 
     // Validate signatures upfront (fast rejection before acquiring advisory lock)
     for signed_event in &events {

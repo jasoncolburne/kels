@@ -39,6 +39,35 @@ fn ip_rate_limit_burst() -> u32 {
     kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
 }
 
+fn max_member_events_per_prefix_per_day() -> u32 {
+    kels::env_usize("KELS_MAX_MEMBER_EVENTS_PER_PREFIX_PER_DAY", 64) as u32
+}
+
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Per-prefix daily rate limit: counts events (not submissions).
+fn check_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    event_count: u32,
+    max_events: u32,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+
+    if entry.0 + event_count > max_events {
+        return Err(ApiError::rate_limited("Too many events for this prefix"));
+    }
+
+    entry.0 += event_count;
+    Ok(())
+}
+
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
 
 impl ApiError {
@@ -143,7 +172,7 @@ pub struct FederationState {
     pub member_kel_repo: crate::raft_store::MemberKelRepository,
     /// Per-IP rate limiting for member KEL submit endpoint.
     pub member_kel_ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
-    /// Per-prefix rate limiting for member KEL submit endpoint.
+    /// Per-prefix daily rate limiting for member KEL submit endpoint.
     pub member_kel_prefix_rate_limits: DashMap<String, (u32, Instant)>,
 }
 
@@ -1006,11 +1035,6 @@ pub async fn list_peers_federated(
     Ok(Json(PeersResponse { peers: histories }))
 }
 
-/// Per-prefix rate limit constants for member KEL submissions.
-fn max_member_submissions_per_prefix_per_minute() -> u32 {
-    kels::env_usize("KELS_max_member_submissions_per_prefix_per_minute()", 60) as u32
-}
-
 /// Submit member key events (push model).
 ///
 /// Accepts signed key events for a federation member's KEL. If the submitted prefix
@@ -1052,25 +1076,13 @@ pub async fn submit_member_key_events(
     // Per-IP rate limiting
     check_ip_rate_limit(&state.member_kel_ip_rate_limits, addr.ip())?;
 
-    // Per-prefix rate limiting
-    {
-        let now = Instant::now();
-        let mut entry = state
-            .member_kel_prefix_rate_limits
-            .entry(prefix.clone())
-            .or_insert((0, now));
-        if now.duration_since(entry.1) >= Duration::from_secs(60) {
-            entry.0 = 1;
-            entry.1 = now;
-        } else {
-            entry.0 += 1;
-            if entry.0 > max_member_submissions_per_prefix_per_minute() {
-                return Err(ApiError::rate_limited(
-                    "Too many submissions for this prefix",
-                ));
-            }
-        }
-    }
+    // Per-prefix daily rate limiting (counts events, not submissions)
+    check_prefix_rate_limit(
+        &state.member_kel_prefix_rate_limits,
+        &prefix,
+        events.len() as u32,
+        max_member_events_per_prefix_per_day(),
+    )?;
 
     // Signature pre-validation (fast rejection before expensive merge)
     for signed_event in &events {
