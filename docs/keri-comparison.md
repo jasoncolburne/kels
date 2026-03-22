@@ -176,7 +176,7 @@ KELS takes a fundamentally different approach: each KEL has a single signing key
 | Revocation/withdrawal | TEL-based (separate append-only log) | Poisoning with soft/hard/immune modes and admin-controlled poison expressions |
 | Verification cost | One KEL replay (efficient) | N KEL replays, one per endorser (more expensive) |
 | Composability | Nested weighted groups within one identifier | Recursive across identities (policies reference other policies by SAID) |
-| Fleet scaling | Not applicable (keys are within one identifier) | Policy compaction: edges match on trust structure without pinning specific delegates |
+| Fleet scaling | ACDC edge `"o"` operator `DI2I` (Delegated-Issuee-to-Issuee) reserved but not yet implemented (as of KERIpy `49fb6fb`) | Policy compaction: edges match on trust structure without pinning specific delegates |
 
 **Composability and flexibility.** KERI's `Tholder` supports fractional weights on keys and nested threshold groups within a single identifier — it can express hierarchical governance structures like "2-of-(group-A-or-group-B)." However, all keys live within one identifier's KEL, and the `Tholder` cannot reference external identifiers, express delegation relationships, or compose across organizational boundaries.
 
@@ -266,6 +266,7 @@ KERI exposes witness addresses in the KEL itself (`"b"` field), creating infrast
 | Delegation trust verification | In-protocol (delegator must anchor approval in their KEL) | Service-level: deferred to consumers. Credential-level: kels-policy `delegate()` DSL node verifies delegation trust chains |
 | Delegation revocation | Delegator can refuse future rotations | Consumer-defined |
 | Delegation depth | Multi-level (A delegates to B, B delegates to C) | Structurally possible; kels-policy `delegate(DELEGATOR, DELEGATE)` verifies one level per node; nested policies can compose multi-level chains |
+| Credential-level delegation | ACDC edge operator `DI2I` reserved but not yet implemented (as of KERIpy `49fb6fb`); `I2I` and `NI2I` operators handle non-delegated issuee constraints | kels-policy `delegate()` node with policy compaction for fleet scaling |
 | Cooperative delegation | Delegator and delegate coordinate via interaction events | No built-in coordination protocol |
 
 **Analysis:** KERI's delegation model is deeply integrated into the protocol. When identifier B is delegated from identifier A, the delegator (A) must anchor an approval seal in their own KEL for every delegated establishment event (inception and rotation). This creates a cryptographically verifiable chain of authority: verifying B's KEL requires also verifying A's KEL and confirming the approval seals. The delegator retains ongoing control — they can refuse to approve future rotations, effectively revoking the delegation.
