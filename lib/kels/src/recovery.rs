@@ -8,6 +8,7 @@
 //! The task is generic over the pool type so both the kels service and
 //! kels-registry can reuse it.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -160,6 +161,12 @@ async fn transition_to_archiving<P: QueryExecutor>(
 }
 
 /// Archive one page of adversary events (backward from tail).
+///
+/// Batch-fetches events by serial range and walks the adversary chain via
+/// `previous` pointers in memory. At `diverged_at` serial there may be both
+/// an adversary event and the owner's rec/rot — the chain walk deterministically
+/// selects only the adversary event since the owner's event is never reachable
+/// via the adversary's `previous` chain.
 async fn archive_one_page<P: QueryExecutor>(
     pool: &P,
     config: &RecoveryConfig,
@@ -186,39 +193,62 @@ async fn archive_one_page<P: QueryExecutor>(
         return Ok(());
     };
 
-    // Walk backward from tip, collecting up to page_size events
-    let page_size = crate::page_size();
-    let mut events_to_archive: Vec<KeyEvent> = Vec::with_capacity(page_size);
-    let mut current_said = tip_said.clone();
+    // Fetch the tip event to determine its serial for the batch window
+    let tip_query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("said", tip_said)
+        .limit(1);
+    let tip_events: Vec<KeyEvent> = tx.fetch(tip_query).await?;
+    let Some(tip_event) = tip_events.into_iter().next() else {
+        // Tip already archived or missing — transition to cleanup
+        let mut next = current;
+        next.state = RecoveryState::Cleanup;
+        next.adversary_tip_said = None;
+        next.increment()
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        tx.insert_with_table(&next, config.recovery_table).await?;
+        tx.commit().await?;
+        return Ok(());
+    };
 
-    for _ in 0..page_size {
-        let query = Query::<KeyEvent>::for_table(config.events_table)
-            .eq("said", &current_said)
-            .limit(1);
-        let fetched: Vec<KeyEvent> = tx.fetch(query).await?;
-        let Some(event) = fetched.into_iter().next() else {
-            // Event not found — already archived or missing
-            break;
+    let page_size = crate::page_size() as u64;
+
+    // Compute the serial window: one page backward from tip, clamped to diverged_at.
+    let low_serial = tip_event
+        .serial
+        .saturating_sub(page_size - 1)
+        .max(current.diverged_at);
+
+    // Batch fetch all events in the serial window. At diverged_at there may be
+    // 2 events (adversary + owner's rec/rot), so fetch extra room.
+    let batch_query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("prefix", &current.kel_prefix)
+        .gte("serial", low_serial)
+        .lte("serial", tip_event.serial)
+        .limit((page_size + 1) * 2);
+    let batch: Vec<KeyEvent> = tx.fetch(batch_query).await?;
+
+    // Index by SAID for O(1) chain walking
+    let by_said: HashMap<&str, &KeyEvent> = batch.iter().map(|e| (e.said.as_str(), e)).collect();
+
+    // Walk backward from tip through `previous` pointers to identify the
+    // adversary chain. This naturally excludes the owner's rec/rot at
+    // diverged_at since those are on a different `previous` chain.
+    let mut events_to_archive: Vec<KeyEvent> = Vec::new();
+    let mut walk_said: &str = tip_said;
+
+    loop {
+        let Some(event) = by_said.get(walk_said) else {
+            break; // Not in this batch — below serial window or already archived
         };
 
-        let at_boundary =
-            event.serial <= current.diverged_at && current.owner_first_serial > current.diverged_at;
-        let past_boundary = event.serial < current.diverged_at;
-
-        if past_boundary || (at_boundary && event.serial < current.diverged_at) {
-            break;
+        if event.serial < current.diverged_at {
+            break; // Reached shared chain — stop
         }
 
-        let next_said = event.previous.clone();
-        events_to_archive.push(event);
+        events_to_archive.push((*event).clone());
 
-        // If we've reached the divergence serial, we're done
-        if at_boundary {
-            break;
-        }
-
-        match next_said {
-            Some(said) => current_said = said,
+        match &event.previous {
+            Some(prev) => walk_said = prev,
             None => break,
         }
     }
@@ -256,7 +286,7 @@ async fn archive_one_page<P: QueryExecutor>(
             .await?;
     }
 
-    // DELETE from live tables (signatures first due to referential integrity)
+    // DELETE from live tables
     let sig_saids: Vec<String> = signatures.iter().map(|s| s.said.clone()).collect();
     if !sig_saids.is_empty() {
         let sig_delete =
@@ -266,46 +296,35 @@ async fn archive_one_page<P: QueryExecutor>(
     let event_delete = Delete::<KeyEvent>::for_table(config.events_table).r#in("said", event_saids);
     tx.delete(event_delete).await?;
 
-    // Determine the new tip: the `previous` of the oldest event we archived.
-    // Safety: events_to_archive is non-empty (checked above with early return).
-    let Some(oldest) = events_to_archive.last() else {
-        unreachable!();
-    };
+    // The oldest archived event (last in our backward walk) determines the new tip.
+    // Its `previous` is the next event to process on the next cycle.
+    let oldest = &events_to_archive[events_to_archive.len() - 1];
     let new_tip = oldest.previous.clone();
-    let reached_boundary = oldest.serial == current.diverged_at
-        || new_tip
-            .as_ref()
-            .is_none_or(|_| oldest.serial <= current.diverged_at);
+    let reached_root = oldest.serial == current.diverged_at || new_tip.is_none();
 
     // Update recovery record
     let mut next = current.clone();
     next.cursor_serial = oldest.serial;
 
-    if reached_boundary {
-        // All adversary events archived — if owner has no events at diverged_at,
-        // we may also need to archive events AT diverged_at on a second pass.
-        // Check if there are still adversary events remaining.
+    if reached_root {
+        // This branch is fully archived. Check if there's a second adversary
+        // branch at diverged_at (only when owner_first_serial <= diverged_at,
+        // meaning both events at diverged_at are adversary).
         if current.owner_first_serial <= current.diverged_at {
-            // All events from diverged_at are adversary — check if diverged_at events remain
-            let check_query = Query::<KeyEvent>::for_table(config.events_table)
-                .eq("prefix", &next.kel_prefix)
-                .gte("serial", next.diverged_at)
-                .order_by("serial", Order::Desc)
-                .limit(crate::page_size() as u64);
-            let remaining: Vec<KeyEvent> = tx.fetch(check_query).await?;
-            let has_adversary_remaining = remaining.iter().any(|e| {
-                // Owner's events are rec, rot, and events with serial > recovery_serial
-                // Everything else at/after diverged_at is adversary
-                e.serial <= next.recovery_serial && !e.is_recover() && !e.is_rotation()
-            });
+            let diverged_query = Query::<KeyEvent>::for_table(config.events_table)
+                .eq("prefix", &current.kel_prefix)
+                .eq("serial", current.diverged_at)
+                .limit(2);
+            let remaining: Vec<KeyEvent> = tx.fetch(diverged_query).await?;
 
-            if has_adversary_remaining {
-                next.adversary_tip_said = remaining
-                    .into_iter()
-                    .find(|e| {
-                        e.serial <= next.recovery_serial && !e.is_recover() && !e.is_rotation()
-                    })
-                    .map(|e| e.said);
+            // Any event at diverged_at that isn't rec/rot is adversary
+            let other_adversary = remaining
+                .into_iter()
+                .find(|e| !e.is_recover() && !e.is_rotation());
+
+            if let Some(other) = other_adversary {
+                // Second adversary branch found — set as new tip
+                next.adversary_tip_said = Some(other.said);
             } else {
                 next.state = RecoveryState::Cleanup;
                 next.adversary_tip_said = None;
