@@ -6,6 +6,7 @@ members = [
     "lib/kels",
     "lib/kels-derive",
     "lib/kels-creds",
+    "lib/kels-policy",
     "lib/kels-ffi",
     "lib/kels-mock-hsm",
     "services/kels",

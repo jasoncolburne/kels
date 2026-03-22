@@ -13,13 +13,11 @@ pub struct Edge {
     pub said: String,
     pub schema: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
+    pub policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, SelfAddressed)]
@@ -101,7 +99,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .unwrap()
     }
@@ -123,30 +120,27 @@ mod tests {
     fn test_edge_with_optional_fields() {
         let edge = Edge::create(
             "KAbc1234567890123456789012345678901234567890".to_string(),
-            Some("KIssuer123456789012345678901234567890abcde".to_string()),
+            Some("KPolicy23456789012345678901234567890abcdefg".to_string()),
             Some("KCred12345678901234567890123456789012abcdef".to_string()),
             Some("KNonce12345678901234567890123456789012abcde".to_string()),
-            Some(true),
         )
         .unwrap();
 
         assert!(edge.verify_said().is_ok());
 
         let json = serde_json::to_value(&edge).unwrap();
-        assert!(json.get("issuer").is_some());
+        assert!(json.get("policy").is_some());
         assert!(json.get("credential").is_some());
         assert!(json.get("nonce").is_some());
-        assert!(json.get("delegated").is_some());
     }
 
     #[test]
     fn test_edge_optional_fields_omitted() {
         let edge = test_edge();
         let json = serde_json::to_value(&edge).unwrap();
-        assert!(json.get("issuer").is_none());
+        assert!(json.get("policy").is_none());
         assert!(json.get("credential").is_none());
         assert!(json.get("nonce").is_none());
-        assert!(json.get("delegated").is_none());
     }
 
     #[test]

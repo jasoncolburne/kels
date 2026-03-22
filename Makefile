@@ -1,6 +1,6 @@
-LIBS_PACKAGES := libkels libkels-derive kels-creds libkels-ffi kels-mock-hsm
+LIBS_PACKAGES := libkels libkels-derive kels-creds kels-policy libkels-ffi kels-mock-hsm
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive kels-creds kels-ffi kels-mock-hsm
+LIBS_SUBDIRS := kels kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services

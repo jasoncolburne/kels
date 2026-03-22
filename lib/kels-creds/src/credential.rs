@@ -6,6 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kels::{KeyEventBuilder, KeyProvider, PagedKelSource, generate_nonce};
+use kels_policy::{Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use crate::{
@@ -66,7 +67,7 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 pub struct Credential<T: Claims> {
     pub said: String,
     pub schema: String,
-    pub issuer: String,
+    pub policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
@@ -75,8 +76,6 @@ pub struct Credential<T: Claims> {
     pub claims: Compactable<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<StorageDatetime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub irrevocable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edges: Option<Compactable<Edges>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,30 +91,27 @@ impl<T: Claims> Credential<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn build(
         schema: &Schema,
-        issuer: String,
+        policy: &Policy,
         subject: Option<String>,
         claims: T,
         unique: bool,
         edges: Option<Edges>,
         rules: Option<Rules>,
-        can_revoke: bool,
         expires_at: Option<StorageDatetime>,
     ) -> Result<(Self, String), CredentialError> {
         let issued_at = StorageDatetime::now();
 
         let nonce = if unique { Some(generate_nonce()) } else { None };
-        let irrevocable = if can_revoke { None } else { Some(true) };
 
         let credential = Self {
             said: String::new(),
             schema: schema.said.clone(),
-            issuer,
+            policy: policy.said.clone(),
             subject,
             issued_at,
             nonce,
             claims: Compactable::Expanded(claims),
             expires_at,
-            irrevocable,
             edges: edges.map(Compactable::Expanded),
             rules: rules.map(Compactable::Expanded),
         };
@@ -166,18 +162,17 @@ impl<T: Claims> Credential<T> {
     #[allow(clippy::too_many_arguments)]
     pub async fn issue<K: KeyProvider + Clone>(
         schema: &Schema,
-        issuer: String,
+        policy: &Policy,
         subject: Option<String>,
         claims: T,
         unique: bool,
         edges: Option<Edges>,
         rules: Option<Rules>,
-        can_revoke: bool,
         expires_at: Option<StorageDatetime>,
         builder: &mut KeyEventBuilder<K>,
     ) -> Result<(Self, String), CredentialError> {
         let (credential, compacted_said) = Self::build(
-            schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at,
+            schema, policy, subject, claims, unique, edges, rules, expires_at,
         )
         .await?;
         builder.interact(&compacted_said).await?;
@@ -221,11 +216,22 @@ impl<T: Claims> Credential<T> {
     pub async fn verify(
         &self,
         schema: &Schema,
-        source: &dyn PagedKelSource,
+        policy: &Policy,
+        resolver: &dyn PolicyResolver,
+        source: &(dyn PagedKelSource + Sync),
         sad_store: Option<&dyn SADStore>,
         edge_schemas: &BTreeMap<String, Schema>,
     ) -> Result<CredentialVerification, CredentialError> {
-        verify_credential(self, schema, source, sad_store, edge_schemas).await
+        verify_credential(
+            self,
+            schema,
+            policy,
+            resolver,
+            source,
+            sad_store,
+            edge_schemas,
+        )
+        .await
     }
 
     fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
@@ -271,12 +277,11 @@ mod tests {
 
         let mut fields = BTreeMap::new();
         fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("policy".to_string(), SchemaField::said());
         fields.insert("issuedAt".to_string(), SchemaField::datetime());
         fields.insert("subject".to_string(), SchemaField::prefix().opt());
         fields.insert("nonce".to_string(), SchemaField::string().opt());
         fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
         fields.insert(
             "claims".to_string(),
             SchemaField::object(claims_fields, true),
@@ -299,20 +304,24 @@ mod tests {
         .unwrap()
     }
 
+    fn test_policy(prefix: &str) -> Policy {
+        Policy::build(&format!("endorse({prefix})"), None).unwrap()
+    }
+
     fn test_claims() -> TestClaims {
         TestClaims::create("Alice".to_string(), 30u32).unwrap()
     }
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
+        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
         Credential::build(
             &test_schema(),
-            "KIssuer123456789012345678901234567890abcde".to_string(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
         )
         .await
@@ -353,15 +362,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_unique_credential() {
+        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
         let (cred, _) = Credential::build(
             &test_schema(),
-            "KIssuer123456789012345678901234567890abcde".to_string(),
+            &policy,
             None,
             test_claims(),
             true,
             None,
             None,
-            true,
             None,
         )
         .await
@@ -372,15 +381,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_deterministic_credential() {
+        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
         let (cred, _) = Credential::build(
             &test_schema(),
-            "KIssuer123456789012345678901234567890abcde".to_string(),
+            &policy,
             None,
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
         )
         .await
@@ -395,7 +404,6 @@ mod tests {
 
         let edge = Edge::create(
             "KAbc1234567890123456789012345678901234567890".to_string(),
-            None,
             None,
             None,
             None,
@@ -417,10 +425,9 @@ mod tests {
                 SchemaField::object(
                     BTreeMap::from([
                         ("schema".to_string(), SchemaField::said()),
-                        ("issuer".to_string(), SchemaField::prefix().opt()),
+                        ("policy".to_string(), SchemaField::said().opt()),
                         ("credential".to_string(), SchemaField::said().opt()),
                         ("nonce".to_string(), SchemaField::string().opt()),
-                        ("delegated".to_string(), SchemaField::boolean().opt()),
                     ]),
                     true,
                 ),
@@ -428,12 +435,11 @@ mod tests {
 
             let mut fields = BTreeMap::new();
             fields.insert("schema".to_string(), SchemaField::said());
-            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("policy".to_string(), SchemaField::said());
             fields.insert("issuedAt".to_string(), SchemaField::datetime());
             fields.insert("subject".to_string(), SchemaField::prefix().opt());
             fields.insert("nonce".to_string(), SchemaField::string().opt());
             fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
             fields.insert(
                 "claims".to_string(),
                 SchemaField::object(claims_fields, true),
@@ -456,15 +462,15 @@ mod tests {
             .unwrap()
         };
 
+        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
         let (cred, _) = Credential::build(
             &schema,
-            "KIssuer123456789012345678901234567890abcde".to_string(),
+            &policy,
             None,
             test_claims(),
             false,
             Some(edges),
             None,
-            true,
             None,
         )
         .await
@@ -505,12 +511,11 @@ mod tests {
 
             let mut fields = BTreeMap::new();
             fields.insert("schema".to_string(), SchemaField::said());
-            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("policy".to_string(), SchemaField::said());
             fields.insert("issuedAt".to_string(), SchemaField::datetime());
             fields.insert("subject".to_string(), SchemaField::prefix().opt());
             fields.insert("nonce".to_string(), SchemaField::string().opt());
             fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
             fields.insert(
                 "claims".to_string(),
                 SchemaField::object(claims_fields, true),
@@ -533,15 +538,15 @@ mod tests {
             .unwrap()
         };
 
+        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
         let (cred, _) = Credential::build(
             &schema,
-            "KIssuer123456789012345678901234567890abcde".to_string(),
+            &policy,
             None,
             test_claims(),
             false,
             None,
             Some(rules),
-            true,
             None,
         )
         .await
@@ -570,6 +575,7 @@ mod tests {
     use std::sync::Arc;
 
     use kels::{FileKelStore, SoftwareKeyProvider, StoreKelSource, VerificationKeyCode};
+    use kels_policy::InMemoryPolicyResolver;
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
@@ -595,35 +601,37 @@ mod tests {
         (builder, prefix, kel_store, temp_dir)
     }
 
-    async fn credential_for_issuer(issuer: &str) -> (Credential<TestClaims>, String) {
-        Credential::build(
+    async fn credential_for_prefix(prefix: &str) -> (Credential<TestClaims>, String, Policy) {
+        let policy = test_policy(prefix);
+        let (cred, said) = Credential::build(
             &test_schema(),
-            issuer.to_string(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
         )
         .await
-        .unwrap()
+        .unwrap();
+        (cred, said, policy)
     }
 
     #[tokio::test]
     async fn test_verify_issued_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
+        let policy = test_policy(&prefix);
+        let resolver = InMemoryPolicyResolver::empty();
         let (cred, _) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder,
         )
@@ -633,6 +641,8 @@ mod tests {
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -641,18 +651,21 @@ mod tests {
             .unwrap();
         result.is_valid(true).unwrap();
         assert_eq!(result.credential_said, cred.said);
-        assert_eq!(result.issuer, prefix);
+        assert_eq!(result.policy_said, policy.said);
     }
 
     #[tokio::test]
     async fn test_verify_unissued_credential() {
         let (_builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let (cred, _) = credential_for_issuer(&prefix).await;
+        let (cred, _, policy) = credential_for_prefix(&prefix).await;
+        let resolver = InMemoryPolicyResolver::empty();
 
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -663,32 +676,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_revoked_credential() {
+    async fn test_verify_poisoned_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
+        let policy = test_policy(&prefix);
+        let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder,
         )
         .await
         .unwrap();
 
-        // Anchor revocation (hash of compacted SAID)
-        let rev_hash = crate::revocation::revocation_hash(&compacted_said);
-        builder.interact(&rev_hash).await.unwrap();
+        // Anchor poison hash (same as revocation hash)
+        let p_hash = kels_policy::poison_hash(&compacted_said);
+        builder.interact(&p_hash).await.unwrap();
 
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -696,37 +712,39 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_valid(true).is_err());
-        assert!(result.is_issued);
-        assert!(result.is_revoked);
+        assert!(!result.policy_verification.is_satisfied);
     }
 
     #[tokio::test]
-    async fn test_verify_irrevocable_ignores_revocation_hash() {
+    async fn test_verify_immune_ignores_poison_hash() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
+        let policy = Policy::build(&format!("endorse({prefix})"), Some("immune")).unwrap();
+        let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             None,
             test_claims(),
             false,
             None,
             None,
-            false,
             None,
             &mut builder,
         )
         .await
         .unwrap();
 
-        // Anchor the revocation hash — should be ignored
-        let rev_hash = crate::revocation::revocation_hash(&compacted_said);
-        builder.interact(&rev_hash).await.unwrap();
+        // Anchor the poison hash — should be ignored for immune policy
+        let p_hash = kels_policy::poison_hash(&compacted_said);
+        builder.interact(&p_hash).await.unwrap();
 
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -741,50 +759,19 @@ mod tests {
         use std::time::Duration;
 
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-
-        let claims_fields = BTreeMap::from([
-            ("name".to_string(), SchemaField::string()),
-            ("age".to_string(), SchemaField::integer()),
-        ]);
-        let mut fields = BTreeMap::new();
-        fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
-        fields.insert("issuedAt".to_string(), SchemaField::datetime());
-        fields.insert("subject".to_string(), SchemaField::prefix().opt());
-        fields.insert("nonce".to_string(), SchemaField::string().opt());
-        fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
-        fields.insert(
-            "claims".to_string(),
-            SchemaField::object(claims_fields, true),
-        );
-        fields.insert(
-            "edges".to_string(),
-            SchemaField::object(BTreeMap::new(), true).opt(),
-        );
-        fields.insert(
-            "rules".to_string(),
-            SchemaField::object(BTreeMap::new(), true).opt(),
-        );
-
-        let schema = Schema::create(
-            "Expiring Schema".to_string(),
-            "A test".to_string(),
-            "1.0".to_string(),
-            fields,
-        )
-        .unwrap();
+        let schema = test_schema();
+        let policy = test_policy(&prefix);
+        let resolver = InMemoryPolicyResolver::empty();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
         let (cred, _) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             None,
             test_claims(),
             false,
             None,
             None,
-            true,
             Some(far_future),
             &mut builder,
         )
@@ -794,6 +781,8 @@ mod tests {
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -807,15 +796,16 @@ mod tests {
     async fn test_verify_schema_validation_expanded() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
+        let policy = test_policy(&prefix);
+        let resolver = InMemoryPolicyResolver::empty();
         let (cred, _) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder,
         )
@@ -825,6 +815,8 @@ mod tests {
         let result = cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -838,6 +830,8 @@ mod tests {
     async fn test_verify_schema_validation_compacted() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
+        let policy = test_policy(&prefix);
+        let resolver = InMemoryPolicyResolver::empty();
 
         // Issue via the expanded API — Credential::issue() takes expanded types
         // by value, so compacted credentials cannot be issued. This test verifies
@@ -845,13 +839,12 @@ mod tests {
         // issued credential during verification.
         let (cred, _) = Credential::issue(
             &schema,
-            prefix.clone(),
+            &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder,
         )
@@ -863,9 +856,9 @@ mod tests {
         let compacted_value = chunks
             .values()
             .find(|v| {
-                v.get("issuer")
-                    .and_then(|i| i.as_str())
-                    .is_some_and(|i| i == prefix)
+                v.get("policy")
+                    .and_then(|p| p.as_str())
+                    .is_some_and(|p| p == policy.said)
             })
             .unwrap();
         let compacted_cred: Credential<TestClaims> =
@@ -874,6 +867,8 @@ mod tests {
         let result = compacted_cred
             .verify(
                 &schema,
+                &policy,
+                &resolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -886,6 +881,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_chained_credentials() {
+        use kels::forward_key_events;
+
         use crate::edge::{Edge, Edges};
 
         // Set up two issuers with separate KELs
@@ -893,17 +890,17 @@ mod tests {
         let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
 
         let schema_a = test_schema();
+        let policy_a = test_policy(&prefix_a);
 
         // Issuer A issues a base credential
         let (cred_a, compacted_said_a) = Credential::issue(
             &schema_a,
-            prefix_a.clone(),
+            &policy_a,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder_a,
         )
@@ -917,9 +914,8 @@ mod tests {
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
             cred_a.schema.clone(),
-            Some(prefix_a.clone()),
+            Some(policy_a.said.clone()),
             Some(compacted_said_a.clone()),
-            None,
             None,
         )
         .unwrap();
@@ -934,10 +930,9 @@ mod tests {
             SchemaField::object(
                 BTreeMap::from([
                     ("schema".to_string(), SchemaField::said()),
-                    ("issuer".to_string(), SchemaField::prefix().opt()),
+                    ("policy".to_string(), SchemaField::said().opt()),
                     ("credential".to_string(), SchemaField::said().opt()),
                     ("nonce".to_string(), SchemaField::string().opt()),
-                    ("delegated".to_string(), SchemaField::boolean().opt()),
                 ]),
                 true,
             ),
@@ -950,12 +945,11 @@ mod tests {
 
         let mut fields = BTreeMap::new();
         fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("policy".to_string(), SchemaField::said());
         fields.insert("issuedAt".to_string(), SchemaField::datetime());
         fields.insert("subject".to_string(), SchemaField::prefix().opt());
         fields.insert("nonce".to_string(), SchemaField::string().opt());
         fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
         fields.insert(
             "claims".to_string(),
             SchemaField::object(claims_fields, true),
@@ -977,15 +971,15 @@ mod tests {
         )
         .unwrap();
 
+        let policy_b = test_policy(&prefix_b);
         let (cred_b, _) = Credential::issue(
             &schema_b,
-            prefix_b.clone(),
+            &policy_b,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             Some(edges),
             None,
-            true,
             None,
             &mut builder_b,
         )
@@ -998,71 +992,94 @@ mod tests {
         let edge_schemas = BTreeMap::from([(schema_a.said.clone(), schema_a.clone())]);
 
         // Verify A alone works:
+        let resolver_a = InMemoryPolicyResolver::empty();
         let result_a = cred_a
             .verify(
                 &schema_a,
+                &policy_a,
+                &resolver_a,
                 &StoreKelSource::new(kel_store_a.as_ref()),
                 None,
                 &BTreeMap::new(),
             )
             .await
             .unwrap();
-        assert!(result_a.is_issued);
+        assert!(result_a.policy_verification.is_satisfied);
         result_a.is_valid(true).unwrap();
 
+        // Merge KEL stores so B's store has A's KEL too
+        let source_a = StoreKelSource::new(kel_store_a.as_ref());
+        let sink_b = kels::KelStoreSink(kel_store_b.as_ref());
+        forward_key_events(
+            &prefix_a,
+            &source_a,
+            &sink_b,
+            kels::page_size(),
+            kels::max_pages(),
+            None,
+        )
+        .await
+        .unwrap();
+
         // Verify B without SADStore — edges not checked
+        let resolver_b = InMemoryPolicyResolver::new(vec![policy_a.clone()]);
         let result_b_no_edges = cred_b
             .verify(
                 &schema_b,
+                &policy_b,
+                &resolver_b,
                 &StoreKelSource::new(kel_store_b.as_ref()),
                 None,
                 &edge_schemas,
             )
             .await
             .unwrap();
-        assert!(result_b_no_edges.is_issued);
+        assert!(result_b_no_edges.policy_verification.is_satisfied);
         assert!(result_b_no_edges.edge_verifications.is_empty());
 
         // Verify B with SADStore — edge credential A is verified recursively
         let result_b = cred_b
             .verify(
                 &schema_b,
+                &policy_b,
+                &resolver_b,
                 &StoreKelSource::new(kel_store_b.as_ref()),
                 Some(&sad_store),
                 &edge_schemas,
             )
             .await
             .unwrap();
-        assert!(result_b.is_issued);
+        assert!(result_b.policy_verification.is_satisfied);
         assert!(result_b.edge_verifications.contains_key("license"));
         let edge_v = result_b.edge_verifications.get("license").unwrap();
-        // A's issuer KEL is not in kel_store_b, so it won't be found as issued
-        assert!(!edge_v.is_issued);
-        assert_eq!(edge_v.issuer, prefix_a);
+        assert!(edge_v.policy_verification.is_satisfied);
+        assert_eq!(edge_v.policy_said, policy_a.said);
     }
 
     #[tokio::test]
     async fn test_verify_three_level_chain() {
+        use kels::forward_key_events;
+
         use crate::edge::{Edge, Edges};
 
         // Three issuers: root -> intermediate -> leaf
-        let (mut builder_root, prefix_root, _kel_store_root, _dir_root) = setup_kel().await;
-        let (mut builder_mid, prefix_mid, _kel_store_mid, _dir_mid) = setup_kel().await;
+        let (mut builder_root, prefix_root, kel_store_root, _dir_root) = setup_kel().await;
+        let (mut builder_mid, prefix_mid, kel_store_mid, _dir_mid) = setup_kel().await;
         let (mut builder_leaf, prefix_leaf, kel_store_leaf, _dir_leaf) = setup_kel().await;
 
         let sad_store = InMemorySADStore::new();
         let root_schema = test_schema();
+        let root_policy = test_policy(&prefix_root);
 
         // Root credential (no edges)
         let (cred_root, compacted_root) = Credential::issue(
             &root_schema,
-            prefix_root.clone(),
+            &root_policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
             test_claims(),
             false,
             None,
             None,
-            true,
             None,
             &mut builder_root,
         )
@@ -1077,10 +1094,9 @@ mod tests {
                 SchemaField::object(
                     BTreeMap::from([
                         ("schema".to_string(), SchemaField::said()),
-                        ("issuer".to_string(), SchemaField::prefix().opt()),
+                        ("policy".to_string(), SchemaField::said().opt()),
                         ("credential".to_string(), SchemaField::said().opt()),
                         ("nonce".to_string(), SchemaField::string().opt()),
-                        ("delegated".to_string(), SchemaField::boolean().opt()),
                     ]),
                     true,
                 ),
@@ -1093,12 +1109,11 @@ mod tests {
 
             let mut fields = BTreeMap::new();
             fields.insert("schema".to_string(), SchemaField::said());
-            fields.insert("issuer".to_string(), SchemaField::prefix());
+            fields.insert("policy".to_string(), SchemaField::said());
             fields.insert("issuedAt".to_string(), SchemaField::datetime());
             fields.insert("subject".to_string(), SchemaField::prefix().opt());
             fields.insert("nonce".to_string(), SchemaField::string().opt());
             fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-            fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
             fields.insert(
                 "claims".to_string(),
                 SchemaField::object(claims_fields, true),
@@ -1124,9 +1139,8 @@ mod tests {
         // Intermediate credential with edge to root
         let edge_to_root = Edge::create(
             cred_root.schema.clone(),
-            Some(prefix_root.clone()),
+            Some(root_policy.said.clone()),
             Some(compacted_root.clone()),
-            None,
             None,
         )
         .unwrap();
@@ -1134,15 +1148,15 @@ mod tests {
         mid_edges.insert("root".to_string(), edge_to_root);
 
         let mid_schema = make_edge_schema("root");
+        let mid_policy = test_policy(&prefix_mid);
         let (cred_mid, compacted_mid) = Credential::issue(
             &mid_schema,
-            prefix_mid.clone(),
+            &mid_policy,
             None,
             test_claims(),
             false,
             Some(Edges::new_validated(mid_edges).unwrap()),
             None,
-            true,
             None,
             &mut builder_mid,
         )
@@ -1153,9 +1167,8 @@ mod tests {
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
             cred_mid.schema.clone(),
-            Some(prefix_mid.clone()),
+            Some(mid_policy.said.clone()),
             Some(compacted_mid),
-            None,
             None,
         )
         .unwrap();
@@ -1163,15 +1176,15 @@ mod tests {
         leaf_edges.insert("authority".to_string(), edge_to_mid);
 
         let leaf_schema = make_edge_schema("authority");
+        let leaf_policy = test_policy(&prefix_leaf);
         let (cred_leaf, _) = Credential::issue(
             &leaf_schema,
-            prefix_leaf.clone(),
+            &leaf_policy,
             None,
             test_claims(),
             false,
             Some(Edges::new_validated(leaf_edges).unwrap()),
             None,
-            true,
             None,
             &mut builder_leaf,
         )
@@ -1185,10 +1198,45 @@ mod tests {
             (mid_schema.said.clone(), mid_schema),
         ]);
 
+        // Merge all KEL stores into the leaf store
+        {
+            let source = StoreKelSource::new(kel_store_root.as_ref());
+            let sink = kels::KelStoreSink(kel_store_leaf.as_ref());
+            forward_key_events(
+                &prefix_root,
+                &source,
+                &sink,
+                kels::page_size(),
+                kels::max_pages(),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let source = StoreKelSource::new(kel_store_mid.as_ref());
+            let sink = kels::KelStoreSink(kel_store_leaf.as_ref());
+            forward_key_events(
+                &prefix_mid,
+                &source,
+                &sink,
+                kels::page_size(),
+                kels::max_pages(),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Resolver knows all policies for edge verification
+        let resolver = InMemoryPolicyResolver::new(vec![root_policy.clone(), mid_policy.clone()]);
+
         // Verify leaf — should recursively verify intermediate and root
         let result = cred_leaf
             .verify(
                 &leaf_schema,
+                &leaf_policy,
+                &resolver,
                 &StoreKelSource::new(kel_store_leaf.as_ref()),
                 Some(&sad_store),
                 &edge_schemas,
@@ -1196,15 +1244,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_issued);
+        assert!(result.policy_verification.is_satisfied);
         assert!(result.edge_verifications.contains_key("authority"));
 
         let mid_v = result.edge_verifications.get("authority").unwrap();
-        assert_eq!(mid_v.issuer, prefix_mid);
+        assert_eq!(mid_v.policy_said, mid_policy.said);
         assert!(mid_v.edge_verifications.contains_key("root"));
 
         let root_v = mid_v.edge_verifications.get("root").unwrap();
-        assert_eq!(root_v.issuer, prefix_root);
+        assert_eq!(root_v.policy_said, root_policy.said);
         assert!(root_v.edge_verifications.is_empty());
     }
 }
