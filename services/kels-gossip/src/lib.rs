@@ -351,6 +351,24 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
     info!("Registry KELs persisted to local store");
 
+    // Background recovery archival task for registry KELs
+    {
+        let recovery_pool = gossip_repo.registry_kels.pool.clone();
+        let recovery_config = kels::RecoveryConfig {
+            events_table: "registry_key_events",
+            signatures_table: "registry_key_event_signatures",
+            recovery_table: "registry_recovery",
+            archived_events_table: "registry_archived_events",
+            archived_signatures_table: "registry_archived_event_signatures",
+        };
+        tokio::spawn(kels::recovery_archival_loop(
+            recovery_pool,
+            recovery_config,
+            kels::NoCache,
+            std::time::Duration::from_secs(5),
+        ));
+    }
+
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
         kels_url: config.kels_url.clone(),

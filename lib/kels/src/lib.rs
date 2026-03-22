@@ -42,6 +42,7 @@ pub mod client;
 pub mod crypto;
 pub mod error;
 pub mod merge;
+pub mod recovery;
 pub mod repository;
 pub mod serving;
 pub mod store;
@@ -76,6 +77,7 @@ pub use crypto::{
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
+pub use recovery::{NoCache, RecoveryCache, RecoveryConfig, recovery_archival_loop};
 pub use repository::{SignedEventRepository, load_signed_history};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};

@@ -204,6 +204,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         builder
     };
 
+    let recovery_pool = kel_repo.pool.clone();
+
     let state = Arc::new(AppState {
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
@@ -217,6 +219,23 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     tokio::spawn(async move {
         auto_rotation_loop(rotation_state).await;
     });
+
+    // Background recovery archival task for identity KEL
+    {
+        let recovery_config = kels::RecoveryConfig {
+            events_table: "identity_key_events",
+            signatures_table: "identity_key_event_signatures",
+            recovery_table: "identity_recovery",
+            archived_events_table: "identity_archived_events",
+            archived_signatures_table: "identity_archived_event_signatures",
+        };
+        tokio::spawn(kels::recovery_archival_loop(
+            recovery_pool,
+            recovery_config,
+            kels::NoCache,
+            std::time::Duration::from_secs(5),
+        ));
+    }
 
     let app = create_router(state);
 

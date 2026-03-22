@@ -115,6 +115,24 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to get registry prefix from identity service: {}", e))?;
     info!("Registry prefix from identity service: {}", prefix);
 
+    // Background recovery archival task for member KELs
+    {
+        let recovery_pool = repo.member_kels.pool.clone();
+        let recovery_config = kels::RecoveryConfig {
+            events_table: "member_key_events",
+            signatures_table: "member_key_event_signatures",
+            recovery_table: "member_recovery",
+            archived_events_table: "member_archived_events",
+            archived_signatures_table: "member_archived_event_signatures",
+        };
+        tokio::spawn(kels::recovery_archival_loop(
+            recovery_pool,
+            recovery_config,
+            kels::NoCache,
+            std::time::Duration::from_secs(5),
+        ));
+    }
+
     // Initialize federation if configured
     let federation_state = match FederationConfig::from_env() {
         Ok(Some(config)) => {

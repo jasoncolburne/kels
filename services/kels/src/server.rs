@@ -85,6 +85,7 @@ pub async fn run(
     };
 
     let repo = Arc::new(repo);
+    let recovery_pool = repo.key_events.pool.clone();
     let kel_store: Arc<dyn kels::KelStore> = {
         let kel_event_repo = Arc::new(crate::repository::KeyEventRepository::new(
             repo.key_events.pool.clone(),
@@ -105,6 +106,23 @@ pub async fn run(
     if let (Some(cache), Some(redis_url)) = (&state.kel_cache, redis_url) {
         let local_cache = cache.local_cache();
         tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
+    }
+
+    // Background recovery archival task
+    {
+        let recovery_config = kels::RecoveryConfig {
+            events_table: "kels_key_events",
+            signatures_table: "kels_key_event_signatures",
+            recovery_table: "kels_recovery",
+            archived_events_table: "kels_archived_events",
+            archived_signatures_table: "kels_archived_event_signatures",
+        };
+        tokio::spawn(kels::recovery_archival_loop(
+            recovery_pool,
+            recovery_config,
+            kels::NoCache,
+            std::time::Duration::from_secs(5),
+        ));
     }
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
