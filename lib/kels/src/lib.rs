@@ -87,12 +87,12 @@ pub use types::{
     PageLoader, PagedKelSink, PagedKelSource, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
     ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
-    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory,
-    RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest, StoreKelSource,
-    StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events, completed_verification,
-    compute_approval_threshold, compute_rotation_hash, forward_key_events, generate_nonce,
-    hash_tip_saids, truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_with,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
+    RecoveryState, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
+    benchmark_key_events, completed_verification, compute_approval_threshold,
+    compute_rotation_hash, forward_key_events, generate_nonce, hash_tip_saids,
+    truncate_incomplete_generation, validate_timestamp, verify_key_events, verify_key_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

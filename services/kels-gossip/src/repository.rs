@@ -9,7 +9,10 @@ use verifiable_storage_postgres::{PgPool, Stored};
 /// PostgreSQL-backed registry KEL repository (local copy for anchoring verification)
 #[derive(Clone, Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "registry_key_events", version_field = "serial")]
-#[signed_events(signatures_table = "registry_key_event_signatures")]
+#[signed_events(
+    signatures_table = "registry_key_event_signatures",
+    recovery_table = "registry_recovery"
+)]
 pub struct RegistryKelRepository {
     pub pool: PgPool,
 }

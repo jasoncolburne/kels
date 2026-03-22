@@ -30,4 +30,29 @@ CREATE TABLE IF NOT EXISTS registry_key_event_signatures (
 
 CREATE INDEX IF NOT EXISTS idx_registry_key_event_sigs_event_said ON registry_key_event_signatures(event_said);
 
+-- Recovery tracking for registry KELs (local copy)
+CREATE TABLE IF NOT EXISTS registry_recovery (
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
+    version BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    kel_prefix TEXT NOT NULL,
+    recovery_serial BIGINT NOT NULL,
+    diverged_at BIGINT NOT NULL,
+    rec_previous TEXT NOT NULL,
+    owner_first_serial BIGINT NOT NULL,
+    state TEXT NOT NULL,
+    cursor_serial BIGINT NOT NULL,
+    adversary_tip_said TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_recovery_prefix_version ON registry_recovery(prefix, version);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_recovery_kel_prefix_version ON registry_recovery(kel_prefix, version);
+CREATE INDEX IF NOT EXISTS idx_registry_recovery_kel_prefix ON registry_recovery(kel_prefix);
+
+-- Archive tables for registry KELs
+CREATE TABLE IF NOT EXISTS registry_archived_events (LIKE registry_key_events INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS registry_archived_event_signatures (LIKE registry_key_event_signatures INCLUDING ALL);
+
 COMMIT;

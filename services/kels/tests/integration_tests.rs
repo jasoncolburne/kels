@@ -982,7 +982,8 @@ async fn test_recovery_from_divergence() {
     // After recovery, the KEL should have the authoritative branch events
     assert!(page.events.iter().any(|e| e.event.is_recover()));
 
-    // Subsequent normal appends should work
+    // Subsequent normal appends are rejected while recovery archival is in progress
+    // (the background task has not run, so the RecoveryRecord is still in pending state)
     let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-recovery")).await;
     let response = harness
         .client()
@@ -991,10 +992,7 @@ async fn test_recovery_from_divergence() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
-    assert!(result.applied);
-    assert!(result.diverged_at.is_none());
+    assert_eq!(response.status(), 409);
 }
 
 /// Contest freezes a KEL after recovery key is revealed.

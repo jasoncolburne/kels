@@ -18,14 +18,14 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// ## Attributes
 ///
 /// - `signatures_table`: The signatures table name (required)
-/// - `audit_table`: Optional audit table name for archiving adversary events during recovery
+/// - `recovery_table`: Recovery tracking table for async adversary archival (required)
 ///
 /// ## Example
 ///
 /// ```text
 /// #[derive(Stored, SignedEvents)]
 /// #[stored(item_type = KeyEvent, table = "kels_key_events")]
-/// #[signed_events(signatures_table = "kels_key_event_signatures", audit_table = "kels_audit_records")]
+/// #[signed_events(signatures_table = "kels_key_event_signatures", recovery_table = "kels_recovery")]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
 /// }
@@ -43,7 +43,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         .expect("No #[signed_events(...)] attribute found");
 
     let mut signatures_table: Option<String> = None;
-    let mut audit_table: Option<String> = None;
+    let mut recovery_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -53,11 +53,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     signatures_table = Some(s.value());
                 }
-            } else if meta.path.is_ident("audit_table") {
+            } else if meta.path.is_ident("recovery_table") {
                 meta.input.parse::<syn::Token![=]>()?;
                 let lit: Lit = meta.input.parse()?;
                 if let Lit::Str(s) = lit {
-                    audit_table = Some(s.value());
+                    recovery_table = Some(s.value());
                 }
             }
             Ok(())
@@ -67,10 +67,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
     let signatures_table =
         signatures_table.expect("Missing signatures_table in #[signed_events(...)]");
 
-    let audit_table_expr = match &audit_table {
-        Some(table) => quote! { Some(#table) },
-        None => quote! { None },
-    };
+    let recovery_table = recovery_table.expect("Missing recovery_table in #[signed_events(...)]");
 
     // Generate the methods
     let methods = quote! {
@@ -352,7 +349,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     prefix.to_string(),
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
-                    #audit_table_expr,
+                    #recovery_table,
                 );
 
                 match merge_tx.merge_events(events).await {

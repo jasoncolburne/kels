@@ -1113,6 +1113,13 @@ pub async fn submit_member_key_events(
                 ApiError::unauthorized("KEL is decommissioned".to_string())
             }
             kels::KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
+            kels::KelsError::RecoveryInProgress => ApiError(
+                StatusCode::CONFLICT,
+                axum::Json(kels::ErrorResponse {
+                    error: "Recovery in progress for this prefix".to_string(),
+                    code: kels::ErrorCode::RecoveryInProgress,
+                }),
+            ),
             _ => ApiError::internal_error(e.to_string()),
         })?;
 

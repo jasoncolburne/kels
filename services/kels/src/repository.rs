@@ -12,7 +12,7 @@ use libkels_derive::SignedEvents;
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
 #[signed_events(
     signatures_table = "kels_key_event_signatures",
-    audit_table = "kels_audit_records"
+    recovery_table = "kels_recovery"
 )]
 pub struct KeyEventRepository {
     pub pool: PgPool,

@@ -195,6 +195,7 @@ impl From<KelsError> for ApiError {
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
             KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
+            KelsError::RecoveryInProgress => (StatusCode::CONFLICT, ErrorCode::RecoveryInProgress),
             KelsError::EventNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
@@ -383,6 +384,13 @@ pub(crate) async fn submit_events(
             // outcome.result below, making KelMergeResult::ContestRequired unreachable.
             KelsError::ContestRequired => ApiError::contest_required(
                 "Contest required: recovery key revealed. Use contest to freeze the KEL.",
+            ),
+            KelsError::RecoveryInProgress => ApiError(
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "Recovery in progress for this prefix".to_string(),
+                    code: ErrorCode::RecoveryInProgress,
+                }),
             ),
             _ => ApiError::internal_error(e.to_string()),
         })?;

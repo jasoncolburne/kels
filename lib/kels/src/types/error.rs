@@ -13,6 +13,7 @@ pub enum ErrorCode {
     Unauthorized,
     Gone,
     ContestRequired,
+    RecoveryInProgress,
     RateLimited,
     InternalError,
 }
