@@ -311,7 +311,7 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
 
     // Required fields
     require_field(fields, "schema", SchemaFieldType::Said, false)?;
-    require_field(fields, "issuer", SchemaFieldType::Prefix, false)?;
+    require_field(fields, "policy", SchemaFieldType::Said, false)?;
     require_field(fields, "issuedAt", SchemaFieldType::Datetime, false)?;
     require_compactable_object(fields, "claims", false)?;
 
@@ -319,7 +319,6 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
     require_field(fields, "subject", SchemaFieldType::Prefix, true)?;
     require_field(fields, "nonce", SchemaFieldType::String, true)?;
     require_field(fields, "expiresAt", SchemaFieldType::Datetime, true)?;
-    require_field(fields, "irrevocable", SchemaFieldType::Boolean, true)?;
     require_compactable_object(fields, "edges", true)?;
     require_compactable_object(fields, "rules", true)?;
 
@@ -338,8 +337,7 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
                 )));
             }
             if let Some(ref entry_fields) = entry.fields {
-                const ALLOWED_EDGE_FIELDS: &[&str] =
-                    &["schema", "issuer", "credential", "nonce", "delegated"];
+                const ALLOWED_EDGE_FIELDS: &[&str] = &["schema", "policy", "credential", "nonce"];
 
                 // schema is required
                 require_field(entry_fields, "schema", SchemaFieldType::Said, false).map_err(
@@ -351,11 +349,11 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
                 )?;
 
                 // Optional edge fields with required types
-                if let Some(f) = entry_fields.get("issuer")
-                    && (f.field_type != SchemaFieldType::Prefix || !f.optional)
+                if let Some(f) = entry_fields.get("policy")
+                    && (f.field_type != SchemaFieldType::Said || !f.optional)
                 {
                     return Err(CredentialError::SchemaValidationError(format!(
-                        "edge '{label}' field 'issuer' must be optional Prefix"
+                        "edge '{label}' field 'policy' must be optional Said"
                     )));
                 }
                 if let Some(f) = entry_fields.get("credential")
@@ -370,13 +368,6 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
                 {
                     return Err(CredentialError::SchemaValidationError(format!(
                         "edge '{label}' field 'nonce' must be optional String"
-                    )));
-                }
-                if let Some(f) = entry_fields.get("delegated")
-                    && (f.field_type != SchemaFieldType::Boolean || !f.optional)
-                {
-                    return Err(CredentialError::SchemaValidationError(format!(
-                        "edge '{label}' field 'delegated' must be optional Boolean"
                     )));
                 }
 
@@ -430,13 +421,12 @@ pub fn validate_schema_compliance(schema: &Schema) -> Result<(), CredentialError
     // Reject unknown top-level fields
     const ALLOWED_FIELDS: &[&str] = &[
         "schema",
-        "issuer",
+        "policy",
         "issuedAt",
         "claims",
         "subject",
         "nonce",
         "expiresAt",
-        "irrevocable",
         "edges",
         "rules",
     ];
@@ -713,12 +703,11 @@ mod tests {
 
         let mut fields = BTreeMap::new();
         fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("policy".to_string(), SchemaField::said());
         fields.insert("issuedAt".to_string(), SchemaField::datetime());
         fields.insert("subject".to_string(), SchemaField::prefix().opt());
         fields.insert("nonce".to_string(), SchemaField::string().opt());
         fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
         fields.insert(
             "claims".to_string(),
             SchemaField::object(claims_fields, true),

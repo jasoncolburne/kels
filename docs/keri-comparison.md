@@ -15,7 +15,7 @@ KERI defines a rich taxonomy of infrastructure roles, each with distinct trust p
 - **Watchers** — monitor witnesses for duplicity (conflicting events at the same sequence number). They compare KELs across witnesses and flag inconsistencies.
 - **Jurors** — evaluate duplicity evidence gathered by watchers and render judgments about identifier trustworthiness.
 - **Judges** — make final trust decisions based on juror evaluations, applying policy to determine whether an identifier should still be trusted.
-- **Registrars** — manage credential registries (TELs — Transaction Event Logs) for verifiable credential issuance and revocation.
+- **Registrars** — manage credential registries that use TELs (Transaction Event Logs) to track credential issuance and revocation state.
 - **Validators** — any party that verifies a KEL's cryptographic integrity.
 
 This layered participant model creates a social trust infrastructure where duplicity detection, evaluation, and resolution are distributed across specialized roles. Each role can be operated by different parties, providing separation of concerns and defense in depth through organizational diversity.
@@ -74,12 +74,15 @@ KELS's approach is more mechanical and auditable: divergence is a protocol state
 | Availability guarantee | Witness liveness required | Any gossip peer can serve; registry manages peer set |
 | Transport security | Varies by implementation | ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 (forward secrecy, mutual auth, PQ-secure) |
 | Discovery | OOBIs (Out-of-Band Introductions) | Registry-managed peer allowlists (compile-time trust roots) |
+| Infrastructure responsibility | Controller selects and manages witnesses | Federation operators run shared infrastructure |
 
 **Analysis:** KERI's witness model provides stronger consistency guarantees at the cost of availability — if witnesses are offline, events cannot be receipted. KELS's gossip model prioritizes availability and partition tolerance, accepting eventual consistency. The tradeoff is that KELS nodes may temporarily have stale views, but anti-entropy repair (every 10s by default) bounds staleness.
 
+A critical operational difference is *who bears the infrastructure burden*. In KERI, the controller is responsible for selecting and managing their own witness pool. For organizations with infrastructure teams this is manageable, but for small businesses or consumers it creates an unrealistic operational requirement. In practice, this pushes most users toward third-party witness hosting (e.g., a KERIA cloud agent), which re-introduces the centralized trust dependency that KERI's architecture was designed to avoid. KELS inverts this: the service is shared infrastructure that verifies and stores KELs — it has no per-identity infrastructure. A consumer's phone talks to the KELS service, gossip handles replication, and the operational burden falls entirely on federation operators rather than end users.
+
 KELS's transport security is notably stronger: the ML-KEM-768/1024 key exchange with ML-DSA-65/87 mutual authentication provides forward secrecy, mutual authentication tied to KEL identities, and post-quantum security. KERI's transport security is implementation-dependent.
 
-**2026 consideration:** The shift toward mesh and edge computing favors gossip-based replication. KELS's model works better in environments with intermittent connectivity or where designated infrastructure (witnesses) cannot be guaranteed. However, KERI's witness model is simpler to reason about for compliance and audit purposes.
+**2026 consideration:** The shift toward mesh and edge computing favors gossip-based replication. KELS's model works better in environments with intermittent connectivity or where designated infrastructure (witnesses) cannot be guaranteed. However, KERI's witness model is simpler to reason about for compliance and audit purposes. The witness operational burden is increasingly relevant as identity systems target consumer adoption — expecting end users to manage distributed infrastructure is a non-starter for mass-market digital wallets.
 
 ### 4. Trust Model and Trust Anchoring
 
@@ -133,17 +136,19 @@ KERI's specification defines verification semantics, but implementation rigor va
 | Property | KERI | KELS |
 |----------|------|------|
 | Credential framework | ACDC (Authentic Chained Data Containers) | kels-creds (see [design](design/kels-creds.md)) |
-| Credential issuance/revocation | TELs (Transaction Event Logs) with registry | Anchor-only: credential SAID anchored = issued, revocation hash anchored = revoked |
+| Credential issuance/revocation | TELs (Transaction Event Logs) with registry | Policy-based: endorsers anchor credential SAID per policy; poisoning (anchor poison hash) replaces revocation |
 | Credential exchange | IPEX (Issuance and Presentation Exchange) | kels-exchange on roadmap |
-| Selective disclosure | Graduated disclosure (compact, partial, full) | Schema-aware path expression DSL (compact, selective, full) |
-| Credential chaining | ACDC edge sections link credentials in directed graphs | SelfAddressed edges with graduated disclosure (schema, credential, issuer, delegation) |
+| Compacted disclosure | Graduated disclosure (compact, partial, full) | Schema-aware path expression DSL (canonical, compacted, expanded) |
+| Credential chaining | ACDC edge sections link credentials in directed graphs | SelfAddressed edges with graduated disclosure (schema, credential, policy) + compacted policy matching |
 | Schema enforcement | JSON Schema + ACDC rules sections | SelfAddressed schema referenced by SAID; closed-schema validation with typed fields |
 
-**Analysis:** KERI's ACDC framework remains more mature, with TELs providing a dedicated append-only log for credential state. KELS takes a leaner approach with kels-creds: credentials are purely computational (no separate storage or event log), with issuance and revocation expressed as anchors in existing interaction events. Revocation is a single domain-separated Blake3 hash of the credential SAID — no registry infrastructure required, and any party who knows the credential SAID can independently compute the revocation hash to check revocation status without additional lookups. Selective disclosure uses a schema-aware path expression DSL that maps naturally to FFI (`*const c_char`) — only fields the schema marks as `compactable: true` are compacted/expanded, preventing blind expansion of SAID-like strings in non-compactable fields. Edge types are themselves SelfAddressed and compactable, enabling anti-correlation properties similar to ACDC's compact disclosure — a holder can prove an edge exists without revealing the referenced credential's issuer or SAID. Edge verification enforces issuer constraints and delegation trust chains (verifying the delegating prefix's KEL anchors the issuer's prefix).
+**Analysis:** KERI's ACDC framework remains more mature, with TELs providing a dedicated append-only log for credential state. KELS takes a leaner approach with kels-creds + kels-policy: credentials are purely computational (no separate storage or event log), with endorsement expressed as anchors in interaction events across multiple endorser KELs per a composable policy. Poisoning replaces revocation — an endorser (or authorized admin per a poison expression) anchors a domain-separated Blake3 hash of the credential SAID to withdraw endorsement. Policies define the trust structure: threshold ("2-of-3 must endorse"), weighted ("board members with weight >= 5"), delegation ("any service delegated by this HSM"), and nested composition via policy references. Poisoning semantics are controlled by two mutually exclusive optional fields: `poison` (a DSL expression defining who can poison — when satisfied, the policy is killed) and `immune` (no poison checks). By default (neither set), any endorser can soft-poison (their endorsement doesn't count toward the threshold).
 
-The key architectural difference: ACDC credentials live in TELs (separate append-only logs), while kels-creds credentials are stateless computational objects verified against KEL anchors via a dedicated `verify_key_events` call for the issuer's prefix. This avoids additional infrastructure but means credential state is derived rather than directly queryable. One should likely be verifying anchors on use of a credential in a zero-trust architecture, anyway.
+Compacted disclosure uses a schema-aware path expression DSL that maps naturally to FFI (`*const c_char`) — only fields the schema marks as `compactable: true` are compacted/expanded, preventing blind expansion of SAID-like strings in non-compactable fields. Edge types are themselves SelfAddressed and compactable, enabling anti-correlation properties similar to ACDC's partial disclosure — a holder can prove an edge exists without revealing the referenced credential's policy or SAID. Edge verification uses **policy compaction** — the edge stores a compacted policy SAID (delegates stripped), and verification compacts the presented credential's policy to check for a match. This means edges don't need updating when delegated services rotate.
 
-**2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds closes the feature gap with a simpler model — no TELs, no registrars — trading ecosystem maturity for architectural simplicity and a smaller attack surface.
+The key architectural difference: ACDC credentials are immutable data objects whose issuance/revocation state is tracked by TELs (separate append-only event logs — a management TEL per registry and a VC TEL per credential), while kels-creds credentials are stateless computational objects verified against KEL anchors via policy evaluation across multiple endorser KELs. This avoids additional infrastructure but means credential state is derived rather than directly queryable. One should likely be verifying anchors on use of a credential in a zero-trust architecture, anyway.
+
+**2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds + kels-policy closes the feature gap with a simpler model — no TELs, no registrars — trading ecosystem maturity for architectural simplicity, a smaller attack surface, and expressive multi-party trust policies.
 
 ### 8. Multi-Signature and Threshold Control
 
@@ -151,17 +156,51 @@ The key architectural difference: ACDC credentials live in TELs (separate append
 |----------|------|------|
 | Multi-sig signing | Native weighted thresholds (`"kt"`: `"1/2,1/2,1/2"`) | Single signing key per event |
 | Multi-sig rotation | Threshold of next key digests (`"nt"`, `"n"`) | Single rotation hash commitment |
-| Threshold structures | Fractionally weighted, nested groups | Threshold, weighted, nested groups, role-based (kels-policy on roadmap) |
-| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance (on roadmap); federation voting for infrastructure |
+| Threshold structures | Fractionally weighted, nested groups | Threshold, weighted, nested groups, delegation via kels-policy DSL |
+| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance; federation voting for infrastructure |
 | Recovery signatures | Implementation-dependent | Dual signature (rotation key + recovery key) required |
 
-**Analysis:** KERI's multi-sig support is deeply integrated. A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys.
+**Analysis:** KERI's multi-sig support is deeply integrated via the `Tholder` (threshold holder). A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. The `Tholder` accepts fractional weights on keys (e.g., `"1/2,1/2,1/2"` — three keys each with weight 1/2, requiring any two). This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys.
 
-KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Core KEL verification stays single-key and simple. However, kels-policy (on roadmap) will provide an expressive policy DSL — threshold, weighted, nested groups, and role-based — for multi-party governance at a layer above the KEL. Policies are self-addressed objects anchored in KELs, and verification checks that enough signers have anchored approval in their own KELs. This keeps threshold logic out of the critical KEL verification path while providing governance expressiveness comparable to KERI's built-in multi-sig.
+KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Core KEL verification stays single-key and simple. kels-policy provides multi-party governance at a layer above the KEL through an expressive, composable policy DSL.
+
+#### Tholder vs. Policy: Detailed Comparison
+
+| | KERI Tholder | KELS Policy |
+|---|---|---|
+| Scope | Per-identifier (embedded in KEL) | Per-credential (travels with credential) |
+| Expressiveness | Fractional weights on keys within one identifier | Nested DSL: threshold, weighted, delegation, policy references |
+| Key compromise isolation | All keys share one identifier's fate | Each endorser has independent recovery/contest lifecycle |
+| Governance changes | Rotation event (changes the identifier's keys) | Issue new credential with new policy |
+| Delegation | Separate mechanism (delegated rotation requires delegator approval) | First-class `delegate(DELEGATOR, DELEGATE)` node in the DSL |
+| Revocation/withdrawal | TEL-based (separate append-only log) | Poisoning with soft/hard/immune modes and admin-controlled poison expressions |
+| Verification cost | One KEL replay (efficient) | N KEL replays, one per endorser (more expensive) |
+| Composability | Nested weighted groups within one identifier | Recursive across identities (policies reference other policies by SAID) |
+| Fleet scaling | ACDC edge `"o"` operator `DI2I` (Delegated-Issuee-to-Issuee) reserved but not yet implemented (as of KERIpy `49fb6fb`) | Policy compaction: edges match on trust structure without pinning specific delegates |
+
+**Composability and flexibility.** KERI's `Tholder` supports fractional weights on keys and nested threshold groups within a single identifier — it can express hierarchical governance structures like "2-of-(group-A-or-group-B)." However, all keys live within one identifier's KEL, and the `Tholder` cannot reference external identifiers, express delegation relationships, or compose across organizational boundaries.
+
+KELS's policy DSL operates at a different level, composing across independent identities rather than keys within one identity:
+
+- **Cross-identity nesting:** `threshold(2, [endorse(A), weighted(3, [endorse(B):2, endorse(C):1]), policy(SAID)])` — a threshold where A, B, C are independent KEL prefixes (each with their own key lifecycle) and one child is an entire sub-policy resolved by SAID.
+- **Cross-identity composition:** Policies reference independent KEL prefixes, each with their own key lifecycle, recovery procedures, and contest mechanisms. A compromised endorser recovers independently without affecting others.
+- **Delegation as a node type:** `delegate(HSM_PREFIX, SERVICE_PREFIX)` expresses "this service, delegated by this HSM, must endorse" as a first-class concept in the trust expression — not a separate mechanism layered on top.
+- **Policy references:** `policy(SAID)` enables reuse and composition of policies across credentials. An organization can define a "board approval" policy once and reference it from many credentials.
+- **Policy compaction:** `delegate(HSM, SERVICE)` compacts to `delegate(HSM)` — edges match on trust *structure* (any service delegated by this HSM) without pinning specific delegates, enabling fleet scaling without edge updates.
+- **Admin-controlled poisoning:** A separate DSL expression (`poison` field) governs who can kill the credential, independent of who endorses it. KERI has no equivalent — revocation is TEL-based and not expressible as a threshold policy.
+
+As a concrete example, KERI cannot express "2-of-3 endorsers, where one endorser is any service delegated by this HSM, and revocation requires 2-of-2 admins" in a single identifier's threshold structure. KELS can express this in a single policy document:
+
+```
+expression: threshold(2, [endorse(A), delegate(HSM, SERVICE), endorse(C)])
+poison:     threshold(2, [endorse(ADMIN_1), endorse(ADMIN_2)])
+```
+
+**The fundamental architectural difference:** KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three separate identities *collectively endorse* a credential per a policy. KERI's approach is more efficient (one KEL replay). KELS's approach gives each endorser independent key lifecycle — if one endorser's key is compromised, they recover independently via `rec`/`cnt` without affecting the other endorsers or the policy itself. In KERI, a compromised key in a multisig set requires a rotation of the entire identifier.
 
 KELS's dual-signature requirement for recovery events (rotation key + recovery key) is a form of 2-of-2 multi-sig, but it serves a specific security purpose (proving possession of both key tiers) rather than general governance.
 
-**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus at a higher layer (KELS's kels-policy approach) becomes a meaningful architectural decision. KERI's approach integrates multi-sig into KEL verification — a single KEL replay checks all thresholds. KELS's approach requires verifying multiple KELs (the policy creator + M approvers) but keeps core verification simple and makes governance independently evolvable. Both approaches can express equivalent policies; the difference is where verification complexity lives.
+**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus at a higher layer (KELS's kels-policy approach) becomes a meaningful architectural decision. KERI's approach integrates multi-sig into KEL verification — a single KEL replay checks all thresholds. KELS's approach requires verifying multiple KELs (one per endorser in the policy) but keeps core verification simple and makes governance independently evolvable. KELS's recursive policy composition and policy compaction have no KERI equivalent — they enable trust structures that span organizational boundaries and scale with fleet operations in ways that a single identifier's key threshold cannot.
 
 ### 9. Standards and Interoperability
 
@@ -203,7 +242,7 @@ KELS is a single-author, single-implementation project. This is not inherently a
 |----------|------|------|
 | Prefix derivation | Prefix = inception SAID (derived from inception content) | Prefix derived separately (both `said` and `prefix` blanked before hashing) |
 | Identifier correlation | SAID reveals inception content hash; prefix = SAID | Prefix and SAID are different values; harder to correlate naked SAIDs to KEL owners |
-| Selective disclosure | ACDC graduated disclosure (compact → partial → full) | kels-creds path expression DSL (compact → selective → full) |
+| Compacted disclosure | ACDC graduated disclosure (compact → partial → full) | kels-creds path expression DSL (compact → compacted → full) |
 | Unlinkable presentations | Possible via ACDC compact disclosure | Compactable edges hide referenced credentials and issuers |
 | KEL privacy | KEL is public (ambient verifiability) | KEL is public (ambient verifiability) |
 | Witness/node privacy | Witness addresses in KEL (`"b"` field) | Peer set managed by registry; not in KEL |
@@ -212,11 +251,11 @@ KELS is a single-author, single-implementation project. This is not inherently a
 
 KELS's prefix derivation offers a subtle privacy advantage: KERI computes a single hash (blanking both fields in one pass) and uses it as both prefix and SAID, so they are identical. KELS computes them sequentially — prefix first (both fields blanked), then SAID (only `said` blanked, prefix already populated) — producing two distinct values. A naked SAID seen in an anchor or external reference cannot be trivially mapped to a KEL prefix without additional context. In KERI, any reference to the inception SAID immediately identifies the KEL.
 
-KERI's ACDC graduated disclosure allows credentials to be presented in compact form (just the SAID), partial form (selected fields), or full form. kels-creds provides comparable functionality via recursive compaction of SelfAddressed fields and a path expression DSL for selective disclosure. Both approaches enable privacy-preserving verification flows; ACDC is more mature while kels-creds is architecturally simpler.
+KERI's ACDC graduated disclosure allows credentials to be presented in compact form (just the SAID), partial form (selected fields), or full form. kels-creds provides comparable functionality via recursive compaction of SelfAddressed fields and a path expression DSL for compacted disclosure — fields are either expanded (visible) or compacted (replaced by their SAID). Both approaches enable privacy-preserving verification flows; ACDC is more mature while kels-creds is architecturally simpler. Note: this is compaction-based disclosure, not zero-knowledge selective disclosure — the holder chooses which fields to expand, but cannot make predicate proofs about compacted fields.
 
 KERI exposes witness addresses in the KEL itself (`"b"` field), creating infrastructure metadata in the public record. KELS keeps peer set management in the registry layer, separate from individual KELs.
 
-**2026 consideration:** Privacy regulations (GDPR, state privacy laws) increasingly constrain how identity systems handle personal data. Both KERI's ACDC graduated disclosure and kels-creds's path-based selective disclosure support data minimization for privacy-compliant credential presentation. For pure key management (no credentials), KELS has a privacy advantage: systems that maintain logs of event SAIDs (e.g., audit trails, anchor records) cannot correlate those SAIDs back to a specific identity without the full event content. In KERI, where the prefix equals the inception SAID, any logged SAID from the inception event immediately identifies the KEL owner.
+**2026 consideration:** Privacy regulations (GDPR, state privacy laws) increasingly constrain how identity systems handle personal data. Both KERI's ACDC graduated disclosure and kels-creds's path-based compacted disclosure support data minimization for privacy-compliant credential presentation. For pure key management (no credentials), KELS has a privacy advantage: systems that maintain logs of event SAIDs (e.g., audit trails, anchor records) cannot correlate those SAIDs back to a specific identity without the full event content. In KERI, where the prefix equals the inception SAID, any logged SAID from the inception event immediately identifies the KEL owner.
 
 ### 12. Delegation Model
 
@@ -224,16 +263,17 @@ KERI exposes witness addresses in the KEL itself (`"b"` field), creating infrast
 |----------|------|------|
 | Delegation inception | Delegated inception (`dip`) requires delegator approval seal | Delegated inception (`dip`) accepted if structurally valid |
 | Delegation rotation | Delegated rotation (`drt`) requires delegator approval | No delegated rotation event type |
-| Delegation trust verification | In-protocol (delegator must anchor approval in their KEL) | Service-level: deferred to consumers. Credential-level: kels-creds verifies delegation trust chains |
+| Delegation trust verification | In-protocol (delegator must anchor approval in their KEL) | Service-level: deferred to consumers. Credential-level: kels-policy `delegate()` DSL node verifies delegation trust chains |
 | Delegation revocation | Delegator can refuse future rotations | Consumer-defined |
-| Delegation depth | Multi-level (A delegates to B, B delegates to C) | Structurally possible; kels-creds verifies one level of delegation for edge credentials |
+| Delegation depth | Multi-level (A delegates to B, B delegates to C) | Structurally possible; kels-policy `delegate(DELEGATOR, DELEGATE)` verifies one level per node; nested policies can compose multi-level chains |
+| Credential-level delegation | ACDC edge operator `DI2I` reserved but not yet implemented (as of KERIpy `49fb6fb`); `I2I` and `NI2I` operators handle non-delegated issuee constraints | kels-policy `delegate()` node with policy compaction for fleet scaling |
 | Cooperative delegation | Delegator and delegate coordinate via interaction events | No built-in coordination protocol |
 
 **Analysis:** KERI's delegation model is deeply integrated into the protocol. When identifier B is delegated from identifier A, the delegator (A) must anchor an approval seal in their own KEL for every delegated establishment event (inception and rotation). This creates a cryptographically verifiable chain of authority: verifying B's KEL requires also verifying A's KEL and confirming the approval seals. The delegator retains ongoing control — they can refuse to approve future rotations, effectively revoking the delegation.
 
 KELS takes a layered approach to delegation. At the service level, the `dip` (delegated inception) event includes a `delegating_prefix` field, but the KELS service itself does not verify the delegation relationship — any structurally valid KEL starting with `dip` is accepted. This is a deliberate design choice: "Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed."
 
-However, at the credential level, kels-creds provides full delegation verification for edge credentials. When an edge declares `delegated: true`, `verify_edges` performs three checks: (1) the issuer's KEL inception is a `dip` (a `delegating_prefix` must be present), (2) the delegating prefix's KEL is cryptographically verified, and (3) the delegating prefix's KEL anchors the issuer's prefix. This means delegation trust is verified automatically during credential verification without consumers needing to implement it independently.
+However, at the credential level, kels-policy provides full delegation verification via the `delegate(DELEGATOR, DELEGATE)` DSL node. When a policy includes a `delegate` node, the evaluator performs three checks: (1) the delegate's KEL inception is a `dip` with the delegator as delegating prefix, (2) the delegator's KEL is cryptographically verified, and (3) the delegator's KEL anchors the delegate's prefix. This means delegation trust is verified automatically during policy evaluation without consumers needing to implement it independently. Policy compaction strips the specific delegate from `delegate(DELEGATOR, DELEGATE)` to `delegate(DELEGATOR)`, enabling edges to express "any delegate of this authority" without pinning a specific service.
 
 **2026 consideration:** Delegation is critical for organizational hierarchies (root CA → intermediate CA → end entity, analogous patterns). KERI's in-protocol delegation verification provides stronger guarantees out of the box for all KEL operations. KELS's layered approach defers delegation verification at the service level but provides it automatically at the credential level via kels-creds, covering the most common use case (verifying that a credential issuer is properly delegated) without requiring every consumer to implement delegation checking independently.
 
@@ -356,7 +396,7 @@ KELS's federation model introduces infrastructure dependencies that conflict wit
 **Recommended: KELS**
 
 Multi-party governance aligns naturally with KELS's design:
-- **kels-policy** (on roadmap) provides an expressive policy DSL (threshold, weighted, nested groups, role-based) for multi-party approval verified against KEL anchors.
+- **kels-policy** provides an expressive policy DSL (`endorse`, `delegate`, `threshold`, `weighted`, nested `policy` references) for multi-party approval verified against KEL anchors, with soft/hard/immune poisoning and admin-controlled poison expressions.
 - **Multi-party voting** for infrastructure changes mirrors governance voting patterns.
 - **Deterministic divergence resolution** provides clear rules when parties disagree.
 - **Federation model** maps to governance structures with defined membership.
@@ -439,10 +479,10 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 - **Key rotation:** Controller-initiated, immediate. No coordination with infrastructure.
 - **Witness management:** Add/remove witnesses via rotation events. Witnesses are stateless relays — they can be replaced without data migration.
 - **Monitoring:** Watch for duplicity via watchers. Duplicity is an exceptional event that requires human investigation.
-- **Backup/recovery:** Controller's key material is the critical backup item. Witnesses can be rebuilt from the controller's KEL.
+- **Backup/recovery:** Controller's key material is the critical backup item. Lost witnesses are replaced by standing up a new witness with fresh keys and rotating the identifier's witness list. Prior receipts from the old witness remain verifiable (they're signed by the old witness's KEL) but the new witness must be receipted going forward.
 
 **KELS:**
-- **Key rotation:** Automatic for services (every 30 days signing, 90 days recovery via identity service). Manual for end-user KELs via CLI or client.
+- **Key rotation:** Automatic for services. Manual for end-user KELs via CLI or client.
 - **Peer management:** Proposing and voting on peers requires coordination across registry operators. Minimum 3 operators must act for any peer change.
 - **Monitoring:** Divergence is visible in the KEL and propagated via gossip — monitoring is built into the data model. Anti-entropy runs every 10 seconds by default, providing continuous consistency checking.
 - **Backup/recovery:** PostgreSQL databases are the primary data store. HSM key material must be backed up separately (PVC for mock HSM, native persistence for real HSMs). Redis is reconstructable from PostgreSQL on restart (cache + operational state rebuilt via anti-entropy).
@@ -781,13 +821,13 @@ KERI and KELS represent different points in the DKMI design space. KERI optimize
 
 The most significant differentiator is divergence handling: KERI treats it as an external detection problem resolved through its layered participant model (watchers detect duplicity, jurors evaluate evidence, judges render verdicts), while KELS treats it as a protocol state with cryptographic resolution (`rec`/`cnt`). In 2026's zero-trust landscape, where automated trust decisions are the norm and human-in-the-loop is a liability for infrastructure, KELS's approach provides stronger security guarantees for most organizational and infrastructure use cases. KERI's richer social trust layer remains the better choice where human governance, decentralization, and individual sovereignty are paramount. However, the deployability gap is notable: KERI's watcher, juror, and judge roles lack standalone deployable implementations, while KELS ships a complete, reproducible environment behind a single command.
 
-KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's two-tier model (signing + pre-rotated next). KELS eliminates the race condition inherent in KERI's rotation-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response (`cnt`) that KERI lacks. On multi-party governance, KERI embeds weighted multi-sig thresholds directly in the identifier, while KELS keeps core KELs single-key and provides governance at a higher layer via kels-policy (on roadmap) — an expressive policy DSL supporting threshold, weighted, nested group, and role-based policies verified against KEL anchors. Both approaches can express equivalent policies; the difference is where verification complexity lives.
+KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's two-tier model (signing + pre-rotated next). KELS eliminates the race condition inherent in KERI's rotation-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response (`cnt`) that KERI lacks. On multi-party governance, KERI embeds weighted multi-sig thresholds directly in the identifier, while KELS keeps core KELs single-key and provides governance at a higher layer via kels-policy — an expressive policy DSL supporting `endorse`, `delegate`, `threshold`, `weighted`, and nested `policy` references, with soft/hard/immune poisoning and admin-controlled poison expressions. Policy compaction enables edges to match on trust structure without pinning specific delegates. Both approaches can express equivalent policies; the difference is where verification complexity lives.
 
 KELS's verification model enforces security invariants at the type level: the `KelVerification` token (private fields, no public constructor, obtainable only through `KelVerifier::into_verification()`) guarantees at compile time that security decisions cannot be made on unverified data. Advisory locking through verify+write eliminates TOCTOU vulnerabilities. KERI's verification semantics are specified but enforcement rigor is implementation-dependent.
 
-The credential ecosystems are converging. KERI's ACDC framework with TELs is more mature, but kels-creds provides a leaner alternative — schema-aware compaction, graduated disclosure via a path expression DSL, recursive edge verification with delegation trust chains, and anchor-only issuance/revocation without separate registry infrastructure. With kels-exchange on the roadmap, the remaining functional gap is narrowing.
+The credential ecosystems are converging. KERI's ACDC framework with TELs is more mature, but kels-creds + kels-policy provides a leaner alternative — schema-aware compaction, graduated disclosure via a path expression DSL, recursive edge verification with compacted policy matching, composable multi-party trust policies with poisoning semantics, and no separate registry infrastructure. With kels-exchange on the roadmap, the remaining functional gap is narrowing.
 
-The two protocols also differ on delegation. KERI verifies delegation trust in-protocol — delegated establishment events require the delegator to anchor approval seals in their own KEL. KELS defers delegation verification at the service level (accepting any structurally valid `dip`) but provides automatic delegation trust verification at the credential level via kels-creds edge verification, covering the most common use case without requiring every consumer to implement delegation checking independently.
+The two protocols also differ on delegation. KERI verifies delegation trust in-protocol — delegated establishment events require the delegator to anchor approval seals in their own KEL. KELS defers delegation verification at the service level (accepting any structurally valid `dip`) but provides automatic delegation trust verification at the credential level via the kels-policy `delegate(DELEGATOR, DELEGATE)` DSL node, which verifies the delegation chain during policy evaluation. Policy compaction strips the specific delegate, enabling edges to express "any delegate of this authority" — supporting fleet scaling (HSM-backed service delegates to rotating software-key services) without edge updates.
 
 KELS's prefix derivation provides a privacy advantage absent from KERI: because the prefix and SAID are computed sequentially (producing distinct values), event SAIDs in logs or anchor records cannot be correlated back to an identity without the full event. In KERI, prefix equals inception SAID, making any logged inception SAID immediately identifying.
 
@@ -801,4 +841,4 @@ Device integration is another differentiator. KELS was designed for hardware-bac
 
 On post-quantum readiness, KELS has completed its infrastructure migration: ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all infrastructure signing, ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated based on peer signing algorithms) for gossip transport key exchange, and support for mixed algorithms with upgrade via rotation. The core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs, enabling gradual client migration. KERI's broader cryptographic agility theoretically accommodates any PQ algorithm, but without a specific implementation, the migration timeline is less defined. Both protocols' pre-rotation hash commitments are already quantum-resistant.
 
-KELS's roadmap — kels-policy (multi-party governance DSL), Android SDK, kels-exchange, exhaustive proof of divergence reconciliation, a standards proposal, and a DID method specification — positions it for production readiness and ecosystem participation. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.
+KELS's roadmap — Android SDK, kels-exchange, exhaustive proof of divergence reconciliation, a standards proposal, and a DID method specification — positions it for production readiness and ecosystem participation. kels-policy (multi-party governance DSL with composable trust policies, poisoning, and admin-controlled poison expressions) is now implemented. KERI's head start in standards (IETF Internet-Drafts), community (WebOfTrust, GLEIF vLEI), and multi-implementation diversity remains a significant advantage for risk-averse adopters today.

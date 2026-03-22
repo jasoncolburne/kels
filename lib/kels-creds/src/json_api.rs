@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, str::FromStr};
 use serde::Deserialize;
 
 use kels::PagedKelSource;
+use kels_policy::{InMemoryPolicyResolver, Policy, PolicyResolver};
+use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use crate::{
     compaction::compact_with_schema,
@@ -22,13 +24,11 @@ use crate::{
 pub struct EdgeInput {
     pub schema: String,
     #[serde(default)]
-    pub issuer: Option<String>,
+    pub policy: Option<String>,
     #[serde(default)]
     pub credential: Option<String>,
     #[serde(default)]
     pub nonce: Option<String>,
-    #[serde(default)]
-    pub delegated: Option<bool>,
 }
 
 /// Rule input without SAID (SAIDs are derived during creation).
@@ -36,6 +36,58 @@ pub struct EdgeInput {
 #[serde(rename_all = "camelCase")]
 pub struct RuleInput {
     pub condition: String,
+}
+
+/// Build a credential from JSON inputs. Validates against schema, derives all SAIDs,
+/// and returns the expanded credential JSON and canonical SAID.
+///
+/// The caller is responsible for anchoring the canonical SAID in endorser KELs.
+#[allow(clippy::too_many_arguments)]
+pub async fn build(
+    json_claims: &str,
+    json_schema: &str,
+    json_policy: &str,
+    subject: Option<&str>,
+    unique: bool,
+    json_edges: Option<&str>,
+    json_rules: Option<&str>,
+    json_expires_at: Option<&str>,
+) -> Result<(String, String), CredentialError> {
+    let schema: Schema = serde_json::from_str(json_schema)?;
+    let policy: kels_policy::Policy = serde_json::from_str(json_policy)?;
+    let mut claims: serde_json::Value = serde_json::from_str(json_claims)?;
+    claims.derive_said()?;
+
+    let edges = if let Some(json) = json_edges {
+        Some(parse_edges(json)?)
+    } else {
+        None
+    };
+    let rules = if let Some(json) = json_rules {
+        Some(parse_rules(json)?)
+    } else {
+        None
+    };
+    let expires_at: Option<StorageDatetime> = if let Some(json) = json_expires_at {
+        Some(serde_json::from_str(json)?)
+    } else {
+        None
+    };
+
+    let (credential, canonical_said) = Credential::build(
+        &schema,
+        &policy,
+        subject.map(String::from),
+        claims,
+        unique,
+        edges,
+        rules,
+        expires_at,
+    )
+    .await?;
+
+    let credential_json = serde_json::to_string(&credential)?;
+    Ok((credential_json, canonical_said))
 }
 
 /// Store a JSON credential in the SAD store.
@@ -77,29 +129,48 @@ pub async fn store(
 /// Verify a JSON credential against the KEL.
 ///
 /// Takes the credential at whatever disclosure level the caller has and verifies
-/// what's visible: SAID integrity, KEL anchoring, revocation, expiration, and
+/// what's visible: SAID integrity, policy evaluation, expiration, and
 /// schema validation.
 /// If a SADStore is provided, recursively verifies edge-referenced credentials.
 ///
+/// - `json_policy`: JSON policy document
+/// - `json_policies`: optional JSON array of policy documents for nested policy resolution
 /// - `json_edge_schemas`: JSON object mapping schema SAIDs to schema objects
 ///
 /// Returns verification result as a JSON string.
 pub async fn verify(
     json_credential: &str,
     json_schema: &str,
-    source: &dyn PagedKelSource,
+    json_policy: &str,
+    json_policies: Option<&str>,
+    source: &(dyn PagedKelSource + Sync),
     sad_store: Option<&dyn SADStore>,
     json_edge_schemas: Option<&str>,
 ) -> Result<String, CredentialError> {
     let schema: Schema = serde_json::from_str(json_schema)?;
+    let policy: Policy = serde_json::from_str(json_policy)?;
+    let resolver: Box<dyn PolicyResolver> = if let Some(json) = json_policies {
+        let policies: Vec<Policy> = serde_json::from_str(json)?;
+        Box::new(InMemoryPolicyResolver::new(policies))
+    } else {
+        Box::new(InMemoryPolicyResolver::empty())
+    };
     let edge_schemas: BTreeMap<String, Schema> = if let Some(json) = json_edge_schemas {
         serde_json::from_str(json)?
     } else {
         BTreeMap::new()
     };
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
-    let verification =
-        verify_credential(&credential, &schema, source, sad_store, &edge_schemas).await?;
+    let verification = verify_credential(
+        &credential,
+        &schema,
+        &policy,
+        resolver.as_ref(),
+        source,
+        sad_store,
+        &edge_schemas,
+    )
+    .await?;
     serde_json::to_string(&verification).map_err(CredentialError::from)
 }
 
@@ -142,13 +213,7 @@ pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     let mut edges = BTreeMap::new();
 
     for (label, input) in inputs {
-        let edge = Edge::create(
-            input.schema,
-            input.issuer,
-            input.credential,
-            input.nonce,
-            input.delegated,
-        )?;
+        let edge = Edge::create(input.schema, input.policy, input.credential, input.nonce)?;
         edges.insert(label, edge);
     }
 
@@ -172,6 +237,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    use kels_policy::Policy;
+    use verifiable_storage::SelfAddressed;
+
     use crate::{
         schema::{Schema, SchemaField},
         store::InMemorySADStore,
@@ -185,12 +253,11 @@ mod tests {
 
         let mut fields = BTreeMap::new();
         fields.insert("schema".to_string(), SchemaField::said());
-        fields.insert("issuer".to_string(), SchemaField::prefix());
+        fields.insert("policy".to_string(), SchemaField::said());
         fields.insert("issuedAt".to_string(), SchemaField::datetime());
         fields.insert("subject".to_string(), SchemaField::prefix().opt());
         fields.insert("nonce".to_string(), SchemaField::string().opt());
         fields.insert("expiresAt".to_string(), SchemaField::datetime().opt());
-        fields.insert("irrevocable".to_string(), SchemaField::boolean().opt());
         fields.insert(
             "claims".to_string(),
             SchemaField::object(claims_fields, true),
@@ -219,24 +286,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_and_disclose() {
-        use verifiable_storage::SelfAddressed;
-
         let schema = test_schema();
         let schema_json = test_schema_json();
+        let policy = Policy::build(
+            "endorse(KIssuer123456789012345678901234567890abcde)",
+            None,
+            false,
+        )
+        .unwrap();
 
         // Build a credential via the typed API
         let mut claims = serde_json::json!({"said": "", "name": "Alice", "age": 30});
         claims.derive_said().unwrap();
         let (cred, _) = crate::credential::Credential::build(
-            &schema,
-            "KIssuer123456789012345678901234567890abcde".to_string(),
-            None,
-            claims,
-            false,
-            None,
-            None,
-            true,
-            None,
+            &schema, &policy, None, claims, false, None, None, None,
         )
         .await
         .unwrap();
@@ -272,7 +335,7 @@ mod tests {
         let json = r#"{
             "license": {
                 "schema": "KAbc1234567890123456789012345678901234567890",
-                "issuer": "KIssuer123456789012345678901234567890abcde",
+                "policy": "KPolicy23456789012345678901234567890abcdefg",
                 "credential": "KCred12345678901234567890123456789012abcdef"
             }
         }"#;

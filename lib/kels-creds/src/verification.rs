@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use kels::{KelVerifier, PagedKelSource, verify_key_events};
+use kels::PagedKelSource;
+use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use crate::{
     compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
     credential::{Claims, Credential},
     error::CredentialError,
-    revocation::revocation_hash,
     schema::{Schema, SchemaValidationReport, validate_credential_report},
     store::SADStore,
 };
@@ -18,46 +18,31 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialVerification {
-    pub credential_said: String,
-    pub issuer: String,
+    pub credential: String,
+    pub policy: String,
     pub subject: Option<String>,
-    pub is_issued: bool,
-    pub is_revoked: bool,
     pub is_expired: bool,
-    pub kel_error: Option<String>,
-    /// The delegating prefix from the issuer's KEL inception, if it was a `dip`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegating_prefix: Option<String>,
+    pub policy_verification: PolicyVerification,
     pub schema_validation: SchemaValidationReport,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub edge_verifications: BTreeMap<String, CredentialVerification>,
 }
 
 impl CredentialVerification {
-    /// Returns `Ok(())` if the credential is fully trustworthy: issued, not revoked,
-    /// not expired, no KEL errors, and all edge credentials also valid. If
+    /// Returns `Ok(())` if the credential is fully trustworthy: policy satisfied,
+    /// not expired, and all edge credentials also valid. If
     /// `require_valid_schema` is true, also requires schema validation to pass
     /// (recursively for edges).
     pub fn is_valid(&self, require_valid_schema: bool) -> Result<(), CredentialError> {
-        if !self.is_issued {
+        if !self.policy_verification.is_satisfied {
             return Err(CredentialError::VerificationError(
-                "credential is not issued".to_string(),
-            ));
-        }
-        if self.is_revoked {
-            return Err(CredentialError::VerificationError(
-                "credential is revoked".to_string(),
+                "policy is not satisfied".to_string(),
             ));
         }
         if self.is_expired {
             return Err(CredentialError::VerificationError(
                 "credential is expired".to_string(),
             ));
-        }
-        if let Some(ref err) = self.kel_error {
-            return Err(CredentialError::VerificationError(format!(
-                "KEL error: {err}"
-            )));
         }
         if require_valid_schema {
             self.schema_validation.require_valid()?;
@@ -77,8 +62,8 @@ impl CredentialVerification {
 /// Checks:
 /// 1. Expanded SAID integrity — recompute SAID from credential data
 /// 2. Compacted SAID integrity — compact to canonical form, verify consistency
-/// 3. KEL anchoring — issuer's KEL contains the compacted credential SAID
-/// 4. Revocation — issuer's KEL contains the revocation hash (unless irrevocable)
+/// 3. Policy SAID match — credential's policy field matches provided policy
+/// 4. Policy evaluation — evaluate policy against KEL state
 /// 5. Expiration — `expiresAt` vs current time
 /// 6. Schema validation — validate credential against provided schema
 /// 7. Edge verification — if edges are expanded and a SADStore + edge schemas
@@ -88,13 +73,17 @@ impl CredentialVerification {
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
     schema: &Schema,
-    source: &dyn PagedKelSource,
+    policy: &kels_policy::Policy,
+    resolver: &dyn PolicyResolver,
+    source: &(dyn PagedKelSource + Sync),
     sad_store: Option<&dyn SADStore>,
     edge_schemas: &BTreeMap<String, Schema>,
 ) -> Result<CredentialVerification, CredentialError> {
     verify_credential_bounded(
         credential,
         schema,
+        policy,
+        resolver,
         source,
         sad_store,
         edge_schemas,
@@ -103,10 +92,13 @@ pub async fn verify_credential<T: Claims>(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_credential_bounded<'a, T: Claims>(
     credential: &'a Credential<T>,
     schema: &'a Schema,
-    source: &'a dyn PagedKelSource,
+    policy: &'a kels_policy::Policy,
+    resolver: &'a dyn PolicyResolver,
+    source: &'a (dyn PagedKelSource + Sync),
     sad_store: Option<&'a dyn SADStore>,
     edge_schemas: &'a BTreeMap<String, Schema>,
     remaining_depth: usize,
@@ -132,6 +124,14 @@ fn verify_credential_bounded<'a, T: Claims>(
             )));
         }
 
+        // Verify policy SAID matches credential's policy reference
+        if credential.policy != policy.said {
+            return Err(CredentialError::VerificationError(format!(
+                "policy SAID mismatch: credential references {}, provided policy has {}",
+                credential.policy, policy.said
+            )));
+        }
+
         // Expanded SAID integrity — verify the credential's own SAID is consistent with data
         let value = serde_json::to_value(credential)?;
         let computed_said = compute_said_from_value(&value)?;
@@ -148,41 +148,10 @@ fn verify_credential_bounded<'a, T: Claims>(
         // Schema validation
         let schema_validation = validate_credential_report(credential, schema)?;
 
-        // KEL verification — check anchoring (compacted SAID) and revocation
-        let irrevocable = credential.irrevocable.unwrap_or(false);
-        let rev_hash = if irrevocable {
-            None
-        } else {
-            Some(revocation_hash(&compacted_said))
-        };
-
-        let mut saids_to_check = vec![compacted_said.clone()];
-        if let Some(ref rh) = rev_hash {
-            saids_to_check.push(rh.clone());
-        }
-
-        let mut verifier = KelVerifier::new(&credential.issuer);
-        verifier.check_anchors(saids_to_check);
-
-        let (is_issued, is_revoked, kel_error, delegating_prefix) = match verify_key_events(
-            &credential.issuer,
-            source,
-            verifier,
-            kels::page_size(),
-            kels::max_pages(),
-        )
-        .await
-        {
-            Ok(kel_v) => {
-                let issued = kel_v.is_said_anchored(&compacted_said);
-                let revoked = rev_hash
-                    .as_ref()
-                    .is_some_and(|rh| kel_v.is_said_anchored(rh));
-                let dp = kel_v.delegating_prefix().map(String::from);
-                (issued, revoked, None, dp)
-            }
-            Err(e) => (false, false, Some(e), None),
-        };
+        // Policy evaluation — check anchoring and poisoning via policy evaluator
+        let policy_verification = evaluate_policy(policy, &compacted_said, source, resolver)
+            .await
+            .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
 
         // Check expiration
         let is_expired = credential
@@ -194,6 +163,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         let edge_verifications = if let Some(sad_store) = sad_store {
             verify_edges(
                 credential,
+                resolver,
                 source,
                 sad_store,
                 edge_schemas,
@@ -205,14 +175,11 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential_said: credential.said.clone(),
-            issuer: credential.issuer.clone(),
+            credential: credential.said.clone(),
+            policy: policy.said.clone(),
             subject: credential.subject.clone(),
-            is_issued,
-            is_revoked,
             is_expired,
-            kel_error: kel_error.map(|e| e.to_string()),
-            delegating_prefix,
+            policy_verification,
             schema_validation,
             edge_verifications,
         })
@@ -225,7 +192,8 @@ fn verify_credential_bounded<'a, T: Claims>(
 /// `Credential<Value>`, and recursively verifies.
 async fn verify_edges<T: Claims>(
     credential: &Credential<T>,
-    source: &dyn PagedKelSource,
+    resolver: &dyn PolicyResolver,
+    source: &(dyn PagedKelSource + Sync),
     sad_store: &dyn SADStore,
     edge_schemas: &BTreeMap<String, Schema>,
     remaining_depth: usize,
@@ -281,66 +249,53 @@ async fn verify_edges<T: Claims>(
                 ))
             })?;
 
-        // Enforce edge.issuer constraint — the edge declares which issuer is expected
-        if let Some(ref expected_issuer) = edge.issuer
-            && *expected_issuer != edge_credential.issuer
-        {
-            return Err(CredentialError::VerificationError(format!(
-                "edge '{label}': issuer mismatch — edge declares {expected_issuer}, \
-                 credential has {}",
-                edge_credential.issuer
-            )));
+        // Enforce edge.policy constraint — the edge declares the expected canonical policy SAID.
+        // Compact the credential's policy to canonical form and compare SAIDs,
+        // allowing delegate flexibility (different delegates produce different full SAIDs
+        // but the same canonical SAID).
+        if let Some(ref expected_policy) = edge.policy {
+            let edge_cred_policy = resolver
+                .resolve_policy(&edge_credential.policy)
+                .await
+                .map_err(|e| {
+                    CredentialError::VerificationError(format!(
+                        "edge '{label}': failed to resolve credential policy {}: {e}",
+                        edge_credential.policy
+                    ))
+                })?;
+            let canonical = edge_cred_policy.compact().map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': failed to compact credential policy: {e}"
+                ))
+            })?;
+            if *expected_policy != canonical.said {
+                return Err(CredentialError::VerificationError(format!(
+                    "edge '{label}': policy mismatch — edge declares {expected_policy}, \
+                     credential's canonical policy is {}",
+                    canonical.said
+                )));
+            }
         }
+
+        // Resolve the edge credential's policy for verification
+        let edge_policy = &edge_credential.policy;
+        let edge_policy = resolver.resolve_policy(edge_policy).await.map_err(|e| {
+            CredentialError::VerificationError(format!(
+                "edge '{label}': failed to resolve policy {edge_policy}: {e}"
+            ))
+        })?;
 
         let verification = verify_credential_bounded(
             &edge_credential,
             edge_schema,
+            &edge_policy,
+            resolver,
             source,
             Some(sad_store),
             edge_schemas,
             remaining_depth,
         )
         .await?;
-
-        // Enforce edge.delegated constraint — verify the issuer's prefix is anchored
-        // in the delegating prefix's KEL
-        if edge.delegated == Some(true) {
-            let dp = verification.delegating_prefix.as_deref().ok_or_else(|| {
-                CredentialError::VerificationError(format!(
-                    "edge '{label}': credential claims delegation but issuer's KEL \
-                     has no delegating prefix (not a dip inception)"
-                ))
-            })?;
-
-            // Verify the delegating prefix's KEL anchors the delegated prefix
-            let mut delegator_verifier = KelVerifier::new(dp);
-            delegator_verifier.check_anchors(vec![edge_credential.issuer.clone()]);
-
-            match verify_key_events(
-                dp,
-                source,
-                delegator_verifier,
-                kels::page_size(),
-                kels::max_pages(),
-            )
-            .await
-            {
-                Ok(kel_v) => {
-                    if !kel_v.is_said_anchored(&edge_credential.issuer) {
-                        return Err(CredentialError::VerificationError(format!(
-                            "edge '{label}': delegating prefix {dp} does not anchor \
-                             issuer prefix {}",
-                            edge_credential.issuer
-                        )));
-                    }
-                }
-                Err(e) => {
-                    return Err(CredentialError::VerificationError(format!(
-                        "edge '{label}': failed to verify delegating prefix {dp}: {e}"
-                    )));
-                }
-            }
-        }
 
         results.insert(label.clone(), verification);
     }
