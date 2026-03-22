@@ -18,6 +18,13 @@ const VALID_KINDS: &[&str] = &["immune", "poisonable"];
 /// - Absent (default): poison hashes checked, poisoned endorsements don't count toward threshold
 /// - `"immune"`: no poison checks, endorsements are permanent
 /// - `"poisonable"`: any single poisoned endorsement unsatisfies the entire policy
+///
+/// Optionally contains a `poison_expression` — a DSL expression defining who can
+/// poison the policy. If absent, any endorser from the main expression can poison.
+/// If present, only prefixes in the poison expression are checked for poison hashes,
+/// and the poison expression is evaluated as a full policy (e.g., "2-of-3 admins must
+/// poison" is expressible). When the poison expression is satisfied, the policy is
+/// considered poisoned.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 #[crate_new]
@@ -26,15 +33,28 @@ pub struct Policy {
     pub said: String,
     pub expression: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub poison_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
 }
 
 impl Policy {
     /// Build a new policy from a DSL expression and optional kind.
     ///
-    /// Parses and canonicalizes the expression, validates the kind, and derives the SAID.
-    pub fn build(expression: &str, kind: Option<&str>) -> Result<Self, PolicyError> {
+    /// Parses and canonicalizes the expression (and poison expression if provided),
+    /// validates the kind, and derives the SAID.
+    pub fn build(
+        expression: &str,
+        poison_expression: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Self, PolicyError> {
         let canonical = canonicalize(expression)?;
+
+        let canonical_poison = if let Some(pe) = poison_expression {
+            Some(canonicalize(pe)?)
+        } else {
+            None
+        };
 
         if let Some(k) = kind
             && !VALID_KINDS.contains(&k)
@@ -44,9 +64,16 @@ impl Policy {
             )));
         }
 
+        if kind == Some("immune") && poison_expression.is_some() {
+            return Err(PolicyError::InvalidPolicy(
+                "immune policies cannot have a poison expression".to_string(),
+            ));
+        }
+
         let mut policy = Self {
             said: String::new(),
             expression: canonical,
+            poison_expression: canonical_poison,
             kind: kind.map(String::from),
         };
         policy.derive_said()?;
@@ -56,6 +83,14 @@ impl Policy {
     /// Parse this policy's expression into an AST.
     pub fn parse(&self) -> Result<PolicyNode, PolicyError> {
         parse(&self.expression)
+    }
+
+    /// Parse this policy's poison expression into an AST, if present.
+    pub fn parse_poison_expression(&self) -> Result<Option<PolicyNode>, PolicyError> {
+        match &self.poison_expression {
+            Some(expr) => Ok(Some(parse(expr)?)),
+            None => Ok(None),
+        }
     }
 
     /// Whether this policy is immune to poisoning.
@@ -90,9 +125,13 @@ impl Policy {
     pub fn compact(&self) -> Result<Self, PolicyError> {
         let ast = self.parse()?;
         let compacted = ast.compact();
+        let compacted_poison = self
+            .parse_poison_expression()?
+            .map(|poison_ast| poison_ast.compact().to_string());
         let mut policy = Self {
             said: String::new(),
             expression: compacted.to_string(),
+            poison_expression: compacted_poison,
             kind: self.kind.clone(),
         };
         policy.derive_said()?;
@@ -155,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_create_simple() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
         assert_eq!(policy.said.len(), 44);
         assert_eq!(policy.expression, format!("endorse({PREFIX_A})"));
         assert!(policy.kind.is_none());
@@ -163,35 +202,73 @@ mod tests {
 
     #[test]
     fn test_create_immune() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), Some("immune")).unwrap();
+        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, Some("immune")).unwrap();
         assert!(policy.is_immune());
         assert!(!policy.is_poisonable());
     }
 
     #[test]
     fn test_create_poisonable() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), Some("poisonable")).unwrap();
+        let policy =
+            Policy::build(&format!("endorse({PREFIX_A})"), None, Some("poisonable")).unwrap();
         assert!(policy.is_poisonable());
         assert!(!policy.is_immune());
     }
 
     #[test]
     fn test_create_invalid_kind() {
-        let result = Policy::build(&format!("endorse({PREFIX_A})"), Some("bad"));
+        let result = Policy::build(&format!("endorse({PREFIX_A})"), None, Some("bad"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_invalid_expression() {
-        let result = Policy::build("invalid()", None);
+        let result = Policy::build("invalid()", None, None);
         assert!(result.is_err());
     }
 
     #[test]
+    fn test_create_immune_with_poison_expression_rejected() {
+        let result = Policy::build(
+            &format!("endorse({PREFIX_A})"),
+            Some(&format!("endorse({PREFIX_B})")),
+            Some("immune"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_with_poison_expression() {
+        let policy = Policy::build(
+            &format!("endorse({PREFIX_A})"),
+            Some(&format!("endorse({PREFIX_B})")),
+            None,
+        )
+        .unwrap();
+        assert!(policy.poison_expression.is_some());
+        assert_eq!(
+            policy.poison_expression.as_deref(),
+            Some(format!("endorse({PREFIX_B})").as_str())
+        );
+    }
+
+    #[test]
+    fn test_said_differs_by_poison_expression() {
+        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
+        let p2 = Policy::build(
+            &format!("endorse({PREFIX_A})"),
+            Some(&format!("endorse({PREFIX_B})")),
+            None,
+        )
+        .unwrap();
+        assert_ne!(p1.said, p2.said);
+    }
+
+    #[test]
     fn test_said_differs_by_kind() {
-        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), Some("immune")).unwrap();
-        let p3 = Policy::build(&format!("endorse({PREFIX_A})"), Some("poisonable")).unwrap();
+        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
+        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, Some("immune")).unwrap();
+        let p3 = Policy::build(&format!("endorse({PREFIX_A})"), None, Some("poisonable")).unwrap();
         assert_ne!(p1.said, p2.said);
         assert_ne!(p2.said, p3.said);
         assert_ne!(p1.said, p3.said);
@@ -199,15 +276,15 @@ mod tests {
 
     #[test]
     fn test_said_deterministic() {
-        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
+        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
+        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
     #[test]
     fn test_said_canonicalization() {
-        let p1 = Policy::build(&format!("endorse( {PREFIX_A} )"), None).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
+        let p1 = Policy::build(&format!("endorse( {PREFIX_A} )"), None, None).unwrap();
+        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
@@ -217,6 +294,7 @@ mod tests {
             &format!(
                 "threshold(2, [endorse({PREFIX_A}), delegate({PREFIX_B}, {PREFIX_C}), policy({SAID_A})])"
             ),
+            None,
             None,
         )
         .unwrap();
@@ -232,6 +310,7 @@ mod tests {
         let policy = Policy::build(
             &format!("threshold(1, [endorse({PREFIX_A}), policy({SAID_A})])"),
             None,
+            None,
         )
         .unwrap();
         let saids = policy.referenced_policy_saids().unwrap();
@@ -241,7 +320,8 @@ mod tests {
 
     #[test]
     fn test_compact() {
-        let policy = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None).unwrap();
+        let policy =
+            Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None, None).unwrap();
         let compacted = policy.compact().unwrap();
         assert_eq!(compacted.expression, format!("delegate({PREFIX_A})"));
         assert_ne!(compacted.said, policy.said);
@@ -249,8 +329,8 @@ mod tests {
 
     #[test]
     fn test_compact_stable_said() {
-        let p1 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None).unwrap();
-        let p2 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_C})"), None).unwrap();
+        let p1 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None, None).unwrap();
+        let p2 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_C})"), None, None).unwrap();
         let c1 = p1.compact().unwrap();
         let c2 = p2.compact().unwrap();
         assert_eq!(c1.said, c2.said);
@@ -263,16 +343,17 @@ mod tests {
                 "threshold(2, [endorse({PREFIX_A}), weighted(3, [endorse({PREFIX_B}):2, endorse({PREFIX_C}):1])])"
             ),
             None,
+            None,
         )
         .unwrap();
         let ast = policy.parse().unwrap();
-        let reparsed = Policy::build(&ast.to_string(), None).unwrap();
+        let reparsed = Policy::build(&ast.to_string(), None, None).unwrap();
         assert_eq!(policy.said, reparsed.said);
     }
 
     #[test]
     fn test_serialization_roundtrip() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.said, deserialized.said);
@@ -282,14 +363,15 @@ mod tests {
 
     #[test]
     fn test_serialization_omits_none_kind() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, None).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(!json.contains("kind"));
     }
 
     #[test]
     fn test_serialization_includes_kind() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), Some("poisonable")).unwrap();
+        let policy =
+            Policy::build(&format!("endorse({PREFIX_A})"), None, Some("poisonable")).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(json.contains("poisonable"));
     }

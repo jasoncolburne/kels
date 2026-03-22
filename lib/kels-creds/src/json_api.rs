@@ -235,8 +235,12 @@ mod tests {
     async fn test_store_and_disclose() {
         let schema = test_schema();
         let schema_json = test_schema_json();
-        let policy =
-            Policy::build("endorse(KIssuer123456789012345678901234567890abcde)", None).unwrap();
+        let policy = Policy::build(
+            "endorse(KIssuer123456789012345678901234567890abcde)",
+            None,
+            None,
+        )
+        .unwrap();
 
         // Build a credential via the typed API
         let mut claims = serde_json::json!({"said": "", "name": "Alice", "age": 30});

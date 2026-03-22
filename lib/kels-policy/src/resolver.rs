@@ -54,6 +54,7 @@ mod tests {
         let policy = Policy::build(
             "endorse(KBfd1234567890123456789012345678901234567890)",
             None,
+            None,
         )
         .unwrap();
         let said = policy.said.clone();

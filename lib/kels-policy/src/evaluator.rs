@@ -34,10 +34,27 @@ pub async fn evaluate_policy(
     let mut nested = BTreeMap::new();
     let mut visited = BTreeSet::new();
 
+    // When a poison_expression is set, the main expression evaluates without
+    // poison checks (endorsers can't individually poison; only the poison
+    // expression controls poisoning). When absent, the main expression checks
+    // poison hashes per-endorser as before.
+    let use_immune_for_main = policy.poison_expression.is_some();
+    let effective_policy_for_main = if use_immune_for_main {
+        // Create a temporary immune view for the main expression evaluation
+        Policy {
+            said: policy.said.clone(),
+            expression: policy.expression.clone(),
+            poison_expression: None,
+            kind: Some("immune".to_string()),
+        }
+    } else {
+        policy.clone()
+    };
+
     let is_satisfied = evaluate_node(
         &ast,
         credential_said,
-        policy,
+        &effective_policy_for_main,
         source,
         resolver,
         &mut endorsements,
@@ -47,11 +64,66 @@ pub async fn evaluate_policy(
     )
     .await?;
 
-    // If poisonable and any endorsement is Poisoned, override satisfaction
-    let final_satisfied = if policy.is_poisonable() && is_satisfied {
-        !endorsements
-            .values()
-            .any(|s| matches!(s, EndorsementStatus::Poisoned))
+    // Evaluate poison expression if present and policy is not immune
+    let is_poisoned = if !policy.is_immune() {
+        if let Some(poison_ast) = policy.parse_poison_expression()? {
+            // Evaluate the poison expression using the poison hash as the anchor
+            let p_hash = poison_hash(credential_said);
+            let mut poison_endorsements = BTreeMap::new();
+            let mut poison_nested = BTreeMap::new();
+            let mut poison_visited = BTreeSet::new();
+
+            // Create an immune policy for poison evaluation (we're checking for
+            // poison hash anchoring, not recursively checking for poisoning)
+            let poison_eval_policy = Policy {
+                said: String::new(),
+                expression: policy.poison_expression.clone().unwrap_or_default(),
+                poison_expression: None,
+                kind: Some("immune".to_string()),
+            };
+
+            let poison_satisfied = evaluate_node(
+                &poison_ast,
+                &p_hash,
+                &poison_eval_policy,
+                source,
+                resolver,
+                &mut poison_endorsements,
+                &mut poison_nested,
+                &mut poison_visited,
+                MAX_POLICY_DEPTH,
+            )
+            .await?;
+
+            // Merge poison endorsements into the main endorsements as Poisoned
+            if poison_satisfied {
+                for (prefix, status) in &poison_endorsements {
+                    if matches!(status, EndorsementStatus::Endorsed) {
+                        endorsements.insert(prefix.clone(), EndorsementStatus::Poisoned);
+                    }
+                }
+            }
+
+            poison_satisfied
+        } else {
+            // No poison expression — check if any endorser is Poisoned (legacy behavior)
+            endorsements
+                .values()
+                .any(|s| matches!(s, EndorsementStatus::Poisoned))
+        }
+    } else {
+        false
+    };
+
+    // Determine final satisfaction
+    let final_satisfied = if is_poisoned {
+        if policy.is_poisonable() || policy.poison_expression.is_some() {
+            // Poisonable or has poison expression: any poisoning kills the policy
+            false
+        } else {
+            // Default mode: poisoned endorsements already don't count in the main evaluation
+            is_satisfied
+        }
     } else {
         is_satisfied
     };
@@ -341,7 +413,7 @@ mod tests {
     #[tokio::test]
     async fn test_single_endorser_satisfied() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-        let policy = Policy::build(&format!("endorse({prefix})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, None).unwrap();
         let credential_said = kels::generate_nonce();
 
         // Anchor the credential SAID
@@ -363,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn test_single_endorser_not_satisfied() {
         let (_builder, prefix, kel_store, _dir) = setup_kel().await;
-        let policy = Policy::build(&format!("endorse({prefix})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, None).unwrap();
         let credential_said = kels::generate_nonce();
 
         let source = StoreKelSource::new(kel_store.as_ref());
@@ -389,6 +461,7 @@ mod tests {
             &format!(
                 "threshold(2, [endorse({prefix_a}), endorse({prefix_b}), endorse({prefix_c})])"
             ),
+            None,
             None,
         )
         .unwrap();
@@ -436,6 +509,7 @@ mod tests {
                 "threshold(2, [endorse({prefix_a}), endorse({prefix_b}), endorse({prefix_c})])"
             ),
             None,
+            None,
         )
         .unwrap();
         let credential_said = kels::generate_nonce();
@@ -455,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn test_poisoned_endorser() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-        let policy = Policy::build(&format!("endorse({prefix})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, None).unwrap();
         let credential_said = kels::generate_nonce();
 
         // Anchor the credential SAID then poison it
@@ -479,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn test_proactive_poisoning() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-        let policy = Policy::build(&format!("endorse({prefix})"), None).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, None).unwrap();
         let credential_said = kels::generate_nonce();
 
         // Poison without ever endorsing
@@ -502,7 +576,7 @@ mod tests {
     #[tokio::test]
     async fn test_immune_ignores_poison() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-        let policy = Policy::build(&format!("endorse({prefix})"), Some("immune")).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, Some("immune")).unwrap();
         let credential_said = kels::generate_nonce();
 
         // Anchor then poison — immune policy should ignore the poison
@@ -530,6 +604,7 @@ mod tests {
 
         let policy = Policy::build(
             &format!("threshold(1, [endorse({prefix_a}), endorse({prefix_b})])"),
+            None,
             Some("poisonable"),
         )
         .unwrap();
@@ -561,8 +636,9 @@ mod tests {
         let credential_said = kels::generate_nonce();
         builder.interact(&credential_said).await.unwrap();
 
-        let inner_policy = Policy::build(&format!("endorse({prefix})"), None).unwrap();
-        let outer_policy = Policy::build(&format!("policy({})", inner_policy.said), None).unwrap();
+        let inner_policy = Policy::build(&format!("endorse({prefix})"), None, None).unwrap();
+        let outer_policy =
+            Policy::build(&format!("policy({})", inner_policy.said), None, None).unwrap();
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::new(vec![inner_policy.clone()]);
@@ -584,6 +660,7 @@ mod tests {
         let policy = Policy {
             said: "KSELF_REF_SAID_FOR_CYCLE_TEST_00000000000".to_string(),
             expression: self_ref_expr.to_string(),
+            poison_expression: None,
             kind: None,
         };
 
@@ -612,6 +689,7 @@ mod tests {
         let policy = Policy::build(
             &format!("weighted(3, [endorse({prefix_a}):3, endorse({prefix_b}):2])"),
             None,
+            None,
         )
         .unwrap();
         let credential_said = kels::generate_nonce();
@@ -625,6 +703,128 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_poison_expression_admin_can_poison() {
+        let (mut builder_a, prefix_a, kel_store_a, _dir_a) = setup_kel().await;
+        let (mut builder_admin, prefix_admin, kel_store_admin, _dir_admin) = setup_kel().await;
+
+        // Policy: A endorses, but only admin can poison
+        let policy = Policy::build(
+            &format!("endorse({prefix_a})"),
+            Some(&format!("endorse({prefix_admin})")),
+            None,
+        )
+        .unwrap();
+        let credential_said = kels::generate_nonce();
+
+        // A endorses
+        builder_a.interact(&credential_said).await.unwrap();
+
+        // Admin poisons
+        let ph = poison_hash(&credential_said);
+        builder_admin.interact(&ph).await.unwrap();
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
+        copy_kel_events(
+            kel_store_admin.as_ref(),
+            &prefix_admin,
+            shared_store.as_ref(),
+        )
+        .await;
+
+        let source = StoreKelSource::new(shared_store.as_ref());
+        let resolver = InMemoryPolicyResolver::empty();
+        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+            .await
+            .unwrap();
+
+        // Admin poisoned → policy unsatisfied
+        assert!(!result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_poison_expression_non_admin_cannot_poison() {
+        let (mut builder_a, prefix_a, kel_store_a, _dir_a) = setup_kel().await;
+        let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
+        let (_builder_admin, prefix_admin, _kel_store_admin, _dir_admin) = setup_kel().await;
+
+        // Policy: A and B endorse with threshold 1, but only admin can poison
+        let policy = Policy::build(
+            &format!("threshold(1, [endorse({prefix_a}), endorse({prefix_b})])"),
+            Some(&format!("endorse({prefix_admin})")),
+            None,
+        )
+        .unwrap();
+        let credential_said = kels::generate_nonce();
+
+        // A endorses
+        builder_a.interact(&credential_said).await.unwrap();
+
+        // B tries to poison (not authorized — B is an endorser, not in poison_expression)
+        let ph = poison_hash(&credential_said);
+        builder_b.interact(&ph).await.unwrap();
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
+        copy_kel_events(kel_store_b.as_ref(), &prefix_b, shared_store.as_ref()).await;
+
+        let source = StoreKelSource::new(shared_store.as_ref());
+        let resolver = InMemoryPolicyResolver::empty();
+        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+            .await
+            .unwrap();
+
+        // B is not in poison_expression, so B's poison hash is ignored → still satisfied
+        assert!(result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_poison_expression_threshold() {
+        let (mut builder_a, prefix_a, kel_store_a, _dir_a) = setup_kel().await;
+        let (mut builder_admin1, prefix_admin1, kel_store_admin1, _dir_admin1) = setup_kel().await;
+        let (_builder_admin2, prefix_admin2, _kel_store_admin2, _dir_admin2) = setup_kel().await;
+
+        // Policy: A endorses, 2-of-2 admins required to poison
+        let policy = Policy::build(
+            &format!("endorse({prefix_a})"),
+            Some(&format!(
+                "threshold(2, [endorse({prefix_admin1}), endorse({prefix_admin2})])"
+            )),
+            None,
+        )
+        .unwrap();
+        let credential_said = kels::generate_nonce();
+
+        // A endorses
+        builder_a.interact(&credential_said).await.unwrap();
+
+        // Only admin1 poisons (threshold not met — need both admins)
+        let ph = poison_hash(&credential_said);
+        builder_admin1.interact(&ph).await.unwrap();
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
+        copy_kel_events(
+            kel_store_admin1.as_ref(),
+            &prefix_admin1,
+            shared_store.as_ref(),
+        )
+        .await;
+
+        let source = StoreKelSource::new(shared_store.as_ref());
+        let resolver = InMemoryPolicyResolver::empty();
+        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+            .await
+            .unwrap();
+
+        // Only 1-of-2 admins poisoned → poison threshold not met → still satisfied
         assert!(result.is_satisfied);
     }
 
