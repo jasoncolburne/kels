@@ -16,29 +16,29 @@ pub struct Policy {
     pub said: String,
     pub expression: String,                    // DSL string (FFI-friendly)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub poison_expression: Option<String>,     // who can poison (DSL); absent = any endorser
+    pub poison: Option<String>,                // who can poison (DSL); absent = any endorser (soft)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,                  // absent = default, "immune", "poisonable"
+    pub immune: Option<bool>,                  // if true, no poison checks
 }
 ```
 
-The common case (revocable, any endorser can poison, no special mode) serializes as just `{ said, expression }`.
+The common case (any endorser can soft-poison) serializes as just `{ said, expression }`.
 
-### Evaluation Modes
+### Poisoning Modes
 
-Determined by the `kind` field:
+Controlled by two mutually exclusive optional fields:
 
-| Kind | Poison checks | Effect of poisoning |
-|------|--------------|---------------------|
-| Absent (default) | Yes | Poisoned endorsements don't count toward threshold |
-| `"immune"` | No | Endorsements are permanent; poison hashes ignored |
-| `"poisonable"` | Yes | Any single poisoned endorsement unsatisfies the entire policy |
+| State | Poison checks | Effect of poisoning |
+|-------|--------------|---------------------|
+| Neither set (default) | Yes, all endorsers | Poisoned endorsements don't count toward threshold (soft withdrawal) |
+| `poison` set | Yes, per DSL expression | If poison expression is satisfied, entire policy is unsatisfied |
+| `immune: true` | No | Endorsements are permanent; poison hashes ignored |
+
+`poison` and `immune` cannot both be set.
 
 ### Poison Expression
 
-When `poison_expression` is absent, any endorser in the main expression can poison by anchoring the poison hash in their KEL. When present, only prefixes matched by the poison expression are checked for poison hashes, and the poison expression is evaluated as a full DSL expression — enabling requirements like "2-of-3 admins must agree to poison."
-
-`immune` + `poison_expression` is rejected at creation (contradictory).
+When `poison` is absent, any endorser in the main expression can soft-poison (their endorsement doesn't count toward the threshold, but the policy may still be satisfied if enough other endorsers remain). When `poison` is set, it defines a DSL expression controlling who can poison and under what conditions — enabling requirements like "2-of-3 admins must agree to poison." When the poison expression is satisfied, the entire policy is unsatisfied.
 
 ## DSL
 
@@ -78,7 +78,7 @@ Same pattern as credential compaction. Strip variable parts (delegates), recompu
 - `delegate(DELEGATOR, DELEGATE)` compacts to `delegate(DELEGATOR)`
 - `endorse(PREFIX)` stays as-is
 - `threshold`, `weighted`, `policy` recursively compact children
-- `poison_expression` is also compacted
+- `poison` expression is also compacted
 
 Edges reference **compacted policy SAIDs**. The edge says "I accept any credential whose policy compacts to this SAID." The credential carries the full policy (with specific delegates). Verification: compact the credential's policy, check `compacted.said == edge.policy`. The edge doesn't need updating when delegates rotate — only the credential is re-issued with a new full policy that compacts to the same SAID.
 
@@ -169,10 +169,10 @@ pub trait PolicyResolver: Sync {
 
 Cycle detection via visited-set on policy SAIDs. Max nesting depth = 10.
 
-When `poison_expression` is set:
+When `poison` is set:
 - Main expression evaluates without poison checks (only endorsement)
 - Poison expression evaluates separately using the poison hash as the anchor
-- If poison expression is satisfied, the policy is considered poisoned
+- If poison expression is satisfied, the entire policy is unsatisfied
 
 Per-endorser results are cached to avoid redundant KEL verification.
 
@@ -180,7 +180,7 @@ Per-endorser results are cached to avoid redundant KEL verification.
 
 ### Credential
 
-The `issuer: String` field has been replaced with `policy: String` (a policy SAID). The `irrevocable: Option<bool>` field has been removed (now expressed via policy `kind: "immune"`).
+The `issuer: String` field has been replaced with `policy: String` (a policy SAID). The `irrevocable: Option<bool>` field has been removed (now expressed via policy `immune: true`).
 
 ```rust
 pub struct Credential<T: Claims> {

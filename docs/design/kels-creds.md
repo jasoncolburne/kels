@@ -372,15 +372,15 @@ The domain separation prefix `kels/revocation:` is retained for compatibility wi
 - **Endorsed:** credential SAID is anchored in endorser's KEL, no poison hash present
 - **Poisoned:** poison hash is anchored in endorser's KEL (regardless of whether SAID is also anchored — proactive poisoning is supported)
 
-Poisoning behavior is controlled by the policy's `kind` field:
+Poisoning behavior is controlled by two mutually exclusive fields on the policy:
 
-| Kind | Poison checks | Effect |
-|------|--------------|--------|
-| Absent (default) | Yes | Poisoned endorsements don't count toward threshold |
-| `"immune"` | No | Endorsements are permanent; poison hashes ignored |
-| `"poisonable"` | Yes | Any single poisoned endorsement unsatisfies the entire policy |
+| State | Poison checks | Effect |
+|-------|--------------|--------|
+| Neither set (default) | Yes, all endorsers | Poisoned endorsements don't count toward threshold (soft withdrawal) |
+| `poison` set | Yes, per DSL expression | If poison expression is satisfied, entire policy is unsatisfied |
+| `immune: true` | No | Endorsements are permanent; poison hashes ignored |
 
-When a `poison_expression` is set on the policy, only prefixes matched by that expression are checked for poison hashes, and the poison expression is evaluated as a full DSL expression (e.g., "2-of-3 admins must poison"). This enables admin-controlled poisoning.
+When `poison` is set on the policy, only prefixes matched by that expression are checked for poison hashes, and the expression is evaluated as a full DSL expression (e.g., "2-of-3 admins must poison"). This enables admin-controlled poisoning.
 
 To poison:
 ```rust
