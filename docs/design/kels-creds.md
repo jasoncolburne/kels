@@ -31,13 +31,12 @@ Typed credential for issuance. `T` is the claims payload (must satisfy the `Clai
 pub struct Credential<T: Claims> {
     pub said: String,
     pub schema: String,              // always a SAID reference to a Schema
-    pub issuer: String,
+    pub policy: String,              // policy SAID (defines endorsement requirements)
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
     pub nonce: Option<String>,
     pub claims: Compactable<T>,
     pub expires_at: Option<StorageDatetime>,
-    pub irrevocable: Option<bool>,
     pub edges: Option<Compactable<Edges>>,
     pub rules: Option<Compactable<Rules>>,
 }
@@ -49,7 +48,7 @@ Implements `FromStr` for JSON deserialization, which is the primary way credenti
 
 ### Untyped Operations
 
-Disclosure operates on `serde_json::Value` directly — no wrapper type needed. Verification takes a typed `Credential<T>` since it needs structured access to fields like `issuer`, `schema`, and `claims`. The JSON API uses `Credential<serde_json::Value>` via the `SelfAddressed` impl on `Value`.
+Disclosure operates on `serde_json::Value` directly — no wrapper type needed. Verification takes a typed `Credential<T>` since it needs structured access to fields like `policy`, `schema`, and `claims`. The JSON API uses `Credential<serde_json::Value>` via the `SelfAddressed` impl on `Value`.
 
 ### Schema
 
@@ -118,10 +117,9 @@ pub struct Edge {
     #[said]
     pub said: String,
     pub schema: String,                // schema SAID (what kind of credential)
-    pub issuer: Option<String>,        // issuer prefix (who issued it)
+    pub policy: Option<String>,        // policy SAID (trust requirements for the credential)
     pub credential: Option<String>,    // credential SAID (a specific one)
     pub nonce: Option<String>,         // anti-correlation nonce
-    pub delegated: Option<bool>,       // self.credential.issuer must be delegated by self.edge.issuer
 }
 ```
 
@@ -146,9 +144,8 @@ Disclosure levels (by expanding/compacting the edge):
 |---|---|
 | Compact (SAID only) | Nothing — proves edge exists |
 | `schema` only | "I have a credential of type X" |
-| `schema` + `issuer` | "I have a type X credential from this authority" |
-| `schema` + `credential` + `issuer` | Full specifics — verifier can fetch and check |
-| Any combination + `delegated: true` | Referenced credential's issuer must be a delegate of `edge.issuer` |
+| `schema` + `policy` | "I have a type X credential under this trust policy" |
+| `schema` + `credential` + `policy` | Full specifics — verifier can fetch and check |
 
 ### Rule/Rules
 
@@ -345,59 +342,55 @@ pub async fn apply_disclosure(
 
 ## Issuance Flow
 
-`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from fully expanded inputs and anchors its compacted SAID in the issuer's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a compacted SAID commits to content the issuer has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
+`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from fully expanded inputs and anchors its compacted SAID in one endorser's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a compacted SAID commits to content the endorser has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
 
-1. `issue()` takes fully expanded inputs (claims, edges, rules) plus a schema and `KeyEventBuilder`
+1. `issue()` takes fully expanded inputs (claims, edges, rules) plus a schema, `Policy`, and `KeyEventBuilder`
 2. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
 3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this compact form
 4. The credential is reconstructed by expanding from the compacted SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
-5. The compacted SAID is anchored in the issuer's KEL via `builder.interact()` (creates an `ixn` event)
+5. The compacted SAID is anchored in the builder's KEL via `builder.interact()` (creates an `ixn` event) — this is one endorsement. Additional endorsers anchor the same SAID in their own KELs separately.
 6. `issue()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the compacted SAID that was anchored
-7. Issuer stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
-8. Credential delivered to holder (out of band)
+7. Endorser stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
+8. Credential delivered to holder (out of band); additional endorsers anchor the compacted SAID independently
 
 ```rust
-// Issuance (atomic: construct + validate + anchor)
+// Issuance (atomic: construct + validate + anchor one endorsement)
 let (credential, compacted_said) = Credential::issue(
-    &schema, issuer, subject, claims, unique, edges, rules, can_revoke, expires_at, &mut builder,
+    &schema, &policy, subject, claims, unique, edges, rules, expires_at, &mut builder,
 ).await?;
 credential.store(&schema, &sad_store).await?;       // store for disclosure
 ```
 
-## Revocation
+## Poisoning (Endorsement Withdrawal)
 
-Anchor-only, no separate revocation registry. Credentials with `irrevocable: Some(true)` skip revocation checks entirely — the issuer committed to irrevocability at issuance time (it's covered by the credential's SAID).
+Poisoning replaces the legacy single-issuer revocation model. An endorser (or authorized admin) poisons a credential by anchoring the **poison hash** in their KEL:
 
-**Revocation hash** = `Blake3(b"kels/revocation:" || credential_said.as_bytes()).qb64()`
+**Poison hash** = `Blake3(b"kels/revocation:" || credential_said.as_bytes()).qb64()`
 
-The domain separation prefix `kels/revocation:` prevents a credential SAID from colliding with its revocation hash.
+The domain separation prefix `kels/revocation:` is retained for compatibility with the revocation hash computation.
 
-- **Issued:** credential SAID is anchored in issuer's KEL
-- **Revoked:** revocation hash is also anchored in issuer's KEL (only checked when `irrevocable` is not `Some(true)`)
+- **Endorsed:** credential SAID is anchored in endorser's KEL, no poison hash present
+- **Poisoned:** poison hash is anchored in endorser's KEL (regardless of whether SAID is also anchored — proactive poisoning is supported)
 
-During KEL verification, `check_anchors` is called with the credential SAID and (unless irrevocable) its revocation hash. After verification:
+Poisoning behavior is controlled by the policy's `kind` field:
 
+| Kind | Poison checks | Effect |
+|------|--------------|--------|
+| Absent (default) | Yes | Poisoned endorsements don't count toward threshold |
+| `"immune"` | No | Endorsements are permanent; poison hashes ignored |
+| `"poisonable"` | Yes | Any single poisoned endorsement unsatisfies the entire policy |
+
+When a `poison_expression` is set on the policy, only prefixes matched by that expression are checked for poison hashes, and the poison expression is evaluated as a full DSL expression (e.g., "2-of-3 admins must poison"). This enables admin-controlled poisoning.
+
+To poison:
 ```rust
-let revocation_hash = revocation_hash(&credential_said);
-kel_verifier.check_anchors([credential_said.clone(), revocation_hash.clone()]);
-
-// ... verify KEL ...
-
-let verification = kel_verifier.into_verification()?;
-let is_issued = verification.is_said_anchored(&credential_said);
-let is_revoked = verification.is_said_anchored(&revocation_hash);
-// credential is valid iff is_issued && !is_revoked
-```
-
-To revoke:
-```rust
-let revocation_hash = revocation_hash(&credential.said);
-builder.interact(&revocation_hash)?;  // anchor revocation hash in KEL
+let poison_hash = kels_policy::poison_hash(&compacted_said);
+builder.interact(&poison_hash)?;  // anchor poison hash in endorser's KEL
 ```
 
 ## Credential Verification
 
-Verification combines structural checks with KEL-anchored trust. Anchoring in the issuer's KEL is the proof of issuance — no separate signature verification is needed since the anchor proves the issuer committed to the credential SAID.
+Verification combines structural checks with policy-based KEL-anchored trust. Anchoring in endorsers' KELs per the policy is the proof of endorsement — no separate signature verification is needed since the anchors prove the endorsers committed to the credential SAID.
 
 ### Depth Bounds
 
@@ -407,33 +400,28 @@ All recursive operations share a single depth constant:
 ### Steps
 
 1. **Schema SAID match** — Verify the credential's `schema` field matches the provided schema's SAID.
-2. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
-3. **Compacted SAID integrity** — Compact the credential to canonical form using schema-aware compaction and derive the compacted SAID. This is the SAID that was anchored in the issuer's KEL at issuance time.
-4. **Schema validation** — Validate the credential against the schema via `validate_credential_report`. Compacted fields are accepted (type checking is skipped for SAID strings in compactable fields).
-5. **KEL verification** — Build a `KelVerifier` for the issuer's prefix with `check_anchors` for the compacted SAID and (unless irrevocable) the revocation hash. Run `verify_key_events` against the `PagedKelSource`. KEL errors are captured rather than failing the entire operation.
-6. **Anchoring** — From the `KelVerification`: `is_said_anchored(&compacted_said)` = issued.
-7. **Revocation** — Unless `irrevocable == Some(true)`, check `is_said_anchored(&revocation_hash)`.
-8. **Expiration** — Check if `expires_at` is present and in the past.
-9. **Edge verification** — If a `SADStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
+2. **Policy SAID match** — Verify `policy.said == credential.policy`.
+3. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
+4. **Compacted SAID integrity** — Compact the credential to canonical form using schema-aware compaction and derive the compacted SAID. This is the SAID that was anchored by endorsers at endorsement time.
+5. **Schema validation** — Validate the credential against the schema via `validate_credential_report`. Compacted fields are accepted (type checking is skipped for SAID strings in compactable fields).
+6. **Policy evaluation** — Call `evaluate_policy(policy, &compacted_said, source, resolver)`. This walks the policy AST, checking each endorser's KEL for credential SAID anchoring and (unless immune) poison hash anchoring. Returns a `PolicyVerification` with per-endorser status and overall satisfaction.
+7. **Expiration** — Check if `expires_at` is present and in the past.
+8. **Edge verification** — If a `SADStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
    - Look up the referenced credential by SAID in the SADStore
    - Verify the credential's schema matches the edge's schema reference
    - Expand using schema-aware expansion with the edge's schema
    - Parse as `Credential<Value>` and recursively verify
-   - Enforce `edge.issuer` constraint (if declared, must match the actual credential's issuer)
-   - Enforce `edge.delegated` constraint (if `true`, verify the issuer's KEL has a `dip` inception and the delegating prefix's KEL anchors the issuer's prefix)
+   - Enforce `edge.policy` constraint: compact the presented credential's policy and check `compacted.said == edge.policy` (allows delegate flexibility)
 
 ### API
 
 ```rust
 pub struct CredentialVerification {
-    pub credential_said: String,
-    pub issuer: String,
+    pub credential: String,
+    pub policy: String,
+    pub policy_verification: PolicyVerification,
     pub subject: Option<String>,
-    pub is_issued: bool,
-    pub is_revoked: bool,
     pub is_expired: bool,
-    pub kel_error: Option<String>,
-    pub delegating_prefix: Option<String>,   // from issuer's KEL inception, if dip
     pub schema_validation: SchemaValidationReport,
     pub edge_verifications: BTreeMap<String, CredentialVerification>,
 }
@@ -443,32 +431,32 @@ pub struct SchemaValidationReport {
     pub errors: Vec<String>,
 }
 
-/// Verify a credential against the KEL, optionally with recursive edge verification.
+/// Verify a credential against the KEL via policy evaluation, optionally with recursive edge verification.
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
     schema: &Schema,
+    policy: &Policy,
     source: &dyn PagedKelSource,
+    resolver: &dyn PolicyResolver,
     sad_store: Option<&dyn SADStore>,
     edge_schemas: &BTreeMap<String, Schema>,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
 
-`CredentialVerification::is_valid(require_valid_schema: bool)` provides a single "all good" check: issued, not revoked, not expired, no KEL errors, and all edge credentials also valid (recursively). When `require_valid_schema` is `true`, also requires schema validation to pass via `SchemaValidationReport::require_valid()`.
+`CredentialVerification::is_valid(require_valid_schema: bool)` provides a single "all good" check: policy satisfied, not expired, and all edge credentials also valid (recursively). When `require_valid_schema` is `true`, also requires schema validation to pass via `SchemaValidationReport::require_valid()`.
 
-When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL. Each edge label maps to the `CredentialVerification` of the referenced credential. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
+`policy_verification` contains the full result of policy evaluation: per-endorser `EndorsementStatus` (Endorsed, NotEndorsed, Poisoned, KelError) and nested policy verification results.
 
-`kel_error` surfaces why KEL verification failed for this credential's issuer, if applicable. When KEL verification fails, `is_issued` and `is_revoked` are `false` (fail-secure) but the caller can distinguish "issuer has no KEL" from "issuer's KEL is cryptographically invalid."
+When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **compacted policy matching**: the presented credential's policy is compacted and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
 
-`delegating_prefix` is captured from the issuer's `KelVerification` after KEL verification. If the issuer's KEL inception was a `dip`, this contains the delegating prefix. Used by edge delegation verification.
-
-`Credential::verify()` is a convenience method that delegates to `verify_credential(self, schema, source, sad_store, edge_schemas)`.
+`Credential::verify()` is a convenience method that delegates to `verify_credential`.
 
 ## JSON API
 
 The `json_api` module provides JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
 
 - `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns compacted SAID
-- `verify(json_credential, json_schema, source, sad_store, json_edge_schemas)` — verify a credential, returns verification result JSON. `json_edge_schemas` is an optional JSON object mapping schema SAIDs to schema objects.
+- `verify(json_credential, json_schema, json_policy, source, sad_store, json_edge_schemas, json_policies)` — verify a credential via policy evaluation, returns verification result JSON. `json_policy` is the policy JSON, `json_policies` is an optional JSON object mapping policy SAIDs to policy objects (for nested policy resolution).
 - `disclose(compacted_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
 - `validate(json_credential, json_schema)` — validate a credential against a schema, returns `SchemaValidationReport`
 - `parse_edges(json)` — parse edge JSON into `Edges` (for FFI use)
@@ -507,7 +495,7 @@ KelsVerifyResult kels_credential_verify(
     const char* credential_json
 );
 
-KelsRevokeResult kels_credential_revoke(
+KelsRevokeResult kels_credential_poison(
     KelsContext* ctx,
     const char* credential_said
 );
@@ -541,12 +529,12 @@ lib/kels-creds/
     ├── store.rs            # SADStore trait + InMemorySADStore + store_credentials
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact/expand (schema-aware, depth-bounded, with _fields variants for sub-trees)
-    ├── verification.rs     # verify_credential, CredentialVerification
-    ├── revocation.rs       # revocation_hash (domain-separated)
+    ├── verification.rs     # verify_credential, CredentialVerification (policy-based)
+    ├── revocation.rs       # revocation_hash / poison_hash (domain-separated, shared with kels-policy)
     ├── json_api.rs         # JSON-boundary functions (store, verify, disclose, validate, parse helpers)
     └── error.rs            # CredentialError
 ```
 
-Dependencies: `kels` (core types, `KelVerification`, `KelVerifier`, `KelsError`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compute_said_from_value`), `serde`, `serde_json` (with `preserve_order` for deterministic serialization), `tokio` (sync primitives), `async-trait`, `thiserror`.
+Dependencies: `kels` (core types, `KelVerification`, `KelVerifier`, `KelsError`), `kels-policy` (policy types, `evaluate_policy`, `PolicyVerification`, `PolicyResolver`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compute_said_from_value`), `serde`, `serde_json` (with `preserve_order` for deterministic serialization), `tokio` (sync primitives), `async-trait`, `thiserror`.
 
 FFI bindings added to existing `lib/kels-ffi/src/lib.rs` — no separate FFI crate.

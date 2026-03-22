@@ -49,15 +49,8 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 
 1. Address GitHub issues
 2. ~~Post-quantum signature support~~ Done: infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`); gossip uses ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms) + ML-DSA-65/ML-DSA-87; core service accepts both P-256 and ML-DSA-65/ML-DSA-87 KELs
-3. Add kels-policy crate
-  - Policy DSL
-    - threshold
-    - weighted
-    - nested groups
-    - role-based
-  - Self-addressed policy objects anchored in KELs
-  - PolicyVerification model similar to others, based on anchoring
-4. Add kels-policy to kels-creds
+3. ~~Add kels-policy crate~~ Done: composable trust policies with DSL (`endorse`, `delegate`, `threshold`, `weighted`, `policy`), three modes (default, `immune`, `poisonable`), poison expression for admin-controlled poisoning, policy compaction for edge matching. See [design](docs/design/policy.md).
+4. ~~Add kels-policy to kels-creds~~ Done: credentials use `policy` (SAID) instead of `issuer` (prefix), edges use compacted policy matching instead of issuer constraints, poisoning replaces revocation
 5. Credential exchange protocol (kels-exchange)
 6. Add credentials/policy/exchange to cli
 7. Add credentials/policy/exchange to FFI
@@ -76,6 +69,8 @@ kels/
 ├── lib/
 │   ├── kels/           # Core library (libkels)
 │   ├── kels-derive/    # Derive macros for storage traits
+│   ├── kels-creds/     # Credential framework (issuance, disclosure, verification)
+│   ├── kels-policy/    # Policy framework (composable trust policies, DSL)
 │   ├── kels-ffi/       # FFI bindings (Swift/C interop)
 │   ├── gossip/         # Custom gossip protocol library
 │   └── kels-mock-hsm/  # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)

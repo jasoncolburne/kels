@@ -20,7 +20,7 @@ pub enum EndorsementStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyVerification {
-    pub policy_said: String,
+    pub policy: String,
     pub is_satisfied: bool,
     pub endorsements: BTreeMap<String, EndorsementStatus>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

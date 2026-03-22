@@ -18,8 +18,8 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialVerification {
-    pub credential_said: String,
-    pub policy_said: String,
+    pub credential: String,
+    pub policy: String,
     pub subject: Option<String>,
     pub is_expired: bool,
     pub policy_verification: PolicyVerification,
@@ -175,8 +175,8 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential_said: credential.said.clone(),
-            policy_said: policy.said.clone(),
+            credential: credential.said.clone(),
+            policy: policy.said.clone(),
             subject: credential.subject.clone(),
             is_expired,
             policy_verification,
@@ -261,15 +261,12 @@ async fn verify_edges<T: Claims>(
         }
 
         // Resolve the edge credential's policy for verification
-        let edge_policy_said = &edge_credential.policy;
-        let edge_policy = resolver
-            .resolve_policy(edge_policy_said)
-            .await
-            .map_err(|e| {
-                CredentialError::VerificationError(format!(
-                    "edge '{label}': failed to resolve policy {edge_policy_said}: {e}"
-                ))
-            })?;
+        let edge_policy = &edge_credential.policy;
+        let edge_policy = resolver.resolve_policy(edge_policy).await.map_err(|e| {
+            CredentialError::VerificationError(format!(
+                "edge '{label}': failed to resolve policy {edge_policy}: {e}"
+            ))
+        })?;
 
         let verification = verify_credential_bounded(
             &edge_credential,

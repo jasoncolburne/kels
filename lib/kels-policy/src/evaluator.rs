@@ -129,7 +129,7 @@ pub async fn evaluate_policy(
     };
 
     Ok(PolicyVerification {
-        policy_said: policy.said.clone(),
+        policy: policy.said.clone(),
         is_satisfied: final_satisfied,
         endorsements,
         nested_verifications: nested,
@@ -260,7 +260,7 @@ fn evaluate_node<'a>(
                 };
 
                 let verification = PolicyVerification {
-                    policy_said: resolved.said.clone(),
+                    policy: resolved.said.clone(),
                     is_satisfied: final_satisfied,
                     endorsements: nested_endorsements,
                     nested_verifications: nested_nested,

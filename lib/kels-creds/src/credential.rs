@@ -650,8 +650,8 @@ mod tests {
             .await
             .unwrap();
         result.is_valid(true).unwrap();
-        assert_eq!(result.credential_said, cred.said);
-        assert_eq!(result.policy_said, policy.said);
+        assert_eq!(result.credential, cred.said);
+        assert_eq!(result.policy, policy.said);
     }
 
     #[tokio::test]
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(result_b.edge_verifications.contains_key("license"));
         let edge_v = result_b.edge_verifications.get("license").unwrap();
         assert!(edge_v.policy_verification.is_satisfied);
-        assert_eq!(edge_v.policy_said, policy_a.said);
+        assert_eq!(edge_v.policy, policy_a.said);
     }
 
     #[tokio::test]
@@ -1248,11 +1248,11 @@ mod tests {
         assert!(result.edge_verifications.contains_key("authority"));
 
         let mid_v = result.edge_verifications.get("authority").unwrap();
-        assert_eq!(mid_v.policy_said, mid_policy.said);
+        assert_eq!(mid_v.policy, mid_policy.said);
         assert!(mid_v.edge_verifications.contains_key("root"));
 
         let root_v = mid_v.edge_verifications.get("root").unwrap();
-        assert_eq!(root_v.policy_said, root_policy.said);
+        assert_eq!(root_v.policy, root_policy.said);
         assert!(root_v.edge_verifications.is_empty());
     }
 }
