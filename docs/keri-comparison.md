@@ -74,12 +74,15 @@ KELS's approach is more mechanical and auditable: divergence is a protocol state
 | Availability guarantee | Witness liveness required | Any gossip peer can serve; registry manages peer set |
 | Transport security | Varies by implementation | ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 (forward secrecy, mutual auth, PQ-secure) |
 | Discovery | OOBIs (Out-of-Band Introductions) | Registry-managed peer allowlists (compile-time trust roots) |
+| Infrastructure responsibility | Controller selects and manages witnesses | Federation operators run shared infrastructure |
 
 **Analysis:** KERI's witness model provides stronger consistency guarantees at the cost of availability — if witnesses are offline, events cannot be receipted. KELS's gossip model prioritizes availability and partition tolerance, accepting eventual consistency. The tradeoff is that KELS nodes may temporarily have stale views, but anti-entropy repair (every 10s by default) bounds staleness.
 
+A critical operational difference is *who bears the infrastructure burden*. In KERI, the controller is responsible for selecting and managing their own witness pool. For organizations with infrastructure teams this is manageable, but for small businesses or consumers it creates an unrealistic operational requirement. In practice, this pushes most users toward third-party witness hosting (e.g., a KERIA cloud agent), which re-introduces the centralized trust dependency that KERI's architecture was designed to avoid. KELS inverts this: the service is shared infrastructure that verifies and stores KELs — it has no per-identity infrastructure. A consumer's phone talks to the KELS service, gossip handles replication, and the operational burden falls entirely on federation operators rather than end users.
+
 KELS's transport security is notably stronger: the ML-KEM-768/1024 key exchange with ML-DSA-65/87 mutual authentication provides forward secrecy, mutual authentication tied to KEL identities, and post-quantum security. KERI's transport security is implementation-dependent.
 
-**2026 consideration:** The shift toward mesh and edge computing favors gossip-based replication. KELS's model works better in environments with intermittent connectivity or where designated infrastructure (witnesses) cannot be guaranteed. However, KERI's witness model is simpler to reason about for compliance and audit purposes.
+**2026 consideration:** The shift toward mesh and edge computing favors gossip-based replication. KELS's model works better in environments with intermittent connectivity or where designated infrastructure (witnesses) cannot be guaranteed. However, KERI's witness model is simpler to reason about for compliance and audit purposes. The witness operational burden is increasingly relevant as identity systems target consumer adoption — expecting end users to manage distributed infrastructure is a non-starter for mass-market digital wallets.
 
 ### 4. Trust Model and Trust Anchoring
 
@@ -475,7 +478,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 - **Key rotation:** Controller-initiated, immediate. No coordination with infrastructure.
 - **Witness management:** Add/remove witnesses via rotation events. Witnesses are stateless relays — they can be replaced without data migration.
 - **Monitoring:** Watch for duplicity via watchers. Duplicity is an exceptional event that requires human investigation.
-- **Backup/recovery:** Controller's key material is the critical backup item. Witnesses can be rebuilt from the controller's KEL.
+- **Backup/recovery:** Controller's key material is the critical backup item. Lost witnesses are replaced by standing up a new witness with fresh keys and rotating the identifier's witness list. Prior receipts from the old witness remain verifiable (they're signed by the old witness's KEL) but the new witness must be receipted going forward.
 
 **KELS:**
 - **Key rotation:** Automatic for services. Manual for end-user KELs via CLI or client.

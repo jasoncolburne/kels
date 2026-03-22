@@ -123,6 +123,9 @@ impl Policy {
         let ast = self.parse()?;
         let mut saids = BTreeSet::new();
         collect_policy_saids(&ast, &mut saids);
+        if let Some(poison_ast) = self.parse_poison()? {
+            collect_policy_saids(&poison_ast, &mut saids);
+        }
         Ok(saids)
     }
 
