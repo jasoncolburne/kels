@@ -128,7 +128,6 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         tokio::spawn(kels::recovery_archival_loop(
             recovery_pool,
             recovery_config,
-            kels::NoCache,
             std::time::Duration::from_secs(5),
         ));
     }

@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use tracing::{debug, error, info, warn};
 use verifiable_storage::{Chained, Delete, Order, Query, QueryExecutor, TransactionExecutor};
 
@@ -27,50 +26,73 @@ pub struct RecoveryConfig {
     pub archived_signatures_table: &'static str,
 }
 
-/// Optional callback for cache invalidation during the cleanup phase.
-#[async_trait]
-pub trait RecoveryCache: Send + Sync + 'static {
-    async fn invalidate(&self, prefix: &str);
-}
-
-/// No-op cache implementation for services without Redis.
-pub struct NoCache;
-
-#[async_trait]
-impl RecoveryCache for NoCache {
-    async fn invalidate(&self, _prefix: &str) {}
-}
-
-/// Run the recovery archival loop. Call via `tokio::spawn`.
+/// Run the recovery archival loop without cache invalidation. Call via `tokio::spawn`.
 ///
 /// Polls every `interval` for non-terminal recovery records and processes
 /// one operation per record per cycle.
 pub async fn recovery_archival_loop<P: QueryExecutor + Clone + 'static>(
     pool: P,
     config: RecoveryConfig,
-    cache: impl RecoveryCache,
     interval: Duration,
 ) {
     loop {
         tokio::time::sleep(interval).await;
 
-        if let Err(e) = process_all_recoveries(&pool, &config, &cache).await {
+        if let Err(e) = process_all_recoveries(&pool, &config, &|_: &str| async {}).await {
+            error!("Recovery archival error: {}", e);
+        }
+    }
+}
+
+/// Run the recovery archival loop with cache invalidation. Call via `tokio::spawn`.
+///
+/// Same as `recovery_archival_loop` but invalidates the KEL cache during
+/// the cleanup phase after adversary archival completes.
+#[cfg(feature = "redis")]
+pub async fn recovery_archival_loop_with_cache<P: QueryExecutor + Clone + 'static>(
+    pool: P,
+    config: RecoveryConfig,
+    cache: crate::ServerKelCache,
+    interval: Duration,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let invalidate = |prefix: &str| {
+            let cache = cache.clone();
+            let prefix = prefix.to_string();
+            async move {
+                if let Err(e) = cache.invalidate(&prefix).await {
+                    warn!(
+                        kel_prefix = %prefix,
+                        "Recovery cache invalidation failed: {}",
+                        e
+                    );
+                }
+            }
+        };
+
+        if let Err(e) = process_all_recoveries(&pool, &config, &invalidate).await {
             error!("Recovery archival error: {}", e);
         }
     }
 }
 
 /// Process all non-terminal recovery records, one operation each.
-async fn process_all_recoveries<P: QueryExecutor>(
+async fn process_all_recoveries<P, F, Fut>(
     pool: &P,
     config: &RecoveryConfig,
-    cache: &impl RecoveryCache,
-) -> Result<(), KelsError> {
-    // Query all non-terminal recovery records (one per kel_prefix, latest version)
+    on_cleanup: &F,
+) -> Result<(), KelsError>
+where
+    P: QueryExecutor,
+    F: Fn(&str) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = ()> + Send,
+{
     let records = query_active_recoveries(pool, config).await?;
 
     for record in records {
-        if let Err(e) = process_one_recovery(pool, config, cache, &record).await {
+        if let Err(e) = process_one_recovery(pool, config, on_cleanup, &record).await {
             warn!(
                 kel_prefix = %record.kel_prefix,
                 state = %record.state,
@@ -109,17 +131,22 @@ async fn query_active_recoveries<P: QueryExecutor>(
 }
 
 /// Process a single recovery record: one state transition or one page of archival.
-async fn process_one_recovery<P: QueryExecutor>(
+async fn process_one_recovery<P, F, Fut>(
     pool: &P,
     config: &RecoveryConfig,
-    cache: &impl RecoveryCache,
+    on_cleanup: &F,
     record: &RecoveryRecord,
-) -> Result<(), KelsError> {
+) -> Result<(), KelsError>
+where
+    P: QueryExecutor,
+    F: Fn(&str) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = ()> + Send,
+{
     match record.state {
         RecoveryState::Pending => transition_to_archiving(pool, config, record).await,
         RecoveryState::Archiving => archive_one_page(pool, config, record).await,
         RecoveryState::Cleanup => {
-            cache.invalidate(&record.kel_prefix).await;
+            on_cleanup(&record.kel_prefix).await;
             transition_to_recovered(pool, config, record).await
         }
         RecoveryState::Recovered => Ok(()), // terminal — should not reach here

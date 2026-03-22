@@ -364,7 +364,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         tokio::spawn(kels::recovery_archival_loop(
             recovery_pool,
             recovery_config,
-            kels::NoCache,
             std::time::Duration::from_secs(5),
         ));
     }

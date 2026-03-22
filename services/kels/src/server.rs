@@ -117,12 +117,20 @@ pub async fn run(
             archived_events_table: "kels_archived_events",
             archived_signatures_table: "kels_archived_event_signatures",
         };
-        tokio::spawn(kels::recovery_archival_loop(
-            recovery_pool,
-            recovery_config,
-            kels::NoCache,
-            std::time::Duration::from_secs(5),
-        ));
+        if let Some(kel_cache) = state.kel_cache.clone() {
+            tokio::spawn(kels::recovery_archival_loop_with_cache(
+                recovery_pool,
+                recovery_config,
+                kel_cache,
+                std::time::Duration::from_secs(5),
+            ));
+        } else {
+            tokio::spawn(kels::recovery_archival_loop(
+                recovery_pool,
+                recovery_config,
+                std::time::Duration::from_secs(5),
+            ));
+        }
     }
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();

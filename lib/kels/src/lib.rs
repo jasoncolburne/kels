@@ -77,7 +77,9 @@ pub use crypto::{
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
-pub use recovery::{NoCache, RecoveryCache, RecoveryConfig, recovery_archival_loop};
+#[cfg(feature = "redis")]
+pub use recovery::recovery_archival_loop_with_cache;
+pub use recovery::{RecoveryConfig, recovery_archival_loop};
 pub use repository::{SignedEventRepository, load_signed_history};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
