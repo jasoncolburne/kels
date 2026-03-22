@@ -267,6 +267,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             &self.prefix,
             limit,
             offset,
+            None,
         )
         .await
     }

@@ -143,11 +143,32 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 self.pool.fetch_optional(query).await
             }
 
+            /// Query the recovery serial cap for a prefix. Returns `Some(serial)` if
+            /// an active (non-recovered) recovery exists, `None` otherwise.
+            async fn recovery_serial_cap(
+                tx: &mut impl verifiable_storage::TransactionExecutor,
+                prefix: &str,
+            ) -> Result<Option<u64>, verifiable_storage::StorageError> {
+                let query = verifiable_storage::Query::<kels::RecoveryRecord>::for_table(#recovery_table)
+                    .eq("kel_prefix", prefix)
+                    .order_by("version", verifiable_storage::Order::Desc)
+                    .limit(1);
+                let records: Vec<kels::RecoveryRecord> = tx.fetch(query).await?;
+                Ok(records.into_iter().next().and_then(|r| {
+                    if r.state != kels::RecoveryState::Recovered {
+                        Some(r.recovery_serial)
+                    } else {
+                        None
+                    }
+                }))
+            }
+
             /// Get a paginated page of signed events for a prefix.
             ///
             /// Returns `(events, has_more)` — fetches `limit + 1` rows and pops the extra
             /// to determine whether more pages exist.
             /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
+            /// During active recovery, events are capped at the recovery serial.
             pub async fn get_signed_history(
                 &self,
                 prefix: &str,
@@ -157,6 +178,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
                 let mut tx = self.pool.begin_transaction().await?;
+                let max_serial = Self::recovery_serial_cap(&mut tx, prefix).await?;
                 let result = kels::load_signed_history(
                     &mut tx,
                     Self::TABLE_NAME,
@@ -164,6 +186,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     prefix,
                     limit,
                     offset,
+                    max_serial,
                 )
                 .await
                 .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
@@ -177,13 +200,17 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// events with `serial >= that serial`, filtering out the since event itself.
             /// Returns `(events, has_more)` using the limit+2 pop pattern.
             /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
+            /// During active recovery, events are capped at the recovery serial.
             pub async fn get_signed_history_since(
                 &self,
                 prefix: &str,
                 since_said: &str,
                 limit: u64,
             ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
-                use verifiable_storage_postgres::QueryExecutor;
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
+                let mut tx = self.pool.begin_transaction().await?;
+                let max_serial = Self::recovery_serial_cap(&mut tx, prefix).await?;
 
                 let subquery = verifiable_storage::ScalarSubquery::new(
                     Self::TABLE_NAME,
@@ -204,14 +231,18 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 // `events.len() > limit` to detect has_more, then truncate to `limit`.
                 // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
                 let clamped_limit = limit.min(kels::page_size() as u64);
-                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                let mut query = verifiable_storage::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .gte_scalar_subquery("serial", subquery)
-                    .order_by("serial", verifiable_storage_postgres::Order::Asc)
-                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
-                    .order_by("said", verifiable_storage_postgres::Order::Asc)
+                    .order_by("serial", verifiable_storage::Order::Asc)
+                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage::Order::Asc)
+                    .order_by("said", verifiable_storage::Order::Asc)
                     .limit(clamped_limit + 2);
-                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+                if let Some(cap) = max_serial {
+                    query = query.lte("serial", cap);
+                }
+                let mut events: Vec<kels::KeyEvent> = tx.fetch(query).await?;
+                tx.commit().await?;
 
                 // Filter out the since event itself (we want events *after* it,
                 // but we need >= its serial to include divergent events at the same serial)
