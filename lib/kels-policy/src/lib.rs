@@ -6,6 +6,7 @@
 pub(crate) mod ast;
 pub(crate) mod error;
 pub(crate) mod evaluator;
+pub mod json_api;
 pub(crate) mod parser;
 pub(crate) mod policy;
 pub(crate) mod resolver;

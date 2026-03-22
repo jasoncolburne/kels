@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use kels::PagedKelSource;
 use kels_policy::{InMemoryPolicyResolver, Policy, PolicyResolver};
+use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use crate::{
     compaction::compact_with_schema,
@@ -35,6 +36,58 @@ pub struct EdgeInput {
 #[serde(rename_all = "camelCase")]
 pub struct RuleInput {
     pub condition: String,
+}
+
+/// Build a credential from JSON inputs. Validates against schema, derives all SAIDs,
+/// and returns the expanded credential JSON and canonical SAID.
+///
+/// The caller is responsible for anchoring the canonical SAID in endorser KELs.
+#[allow(clippy::too_many_arguments)]
+pub async fn build(
+    json_claims: &str,
+    json_schema: &str,
+    json_policy: &str,
+    subject: Option<&str>,
+    unique: bool,
+    json_edges: Option<&str>,
+    json_rules: Option<&str>,
+    json_expires_at: Option<&str>,
+) -> Result<(String, String), CredentialError> {
+    let schema: Schema = serde_json::from_str(json_schema)?;
+    let policy: kels_policy::Policy = serde_json::from_str(json_policy)?;
+    let mut claims: serde_json::Value = serde_json::from_str(json_claims)?;
+    claims.derive_said()?;
+
+    let edges = if let Some(json) = json_edges {
+        Some(parse_edges(json)?)
+    } else {
+        None
+    };
+    let rules = if let Some(json) = json_rules {
+        Some(parse_rules(json)?)
+    } else {
+        None
+    };
+    let expires_at: Option<StorageDatetime> = if let Some(json) = json_expires_at {
+        Some(serde_json::from_str(json)?)
+    } else {
+        None
+    };
+
+    let (credential, canonical_said) = Credential::build(
+        &schema,
+        &policy,
+        subject.map(String::from),
+        claims,
+        unique,
+        edges,
+        rules,
+        expires_at,
+    )
+    .await?;
+
+    let credential_json = serde_json::to_string(&credential)?;
+    Ok((credential_json, canonical_said))
 }
 
 /// Store a JSON credential in the SAD store.

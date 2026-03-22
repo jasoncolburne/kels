@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use kels::{KeyEventBuilder, KeyProvider, PagedKelSource, generate_nonce};
+use kels::{PagedKelSource, generate_nonce};
 use kels_policy::{Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -52,13 +52,15 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 ///
 /// # Security: Atomic Issuance
 ///
-/// The only public way to issue a credential is [`Credential::issue()`], which
-/// takes fully expanded inputs and atomically anchors the credential in the
-/// issuer's KEL. This prevents signing credentials with compacted (uninspected)
-/// fields — a compacted SAID commits to content the issuer has not examined,
-/// allowing an attacker to hide malicious payloads behind opaque hashes.
-/// `Credential` values can be constructed via deserialization (for verification
-/// and disclosure of received credentials), but issuance requires expanded types.
+/// The only public way to build a credential is [`Credential::build()`], which
+/// takes fully expanded inputs and derives all inner SAIDs. The caller must then
+/// anchor the canonical SAID in the issuer's KEL (e.g., via
+/// `KeyEventBuilder::interact()`). This prevents signing credentials with
+/// compacted (uninspected) fields — a compacted SAID commits to content the
+/// issuer has not examined, allowing an attacker to hide malicious payloads
+/// behind opaque hashes. `Credential` values can be constructed via
+/// deserialization (for verification and disclosure of received credentials),
+/// but issuance requires expanded types.
 ///
 /// Disclosure and verification may operate on compacted or partially compacted
 /// forms — the content commitment was already accepted at issuance time.
@@ -83,13 +85,13 @@ pub struct Credential<T: Claims> {
 }
 
 impl<T: Claims> Credential<T> {
-    /// Construct a credential from fully expanded inputs, validate against schema,
-    /// and derive all inner SAIDs. Returns the expanded credential and its compacted SAID.
+    /// Construct a credential from expanded inputs, validate against schema,
+    /// and derive all inner SAIDs. Returns the expanded credential and its canonical SAID.
     ///
-    /// This is an internal building block — use [`issue()`](Self::issue) for the public API,
-    /// which atomically constructs and anchors the credential in the issuer's KEL.
+    /// The caller is responsible for anchoring the canonical SAID in endorser KELs
+    /// per the policy (e.g., via `KeyEventBuilder::interact()`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn build(
+    pub async fn build(
         schema: &Schema,
         policy: &Policy,
         subject: Option<String>,
@@ -146,36 +148,6 @@ impl<T: Claims> Credential<T> {
 
         let credential: Self = serde_json::from_value(expanded_value)?;
 
-        Ok((credential, compacted_said))
-    }
-
-    /// Issue a credential by constructing it from fully expanded inputs and
-    /// atomically anchoring its compacted SAID in the issuer's KEL.
-    ///
-    /// This is the only public way to create a credential. It takes expanded
-    /// types directly, preventing issuance of credentials with compacted
-    /// (uninspected) fields — the issuer must have examined all content before
-    /// it can be signed.
-    ///
-    /// Returns the fully expanded credential (with all SAIDs derived) and
-    /// the compacted SAID that was anchored in the KEL.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn issue<K: KeyProvider + Clone>(
-        schema: &Schema,
-        policy: &Policy,
-        subject: Option<String>,
-        claims: T,
-        unique: bool,
-        edges: Option<Edges>,
-        rules: Option<Rules>,
-        expires_at: Option<StorageDatetime>,
-        builder: &mut KeyEventBuilder<K>,
-    ) -> Result<(Self, String), CredentialError> {
-        let (credential, compacted_said) = Self::build(
-            schema, policy, subject, claims, unique, edges, rules, expires_at,
-        )
-        .await?;
-        builder.interact(&compacted_said).await?;
         Ok((credential, compacted_said))
     }
 
@@ -574,7 +546,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use kels::{FileKelStore, SoftwareKeyProvider, StoreKelSource, VerificationKeyCode};
+    use kels::{
+        FileKelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource, VerificationKeyCode,
+    };
     use kels_policy::InMemoryPolicyResolver;
 
     async fn setup_kel() -> (
@@ -624,7 +598,7 @@ mod tests {
         let schema = test_schema();
         let policy = test_policy(&prefix);
         let resolver = InMemoryPolicyResolver::empty();
-        let (cred, _) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -633,10 +607,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         let result = cred
             .verify(
@@ -682,7 +656,7 @@ mod tests {
         let policy = test_policy(&prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
-        let (cred, compacted_said) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -691,10 +665,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         // Anchor poison hash (same as revocation hash)
         let p_hash = kels_policy::poison_hash(&compacted_said);
@@ -722,7 +696,7 @@ mod tests {
         let policy = Policy::build(&format!("endorse({prefix})"), None, true).unwrap();
         let resolver = InMemoryPolicyResolver::empty();
 
-        let (cred, compacted_said) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             None,
@@ -731,10 +705,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         // Anchor the poison hash — should be ignored for immune policy
         let p_hash = kels_policy::poison_hash(&compacted_said);
@@ -764,7 +738,7 @@ mod tests {
         let resolver = InMemoryPolicyResolver::empty();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
-        let (cred, _) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             None,
@@ -773,10 +747,10 @@ mod tests {
             None,
             None,
             Some(far_future),
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         let result = cred
             .verify(
@@ -798,7 +772,7 @@ mod tests {
         let schema = test_schema();
         let policy = test_policy(&prefix);
         let resolver = InMemoryPolicyResolver::empty();
-        let (cred, _) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -807,10 +781,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         let result = cred
             .verify(
@@ -833,11 +807,11 @@ mod tests {
         let policy = test_policy(&prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
-        // Issue via the expanded API — Credential::issue() takes expanded types
-        // by value, so compacted credentials cannot be issued. This test verifies
+        // Build via the expanded API — Credential::build() takes expanded types
+        // by value, so compacted credentials cannot be built. This test verifies
         // that schema validation works on the compacted *form* of a legitimately
         // issued credential during verification.
-        let (cred, _) = Credential::issue(
+        let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -846,10 +820,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder,
         )
         .await
         .unwrap();
+        builder.interact(&compacted_said).await.unwrap();
 
         // Get the compacted form and verify schema validation works on it
         let (_, chunks) = cred.compact(&schema).unwrap();
@@ -893,7 +867,7 @@ mod tests {
         let policy_a = test_policy(&prefix_a);
 
         // Issuer A issues a base credential
-        let (cred_a, compacted_said_a) = Credential::issue(
+        let (cred_a, compacted_said_a) = Credential::build(
             &schema_a,
             &policy_a,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -902,10 +876,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder_a,
         )
         .await
         .unwrap();
+        builder_a.interact(&compacted_said_a).await.unwrap();
 
         // Store credential A in a shared SADStore
         let sad_store = InMemorySADStore::new();
@@ -972,7 +946,7 @@ mod tests {
         .unwrap();
 
         let policy_b = test_policy(&prefix_b);
-        let (cred_b, _) = Credential::issue(
+        let (cred_b, compacted_said_b) = Credential::build(
             &schema_b,
             &policy_b,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -981,10 +955,10 @@ mod tests {
             Some(edges),
             None,
             None,
-            &mut builder_b,
         )
         .await
         .unwrap();
+        builder_b.interact(&compacted_said_b).await.unwrap();
 
         cred_b.store(&schema_b, &sad_store).await.unwrap();
 
@@ -1072,7 +1046,7 @@ mod tests {
         let root_policy = test_policy(&prefix_root);
 
         // Root credential (no edges)
-        let (cred_root, compacted_root) = Credential::issue(
+        let (cred_root, compacted_root) = Credential::build(
             &root_schema,
             &root_policy,
             Some("KSubject23456789012345678901234567890abcde".to_string()),
@@ -1081,10 +1055,10 @@ mod tests {
             None,
             None,
             None,
-            &mut builder_root,
         )
         .await
         .unwrap();
+        builder_root.interact(&compacted_root).await.unwrap();
         cred_root.store(&root_schema, &sad_store).await.unwrap();
 
         // Helper to build a schema with edge fields
@@ -1149,7 +1123,7 @@ mod tests {
 
         let mid_schema = make_edge_schema("root");
         let mid_policy = test_policy(&prefix_mid);
-        let (cred_mid, compacted_mid) = Credential::issue(
+        let (cred_mid, compacted_mid) = Credential::build(
             &mid_schema,
             &mid_policy,
             None,
@@ -1158,10 +1132,10 @@ mod tests {
             Some(Edges::new_validated(mid_edges).unwrap()),
             None,
             None,
-            &mut builder_mid,
         )
         .await
         .unwrap();
+        builder_mid.interact(&compacted_mid).await.unwrap();
         cred_mid.store(&mid_schema, &sad_store).await.unwrap();
 
         // Leaf credential with edge to intermediate
@@ -1177,7 +1151,7 @@ mod tests {
 
         let leaf_schema = make_edge_schema("authority");
         let leaf_policy = test_policy(&prefix_leaf);
-        let (cred_leaf, _) = Credential::issue(
+        let (cred_leaf, compacted_leaf) = Credential::build(
             &leaf_schema,
             &leaf_policy,
             None,
@@ -1186,10 +1160,10 @@ mod tests {
             Some(Edges::new_validated(leaf_edges).unwrap()),
             None,
             None,
-            &mut builder_leaf,
         )
         .await
         .unwrap();
+        builder_leaf.interact(&compacted_leaf).await.unwrap();
         cred_leaf.store(&leaf_schema, &sad_store).await.unwrap();
 
         // All edge schemas for recursive verification

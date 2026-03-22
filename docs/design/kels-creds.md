@@ -1,6 +1,6 @@
 # kels-creds: Credential Framework Design
 
-A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. All data (credentials, schemas, claims, edges, rules) lives in the `SADStore` as content-addressable chunks keyed by SAID.
+A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. Data (credentials, schemas, claims, edges, rules) can be stored in the `SADStore` as content-addressable chunks keyed by SAID.
 
 All JSON-serializable types use `#[serde(rename_all = "camelCase")]` for consistent field naming across the FFI boundary.
 

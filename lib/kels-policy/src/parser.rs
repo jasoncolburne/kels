@@ -138,8 +138,17 @@ fn parse_delegate(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyErro
     consume_keyword(input, pos, "delegate")?;
     expect_char(input, pos, b'(')?;
     let delegator = parse_identifier(input, pos)?;
-    expect_char(input, pos, b',')?;
-    let delegate = parse_identifier(input, pos)?;
+
+    // Support both full form `delegate(DELEGATOR, DELEGATE)` and
+    // compacted form `delegate(DELEGATOR)` (empty delegate string).
+    skip_whitespace(input, pos);
+    let delegate = if *pos < input.len() && input.as_bytes()[*pos] == b',' {
+        *pos += 1;
+        parse_identifier(input, pos)?
+    } else {
+        String::new()
+    };
+
     expect_char(input, pos, b')')?;
     Ok(PolicyNode::Delegate(delegator, delegate))
 }
@@ -463,6 +472,24 @@ mod tests {
         let display = node.to_string();
         let parsed = parse(&display).unwrap();
         assert_eq!(node, parsed);
+    }
+
+    #[test]
+    fn test_parse_delegate_compacted() {
+        let node = parse(&format!("delegate({PREFIX_A})")).unwrap();
+        assert_eq!(
+            node,
+            PolicyNode::Delegate(PREFIX_A.to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn test_compact_delegate_roundtrip() {
+        let node = PolicyNode::Delegate(PREFIX_A.to_string(), PREFIX_B.to_string());
+        let compacted = node.compact();
+        let display = compacted.to_string();
+        let parsed = parse(&display).unwrap();
+        assert_eq!(parsed, compacted);
     }
 
     #[test]
