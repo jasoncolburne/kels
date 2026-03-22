@@ -157,13 +157,47 @@ The key architectural difference: ACDC credentials live in TELs (separate append
 | Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance; federation voting for infrastructure |
 | Recovery signatures | Implementation-dependent | Dual signature (rotation key + recovery key) required |
 
-**Analysis:** KERI's multi-sig support is deeply integrated. A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys.
+**Analysis:** KERI's multi-sig support is deeply integrated via the `Tholder` (threshold holder). A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. The `Tholder` accepts fractional weights on keys (e.g., `"1/2,1/2,1/2"` — three keys each with weight 1/2, requiring any two). This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys.
 
-KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Core KEL verification stays single-key and simple. kels-policy provides an expressive policy DSL — `endorse`, `delegate`, `threshold`, `weighted`, and nested `policy` references — for multi-party governance at a layer above the KEL. Policies are immutable, self-addressed objects that travel with credentials, and verification checks that enough endorsers have anchored the credential SAID in their own KELs per the policy's conditions. Three modes control poisoning semantics (default, immune, poisonable), and a separate poison expression can restrict who is authorized to poison a credential. Policy compaction enables edges to match on trust structure without pinning specific delegates. This keeps threshold logic out of the critical KEL verification path while providing governance expressiveness comparable to KERI's built-in multi-sig.
+KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Core KEL verification stays single-key and simple. kels-policy provides multi-party governance at a layer above the KEL through an expressive, composable policy DSL.
+
+#### Tholder vs. Policy: Detailed Comparison
+
+| | KERI Tholder | KELS Policy |
+|---|---|---|
+| Scope | Per-identifier (embedded in KEL) | Per-credential (travels with credential) |
+| Expressiveness | Fractional weights on keys within one identifier | Nested DSL: threshold, weighted, delegation, policy references |
+| Key compromise isolation | All keys share one identifier's fate | Each endorser has independent recovery/contest lifecycle |
+| Governance changes | Rotation event (changes the identifier's keys) | Issue new credential with new policy |
+| Delegation | Separate mechanism (delegated rotation requires delegator approval) | First-class `delegate(DELEGATOR, DELEGATE)` node in the DSL |
+| Revocation/withdrawal | TEL-based (separate append-only log) | Poisoning with soft/hard/immune modes and admin-controlled poison expressions |
+| Verification cost | One KEL replay (efficient) | N KEL replays, one per endorser (more expensive) |
+| Composability | Nested weighted groups within one identifier | Recursive across identities (policies reference other policies by SAID) |
+| Fleet scaling | Not applicable (keys are within one identifier) | Policy compaction: edges match on trust structure without pinning specific delegates |
+
+**Composability and flexibility.** KERI's `Tholder` supports fractional weights on keys and nested threshold groups within a single identifier — it can express hierarchical governance structures like "2-of-(group-A-or-group-B)." However, all keys live within one identifier's KEL, and the `Tholder` cannot reference external identifiers, express delegation relationships, or compose across organizational boundaries.
+
+KELS's policy DSL operates at a different level, composing across independent identities rather than keys within one identity:
+
+- **Cross-identity nesting:** `threshold(2, [endorse(A), weighted(3, [endorse(B):2, endorse(C):1]), policy(SAID)])` — a threshold where A, B, C are independent KEL prefixes (each with their own key lifecycle) and one child is an entire sub-policy resolved by SAID.
+- **Cross-identity composition:** Policies reference independent KEL prefixes, each with their own key lifecycle, recovery procedures, and contest mechanisms. A compromised endorser recovers independently without affecting others.
+- **Delegation as a node type:** `delegate(HSM_PREFIX, SERVICE_PREFIX)` expresses "this service, delegated by this HSM, must endorse" as a first-class concept in the trust expression — not a separate mechanism layered on top.
+- **Policy references:** `policy(SAID)` enables reuse and composition of policies across credentials. An organization can define a "board approval" policy once and reference it from many credentials.
+- **Policy compaction:** `delegate(HSM, SERVICE)` compacts to `delegate(HSM)` — edges match on trust *structure* (any service delegated by this HSM) without pinning specific delegates, enabling fleet scaling without edge updates.
+- **Admin-controlled poisoning:** A separate DSL expression (`poison` field) governs who can kill the credential, independent of who endorses it. KERI has no equivalent — revocation is TEL-based and not expressible as a threshold policy.
+
+As a concrete example, KERI cannot express "2-of-3 endorsers, where one endorser is any service delegated by this HSM, and revocation requires 2-of-2 admins" in a single identifier's threshold structure. KELS can express this in a single policy document:
+
+```
+expression: threshold(2, [endorse(A), delegate(HSM, SERVICE), endorse(C)])
+poison:     threshold(2, [endorse(ADMIN_1), endorse(ADMIN_2)])
+```
+
+**The fundamental architectural difference:** KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three separate identities *collectively endorse* a credential per a policy. KERI's approach is more efficient (one KEL replay). KELS's approach gives each endorser independent key lifecycle — if one endorser's key is compromised, they recover independently via `rec`/`cnt` without affecting the other endorsers or the policy itself. In KERI, a compromised key in a multisig set requires a rotation of the entire identifier.
 
 KELS's dual-signature requirement for recovery events (rotation key + recovery key) is a form of 2-of-2 multi-sig, but it serves a specific security purpose (proving possession of both key tiers) rather than general governance.
 
-**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus at a higher layer (KELS's kels-policy approach) becomes a meaningful architectural decision. KERI's approach integrates multi-sig into KEL verification — a single KEL replay checks all thresholds. KELS's approach requires verifying multiple KELs (one per endorser in the policy) but keeps core verification simple and makes governance independently evolvable. Both approaches can express equivalent policies; the difference is where verification complexity lives. KELS's policy compaction adds a unique capability: edges can express trust requirements at the structural level (e.g., "delegated by this HSM") without pinning specific delegates, enabling fleet scaling without edge updates.
+**2026 consideration:** As organizational key management matures, the ability to express governance policies directly in the identifier (KERI's approach) versus at a higher layer (KELS's kels-policy approach) becomes a meaningful architectural decision. KERI's approach integrates multi-sig into KEL verification — a single KEL replay checks all thresholds. KELS's approach requires verifying multiple KELs (one per endorser in the policy) but keeps core verification simple and makes governance independently evolvable. KELS's recursive policy composition and policy compaction have no KERI equivalent — they enable trust structures that span organizational boundaries and scale with fleet operations in ways that a single identifier's key threshold cannot.
 
 ### 9. Standards and Interoperability
 
