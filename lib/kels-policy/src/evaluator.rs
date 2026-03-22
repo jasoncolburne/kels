@@ -13,9 +13,9 @@ use crate::{
 const MAX_POLICY_DEPTH: usize = 10;
 
 /// Compute the poison hash for a credential SAID.
-/// Uses the same pattern as revocation_hash but with a different domain separator.
+/// `poison_hash = Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()`
 pub fn poison_hash(credential_said: &str) -> String {
-    let bytes = [b"kels/revocation:" as &[u8], credential_said.as_bytes()].concat();
+    let bytes = [b"kels/poison:" as &[u8], credential_said.as_bytes()].concat();
     Digest::blake3_256(&bytes).qb64()
 }
 
@@ -29,12 +29,31 @@ pub async fn evaluate_policy(
     source: &(dyn PagedKelSource + Sync),
     resolver: &dyn PolicyResolver,
 ) -> Result<PolicyVerification, PolicyError> {
+    let mut visited = BTreeSet::new();
+    evaluate_policy_inner(
+        policy,
+        credential_said,
+        source,
+        resolver,
+        &mut visited,
+        MAX_POLICY_DEPTH,
+    )
+    .await
+}
+
+async fn evaluate_policy_inner(
+    policy: &Policy,
+    credential_said: &str,
+    source: &(dyn PagedKelSource + Sync),
+    resolver: &dyn PolicyResolver,
+    visited: &mut BTreeSet<String>,
+    remaining_depth: usize,
+) -> Result<PolicyVerification, PolicyError> {
     let ast = policy.parse()?;
     let mut endorsements = BTreeMap::new();
     let mut nested = BTreeMap::new();
-    let mut visited = BTreeSet::new();
 
-    // When a poison_expression is set, the main expression evaluates without
+    // When a poison expression is set, the main expression evaluates without
     // poison checks (endorsers can't individually poison; only the poison
     // expression controls poisoning). When absent, the main expression checks
     // poison hashes per-endorser as before.
@@ -59,8 +78,8 @@ pub async fn evaluate_policy(
         resolver,
         &mut endorsements,
         &mut nested,
-        &mut visited,
-        MAX_POLICY_DEPTH,
+        visited,
+        remaining_depth,
     )
     .await?;
 
@@ -91,7 +110,7 @@ pub async fn evaluate_policy(
                 &mut poison_endorsements,
                 &mut poison_nested,
                 &mut poison_visited,
-                MAX_POLICY_DEPTH,
+                remaining_depth,
             )
             .await?;
 
@@ -106,7 +125,7 @@ pub async fn evaluate_policy(
 
             poison_satisfied
         } else {
-            // No poison expression — check if any endorser is Poisoned (legacy behavior)
+            // Default mode: any endorser can soft-poison
             endorsements
                 .values()
                 .any(|s| matches!(s, EndorsementStatus::Poisoned))
@@ -118,7 +137,7 @@ pub async fn evaluate_policy(
     // Determine final satisfaction
     let final_satisfied = if is_poisoned {
         if policy.is_poisonable() {
-            // Poisonable or has poison expression: any poisoning kills the policy
+            // Poison expression satisfied: policy is unsatisfied
             false
         } else {
             // Default mode: poisoned endorsements already don't count in the main evaluation
@@ -181,28 +200,6 @@ fn evaluate_node<'a>(
                 Ok(matches!(status, EndorsementStatus::Endorsed))
             }
 
-            PolicyNode::Threshold(min, children) => {
-                let mut satisfied = 0usize;
-                for child in children {
-                    if evaluate_node(
-                        child,
-                        credential_said,
-                        policy,
-                        source,
-                        resolver,
-                        endorsements,
-                        nested,
-                        visited,
-                        remaining_depth - 1,
-                    )
-                    .await?
-                    {
-                        satisfied += 1;
-                    }
-                }
-                Ok(satisfied >= *min)
-            }
-
             PolicyNode::Weighted(min_weight, pairs) => {
                 let mut total_weight = 0u64;
                 for (child, weight) in pairs {
@@ -233,38 +230,15 @@ fn evaluate_node<'a>(
                 }
 
                 let resolved = resolver.resolve_policy(said).await?;
-                let resolved_ast = resolved.parse()?;
-                let mut nested_endorsements = BTreeMap::new();
-                let mut nested_nested = BTreeMap::new();
-
-                let is_satisfied = evaluate_node(
-                    &resolved_ast,
-                    credential_said,
+                let verification = evaluate_policy_inner(
                     &resolved,
+                    credential_said,
                     source,
                     resolver,
-                    &mut nested_endorsements,
-                    &mut nested_nested,
                     visited,
                     remaining_depth - 1,
                 )
                 .await?;
-
-                // Apply poisonable override for nested policy
-                let final_satisfied = if resolved.is_poisonable() && is_satisfied {
-                    !nested_endorsements
-                        .values()
-                        .any(|s| matches!(s, EndorsementStatus::Poisoned))
-                } else {
-                    is_satisfied
-                };
-
-                let verification = PolicyVerification {
-                    policy: resolved.said.clone(),
-                    is_satisfied: final_satisfied,
-                    endorsements: nested_endorsements,
-                    nested_verifications: nested_nested,
-                };
                 let satisfied = verification.is_satisfied;
                 nested.insert(said.clone(), verification);
 
@@ -380,7 +354,7 @@ mod tests {
 
     use kels::{
         FileKelStore, KelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource,
-        VerificationKeyCode,
+        VerificationKeyCode, forward_key_events,
     };
 
     use super::*;
@@ -832,8 +806,6 @@ mod tests {
 
     /// Helper to copy KEL events from one FileKelStore to another.
     async fn copy_kel_events(from: &FileKelStore, prefix: &str, to: &FileKelStore) {
-        use kels::forward_key_events;
-
         let source = StoreKelSource::new(from);
         let sink = kels::KelStoreSink(to);
         forward_key_events(

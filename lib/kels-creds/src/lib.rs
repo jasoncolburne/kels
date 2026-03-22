@@ -9,7 +9,6 @@ pub(crate) mod disclosure;
 pub(crate) mod edge;
 pub(crate) mod error;
 pub mod json_api;
-pub(crate) mod revocation;
 pub(crate) mod rule;
 pub(crate) mod schema;
 pub(crate) mod store;
@@ -19,7 +18,6 @@ pub use credential::{Compactable, Credential};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
 pub use error::CredentialError;
-pub use revocation::revocation_hash;
 pub use rule::{Rule, Rules};
 pub use schema::{
     Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult,

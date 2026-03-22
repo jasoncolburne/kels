@@ -670,7 +670,7 @@ mod tests {
         .unwrap();
         builder.interact(&compacted_said).await.unwrap();
 
-        // Anchor poison hash (same as revocation hash)
+        // Anchor poison hash
         let p_hash = kels_policy::poison_hash(&compacted_said);
         builder.interact(&p_hash).await.unwrap();
 

@@ -30,8 +30,26 @@ pub struct Policy {
     pub expression: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poison: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_immune"
+    )]
     pub immune: Option<bool>,
+}
+
+/// Deserialize `immune` field, normalizing `false` to `None`.
+/// Only `true` is meaningful; `false` would produce a different SAID than `None`
+/// while behaving identically at runtime.
+fn deserialize_immune<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<bool> = Option::deserialize(deserializer)?;
+    match value {
+        Some(true) => Ok(Some(true)),
+        _ => Ok(None),
+    }
 }
 
 impl Policy {
@@ -135,11 +153,6 @@ fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<String>)
                 prefixes.insert(delegate.clone());
             }
         }
-        PolicyNode::Threshold(_, children) => {
-            for child in children {
-                collect_endorser_prefixes(child, prefixes);
-            }
-        }
         PolicyNode::Weighted(_, pairs) => {
             for (node, _) in pairs {
                 collect_endorser_prefixes(node, prefixes);
@@ -152,11 +165,6 @@ fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<String>)
 fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<String>) {
     match node {
         PolicyNode::Endorse(_) | PolicyNode::Delegate(_, _) => {}
-        PolicyNode::Threshold(_, children) => {
-            for child in children {
-                collect_policy_saids(child, saids);
-            }
-        }
         PolicyNode::Weighted(_, pairs) => {
             for (node, _) in pairs {
                 collect_policy_saids(node, saids);

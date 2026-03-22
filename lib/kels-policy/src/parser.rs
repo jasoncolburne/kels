@@ -63,6 +63,12 @@ fn parse_identifier(input: &str, pos: &mut usize) -> Result<String, PolicyError>
             "expected identifier at position {start}"
         )));
     }
+    let len = *pos - start;
+    if len < 2 {
+        return Err(PolicyError::ParseError(format!(
+            "identifier too short at position {start}: must be at least 2 characters"
+        )));
+    }
     Ok(input[start..*pos].to_string())
 }
 
@@ -178,7 +184,8 @@ fn parse_threshold(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyErr
         )));
     }
 
-    Ok(PolicyNode::Threshold(min, children))
+    let pairs = children.into_iter().map(|node| (node, 1u64)).collect();
+    Ok(PolicyNode::Weighted(min as u64, pairs))
 }
 
 fn parse_weighted(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyError> {
@@ -309,12 +316,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             node,
-            PolicyNode::Threshold(
+            PolicyNode::Weighted(
                 2,
                 vec![
-                    PolicyNode::Endorse(PREFIX_A.to_string()),
-                    PolicyNode::Endorse(PREFIX_B.to_string()),
-                    PolicyNode::Endorse(PREFIX_C.to_string()),
+                    (PolicyNode::Endorse(PREFIX_A.to_string()), 1),
+                    (PolicyNode::Endorse(PREFIX_B.to_string()), 1),
+                    (PolicyNode::Endorse(PREFIX_C.to_string()), 1),
                 ]
             )
         );
@@ -352,18 +359,21 @@ mod tests {
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
-            PolicyNode::Threshold(
+            PolicyNode::Weighted(
                 2,
                 vec![
-                    PolicyNode::Endorse(PREFIX_A.to_string()),
-                    PolicyNode::Weighted(
-                        3,
-                        vec![
-                            (PolicyNode::Endorse(PREFIX_B.to_string()), 2),
-                            (PolicyNode::Endorse(PREFIX_C.to_string()), 1),
-                        ]
+                    (PolicyNode::Endorse(PREFIX_A.to_string()), 1),
+                    (
+                        PolicyNode::Weighted(
+                            3,
+                            vec![
+                                (PolicyNode::Endorse(PREFIX_B.to_string()), 2),
+                                (PolicyNode::Endorse(PREFIX_C.to_string()), 1),
+                            ]
+                        ),
+                        1
                     ),
-                    PolicyNode::Policy(SAID_A.to_string()),
+                    (PolicyNode::Policy(SAID_A.to_string()), 1),
                 ]
             )
         );
@@ -387,11 +397,11 @@ mod tests {
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
-            PolicyNode::Threshold(
+            PolicyNode::Weighted(
                 2,
                 vec![
-                    PolicyNode::Endorse(PREFIX_A.to_string()),
-                    PolicyNode::Endorse(PREFIX_B.to_string()),
+                    (PolicyNode::Endorse(PREFIX_A.to_string()), 1),
+                    (PolicyNode::Endorse(PREFIX_B.to_string()), 1),
                 ]
             )
         );
@@ -455,18 +465,21 @@ mod tests {
 
     #[test]
     fn test_display_roundtrip() {
-        let node = PolicyNode::Threshold(
+        let node = PolicyNode::Weighted(
             2,
             vec![
-                PolicyNode::Endorse(PREFIX_A.to_string()),
-                PolicyNode::Weighted(
-                    3,
-                    vec![
-                        (PolicyNode::Endorse(PREFIX_B.to_string()), 2),
-                        (PolicyNode::Endorse(PREFIX_C.to_string()), 1),
-                    ],
+                (PolicyNode::Endorse(PREFIX_A.to_string()), 1),
+                (
+                    PolicyNode::Weighted(
+                        3,
+                        vec![
+                            (PolicyNode::Endorse(PREFIX_B.to_string()), 2),
+                            (PolicyNode::Endorse(PREFIX_C.to_string()), 1),
+                        ],
+                    ),
+                    1,
                 ),
-                PolicyNode::Policy(SAID_A.to_string()),
+                (PolicyNode::Policy(SAID_A.to_string()), 1),
             ],
         );
         let display = node.to_string();
@@ -504,11 +517,11 @@ mod tests {
                 3,
                 vec![
                     (
-                        PolicyNode::Threshold(
+                        PolicyNode::Weighted(
                             1,
                             vec![
-                                PolicyNode::Endorse(PREFIX_A.to_string()),
-                                PolicyNode::Endorse(PREFIX_B.to_string()),
+                                (PolicyNode::Endorse(PREFIX_A.to_string()), 1),
+                                (PolicyNode::Endorse(PREFIX_B.to_string()), 1),
                             ]
                         ),
                         2

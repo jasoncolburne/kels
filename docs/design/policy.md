@@ -88,19 +88,17 @@ Edges reference **canonical policy SAIDs**. The edge says "I accept any credenti
 pub enum PolicyNode {
     Endorse(String),                          // specific prefix
     Delegate(String, String),                 // delegator, delegate
-    Threshold(usize, Vec<PolicyNode>),        // min, children
     Weighted(u64, Vec<(PolicyNode, u64)>),    // min_weight, (child, weight)
     Policy(String),                           // nested policy SAID
 }
 ```
 
-`Display` produces canonical DSL output; `parse()` → `Display` → `parse()` is identity (round-trip safe). `compact()` strips delegates for compaction.
+`threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])` — threshold is syntactic sugar for equal-weight weighted. `Display` produces `threshold()` syntax when all weights are 1, preserving round-trip identity. `compact()` strips delegates for compaction.
 
 ## Parser
 
 Hand-written recursive descent (no external parser deps). Validates:
-- Threshold min >= 1 and <= child count
-- Weighted min_weight >= 1 and <= total weight
+- Weighted/threshold min_weight >= 1 and <= total weight
 - Non-empty child lists
 - Weight >= 1 per item
 
@@ -109,7 +107,7 @@ Hand-written recursive descent (no external parser deps). Validates:
 Endorsers poison by anchoring the **poison hash** in their KEL:
 
 ```
-poison_hash = Blake3(b"kels/revocation:" || credential_said.as_bytes()).qb64()
+poison_hash = Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()
 ```
 
 The domain separator is shared with the legacy revocation hash for backward compatibility.
@@ -163,8 +161,7 @@ pub trait PolicyResolver: Sync {
 
 1. For `Endorse(prefix)`: verify prefix's KEL, check for credential SAID anchoring and (unless immune) poison hash
 2. For `Delegate(delegator, delegate)`: verify delegation relationship, then check delegate's endorsement
-3. For `Threshold(min, children)`: count satisfied children, compare to min
-4. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight
+3. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight (threshold is weighted with unit weights)
 5. For `Policy(said)`: resolve via `PolicyResolver`, parse, evaluate recursively
 
 Cycle detection via visited-set on policy SAIDs. Max nesting depth = 10.
@@ -193,7 +190,7 @@ pub struct Credential<T: Claims> {
 }
 ```
 
-`Credential::issue()` takes a `&Policy` and one `KeyEventBuilder` — anchoring one endorsement. Additional endorsers anchor separately via their own builders.
+`Credential::build()` takes a `&Policy` and returns the credential with its canonical SAID. The caller anchors the SAID in endorser KELs separately (e.g., via `KeyEventBuilder::interact()`).
 
 ### CredentialVerification
 
@@ -227,11 +224,12 @@ lib/kels-policy/
 ├── deny.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── ast.rs              # PolicyNode enum + Display + compact()
-    ├── parser.rs           # recursive descent parser + canonicalize()
-    ├── policy.rs           # Policy struct + build() + helpers
+    ├── ast.rs              # PolicyNode enum (Endorse, Delegate, Weighted, Policy) + Display + compact()
+    ├── parser.rs           # recursive descent parser + canonicalize(); threshold() is sugar for Weighted
+    ├── policy.rs           # Policy struct + build() + compact() + helpers
     ├── resolver.rs         # PolicyResolver trait + InMemoryPolicyResolver
     ├── evaluator.rs        # evaluate_policy() + poison_hash()
+    ├── json_api.rs         # JSON-boundary functions (build, compact, poison_hash)
     ├── verification.rs     # PolicyVerification + EndorsementStatus
     └── error.rs            # PolicyError
 ```

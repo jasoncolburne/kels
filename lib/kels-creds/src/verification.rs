@@ -249,15 +249,32 @@ async fn verify_edges<T: Claims>(
                 ))
             })?;
 
-        // Enforce edge.policy constraint — the edge declares which policy is expected
-        if let Some(ref expected_policy) = edge.policy
-            && *expected_policy != edge_credential.policy
-        {
-            return Err(CredentialError::VerificationError(format!(
-                "edge '{label}': policy mismatch — edge declares {expected_policy}, \
-                 credential has {}",
-                edge_credential.policy
-            )));
+        // Enforce edge.policy constraint — the edge declares the expected canonical policy SAID.
+        // Compact the credential's policy to canonical form and compare SAIDs,
+        // allowing delegate flexibility (different delegates produce different full SAIDs
+        // but the same canonical SAID).
+        if let Some(ref expected_policy) = edge.policy {
+            let edge_cred_policy = resolver
+                .resolve_policy(&edge_credential.policy)
+                .await
+                .map_err(|e| {
+                    CredentialError::VerificationError(format!(
+                        "edge '{label}': failed to resolve credential policy {}: {e}",
+                        edge_credential.policy
+                    ))
+                })?;
+            let canonical = edge_cred_policy.compact().map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': failed to compact credential policy: {e}"
+                ))
+            })?;
+            if *expected_policy != canonical.said {
+                return Err(CredentialError::VerificationError(format!(
+                    "edge '{label}': policy mismatch — edge declares {expected_policy}, \
+                     credential's canonical policy is {}",
+                    canonical.said
+                )));
+            }
         }
 
         // Resolve the edge credential's policy for verification

@@ -104,7 +104,7 @@ Implements `FromStr` for JSON deserialization.
 - Value constraints enforced
 - Returns `SchemaValidationReport { valid: bool, errors: Vec<String> }` for graduated reporting
 
-`Credential::issue()` calls `validate_credential_report` and requires `valid == true` via `require_valid()`. Verification also uses it, but accepts compacted fields (which skip type checking).
+`Credential::build()` calls `validate_credential_report` and requires `valid == true` via `require_valid()`. Verification also uses it, but accepts compacted fields (which skip type checking).
 
 ### Edge/Edges
 
@@ -342,22 +342,24 @@ pub async fn apply_disclosure(
 
 ## Issuance Flow
 
-`Credential::issue()` is the only public way to create a credential. It atomically constructs the credential from expanded inputs and anchors its canonical SAID in one endorser's KEL. This prevents issuance of credentials with compacted (uninspected) fields — a canonical SAID commits to content the endorser has not examined, allowing an attacker to hide malicious payloads behind opaque hashes.
+`Credential::build()` is the only public way to create a credential. It constructs the credential from expanded inputs, validates against the schema, and derives all SAIDs. This prevents construction of credentials with compacted (uninspected) fields — a canonical SAID commits to content the builder has not examined, allowing an attacker to hide malicious payloads behind opaque hashes. The caller is responsible for anchoring the canonical SAID in endorser KELs.
 
-1. `issue()` takes expanded inputs (claims, edges, rules) plus a schema, `Policy`, and `KeyEventBuilder`
+1. `build()` takes expanded inputs (claims, edges, rules) plus a schema and `Policy`
 2. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
 3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this canonical form
 4. The credential is reconstructed by expanding from the canonical SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
-5. The canonical SAID is anchored in the builder's KEL via `builder.interact()` (creates an `ixn` event) — this is one endorsement. Additional endorsers anchor the same SAID in their own KELs separately.
-6. `issue()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the canonical SAID that was anchored
-7. Endorser stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
-8. Credential delivered to holder (out of band); additional endorsers anchor the canonical SAID independently
+5. `build()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the canonical SAID
+6. Caller anchors the canonical SAID in endorser KELs via `builder.interact(&canonical_said)` — each endorser anchors independently
+7. Caller stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
+8. Credential delivered to holder (out of band)
 
 ```rust
-// Issuance (atomic: construct + validate + anchor one endorsement)
-let (credential, canonical_said) = Credential::issue(
-    &schema, &policy, subject, claims, unique, edges, rules, expires_at, &mut builder,
+// Build credential (construct + validate + derive SAIDs)
+let (credential, canonical_said) = Credential::build(
+    &schema, &policy, subject, claims, unique, edges, rules, expires_at,
 ).await?;
+// Anchor in endorser's KEL (caller's responsibility)
+builder.interact(&canonical_said).await?;
 credential.store(&schema, &sad_store).await?;       // store for disclosure
 ```
 
@@ -365,9 +367,7 @@ credential.store(&schema, &sad_store).await?;       // store for disclosure
 
 Poisoning replaces the legacy single-issuer revocation model. An endorser (or authorized admin) poisons a credential by anchoring the **poison hash** in their KEL:
 
-**Poison hash** = `Blake3(b"kels/revocation:" || credential_said.as_bytes()).qb64()`
-
-The domain separation prefix `kels/revocation:` is retained for compatibility with the revocation hash computation.
+**Poison hash** = `Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()`
 
 - **Endorsed:** credential SAID is anchored in endorser's KEL, no poison hash present
 - **Poisoned:** poison hash is anchored in endorser's KEL (regardless of whether SAID is also anchored — proactive poisoning is supported)
@@ -462,7 +462,7 @@ The `json_api` module provides JSON-boundary functions for consumers who work wi
 - `parse_edges(json)` — parse edge JSON into `Edges` (for FFI use)
 - `parse_rules(json)` — parse rule JSON into `Rules` (for FFI use)
 
-Credential issuance is not in the JSON API — it requires a `KeyEventBuilder` which is a typed Rust generic. Issuance goes through the typed `Credential::issue()` API; the FFI layer will manage builder lifecycle.
+The JSON API also provides `build()` for constructing credentials from JSON strings — it returns the credential JSON and canonical SAID. Anchoring the SAID in endorser KELs is the caller's responsibility.
 
 These use `Credential<serde_json::Value>` internally via the `SelfAddressed` impl on `Value`, ensuring the same validation and verification logic as the typed API.
 
@@ -530,8 +530,7 @@ lib/kels-creds/
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact/expand (schema-aware, depth-bounded, with _fields variants for sub-trees)
     ├── verification.rs     # verify_credential, CredentialVerification (policy-based)
-    ├── revocation.rs       # revocation_hash / poison_hash (domain-separated, shared with kels-policy)
-    ├── json_api.rs         # JSON-boundary functions (store, verify, disclose, validate, parse helpers)
+    ├── json_api.rs         # JSON-boundary functions (build, store, verify, disclose, validate, parse helpers)
     └── error.rs            # CredentialError
 ```
 
