@@ -1,7 +1,7 @@
 use std::fmt;
 
 /// AST node representing a policy expression.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyNode {
     /// A specific prefix must anchor the credential SAID.
     Endorse(String),

@@ -478,7 +478,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 - **Backup/recovery:** Controller's key material is the critical backup item. Witnesses can be rebuilt from the controller's KEL.
 
 **KELS:**
-- **Key rotation:** Automatic for services (every 30 days signing, 90 days recovery via identity service). Manual for end-user KELs via CLI or client.
+- **Key rotation:** Automatic for services. Manual for end-user KELs via CLI or client.
 - **Peer management:** Proposing and voting on peers requires coordination across registry operators. Minimum 3 operators must act for any peer change.
 - **Monitoring:** Divergence is visible in the KEL and propagated via gossip — monitoring is built into the data model. Anti-entropy runs every 10 seconds by default, providing continuous consistency checking.
 - **Backup/recovery:** PostgreSQL databases are the primary data store. HSM key material must be backed up separately (PVC for mock HSM, native persistence for real HSMs). Redis is reconstructable from PostgreSQL on restart (cache + operational state rebuilt via anti-entropy).

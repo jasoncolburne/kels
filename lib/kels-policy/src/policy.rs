@@ -112,6 +112,9 @@ impl Policy {
         let ast = self.parse()?;
         let mut prefixes = BTreeSet::new();
         collect_endorser_prefixes(&ast, &mut prefixes);
+        if let Some(poison_ast) = self.parse_poison()? {
+            collect_endorser_prefixes(&poison_ast, &mut prefixes);
+        }
         Ok(prefixes)
     }
 

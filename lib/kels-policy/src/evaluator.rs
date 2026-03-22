@@ -216,7 +216,7 @@ fn evaluate_node<'a>(
                     )
                     .await?
                     {
-                        total_weight += weight;
+                        total_weight = total_weight.saturating_add(*weight);
                     }
                 }
                 Ok(total_weight >= *min_weight)

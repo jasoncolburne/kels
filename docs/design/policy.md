@@ -110,7 +110,7 @@ Endorsers poison by anchoring the **poison hash** in their KEL:
 poison_hash = Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()
 ```
 
-The domain separator is shared with the legacy revocation hash for backward compatibility.
+The domain separator `kels/poison:` is purpose-named to distinguish poison hashes from other anchored SAIDs.
 
 **Endorsement status per endorser:**
 

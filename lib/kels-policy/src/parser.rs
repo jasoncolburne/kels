@@ -207,7 +207,10 @@ fn parse_weighted(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyErro
         ));
     }
 
-    let total_weight: u64 = pairs.iter().map(|(_, w)| w).sum();
+    let total_weight: u64 = pairs
+        .iter()
+        .map(|(_, w)| *w)
+        .fold(0u64, u64::saturating_add);
     if min_weight > total_weight {
         return Err(PolicyError::ParseError(format!(
             "weighted minimum ({min_weight}) exceeds total weight ({total_weight})"
