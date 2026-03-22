@@ -15,7 +15,7 @@ KERI defines a rich taxonomy of infrastructure roles, each with distinct trust p
 - **Watchers** — monitor witnesses for duplicity (conflicting events at the same sequence number). They compare KELs across witnesses and flag inconsistencies.
 - **Jurors** — evaluate duplicity evidence gathered by watchers and render judgments about identifier trustworthiness.
 - **Judges** — make final trust decisions based on juror evaluations, applying policy to determine whether an identifier should still be trusted.
-- **Registrars** — manage credential registries (TELs — Transaction Event Logs) for verifiable credential issuance and revocation.
+- **Registrars** — manage credential registries that use TELs (Transaction Event Logs) to track credential issuance and revocation state.
 - **Validators** — any party that verifies a KEL's cryptographic integrity.
 
 This layered participant model creates a social trust infrastructure where duplicity detection, evaluation, and resolution are distributed across specialized roles. Each role can be operated by different parties, providing separation of concerns and defense in depth through organizational diversity.
@@ -146,7 +146,7 @@ KERI's specification defines verification semantics, but implementation rigor va
 
 Compacted disclosure uses a schema-aware path expression DSL that maps naturally to FFI (`*const c_char`) — only fields the schema marks as `compactable: true` are compacted/expanded, preventing blind expansion of SAID-like strings in non-compactable fields. Edge types are themselves SelfAddressed and compactable, enabling anti-correlation properties similar to ACDC's partial disclosure — a holder can prove an edge exists without revealing the referenced credential's policy or SAID. Edge verification uses **policy compaction** — the edge stores a compacted policy SAID (delegates stripped), and verification compacts the presented credential's policy to check for a match. This means edges don't need updating when delegated services rotate.
 
-The key architectural difference: ACDC credentials live in TELs (separate append-only logs), while kels-creds credentials are stateless computational objects verified against KEL anchors via policy evaluation across multiple endorser KELs. This avoids additional infrastructure but means credential state is derived rather than directly queryable. One should likely be verifying anchors on use of a credential in a zero-trust architecture, anyway.
+The key architectural difference: ACDC credentials are immutable data objects whose issuance/revocation state is tracked by TELs (separate append-only event logs — a management TEL per registry and a VC TEL per credential), while kels-creds credentials are stateless computational objects verified against KEL anchors via policy evaluation across multiple endorser KELs. This avoids additional infrastructure but means credential state is derived rather than directly queryable. One should likely be verifying anchors on use of a credential in a zero-trust architecture, anyway.
 
 **2026 consideration:** Verifiable credential adoption is accelerating (eIDAS 2.0, mDL, OpenID4VC). KERI's integrated credential stack is more battle-tested for production deployments. kels-creds + kels-policy closes the feature gap with a simpler model — no TELs, no registrars — trading ecosystem maturity for architectural simplicity, a smaller attack surface, and expressive multi-party trust policies.
 
