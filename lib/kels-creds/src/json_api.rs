@@ -238,7 +238,7 @@ mod tests {
         let policy = Policy::build(
             "endorse(KIssuer123456789012345678901234567890abcde)",
             None,
-            None,
+            false,
         )
         .unwrap();
 

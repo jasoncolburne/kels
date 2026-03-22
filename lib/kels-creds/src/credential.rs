@@ -305,7 +305,7 @@ mod tests {
     }
 
     fn test_policy(prefix: &str) -> Policy {
-        Policy::build(&format!("endorse({prefix})"), None, None).unwrap()
+        Policy::build(&format!("endorse({prefix})"), None, false).unwrap()
     }
 
     fn test_claims() -> TestClaims {
@@ -719,7 +719,7 @@ mod tests {
     async fn test_verify_immune_ignores_poison_hash() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = Policy::build(&format!("endorse({prefix})"), None, Some("immune")).unwrap();
+        let policy = Policy::build(&format!("endorse({prefix})"), None, true).unwrap();
         let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::issue(
