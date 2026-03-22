@@ -79,8 +79,8 @@ Client                              KELS Server
   │ create rec event from owner's tail   │
   │                                      │
   │──── submit_events([rec]) ───────────>│
-  │                                      │ archive adversary events
-  │                                      │ store rec
+  │                                      │ store rec, create RecoveryRecord
+  │                                      │ (adversary archival is async)
   │<──── BatchSubmitResponse ────────────│
   │      { applied: true }               │
 ```
@@ -193,19 +193,29 @@ CREATE INDEX kels_key_events_prefix_idx
 
 Events are linked by their `previous` SAID field rather than a version number. Multiple events can share the same `previous` value, indicating divergence.
 
-### Audit Records
+### Recovery Records
 
-Archived events preserved for forensics:
+Chained records tracking async adversary archival progress. Each state transition creates a new version; records are never deleted, forming an immutable audit trail.
 
 ```sql
-CREATE TABLE kels_audit_records (
+CREATE TABLE kels_recovery (
     said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
+    version BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
     kel_prefix TEXT NOT NULL,
-    kind TEXT NOT NULL,  -- 'kels/v1/rec' or 'kels/v1/cnt'
-    data_json TEXT NOT NULL,
-    recorded_at TIMESTAMPTZ NOT NULL
+    recovery_serial BIGINT NOT NULL,
+    diverged_at BIGINT NOT NULL,
+    rec_previous TEXT NOT NULL,
+    owner_first_serial BIGINT NOT NULL,
+    state TEXT NOT NULL,        -- pending, archiving, cleanup, recovered
+    cursor_serial BIGINT NOT NULL,
+    adversary_tip_said TEXT
 );
 ```
+
+Adversary events are moved to `kels_archived_events` (same schema as `kels_key_events`) and `kels_archived_event_signatures` by a background task.
 
 ## API Reference
 
@@ -236,15 +246,15 @@ Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 
 Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-32, default 32). Loop with `hasMore` for full retrieval.
 
-### Fetch Audit Records
+### Fetch Recovery History
 
 ```
 GET /api/v1/kels/kel/:prefix/audit
 
-Response: [KelsAuditRecord, ...]
+Response: [RecoveryRecord, ...]
 ```
 
-Audit records are separate from the paginated KEL endpoint.
+Recovery records are separate from the paginated KEL endpoint. Each record represents a state transition in the recovery lifecycle (pending → archiving → cleanup → recovered).
 
 ## CLI Commands
 
