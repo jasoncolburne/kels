@@ -151,7 +151,6 @@ impl LockedKelTransaction {
             &self.prefix,
             limit,
             offset,
-            None,
         )
         .await
         .map_err(|e| StorageError::StorageError(e.to_string()))

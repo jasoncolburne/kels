@@ -34,8 +34,6 @@ pub(crate) fn zip_events_with_signatures(
 /// ordering, fetches their signatures, and assembles into `SignedKeyEvent`s.
 /// Returns `(events, has_more)` using the limit+1 pop pattern.
 ///
-/// When `max_serial` is `Some`, events with `serial > max_serial` are excluded.
-/// This is used during active recovery to cap served events at the recovery serial.
 pub async fn load_signed_history(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
@@ -43,19 +41,15 @@ pub async fn load_signed_history(
     prefix: &str,
     limit: u64,
     offset: u64,
-    max_serial: Option<u64>,
 ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
     let clamped_limit = limit.min(crate::page_size() as u64);
-    let mut query = Query::<KeyEvent>::for_table(events_table)
+    let query = Query::<KeyEvent>::for_table(events_table)
         .eq("prefix", prefix)
         .order_by("serial", Order::Asc)
         .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
         .order_by("said", Order::Asc)
         .limit(clamped_limit + 1)
         .offset(offset);
-    if let Some(cap) = max_serial {
-        query = query.lte("serial", cap);
-    }
     let mut events: Vec<KeyEvent> = tx.fetch(query).await?;
 
     let has_more = events.len() > clamped_limit as usize;

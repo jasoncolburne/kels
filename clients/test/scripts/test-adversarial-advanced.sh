@@ -126,6 +126,7 @@ echo "Adversary events injected on node-d and node-e"
 # Wait for gossip propagation then recover
 wait_for_propagation
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX1"
+run_test "Recovery archival completes on node-d" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX1"
 
 # Poll until all nodes converge to the same recovered state
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX1"
@@ -170,6 +171,7 @@ wait_for_propagation
 # Owner recovers. The rec's previous points to the owner's ixn@1 which every node has,
 # so recovery resolves uniformly regardless of which adversary pair each node captured.
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX2"
+run_test "Recovery archival completes on node-d" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX2"
 
 # Poll until all nodes converge to the same recovered state
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX2"
@@ -206,6 +208,7 @@ echo "Owner anchor + two adversary events submitted simultaneously"
 # Wait for gossip propagation — nodes have different divergent pairs
 wait_for_propagation
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX3"
+run_test "Recovery archival completes on node-d" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX3"
 
 # Poll until all nodes converge
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX3"
@@ -245,6 +248,8 @@ run_test "Owner rotates recovery key on node-d" kels-cli -u "$NODE_D_URL" rotate
 # Wait then recover
 wait_for_propagation
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX4"
+# No wait_for_recovery_complete: node-d's ror+rec is a non-divergent append (adversary
+# events are on nodes e/f), so no RecoveryRecord is created on node-d.
 
 # Poll until all nodes converge to the same recovered state [icp, ror, rec]
 run_test "All nodes have matching KELs after ror+rec recovery" wait_for_convergence "$PREFIX4"

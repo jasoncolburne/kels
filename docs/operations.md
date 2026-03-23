@@ -20,10 +20,19 @@ The standard recovery flow works for identity:
 
 1. **Rotate the recovery key offline.** The recovery key should be stored in a separate HSM or cold storage, not accessible to the compromised signing key.
 2. **Submit a `rec + rot` batch** using the recovery key. This can be done via the identity service's manage endpoint or directly against the kels service.
-3. **The merge engine detects divergence**, accepts the recovery, and creates a `RecoveryRecord`.
-4. **The background archival task** asynchronously moves adversary events to archive tables.
-5. **During recovery**, the serve filter caps events at the recovery serial — consumers see a consistent view.
-6. **After recovery completes**, the new `rot` becomes visible and normal operations resume.
+3. **The merge engine detects divergence**, accepts the recovery atomically, and creates a `RecoveryRecord`.
+4. **The background archival task** removes adversary events newest-first, moving them to archive tables for auditability.
+5. **During recovery**, serve endpoints return the full KEL including adversary events — consumers verify independently. Anchors beyond the divergence serial are not honoured by the verifier. Non-recovery submissions return `RecoverRequired` (the divergent KEL is frozen until archival completes).
+6. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume.
+
+### During active recovery
+
+While the `RecoveryRecord` is in `Pending`, `Archiving`, or `Cleanup` state:
+
+- Non-recovery submissions return `RecoverRequired` — the divergent KEL is frozen until adversary events are archived.
+- Serve endpoints return the full KEL including adversary events — consumers verify independently and the verifier does not honour anchors beyond the divergence serial.
+- The background archival task archives adversary events asynchronously (configurable interval via `KELS_RECOVERY_INTERVAL_SECS`, default 1s).
+- Monitor progress via `GET /api/v1/kels/kel/:prefix/audit` — the latest `RecoveryRecord` shows the current state.
 
 ### Recovery via database truncation
 

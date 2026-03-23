@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
-use kels::{KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord};
+use kels::{KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord, SignedKeyEvent};
 use libkels_derive::SignedEvents;
 
 #[derive(Stored, SignedEvents)]
@@ -32,6 +32,29 @@ pub struct KelsRepository {
 }
 
 impl KeyEventRepository {
+    /// Paginated query of archived adversary events for a prefix.
+    pub async fn get_archived_events(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+        use verifiable_storage::TransactionExecutor;
+
+        let mut tx = self.pool.begin_transaction().await?;
+        let result = kels::load_signed_history(
+            &mut tx,
+            "kels_archived_events",
+            "kels_archived_event_signatures",
+            prefix,
+            limit,
+            offset,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
     /// Check if an event with the given SAID exists (efficient SELECT EXISTS query).
     pub async fn event_exists_by_said(&self, said: &str) -> Result<bool, StorageError> {
         let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME).eq("said", said);

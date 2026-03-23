@@ -45,7 +45,8 @@ fn max_member_events_per_prefix_per_day() -> u32 {
 
 const SECS_PER_DAY: u64 = 86_400;
 
-/// Per-prefix daily rate limit: counts events (not submissions).
+/// Check whether adding `event_count` new events would exceed the daily limit.
+/// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -64,8 +65,21 @@ fn check_prefix_rate_limit(
         return Err(ApiError::rate_limited("Too many events for this prefix"));
     }
 
-    entry.0 += event_count;
     Ok(())
+}
+
+/// Accrue the actual number of new events after merge completes.
+fn accrue_prefix_rate_limit(limits: &DashMap<String, (u32, Instant)>, prefix: &str, count: u32) {
+    if count == 0 {
+        return;
+    }
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    entry.0 += count;
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -1113,15 +1127,15 @@ pub async fn submit_member_key_events(
                 ApiError::unauthorized("KEL is decommissioned".to_string())
             }
             kels::KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
-            kels::KelsError::RecoveryInProgress => ApiError(
-                StatusCode::CONFLICT,
-                axum::Json(kels::ErrorResponse {
-                    error: "Recovery in progress for this prefix".to_string(),
-                    code: kels::ErrorCode::RecoveryInProgress,
-                }),
-            ),
             _ => ApiError::internal_error(e.to_string()),
         })?;
+
+    // Accrue only the actual new events (duplicates don't count)
+    accrue_prefix_rate_limit(
+        &state.member_kel_prefix_rate_limits,
+        &prefix,
+        outcome.new_event_count as u32,
+    );
 
     let applied = matches!(
         outcome.result,

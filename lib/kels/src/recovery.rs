@@ -8,8 +8,10 @@
 //! The task is generic over the pool type so both the kels service and
 //! kels-registry can reuse it.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use tracing::{debug, error, info, warn};
 use verifiable_storage::{Chained, Delete, Order, Query, QueryExecutor, TransactionExecutor};
@@ -111,17 +113,15 @@ async fn query_active_recoveries<P: QueryExecutor>(
     config: &RecoveryConfig,
 ) -> Result<Vec<RecoveryRecord>, KelsError> {
     let query = Query::<RecoveryRecord>::for_table(config.recovery_table)
+        .ne("state", "recovered")
         .order_by("kel_prefix", Order::Asc)
         .order_by("version", Order::Desc);
     let all_records: Vec<RecoveryRecord> = pool.fetch(query).await?;
 
-    // Deduplicate: keep only the latest version per kel_prefix, skip terminal
-    let mut seen = std::collections::HashSet::new();
+    // Deduplicate: keep only the latest version per kel_prefix
+    let mut seen = HashSet::new();
     let mut result = Vec::new();
     for record in all_records {
-        if record.state == RecoveryState::Recovered {
-            continue;
-        }
         if seen.insert(record.kel_prefix.clone()) {
             result.push(record);
         }
@@ -169,21 +169,28 @@ async fn transition_to_archiving<P: QueryExecutor>(
         return Ok(());
     }
 
-    // Find the adversary tip
-    let adversary_tip_said = find_adversary_tip(&mut tx, config, &current).await?;
-
+    // Find the adversary tip. If there are no adversary events (proactive
+    // recovery on a non-divergent KEL), skip directly to cleanup.
     let mut next = current;
-    next.state = RecoveryState::Archiving;
-    next.adversary_tip_said = Some(adversary_tip_said);
+    match find_adversary_tip(&mut tx, config, &next).await {
+        Ok(adversary_tip_said) => {
+            next.state = RecoveryState::Archiving;
+            next.adversary_tip_said = Some(adversary_tip_said);
+            debug!(kel_prefix = %next.kel_prefix, "Recovery: pending → archiving");
+        }
+        Err(_) => {
+            next.state = RecoveryState::Cleanup;
+            debug!(
+                kel_prefix = %next.kel_prefix,
+                "Recovery: pending → cleanup (no adversary events)"
+            );
+        }
+    }
     next.increment()
         .map_err(|e| KelsError::StorageError(e.to_string()))?;
     tx.insert_with_table(&next, config.recovery_table).await?;
     tx.commit().await?;
 
-    debug!(
-        kel_prefix = %next.kel_prefix,
-        "Recovery: pending → archiving"
-    );
     Ok(())
 }
 
@@ -222,6 +229,7 @@ async fn archive_one_page<P: QueryExecutor>(
 
     // Fetch the tip event to determine its serial for the batch window
     let tip_query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("prefix", &current.kel_prefix)
         .eq("said", tip_said)
         .limit(1);
     let tip_events: Vec<KeyEvent> = tx.fetch(tip_query).await?;
@@ -334,23 +342,70 @@ async fn archive_one_page<P: QueryExecutor>(
     next.cursor_serial = oldest.serial;
 
     if reached_root {
-        // This branch is fully archived. Check if there's a second adversary
-        // branch at diverged_at (only when owner_first_serial <= diverged_at,
-        // meaning both events at diverged_at are adversary).
+        // This branch is fully archived. Check if there are remaining adversary
+        // events at diverged_at. Identify owner events by tracing the rec_previous
+        // chain — any event at diverged_at NOT on the owner's chain is adversary.
         if current.owner_first_serial <= current.diverged_at {
             let diverged_query = Query::<KeyEvent>::for_table(config.events_table)
                 .eq("prefix", &current.kel_prefix)
                 .eq("serial", current.diverged_at)
-                .limit(2);
+                .limit(4);
             let remaining: Vec<KeyEvent> = tx.fetch(diverged_query).await?;
 
-            // Any event at diverged_at that isn't rec/rot is adversary
+            // Build the set of owner event SAIDs at diverged_at by walking
+            // backward from rec_previous, plus the rec and rot-after-rec.
+            let mut owner_saids: HashSet<String> = HashSet::new();
+            let mut walk = Some(current.rec_previous.clone());
+            for _ in 0..crate::page_size() {
+                let Some(said) = walk.take() else { break };
+                let q = Query::<KeyEvent>::for_table(config.events_table)
+                    .eq("prefix", &current.kel_prefix)
+                    .eq("said", &said)
+                    .limit(1);
+                let events: Vec<KeyEvent> = tx.fetch(q).await?;
+                let Some(event) = events.into_iter().next() else {
+                    break;
+                };
+                if event.serial < current.diverged_at {
+                    break;
+                }
+                owner_saids.insert(event.said.clone());
+                walk = event.previous;
+            }
+
+            // Include the rec (and rot-after-rec) as owner events — they must
+            // never be archived. The rec_previous walk above only traces events
+            // BEFORE rec; the rec itself must be added explicitly.
+            let rec_query = Query::<KeyEvent>::for_table(config.events_table)
+                .eq("prefix", &current.kel_prefix)
+                .eq("serial", current.recovery_serial)
+                .limit(3);
+            let rec_events: Vec<KeyEvent> = tx.fetch(rec_query).await?;
+            for e in &rec_events {
+                if e.is_recover() {
+                    owner_saids.insert(e.said.clone());
+                }
+            }
+            let rot_query = Query::<KeyEvent>::for_table(config.events_table)
+                .eq("prefix", &current.kel_prefix)
+                .eq("serial", current.recovery_serial + 1)
+                .limit(2);
+            let rot_events: Vec<KeyEvent> = tx.fetch(rot_query).await?;
+            for e in &rot_events {
+                if e.is_rotation()
+                    && e.previous
+                        .as_deref()
+                        .is_some_and(|p| rec_events.iter().any(|r| r.is_recover() && r.said == p))
+                {
+                    owner_saids.insert(e.said.clone());
+                }
+            }
+
             let other_adversary = remaining
                 .into_iter()
-                .find(|e| !e.is_recover() && !e.is_rotation());
+                .find(|e| !owner_saids.contains(&e.said));
 
             if let Some(other) = other_adversary {
-                // Second adversary branch found — set as new tip
                 next.adversary_tip_said = Some(other.said);
             } else {
                 next.state = RecoveryState::Cleanup;
@@ -450,31 +505,76 @@ async fn find_adversary_tip<T: TransactionExecutor>(
     }
 }
 
-/// Case: all events from diverged_at are adversary. Find highest-serial event
-/// that isn't the owner's rec or rot.
+/// Case: owner_first_serial <= diverged_at. Find the highest-serial adversary
+/// event by identifying owner events via the rec_previous chain.
 async fn find_adversary_tip_all_adversary<T: TransactionExecutor>(
     tx: &mut T,
     config: &RecoveryConfig,
     record: &RecoveryRecord,
 ) -> Result<String, KelsError> {
-    // Query events from diverged_at, sorted by serial descending
+    // Build the set of owner event SAIDs by walking backward from rec_previous.
+    // This traces the owner's chain from just before the rec back to (and including)
+    // events at diverged_at.
+    let mut owner_saids: HashSet<String> = HashSet::new();
+    let mut walk = Some(record.rec_previous.clone());
+    for _ in 0..crate::page_size() {
+        let Some(said) = walk.take() else { break };
+        let q = Query::<KeyEvent>::for_table(config.events_table)
+            .eq("prefix", &record.kel_prefix)
+            .eq("said", &said)
+            .limit(1);
+        let events: Vec<KeyEvent> = tx.fetch(q).await?;
+        let Some(event) = events.into_iter().next() else {
+            break;
+        };
+        if event.serial < record.diverged_at {
+            break;
+        }
+        owner_saids.insert(event.said.clone());
+        walk = event.previous;
+    }
+
+    // Also include the rec and rot-after-rec as owner events.
+    // At recovery_serial there may be up to 3 events: 2 divergent + rec.
+    let rec_query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("prefix", &record.kel_prefix)
+        .eq("serial", record.recovery_serial)
+        .limit(3);
+    let rec_events: Vec<KeyEvent> = tx.fetch(rec_query).await?;
+    for e in &rec_events {
+        if e.is_recover() {
+            owner_saids.insert(e.said.clone());
+        }
+    }
+    let rot_query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("prefix", &record.kel_prefix)
+        .eq("serial", record.recovery_serial + 1)
+        .limit(2);
+    let rot_events: Vec<KeyEvent> = tx.fetch(rot_query).await?;
+    for e in &rot_events {
+        if e.is_rotation()
+            && e.previous
+                .as_deref()
+                .is_some_and(|p| rec_events.iter().any(|r| r.is_recover() && r.said == p))
+        {
+            owner_saids.insert(e.said.clone());
+        }
+    }
+
+    // The adversary tip is the highest-serial event NOT in the owner set.
+    // Owner events are bounded, so fetch a small window from the top.
     let query = Query::<KeyEvent>::for_table(config.events_table)
         .eq("prefix", &record.kel_prefix)
         .gte("serial", record.diverged_at)
         .order_by("serial", Order::Desc)
         .order_by("said", Order::Asc)
-        .limit(crate::page_size() as u64);
+        .limit((owner_saids.len() as u64 + 1).max(3));
     let events: Vec<KeyEvent> = tx.fetch(query).await?;
 
-    // The adversary tip is the highest-serial event that isn't on the owner's branch.
-    // Owner's events: rec event (identifiable by kind) and rot at recovery_serial + 1.
-    // Walk from highest serial down, skipping owner events.
     for event in &events {
-        if event.is_recover() || (event.is_rotation() && event.serial == record.recovery_serial + 1)
-        {
-            continue;
+        if !owner_saids.contains(&event.said) {
+            return Ok(event.said.clone());
         }
-        return Ok(event.said.clone());
     }
 
     Err(KelsError::StorageError(
@@ -484,17 +584,31 @@ async fn find_adversary_tip_all_adversary<T: TransactionExecutor>(
 
 /// Case: owner has events at diverged_at. Identify adversary at divergence
 /// and walk forward to find the tip.
+///
+/// Uses the same logic as merge.rs `find_adversary_event`:
+/// 1. Direct match: if `rec_previous` matches one divergent event's SAID,
+///    the other is the adversary.
+/// 2. N case: if the owner extended beyond diverged_at, the divergent event
+///    WITH a child at the next serial is the owner's; the one WITHOUT is
+///    the adversary's (adversary branch is always exactly 1 event at
+///    the divergence serial in this case).
 async fn find_adversary_tip_with_owner_events<T: TransactionExecutor>(
     tx: &mut T,
     config: &RecoveryConfig,
     record: &RecoveryRecord,
 ) -> Result<String, KelsError> {
-    // Find the two events at diverged_at
+    // Fetch events at diverged_at AND diverged_at+1 to check child relationships
     let query = Query::<KeyEvent>::for_table(config.events_table)
         .eq("prefix", &record.kel_prefix)
-        .eq("serial", record.diverged_at)
-        .limit(2);
-    let divergent: Vec<KeyEvent> = tx.fetch(query).await?;
+        .gte("serial", record.diverged_at)
+        .lte("serial", record.diverged_at + 1)
+        .limit(4); // 2 at diverged_at + up to 2 at diverged_at+1
+    let events: Vec<KeyEvent> = tx.fetch(query).await?;
+
+    let divergent: Vec<&KeyEvent> = events
+        .iter()
+        .filter(|e| e.serial == record.diverged_at)
+        .collect();
 
     if divergent.len() != 2 {
         return Err(KelsError::StorageError(format!(
@@ -504,25 +618,32 @@ async fn find_adversary_tip_with_owner_events<T: TransactionExecutor>(
         )));
     }
 
-    // The owner's event is the one traceable via rec_previous chain.
-    // The adversary's event is the other one.
-    let adversary = if is_on_owner_chain(&divergent[0], &record.rec_previous) {
-        &divergent[1]
-    } else {
-        &divergent[0]
-    };
+    // Direct match: rec_previous points to one of the divergent events
+    if record.rec_previous == divergent[0].said {
+        return walk_chain_to_tip(tx, config, &divergent[1].said, &record.kel_prefix).await;
+    }
+    if record.rec_previous == divergent[1].said {
+        return walk_chain_to_tip(tx, config, &divergent[0].said, &record.kel_prefix).await;
+    }
 
-    // Walk forward from adversary event to find the tip
-    walk_chain_to_tip(tx, config, &adversary.said, &record.kel_prefix).await
-}
+    // N case: rec extends a longer chain. The divergent event WITH a child
+    // at the next serial is the owner's; the one WITHOUT is the adversary's.
+    let d0_has_child = events.iter().any(|e| {
+        e.serial == record.diverged_at + 1 && e.previous.as_deref() == Some(&divergent[0].said)
+    });
+    let d1_has_child = events.iter().any(|e| {
+        e.serial == record.diverged_at + 1 && e.previous.as_deref() == Some(&divergent[1].said)
+    });
 
-/// Check if an event at diverged_at is on the owner's chain by comparing
-/// with rec_previous. The owner's chain is traceable: rec_previous points
-/// to the event just before rec. If divergent event's SAID matches
-/// rec_previous, it's on the owner's chain. If rec extends beyond diverged_at,
-/// the divergent event with a child is on the owner's chain.
-fn is_on_owner_chain(event: &KeyEvent, rec_previous: &str) -> bool {
-    event.said == rec_previous
+    match (d0_has_child, d1_has_child) {
+        // d0 has child (owner's), d1 is adversary (no chain)
+        (true, false) => Ok(divergent[1].said.clone()),
+        // d1 has child (owner's), d0 is adversary (no chain)
+        (false, true) => Ok(divergent[0].said.clone()),
+        _ => Err(KelsError::StorageError(
+            "Cannot identify adversary event at divergence point".to_string(),
+        )),
+    }
 }
 
 /// Walk forward from a starting event to find the chain tip (leaf node).

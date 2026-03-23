@@ -18,7 +18,8 @@ use tracing::warn;
 
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
-    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
+    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    SubmitEventsResponse,
 };
 
 use crate::repository::KelsRepository;
@@ -54,6 +55,9 @@ const SECS_PER_DAY: u64 = 86_400;
 /// Per-prefix rate limit: counts events (not submissions) in a daily window.
 /// Slows adversary event accumulation. The hard resilience guarantee comes
 /// from async archival (KELS-71), not from this rate limit.
+/// Check whether adding `event_count` new events would exceed the daily limit.
+/// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge
+/// with the actual number of new events inserted.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -72,8 +76,25 @@ fn check_prefix_rate_limit(
         return Err(ApiError::rate_limited("Too many events for this prefix"));
     }
 
-    entry.0 += event_count;
     Ok(())
+}
+
+/// Accrue the actual number of new events after merge completes.
+fn accrue_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    new_event_count: u32,
+) {
+    if new_event_count == 0 {
+        return;
+    }
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    entry.0 += new_event_count;
 }
 
 pub(crate) struct AppState {
@@ -195,7 +216,6 @@ impl From<KelsError> for ApiError {
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
             KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
-            KelsError::RecoveryInProgress => (StatusCode::CONFLICT, ErrorCode::RecoveryInProgress),
             KelsError::EventNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
@@ -385,15 +405,15 @@ pub(crate) async fn submit_events(
             KelsError::ContestRequired => ApiError::contest_required(
                 "Contest required: recovery key revealed. Use contest to freeze the KEL.",
             ),
-            KelsError::RecoveryInProgress => ApiError(
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: "Recovery in progress for this prefix".to_string(),
-                    code: ErrorCode::RecoveryInProgress,
-                }),
-            ),
             _ => ApiError::internal_error(e.to_string()),
         })?;
+
+    // Accrue only the actual new events (duplicates don't count)
+    accrue_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        &prefix,
+        outcome.new_event_count as u32,
+    );
 
     let applied = match outcome.result {
         KelMergeResult::Accepted
@@ -529,6 +549,37 @@ pub(crate) async fn get_kel_audit(
         .get_by_kel_prefix(&prefix)
         .await?;
     Ok(Json(records))
+}
+
+/// Query parameters for the archived events endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ArchivedEventsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<u64>,
+}
+
+/// Archived adversary events for a prefix — paginated.
+///
+/// `?limit=N` controls page size (1-32, default 32).
+/// `?offset=N` skips the first N events.
+pub(crate) async fn get_kel_archived(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (events, has_more) = state
+        .repo
+        .key_events
+        .get_archived_events(&prefix, limit, offset)
+        .await?;
+
+    Ok(Json(SignedKeyEventPage { events, has_more }))
 }
 
 // ==================== Event Exists ====================

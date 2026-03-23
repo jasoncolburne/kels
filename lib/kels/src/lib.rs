@@ -48,8 +48,7 @@ pub mod serving;
 pub mod store;
 pub mod types;
 
-use std::env;
-use std::sync::LazyLock;
+use std::{env, sync::LazyLock, time::Duration};
 
 #[cfg(feature = "redis")]
 pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
@@ -146,6 +145,22 @@ static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
 /// Read the max verification pages, cached from env on first access.
 pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
+}
+
+/// Default interval (seconds) for the background recovery archival task.
+/// Override with `KELS_RECOVERY_INTERVAL_SECS` environment variable.
+pub const DEFAULT_RECOVERY_INTERVAL_SECS: usize = 1;
+
+static RECOVERY_INTERVAL_SECS: LazyLock<usize> = LazyLock::new(|| {
+    env_usize(
+        "KELS_RECOVERY_INTERVAL_SECS",
+        DEFAULT_RECOVERY_INTERVAL_SECS,
+    )
+});
+
+/// Read the recovery interval, cached from env on first access.
+pub fn recovery_interval() -> Duration {
+    Duration::from_secs(*RECOVERY_INTERVAL_SECS as u64)
 }
 
 /// Sentinel limit for loading an entire KEL without pagination.

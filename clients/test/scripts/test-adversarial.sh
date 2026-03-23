@@ -204,6 +204,7 @@ run_test "KEL status is DIVERGENT before recovery" check_kel_status "$PREFIX1" "
 
 # Owner recovers
 run_test "Owner recovers KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX1"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX1"
 
 # Verify KEL is now OK
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX1" "OK"
@@ -255,6 +256,7 @@ run_test "KEL status is DIVERGENT after adversary rotation" check_kel_status "$P
 
 # Owner recovers (using recovery key)
 run_test "Owner recovers after adversary rotation" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX2"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX2"
 
 # Verify KEL is recovered
 run_test "KEL status is OK after rotation recovery" check_kel_status "$PREFIX2" "OK"
@@ -301,6 +303,7 @@ run_test "KEL status is DIVERGENT after multiple adversary events" check_kel_sta
 
 # Owner recovers (all adversary events should be archived)
 run_test "Owner recovers from multiple adversary events" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX3"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX3"
 
 # Verify clean state
 run_test "KEL is clean after multi-event recovery" check_kel_status "$PREFIX3" "OK"
@@ -352,6 +355,7 @@ run_test "KEL status is DIVERGENT before integrity check" check_kel_status "$PRE
 
 # Recover
 run_test "Owner recovers for integrity test" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX4"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX4"
 
 # Verify pre-attack anchors are still in KEL
 run_test "Pre-attack anchors preserved" kels-cli -u "$KELS_URL" get "$PREFIX4"
@@ -398,6 +402,7 @@ run_test "KEL status is DIVERGENT after owner rotation" check_kel_status "$PREFI
 
 # Owner recovers (must use keys from BEFORE the failed rotation)
 run_test "Owner recovers after divergent rotation" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX5"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX5"
 
 # Verify KEL is recovered
 run_test "KEL status is OK after recovery from divergent rotation" check_kel_status "$PREFIX5" "OK"
@@ -528,6 +533,7 @@ run_test "KEL status is DIVERGENT after adversary rot chain" check_kel_status "$
 
 # Owner recovers
 run_test "Owner recovers from adversary rot chain" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX8"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX8"
 
 # Verify KEL is OK
 run_test "KEL status is OK after rot chain recovery" check_kel_status "$PREFIX8" "OK"
@@ -577,6 +583,7 @@ run_test "KEL status is DIVERGENT after double rotation" check_kel_status "$PREF
 
 # Owner recovers
 run_test "Owner recovers from double rotation" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX9"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX9"
 
 # Verify KEL is OK
 run_test "KEL status is OK after double rotation recovery" check_kel_status "$PREFIX9" "OK"
@@ -630,6 +637,7 @@ run_test "KEL status is DIVERGENT after post-rotation attack" check_kel_status "
 
 # Owner recovers
 run_test "Owner recovers from post-rotation attack" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX10"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX10"
 
 # Verify KEL is OK
 run_test "KEL status is OK after post-rotation recovery" check_kel_status "$PREFIX10" "OK"
@@ -773,6 +781,7 @@ swap_to_owner
 
 # Owner recovers - no extra rotation needed because owner already rotated past compromised keys
 run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX13"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX13"
 
 # Verify recovery succeeded
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX13" "OK"
@@ -880,6 +889,7 @@ swap_to_owner
 run_test_expect_divergence "Owner anchor syncs divergence" "$PREFIX16" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX16" --said "KOwnerAnchorV3TriggersDivergence____________"
 run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX16"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX16"
 
 # KEL is now: icp(v0), ixn(v1), ixn(v2), rec(v3) (rec at divergence point)
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX16" "OK"
@@ -932,6 +942,7 @@ swap_to_owner
 
 # Owner recovers
 run_test "Owner recovers from replay attack" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX17"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX17"
 run_test "KEL status is OK after replay recovery" check_kel_status "$PREFIX17" "OK"
 
 cleanup_adversary_backup
@@ -961,6 +972,7 @@ run_test "Adversary injects ixn" kels-cli -u "$KELS_URL" adversary inject --pref
 run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX18" \
     kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX18" --said "KOwnerAnchorTriggersDivergence______________"
 run_test "Owner recovers" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX18"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX18"
 run_test "KEL status is OK after recovery" check_kel_status "$PREFIX18" "OK"
 
 # Adversary tries recovery-key operations with old keys
@@ -999,7 +1011,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX19" --said "KOwnerAnchorOnCleanK
 # Verify KEL is OK (not divergent)
 run_test "KEL status is OK (clean)" check_kel_status "$PREFIX19" "OK"
 
-# Recovery on clean KEL succeeds (proactive recovery rotates keys)
+# Recovery on clean KEL succeeds (proactive recovery — no divergence, no archival needed)
 run_test "Recovery succeeds on clean KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX19"
 
 # Try to contest - should fail (nothing to contest)
@@ -1050,6 +1062,7 @@ swap_to_owner
 
 # Owner recovers from first attack
 run_test "Owner recovers from first attack" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX20"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX20"
 run_test "KEL status is OK after first recovery" check_kel_status "$PREFIX20" "OK"
 
 cleanup_adversary_backup
@@ -1094,6 +1107,7 @@ run_test_expect_divergence "Owner anchor triggers divergence at v1" "$PREFIX21" 
 
 # Owner recovers
 run_test "Owner recovers from v0 attack" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX21"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX21"
 run_test "KEL status is OK after v0 recovery" check_kel_status "$PREFIX21" "OK"
 
 # Adversary re-injection should be blocked
@@ -1166,10 +1180,12 @@ run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX23" \
 
 # First recovery succeeds
 run_test "First recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX23"
 run_test "KEL status is OK after first recovery" check_kel_status "$PREFIX23" "OK"
 
 # Second recovery succeeds (proactive recovery on non-divergent KEL)
 run_test "Second recovery succeeds (proactive)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX23"
 
 # KEL should still be OK
 run_test "KEL status still OK" check_kel_status "$PREFIX23" "OK"
@@ -1203,6 +1219,7 @@ run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX24" \
 
 # Owner recovers first
 run_test "Owner recovers first" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX24"
+run_test "Recovery archival completes" wait_for_recovery_complete "$KELS_URL" "$PREFIX24"
 run_test "KEL status is OK after owner recovery" check_kel_status "$PREFIX24" "OK"
 
 # Adversary tries to recover with old recovery key - should be rejected

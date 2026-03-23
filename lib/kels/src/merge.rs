@@ -26,6 +26,8 @@ pub struct MergeOutcome {
     pub result: KelMergeResult,
     pub diverged_at: Option<u64>,
     pub tip_said: Option<String>,
+    /// Number of new events actually inserted (excludes duplicates).
+    pub new_event_count: usize,
 }
 
 impl MergeOutcome {
@@ -34,6 +36,7 @@ impl MergeOutcome {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: None,
+            new_event_count: 0,
         }
     }
 }
@@ -232,20 +235,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(self.tx.delete(delete).await?)
     }
 
-    /// Query the tip recovery record for this prefix. Returns the latest
-    /// version if one exists with a non-terminal state.
-    async fn query_active_recovery(&mut self) -> Result<Option<RecoveryRecord>, KelsError> {
-        let query = Query::<RecoveryRecord>::for_table(self.recovery_table)
-            .eq("kel_prefix", &self.prefix)
-            .order_by("version", Order::Desc)
-            .limit(1);
-        let records: Vec<RecoveryRecord> = self.tx.fetch(query).await?;
-        match records.into_iter().next() {
-            Some(r) if r.state != RecoveryState::Recovered => Ok(Some(r)),
-            _ => Ok(None),
-        }
-    }
-
     /// Insert a recovery record.
     async fn insert_recovery_record(&mut self, record: &RecoveryRecord) -> Result<(), KelsError> {
         self.tx
@@ -267,7 +256,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             &self.prefix,
             limit,
             offset,
-            None,
         )
         .await
     }
@@ -304,11 +292,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ) -> Result<MergeOutcome, KelsError> {
         if events.is_empty() {
             return Ok(MergeOutcome::empty());
-        }
-
-        // Reject submissions while recovery is in progress
-        if self.query_active_recovery().await?.is_some() {
-            return Err(KelsError::RecoveryInProgress);
         }
 
         // Validate all events belong to this prefix
@@ -412,6 +395,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
         let tip = events.last().map(|e| e.event.said.clone());
+        let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
         }
@@ -420,6 +404,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: tip,
+            new_event_count: count,
         })
     }
 
@@ -435,6 +420,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
         let tip = events.last().map(|e| e.event.said.clone());
+        let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
         }
@@ -443,6 +429,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: tip,
+            new_event_count: count,
         })
     }
 
@@ -474,6 +461,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result: KelMergeResult::Accepted,
                 diverged_at: kel_verification.diverged_at_serial(),
                 tip_said: None,
+                new_event_count: 0,
             });
         }
 
@@ -498,6 +486,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .verify_page(&new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
             let tip = new_events.last().map(|e| e.event.said.clone());
+            let count = new_events.len();
             for event in &new_events {
                 self.insert_signed_event(event).await?;
             }
@@ -505,9 +494,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result: KelMergeResult::Accepted,
                 diverged_at: None,
                 tip_said: tip,
+                new_event_count: count,
             });
         }
 
+        let new_count = new_events.len();
         if kel_verification.is_divergent() {
             let (result, diverged_at) = self
                 .handle_divergent_submission(kel_verification, &new_events, prefix)
@@ -516,6 +507,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result,
                 diverged_at,
                 tip_said: None,
+                new_event_count: new_count,
             })
         } else {
             let (result, diverged_at) = self
@@ -525,6 +517,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result,
                 diverged_at,
                 tip_said: None,
+                new_event_count: new_count,
             })
         }
     }

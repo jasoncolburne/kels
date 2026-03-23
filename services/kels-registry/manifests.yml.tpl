@@ -56,6 +56,8 @@ spec:
               value: "${var.federationSelfPrefix}"
             - name: FEDERATION_URLS
               value: "${var.federationUrls}"
+            - name: KELS_RECOVERY_INTERVAL_SECS
+              value: "${var.kels.recoveryIntervalSecs}"
           livenessProbe:
             httpGet:
               path: /health

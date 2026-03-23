@@ -42,6 +42,7 @@ variables:
   identityUrl: ${var.identity.url}
   federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
   federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
+  recoveryIntervalSecs: "${var.kels.recoveryIntervalSecs}"
 
 spec:
   manifestTemplates:

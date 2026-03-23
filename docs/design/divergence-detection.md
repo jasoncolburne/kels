@@ -16,7 +16,7 @@ The legitimate owner must be able to:
 1. **Store all valid events** - Don't reject conflicting events at the database level; let clients detect and resolve divergence
 2. **Derive state from data** - No separate divergence flag; compute from event structure
 3. **Freeze on divergence** - Prevent further damage until owner recovers
-4. **Archive on recovery** - Preserve adversary events for audit purposes
+4. **Archive asynchronously on recovery** - The `rec` (or `rec+rot`) is accepted atomically, placing the KEL in a recoverable divergent state. Adversary events are archived by a background task that removes them newest-first to maintain chain consistency at every step. This approach is necessary because an adversary's event count is unbounded (key compromise may go undetected for years), making synchronous archival impractical. The chained `RecoveryRecord` provides an immutable audit trail of the archival process.
 5. **Simple client API** - `KeyEventBuilder` handles complexity internally
 
 ## Architecture
@@ -79,10 +79,13 @@ Client                              KELS Server
   │ create rec event from owner's tail   │
   │                                      │
   │──── submit_events([rec]) ───────────>│
-  │                                      │ store rec, create RecoveryRecord
-  │                                      │ (adversary archival is async)
+  │                                      │ store rec (+ rot if needed)
+  │                                      │ create RecoveryRecord
   │<──── BatchSubmitResponse ────────────│
   │      { applied: true }               │
+  │                                      │
+  │ (background task archives adversary  │
+  │  events newest-first, one page/cycle)│
 ```
 
 When KEL is already frozen (submitting to a divergent KEL):
@@ -193,9 +196,21 @@ CREATE INDEX kels_key_events_prefix_idx
 
 Events are linked by their `previous` SAID field rather than a version number. Multiple events can share the same `previous` value, indicating divergence.
 
-### Recovery Records
+### Recovery Records and Async Archival
 
-Chained records tracking async adversary archival progress. Each state transition creates a new version; records are never deleted, forming an immutable audit trail.
+When a `rec` (or `rec+rot`) event resolves divergence, the merge engine stores the recovery events atomically and creates a `RecoveryRecord`. The KEL is now in a recoverable divergent state: both the owner's recovery branch and the adversary's branch coexist in the database.
+
+A background task archives adversary events asynchronously, removing them newest-first (backward from the adversary chain tip toward the divergence point). This preserves chain consistency at every step — consumers always see a valid chain with no orphaned events.
+
+**Why async?** An adversary's key compromise may go undetected for years. With a daily rate limit of 64 events, that's potentially 160,000+ adversary events. Synchronous archival of this many events in an HTTP handler is impractical. The async approach bounds each operation to one page (32 events) per cycle.
+
+**Why not truncate?** A database-level truncation (deleting all adversary events at once) would be faster but provides no audit trail. The async archival moves events to `kels_archived_events` and `kels_archived_event_signatures` (mirror tables with the same schema), and the chained `RecoveryRecord` provides an immutable record of when recovery happened, what was archived, and the state transitions involved.
+
+**During active recovery:**
+- Non-recovery submissions return `RecoverRequired` — the divergent KEL is frozen until adversary events are archived.
+- Serve endpoints return the full KEL including adversary events — consumers verify independently. The verifier does not honour anchors beyond the divergence serial, so adversary anchors have no effect.
+- The background task progresses through states: `pending` → `archiving` → `cleanup` → `recovered`.
+- After archival completes, the adversary events are gone from the live tables and the clean chain is all that remains.
 
 ```sql
 CREATE TABLE kels_recovery (
@@ -213,9 +228,10 @@ CREATE TABLE kels_recovery (
     cursor_serial BIGINT NOT NULL,
     adversary_tip_said TEXT
 );
-```
 
-Adversary events are moved to `kels_archived_events` (same schema as `kels_key_events`) and `kels_archived_event_signatures` by a background task.
+CREATE TABLE kels_archived_events (LIKE kels_key_events INCLUDING ALL);
+CREATE TABLE kels_archived_event_signatures (LIKE kels_key_event_signatures INCLUDING ALL);
+```
 
 ## API Reference
 

@@ -109,9 +109,6 @@ pub enum KelsError {
     #[error("Contest required: recovery key revealed")]
     ContestRequired,
 
-    #[error("Recovery in progress for this prefix")]
-    RecoveryInProgress,
-
     #[error("KEL diverged at: {0}")]
     Diverged(String),
 
@@ -241,7 +238,6 @@ mod tests {
             KelsError::StorageError("storage error".to_string()),
             KelsError::ContestedKel("contested".to_string()),
             KelsError::ContestRequired,
-            KelsError::RecoveryInProgress,
             KelsError::Diverged("diverged".to_string()),
             KelsError::Divergent,
             KelsError::Frozen,

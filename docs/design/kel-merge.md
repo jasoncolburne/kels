@@ -15,10 +15,12 @@ Events are linked by their `previous` SAID field. Generation is the position in 
 
 ## Return Values
 
-The merge function returns a tuple of three elements:
-1. **Archived events** - Events removed from the KEL (adversary events during recovery)
-2. **Added events** - Events successfully added to the KEL
-3. **Merge result** - One of the `KelMergeResult` variants
+The merge function returns a `MergeOutcome`:
+- **`result`** - A `KelMergeResult` variant (see below)
+- **`diverged_at`** - Serial at which divergence was detected, if any
+- **`tip_said`** - SAID of the new tip event for linear appends, or `None` for divergent/complex paths
+
+During recovery, adversary events are not archived synchronously. Instead, a `RecoveryRecord` is created (state `Pending`) and the background archival task handles cleanup asynchronously.
 
 ### KelMergeResult Variants
 

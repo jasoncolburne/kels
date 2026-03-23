@@ -47,7 +47,9 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 - KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
 - `KELS_MAX_VERIFICATION_PAGES` environment variable (default 64) controls maximum pagination loops for callers fetching large KELs.
+- `get_kel_archived` returns paginated `SignedKeyEventPage` of archived adversary events for a prefix. Use `?limit=N&offset=N` for pagination.
 - Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
+- During active recovery, the KEL contains both adversary and recovery events. Non-recovery submissions return `RecoverRequired` (the divergent KEL is frozen). Consumers see the full KEL and verify independently — anchors beyond the divergence serial are not honoured by the verifier.
 
 ## KELS Registry Service
 
