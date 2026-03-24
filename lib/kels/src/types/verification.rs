@@ -44,6 +44,14 @@ pub struct KelVerification {
     rotation_count: usize,
     anchored_saids: BTreeSet<String>,
     queried_saids: BTreeSet<String>,
+    /// Whether the KEL maintains proactive recovery rotation compliance:
+    /// no more than `MAX_NON_REVEALING_EVENTS` non-revealing events between
+    /// consecutive recovery-revealing events. Required to ensure all server
+    /// operations (archival, contest, recovery) are bounded to a single page.
+    proactive_ror_compliant: bool,
+    /// Non-revealing events since the last recovery-revealing event.
+    /// Preserved across resume so incremental verification continues tracking.
+    events_since_last_revealing: usize,
 }
 
 impl KelVerification {
@@ -153,6 +161,16 @@ impl KelVerification {
     /// Whether all queried SAIDs were found anchored.
     pub fn anchors_all_saids(&self) -> bool {
         self.queried_saids.is_subset(&self.anchored_saids)
+    }
+
+    /// Whether the KEL maintains proactive recovery rotation compliance.
+    pub fn is_proactive_ror_compliant(&self) -> bool {
+        self.proactive_ror_compliant
+    }
+
+    /// Non-revealing events since the last recovery-revealing event.
+    pub fn events_since_last_revealing(&self) -> usize {
+        self.events_since_last_revealing
     }
 
     /// Whether the KEL is empty (no events).

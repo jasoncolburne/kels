@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::iter;
-use std::slice;
 
 use async_trait::async_trait;
 use cesr::{Matter, Signature};
@@ -394,6 +393,13 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .verify_page(events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
+        // Reject if the new events violate proactive ror compliance
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
+
         let tip = events.last().map(|e| e.event.said.clone());
         let count = events.len();
         for event in events {
@@ -485,6 +491,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             verifier
                 .verify_page(&new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !verifier.is_proactive_ror_compliant() {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+                ));
+            }
             let tip = new_events.last().map(|e| e.event.said.clone());
             let count = new_events.len();
             for event in &new_events {
@@ -537,13 +548,14 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         };
 
-        let first = &new_events[0];
-
-        // === Contest ===
-        if first.event.is_contest() {
-            if new_events.len() > 1 {
+        // === Contest (cnt event anywhere in batch, must be last) ===
+        // The owner may need to resubmit their archived chain alongside cnt
+        // to restore verifiability (e.g., if the adversary's rec triggered
+        // archival of the owner's events before the owner could contest).
+        if let Some(cnt_idx) = new_events.iter().position(|e| e.event.is_contest()) {
+            if cnt_idx != new_events.len() - 1 {
                 return Err(KelsError::InvalidKeyEvent(
-                    "Cannot append events after contest".to_string(),
+                    "Contest must be the last event in the batch".to_string(),
                 ));
             }
 
@@ -553,7 +565,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let cnt_serial = first.event.serial;
+            let cnt_event = &new_events[cnt_idx];
+            let cnt_serial = cnt_event.event.serial;
             if cnt_serial == 0 {
                 return Err(KelsError::InvalidKeyEvent(
                     "Contest cannot have serial 0".to_string(),
@@ -565,44 +578,47 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let full_kel_verification = completed_verification(
-                self,
-                prefix,
-                crate::page_size(),
-                crate::max_pages(),
-                iter::empty::<String>(),
-            )
-            .await
-            .map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+            let first_serial = new_events[0].event.serial;
+            let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
+                KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
             })?;
 
-            let contest_previous = first.event.previous.as_deref().ok_or_else(|| {
-                KelsError::InvalidKeyEvent("Contest has no previous pointer".to_string())
-            })?;
-            let anchor_event =
-                self.get_event_by_said(contest_previous)
-                    .await?
-                    .ok_or_else(|| {
-                        KelsError::InvalidKeyEvent(
-                            "Contest does not extend a known event".to_string(),
-                        )
-                    })?;
-            if anchor_event.event.serial != cnt_serial - 1 {
+            let anchor_event = self
+                .get_event_by_said(first_previous)
+                .await?
+                .ok_or_else(|| {
+                    KelsError::InvalidKeyEvent("Contest does not extend a known event".to_string())
+                })?;
+            if anchor_event.event.serial >= first_serial {
                 return Err(KelsError::InvalidKeyEvent(
-                    "Contest previous event is not at the expected serial".to_string(),
+                    "Contest chain-from event is not before first submitted serial".to_string(),
                 ));
             }
 
-            let mut verifier =
-                KelVerifier::resume(prefix, &full_kel_verification).map_err(|e| {
+            let establishment = self
+                .trace_establishment_backward(&anchor_event.event.said)
+                .await?;
+            let anchor_tip = BranchTip {
+                tip: anchor_event,
+                establishment_tip: establishment,
+            };
+
+            let mut event_verifier =
+                KelVerifier::from_branch_tip(prefix, &anchor_tip).map_err(|e| {
                     KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
                 })?;
-            verifier
-                .verify_page(slice::from_ref(first))
+            event_verifier
+                .verify_page(new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !event_verifier.is_proactive_ror_compliant() {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+                ));
+            }
 
-            self.insert_signed_event(first).await?;
+            for event in new_events {
+                self.insert_signed_event(event).await?;
+            }
             return Ok((KelMergeResult::Contested, Some(diverged_at)));
         }
 
@@ -653,6 +669,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             event_verifier
                 .verify_page(new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !event_verifier.is_proactive_ror_compliant() {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+                ));
+            }
 
             let rec_previous = rec_event.event.previous.as_deref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Recovery event has no previous".to_string())
@@ -731,6 +752,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         verifier
             .verify_page(new_events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
 
         // Check if any existing event from divergence onward reveals recovery key
         let diverged_at = branch_serial + 1;
@@ -739,20 +765,18 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .await?;
 
         if old_reveals_recovery {
-            let divergent_event = new_events
-                .iter()
-                .find(|e| e.event.previous.as_deref() == Some(first_previous))
-                .ok_or_else(|| {
-                    KelsError::InvalidKeyEvent("Cannot find divergent event".to_string())
-                })?;
-
-            if divergent_event.event.is_contest() {
-                if new_events.len() > 1 {
+            // Check if the batch contains a contest (must be last). The owner
+            // may need to resubmit their archived chain alongside cnt when the
+            // adversary's rec triggered archival of the owner's events.
+            if let Some(cnt_idx) = new_events.iter().position(|e| e.event.is_contest()) {
+                if cnt_idx != new_events.len() - 1 {
                     return Err(KelsError::InvalidKeyEvent(
-                        "Cannot append events after contest".to_string(),
+                        "Contest must be the last event in the batch".to_string(),
                     ));
                 }
-                self.insert_signed_event(divergent_event).await?;
+                for event in new_events {
+                    self.insert_signed_event(event).await?;
+                }
                 return Ok((KelMergeResult::Contested, Some(branch_serial + 1)));
             } else {
                 return Err(KelsError::ContestRequired);

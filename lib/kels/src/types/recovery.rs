@@ -22,6 +22,9 @@ pub enum RecoveryState {
     Cleanup,
     /// Terminal state. Recovery is complete. Serves as audit trail.
     Recovered,
+    /// Terminal state. A contest (cnt) was submitted during archival,
+    /// permanently freezing the KEL. Archival stops immediately.
+    Contested,
 }
 
 impl fmt::Display for RecoveryState {
@@ -31,6 +34,7 @@ impl fmt::Display for RecoveryState {
             RecoveryState::Archiving => write!(f, "archiving"),
             RecoveryState::Cleanup => write!(f, "cleanup"),
             RecoveryState::Recovered => write!(f, "recovered"),
+            RecoveryState::Contested => write!(f, "contested"),
         }
     }
 }
@@ -44,6 +48,7 @@ impl std::str::FromStr for RecoveryState {
             "archiving" => Ok(RecoveryState::Archiving),
             "cleanup" => Ok(RecoveryState::Cleanup),
             "recovered" => Ok(RecoveryState::Recovered),
+            "contested" => Ok(RecoveryState::Contested),
             other => Err(format!("unknown recovery state: {other}")),
         }
     }

@@ -101,10 +101,27 @@ pub use types::{
 #[cfg(any(test, feature = "dev-tools"))]
 pub use types::resolve_key_events;
 
+/// Minimum page size. Defines the security bound for proactive recovery rotation:
+/// between any two recovery-revealing events, at most `MINIMUM_PAGE_SIZE - 2`
+/// non-revealing events are allowed. An adversary can only fork after the last
+/// recovery-revealing event (forking before triggers ContestRequired), so the
+/// worst-case recovery batch is `[62 events, rec, rot] = 64` and the worst-case
+/// contest batch is `[62 events, cnt] = 63`. Both fit in one page submission.
+///
+/// At 64 events, a full page of ML-DSA-65 events stays under 256KB and
+/// ML-DSA-87 events under 512KB.
+pub const MINIMUM_PAGE_SIZE: usize = 64;
+
+/// Maximum non-revealing events between recovery-revealing events.
+/// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
+pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
+
 /// Default page size for all KEL operations: submissions, queries, and responses.
-/// ML-DSA-65 signatures are ~3.3KB each, so 32 events ≈ 100KB per page.
+/// Clamped to at least `MINIMUM_PAGE_SIZE` at parse time. Operators may increase
+/// this for deployments that need larger batches, but the security bound is always
+/// defined by `MINIMUM_PAGE_SIZE`.
 /// Override with `KELS_PAGE_SIZE` environment variable.
-pub const DEFAULT_PAGE_SIZE: usize = 32;
+pub const DEFAULT_PAGE_SIZE: usize = MINIMUM_PAGE_SIZE;
 
 pub fn env_usize(name: &str, default: usize) -> usize {
     match env::var(name) {
@@ -123,7 +140,7 @@ pub fn env_usize(name: &str, default: usize) -> usize {
 }
 
 static PAGE_SIZE: LazyLock<usize> =
-    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE));
+    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE).max(MINIMUM_PAGE_SIZE));
 
 /// Read the page size, cached from env on first access.
 pub fn page_size() -> usize {

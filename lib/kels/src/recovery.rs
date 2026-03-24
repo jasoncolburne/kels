@@ -16,7 +16,10 @@ use std::{
 use tracing::{debug, error, info, warn};
 use verifiable_storage::{Chained, Delete, Order, Query, QueryExecutor, TransactionExecutor};
 
-use crate::{EventSignature, KelsError, KeyEvent, RecoveryRecord, RecoveryState};
+use crate::{
+    EventKind, EventSignature, KelsError, KeyEvent, PageLoader, RecoveryRecord, RecoveryState,
+    SignedKeyEvent, completed_verification, load_signed_history,
+};
 
 /// Table name configuration for the recovery task.
 #[derive(Clone)]
@@ -131,6 +134,10 @@ async fn query_active_recoveries<P: QueryExecutor>(
 }
 
 /// Process a single recovery record: one state transition or one page of archival.
+///
+/// Before processing, checks if the KEL was contested during archival. If a cnt
+/// event exists, archival stops immediately and the record transitions to the
+/// `Contested` terminal state.
 async fn process_one_recovery<P, F, Fut>(
     pool: &P,
     config: &RecoveryConfig,
@@ -144,13 +151,101 @@ where
 {
     match record.state {
         RecoveryState::Pending => transition_to_archiving(pool, config, record).await,
-        RecoveryState::Archiving => archive_one_page(pool, config, record).await,
+        RecoveryState::Archiving => {
+            // Check for contest under the advisory lock — if the KEL was
+            // contested while archival was running, stop immediately.
+            if check_contested_during_archival(pool, config, record).await? {
+                on_cleanup(&record.kel_prefix).await;
+                return Ok(());
+            }
+            archive_one_page(pool, config, record).await
+        }
         RecoveryState::Cleanup => {
             on_cleanup(&record.kel_prefix).await;
             transition_to_recovered(pool, config, record).await
         }
-        RecoveryState::Recovered => Ok(()), // terminal — should not reach here
+        RecoveryState::Recovered | RecoveryState::Contested => Ok(()),
     }
+}
+
+/// Check if a contest event was submitted during archival. If so, verify
+/// the full KEL chain (including the cnt) and transition the recovery record
+/// to the `Contested` terminal state.
+async fn check_contested_during_archival<P: QueryExecutor>(
+    pool: &P,
+    config: &RecoveryConfig,
+    record: &RecoveryRecord,
+) -> Result<bool, KelsError> {
+    let mut tx = pool.begin_transaction().await?;
+    tx.acquire_advisory_lock(&record.kel_prefix).await?;
+
+    // Quick check: is there a cnt event at all?
+    let query = Query::<KeyEvent>::for_table(config.events_table)
+        .eq("prefix", &record.kel_prefix)
+        .eq("kind", EventKind::Cnt.to_string())
+        .limit(1);
+    let cnt_events: Vec<KeyEvent> = tx.fetch(query).await?;
+
+    if cnt_events.is_empty() {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    // Verify the full KEL chain including the cnt. We cannot trust the DB —
+    // the cnt and its supporting chain must be cryptographically valid.
+    let mut loader = TransactionPageLoader {
+        tx: &mut tx,
+        config,
+    };
+    let verification = completed_verification(
+        &mut loader,
+        &record.kel_prefix,
+        crate::page_size(),
+        crate::max_pages(),
+        std::iter::empty::<String>(),
+    )
+    .await;
+
+    let is_contested = match verification {
+        Ok(v) => v.is_contested(),
+        Err(e) => {
+            warn!(
+                kel_prefix = %record.kel_prefix,
+                error = %e,
+                "Recovery: KEL verification failed during contest check, ignoring cnt"
+            );
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    };
+
+    if !is_contested {
+        // cnt exists but chain doesn't verify as contested — ignore
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    // Verified contest — transition to terminal Contested state
+    let current = read_latest_recovery(&mut tx, config, &record.kel_prefix).await?;
+    if current.state != RecoveryState::Archiving {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    let mut next = current;
+    next.state = RecoveryState::Contested;
+    next.adversary_tip_said = None;
+    next.increment()
+        .map_err(|e| KelsError::StorageError(e.to_string()))?;
+    tx.insert_with_table(&next, config.recovery_table).await?;
+    tx.commit().await?;
+
+    debug!(
+        kel_prefix = %next.kel_prefix,
+        "Recovery: archiving → contested (verified cnt event)"
+    );
+
+    Ok(true)
 }
 
 /// Pending → Archiving: discover the adversary tip and begin archival.
@@ -561,8 +656,31 @@ async fn find_adversary_tip_all_adversary<T: TransactionExecutor>(
         }
     }
 
+    // Trace forward from the last owner event (rot-after-rec or rec) to include
+    // any post-recovery owner events (e.g., ixn submitted after rec+rot). These
+    // arrive via gossip when another node syncs its full post-recovery chain.
+    let last_owner_said = rot_events
+        .iter()
+        .find(|e| owner_saids.contains(&e.said))
+        .map(|e| &e.said)
+        .or_else(|| rec_events.iter().find(|e| e.is_recover()).map(|e| &e.said));
+    if let Some(start_said) = last_owner_said {
+        let mut forward_said = start_said.clone();
+        for _ in 0..crate::page_size() {
+            let child_query = Query::<KeyEvent>::for_table(config.events_table)
+                .eq("prefix", &record.kel_prefix)
+                .eq("previous", &forward_said)
+                .limit(1);
+            let children: Vec<KeyEvent> = tx.fetch(child_query).await?;
+            let Some(child) = children.into_iter().next() else {
+                break;
+            };
+            owner_saids.insert(child.said.clone());
+            forward_said = child.said;
+        }
+    }
+
     // The adversary tip is the highest-serial event NOT in the owner set.
-    // Owner events are bounded, so fetch a small window from the top.
     let query = Query::<KeyEvent>::for_table(config.events_table)
         .eq("prefix", &record.kel_prefix)
         .gte("serial", record.diverged_at)
@@ -682,4 +800,30 @@ async fn walk_chain_to_tip<T: TransactionExecutor>(
     Err(KelsError::StorageError(
         "Forward chain walk exceeded iteration limit".to_string(),
     ))
+}
+
+/// PageLoader adapter that queries a specific events table via a transaction.
+struct TransactionPageLoader<'a, T: TransactionExecutor> {
+    tx: &'a mut T,
+    config: &'a RecoveryConfig,
+}
+
+#[async_trait::async_trait]
+impl<T: TransactionExecutor> PageLoader for TransactionPageLoader<'_, T> {
+    async fn load_page(
+        &mut self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+        load_signed_history(
+            self.tx,
+            self.config.events_table,
+            self.config.signatures_table,
+            prefix,
+            limit,
+            offset,
+        )
+        .await
+    }
 }

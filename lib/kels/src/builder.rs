@@ -273,6 +273,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Err(KelsError::KelDecommissioned);
         }
 
+        // Auto-insert ror if the proactive interval would be exceeded
+        if self.needs_proactive_ror() {
+            self.rotate_recovery().await?;
+        }
+
         let last_event = self.get_owner_tail().await?.event.clone();
         let signed_event = self
             .create_signed_interaction_event(&last_event, anchor)
@@ -285,6 +290,12 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     pub async fn rotate(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
+        }
+
+        // If proactive ror is due, use ror instead of rot — it rotates both
+        // signing and recovery keys, satisfying the interval requirement.
+        if self.needs_proactive_ror() {
+            return self.rotate_recovery().await;
         }
 
         let last_event = self.get_owner_tail().await?.event.clone();
@@ -397,6 +408,13 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(result)
     }
 
+    /// Contest a KEL where the adversary has revealed the recovery key.
+    ///
+    /// If the adversary's recovery triggered archival of the owner's events,
+    /// the server may no longer have the owner's chain. This method detects
+    /// that by comparing local events with the server KEL and resubmits the
+    /// minimal owner chain alongside the cnt event so the KEL remains
+    /// verifiable after contest.
     pub async fn contest(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
@@ -411,28 +429,76 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             }
         };
 
-        match self
-            .add_and_flush(std::slice::from_ref(&signed_event))
-            .await
-        {
-            Err(e) => {
-                match e {
-                    // in this case, we expect and welcome divergence
-                    KelsError::DivergenceDetected {
-                        diverged_at: _,
-                        submission_accepted,
-                    } => {
-                        if submission_accepted {
-                            Ok(signed_event)
-                        } else {
-                            Err(e)
-                        }
+        // Determine which local events the server is missing (may have been
+        // archived by the adversary's recovery). Include them in the batch so
+        // the merge engine can verify the contest chain.
+        let missing = self.find_missing_owner_events().await?;
+        let mut batch = missing;
+        batch.push(signed_event.clone());
+
+        match self.add_and_flush(&batch).await {
+            Err(e) => match e {
+                // in this case, we expect and welcome divergence
+                KelsError::DivergenceDetected {
+                    diverged_at: _,
+                    submission_accepted,
+                } => {
+                    if submission_accepted {
+                        Ok(signed_event)
+                    } else {
+                        Err(e)
                     }
-                    _ => Err(e),
                 }
-            }
+                _ => Err(e),
+            },
             _ => Ok(signed_event),
         }
+    }
+
+    /// Find local owner events that the server doesn't have.
+    ///
+    /// Walks the local chain backward from the owner tail, collecting events
+    /// until we find one that exists on the server. Returns the missing events
+    /// in forward (serial-ascending) order.
+    async fn find_missing_owner_events(&self) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let client = match &self.kels_client {
+            Some(c) => c,
+            None => return Ok(Vec::new()), // no server connection — nothing to compare
+        };
+        let store = match &self.kel_store {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+        let prefix = self.prefix().ok_or(KelsError::NotIncepted)?;
+
+        // Load all local events
+        let mut local_events: Vec<SignedKeyEvent> = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let (page, has_more) = store
+                .load(prefix, crate::page_size() as u64, offset)
+                .await?;
+            let page_len = page.len() as u64;
+            local_events.extend(page);
+            if !has_more {
+                break;
+            }
+            offset += page_len;
+        }
+
+        // Check which local events exist on the server by probing from the
+        // tail backward. The first event the server has marks the boundary.
+        let mut missing: Vec<SignedKeyEvent> = Vec::new();
+        for event in local_events.iter().rev() {
+            if client.event_exists(&event.event.said).await? {
+                break;
+            }
+            missing.push(event.clone());
+        }
+
+        // Reverse to get forward (serial-ascending) order
+        missing.reverse();
+        Ok(missing)
     }
 
     // ==================== Operations ====================
@@ -537,6 +603,27 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     }
 
     // ==================== Private Helpers ====================
+
+    /// Check if a proactive recovery rotation (ror) is needed before the next
+    /// non-revealing event. Compares the counter from kel_verification (confirmed
+    /// events) plus any non-revealing pending events against the limit.
+    fn needs_proactive_ror(&self) -> bool {
+        let confirmed_count = self
+            .kel_verification
+            .as_ref()
+            .map(|v| v.events_since_last_revealing())
+            .unwrap_or(0);
+
+        let pending_non_revealing = self
+            .pending_events
+            .iter()
+            .rev()
+            .take_while(|e| !e.event.reveals_recovery_key())
+            .count();
+
+        // Adding one more non-revealing event would exceed the limit
+        confirmed_count + pending_non_revealing >= crate::MAX_NON_REVEALING_EVENTS
+    }
 
     async fn get_owner_tail(&self) -> Result<&SignedKeyEvent, KelsError> {
         if let Some(last) = self.pending_events.last() {

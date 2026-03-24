@@ -98,6 +98,10 @@ pub struct KelVerifier {
     queried_saids: BTreeSet<String>,
     /// Anchor checking: SAIDs we've found anchored.
     anchored_saids: BTreeSet<String>,
+    /// Non-revealing events since the last recovery-revealing event.
+    events_since_last_revealing: usize,
+    /// Whether the proactive ror interval has been violated.
+    proactive_ror_compliant: bool,
 }
 
 impl KelVerifier {
@@ -114,6 +118,8 @@ impl KelVerifier {
             rotation_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
+            events_since_last_revealing: 0,
+            proactive_ror_compliant: true,
         }
     }
 
@@ -146,6 +152,8 @@ impl KelVerifier {
             rotation_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
+            events_since_last_revealing: 0,
+            proactive_ror_compliant: true,
         })
     }
 
@@ -179,6 +187,8 @@ impl KelVerifier {
             rotation_count: kel_verification.rotation_count(),
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
+            events_since_last_revealing: kel_verification.events_since_last_revealing(),
+            proactive_ror_compliant: kel_verification.is_proactive_ror_compliant(),
         })
     }
 
@@ -189,6 +199,11 @@ impl KelVerifier {
     /// via `KelVerification::anchored_saids()` after calling `into_verification()`.
     pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = String>) {
         self.queried_saids.extend(saids);
+    }
+
+    /// Whether the KEL maintains proactive recovery rotation compliance.
+    pub fn is_proactive_ror_compliant(&self) -> bool {
+        self.proactive_ror_compliant
     }
 
     /// The current public key (qb64) after the last verified establishment event.
@@ -255,6 +270,8 @@ impl KelVerifier {
             self.rotation_count,
             self.anchored_saids,
             self.queried_saids,
+            self.proactive_ror_compliant,
+            self.events_since_last_revealing,
         );
         kel_verification
             .derive_said()
@@ -375,6 +392,16 @@ impl KelVerifier {
             // Track rotation count
             if event.event.reveals_rotation_key() {
                 self.rotation_count += 1;
+            }
+
+            // Track proactive ror compliance
+            if event.event.reveals_recovery_key() {
+                self.events_since_last_revealing = 0;
+            } else {
+                self.events_since_last_revealing += 1;
+                if self.events_since_last_revealing > crate::MAX_NON_REVEALING_EVENTS {
+                    self.proactive_ror_compliant = false;
+                }
             }
 
             new_branches.insert(event.event.said.clone(), new_state);
@@ -1125,11 +1152,11 @@ async fn transfer_key_events(
     }
 
     // Submit divergent events in the correct order
-    submit_divergent_events(prefix, sink, &pre_divergence, post_divergence, page_size).await
+    send_divergent_events(prefix, sink, &pre_divergence, post_divergence, page_size).await
 }
 
-/// Separate post-divergence events into owner and adversary chains, then submit
-/// in an order the remote merge engine can process.
+/// Separate post-divergence events into owner and adversary chains, then send
+/// to the sink in an order compatible with the remote merge engine.
 ///
 /// For recovered divergence:
 ///   1. Pre-divergence + longer chain (paged, non-divergent appends)
@@ -1139,7 +1166,7 @@ async fn transfer_key_events(
 /// For unrecovered divergence:
 ///   1. Pre-divergence + non-revealing chain (paged, non-divergent appends)
 ///   2. Revealing chain (creates divergence; warn on failure)
-async fn submit_divergent_events(
+async fn send_divergent_events(
     prefix: &str,
     sink: &(dyn PagedKelSink + Sync),
     pre_divergence: &[SignedKeyEvent],
@@ -1152,8 +1179,12 @@ async fn submit_divergent_events(
         ));
     }
 
-    // Find the rec event to identify the owner chain
-    if let Some(rec_idx) = post_divergence.iter().position(|e| e.event.is_recover()) {
+    // Contested KELs use the chain-building path — the rec in a contested KEL
+    // is part of one branch (the adversary's), not a recovery to build from.
+    let has_contest = post_divergence.iter().any(|e| e.event.is_contest());
+
+    if !has_contest && let Some(rec_idx) = post_divergence.iter().position(|e| e.event.is_recover())
+    {
         // === Recovered divergence ===
         let rec_said = post_divergence[rec_idx].event.said.clone();
 
@@ -1231,65 +1262,67 @@ async fn submit_divergent_events(
 
         // Step 3: rec(+rot) resolves divergence
         sink.store_page(prefix, &rec_rot).await?;
-    } else {
-        // === Unrecovered divergence ===
-        // Build two chains by tracing forward from each fork event.
-        let mut chain_a_saids = HashSet::new();
-        let mut chain_b_saids = HashSet::new();
-        chain_a_saids.insert(post_divergence[0].event.said.clone());
-        chain_b_saids.insert(post_divergence[1].event.said.clone());
 
-        for evt in &post_divergence[2..] {
-            if let Some(prev) = evt.event.previous.as_deref() {
-                if chain_a_saids.contains(prev) {
-                    chain_a_saids.insert(evt.event.said.clone());
-                } else if chain_b_saids.contains(prev) {
-                    chain_b_saids.insert(evt.event.said.clone());
-                }
+        return Ok(());
+    }
+
+    // === Unrecovered or contested divergence ===
+    // Build two chains by tracing forward from each fork event.
+    let mut chain_a_saids = HashSet::new();
+    let mut chain_b_saids = HashSet::new();
+    chain_a_saids.insert(post_divergence[0].event.said.clone());
+    chain_b_saids.insert(post_divergence[1].event.said.clone());
+
+    for evt in &post_divergence[2..] {
+        if let Some(prev) = evt.event.previous.as_deref() {
+            if chain_a_saids.contains(prev) {
+                chain_a_saids.insert(evt.event.said.clone());
+            } else if chain_b_saids.contains(prev) {
+                chain_b_saids.insert(evt.event.said.clone());
             }
         }
+    }
 
-        let mut chain_a: Vec<SignedKeyEvent> = Vec::new();
-        let mut chain_b: Vec<SignedKeyEvent> = Vec::new();
-        for evt in post_divergence {
-            if chain_a_saids.contains(&evt.event.said) {
-                chain_a.push(evt);
-            } else {
-                chain_b.push(evt);
-            }
-        }
-
-        // Longer chain goes first as non-divergent appends. Only the fork
-        // event from the shorter chain is sent (creates divergence — the merge
-        // engine writes just that one event, freezing the KEL). When chains
-        // are equal length, defer the recovery-revealing one.
-        let (longer, shorter) = if chain_a.len() > chain_b.len() {
-            (chain_a, chain_b)
-        } else if chain_b.len() > chain_a.len() {
-            (chain_b, chain_a)
-        } else if chain_b.iter().any(|e| e.event.reveals_recovery_key()) {
-            (chain_a, chain_b)
+    let mut chain_a: Vec<SignedKeyEvent> = Vec::new();
+    let mut chain_b: Vec<SignedKeyEvent> = Vec::new();
+    for evt in post_divergence {
+        if chain_a_saids.contains(&evt.event.said) {
+            chain_a.push(evt);
         } else {
-            (chain_b, chain_a)
-        };
-
-        // Pre-divergence + longer chain (non-divergent appends)
-        let mut non_divergent = pre_divergence.to_vec();
-        non_divergent.extend(longer);
-        for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
+            chain_b.push(evt);
         }
+    }
 
-        // Single fork event from shorter chain (creates divergence)
-        if let Some(fork) = shorter.first() {
-            match sink.store_page(prefix, slice::from_ref(fork)).await {
-                Ok(()) => {}
-                Err(e) => {
-                    warn!(
-                        "Deferred branch submission failed \
-                         (KEL may already be divergent): {e}"
-                    );
-                }
+    // Longer chain goes first as non-divergent appends. Only the fork
+    // event from the shorter chain is sent (creates divergence — the merge
+    // engine writes just that one event, freezing the KEL). When chains
+    // are equal length, defer the recovery-revealing one.
+    let (longer, shorter) = if chain_a.len() > chain_b.len() {
+        (chain_a, chain_b)
+    } else if chain_b.len() > chain_a.len() {
+        (chain_b, chain_a)
+    } else if chain_b.iter().any(|e| e.event.reveals_recovery_key()) {
+        (chain_a, chain_b)
+    } else {
+        (chain_b, chain_a)
+    };
+
+    // Pre-divergence + longer chain (non-divergent appends)
+    let mut non_divergent = pre_divergence.to_vec();
+    non_divergent.extend(longer);
+    for chunk in non_divergent.chunks(page_size) {
+        sink.store_page(prefix, chunk).await?;
+    }
+
+    // Single fork event from shorter chain (creates divergence)
+    if let Some(fork) = shorter.first() {
+        match sink.store_page(prefix, slice::from_ref(fork)).await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(
+                    "Deferred branch submission failed \
+                     (KEL may already be divergent): {e}"
+                );
             }
         }
     }
@@ -1563,30 +1596,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_kel_paginated_verification() {
-        // Build a 65-event KEL (icp + 64 ixn) — spans 3 pages at 32 events/page
+        // Build a KEL that spans 3 pages. The builder auto-inserts ror events
+        // to maintain proactive recovery compliance, so we request enough ixn
+        // events to exceed 2 full pages worth of total events.
+        let page_size = crate::page_size();
+        let target_events = 2 * page_size + 1;
         let mut builder = KeyEventBuilder::new(random_provider(), None);
-        let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        builder.incept().await.unwrap();
 
-        let mut events = vec![icp];
-        for i in 0..64 {
-            let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+        // Keep adding ixn until we have enough events (including auto-rors)
+        while builder.pending_events().len() < target_events {
+            builder
+                .interact(
+                    &Digest::blake3_256(
+                        format!("anchor-{}", builder.pending_events().len()).as_bytes(),
+                    )
+                    .qb64(),
+                )
                 .await
                 .unwrap();
-            events.push(ixn);
         }
-        assert_eq!(events.len(), 65);
+
+        let events = builder.pending_events().to_vec();
+        let prefix = events[0].event.prefix.clone();
+        assert!(events.len() >= target_events);
 
         // Save to MemoryStore
         let store = MemoryStore::new();
         store.overwrite(&prefix, &events).await.unwrap();
 
-        // Verify with small page size to force multiple pages
+        // Verify — spans 3+ pages
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            page_size,
             100,
             iter::empty(),
         )
@@ -1598,6 +1641,7 @@ mod tests {
         assert!(!kel_verification.is_contested());
         assert!(!kel_verification.is_decommissioned());
         assert!(kel_verification.current_public_key().is_some());
+        assert!(kel_verification.is_proactive_ror_compliant());
 
         // Tip should be the last event
         assert_eq!(kel_verification.branch_tips().len(), 1);
@@ -1609,11 +1653,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_kel_with_early_divergence() {
-        // Build a long KEL, then inject a divergent event at serial 2
+        // Build a long KEL (spanning 2+ pages), then inject a divergent event
+        // at serial 2. The builder auto-inserts rors for compliance.
+        let page_size = crate::page_size();
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
-        let icp = builder1.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
-        let ixn1 = builder1
+        builder1.incept().await.unwrap();
+        builder1
             .interact(&Digest::blake3_256(b"anchor-1").qb64())
             .await
             .unwrap();
@@ -1621,16 +1666,21 @@ mod tests {
         // Duplicate builder after icp+ixn1 (adversary has same keys)
         let mut builder2 = builder1.clone();
 
-        // Owner continues building a long chain
-        let mut owner_events = vec![icp.clone(), ixn1.clone()];
-        for i in 2..65 {
-            let ixn = builder1
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+        // Owner continues building a long chain (2+ pages worth)
+        while builder1.pending_events().len() < 2 * page_size + 1 {
+            builder1
+                .interact(
+                    &Digest::blake3_256(
+                        format!("anchor-{}", builder1.pending_events().len()).as_bytes(),
+                    )
+                    .qb64(),
+                )
                 .await
                 .unwrap();
-            owner_events.push(ixn);
         }
-        assert_eq!(owner_events.len(), 65);
+
+        let owner_events = builder1.pending_events().to_vec();
+        let prefix = owner_events[0].event.prefix.clone();
 
         // Adversary injects one event at serial 2 (divergence)
         let adversary_ixn = builder2
@@ -1640,7 +1690,7 @@ mod tests {
         assert_eq!(adversary_ixn.event.serial, 2);
 
         // Combined events: owner chain + adversary event at serial 2
-        let mut all_events = owner_events.clone();
+        let mut all_events = owner_events;
         all_events.push(adversary_ixn.clone());
         sort_events(&mut all_events);
 
@@ -1652,7 +1702,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            page_size,
             100,
             iter::empty(),
         )
@@ -1683,7 +1733,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             100,
             iter::once(target_anchor.clone()),
         )
@@ -1697,7 +1747,7 @@ mod tests {
         let kel_verification2 = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             100,
             iter::once(missing_anchor.clone()),
         )
@@ -2579,7 +2629,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             10,
             iter::empty(),
         )
@@ -2651,7 +2701,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             10,
             vec![early_anchor.clone(), late_anchor.clone()],
         )
@@ -2667,25 +2717,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergence_starts_on_second_page() {
-        // Owner builds exactly 32 events (serials 0..31, filling one page).
-        // Both owner and adversary add events at serial 32, which falls
-        // entirely on page 2 — no split generation.
+        // Owner fills exactly one page, then both owner and adversary add
+        // events at the next serial — divergence falls entirely on page 2.
+        let page_size = crate::page_size();
         let mut owner = KeyEventBuilder::new(random_provider(), None);
-        let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        owner.incept().await.unwrap();
+        let prefix = owner.pending_events()[0].event.prefix.clone();
 
-        for i in 0..31 {
-            owner.interact(&anchor(&format!("o-{}", i))).await.unwrap();
+        // Fill first page (page_size events including icp)
+        while owner.pending_events().len() < page_size {
+            owner
+                .interact(&anchor(&format!("o-{}", owner.pending_events().len())))
+                .await
+                .unwrap();
         }
-        // Owner has 32 events (serial 0..31). Clone for adversary.
         let mut adversary = owner.clone();
 
-        // Both add an event at serial 32
-        let owner_ixn = owner.interact(&anchor("owner-32")).await.unwrap();
-        let adv_ixn = adversary.interact(&anchor("adv-32")).await.unwrap();
-        assert_eq!(owner_ixn.event.serial, 32);
-        assert_eq!(adv_ixn.event.serial, 32);
+        // Both add an event at the next serial (page 2)
+        let owner_ixn = owner.interact(&anchor("owner-page2")).await.unwrap();
+        let adv_ixn = adversary.interact(&anchor("adv-page2")).await.unwrap();
+        assert_eq!(owner_ixn.event.serial, adv_ixn.event.serial);
 
+        let diverge_serial = owner_ixn.event.serial;
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn);
         sort_events(&mut all_events);
@@ -2696,7 +2749,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            page_size,
             10,
             iter::empty(),
         )
@@ -2704,7 +2757,7 @@ mod tests {
         .unwrap();
 
         assert!(kel_verification.is_divergent());
-        assert_eq!(kel_verification.diverged_at_serial(), Some(32));
+        assert_eq!(kel_verification.diverged_at_serial(), Some(diverge_serial));
         assert_eq!(kel_verification.branch_tips().len(), 2);
         assert!(kel_verification.current_public_key().is_none());
     }
@@ -2713,19 +2766,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_long_owner_chain_with_early_adversary() {
-        // Owner: icp + 63 ixn (64 events, 2 full pages).
-        // Adversary: branches after icp, adds 1 ixn at serial 1.
-        // Tests: multi-page divergent verification where one branch is
-        // much longer than the other. The short adversary branch should
-        // be carried forward across pages.
+        // Owner builds a long chain (2+ pages). Adversary branches after icp.
+        // Tests multi-page divergent verification where one branch is much
+        // longer. The short adversary branch should be carried forward.
+        let page_size = crate::page_size();
         let mut owner = KeyEventBuilder::new(random_provider(), None);
-        let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        owner.incept().await.unwrap();
+        let prefix = owner.pending_events()[0].event.prefix.clone();
         let mut adversary = owner.clone();
 
-        // Owner builds long chain
-        let owner_tip = build_interactions(&mut owner, 63, "owner").await;
-        assert_eq!(owner_tip.event.serial, 63);
+        // Owner builds long chain (2+ pages including auto-rors)
+        while owner.pending_events().len() < 2 * page_size {
+            owner
+                .interact(&anchor(&format!("owner-{}", owner.pending_events().len())))
+                .await
+                .unwrap();
+        }
+        let owner_tip = owner.pending_events().last().unwrap().clone();
 
         // Adversary injects one event at serial 1
         let adv_ixn = adversary.interact(&anchor("adversary-1")).await.unwrap();
@@ -2734,7 +2791,6 @@ mod tests {
         let mut all_events = owner.pending_events().to_vec();
         all_events.push(adv_ixn.clone());
         sort_events(&mut all_events);
-        assert_eq!(all_events.len(), 65);
 
         let store = MemoryStore::new();
         store.overwrite(&prefix, &all_events).await.unwrap();
@@ -2742,7 +2798,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             10,
             iter::empty(),
         )
@@ -3213,7 +3269,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             &prefix,
-            32,
+            crate::page_size(),
             10,
             iter::empty(),
         )
@@ -3307,7 +3363,7 @@ mod tests {
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
             "KNonexistent_Prefix_________________________",
-            32,
+            crate::page_size(),
             10,
             iter::empty(),
         )
@@ -3808,7 +3864,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 1, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3822,7 +3878,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 1, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3843,7 +3899,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 30, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3857,7 +3913,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 30, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3878,7 +3934,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(30, 1, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3892,7 +3948,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(30, 1, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3913,7 +3969,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(15, 30, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3927,7 +3983,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(15, 30, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3948,7 +4004,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(5, 1, "none").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 
@@ -3962,7 +4018,7 @@ mod tests {
         let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 1, "cnt").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 32, 100, None)
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
             .await
             .unwrap();
 

@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(kels::page_size(), 32);
+        assert_eq!(kels::page_size(), kels::MINIMUM_PAGE_SIZE);
     }
 
     // ==================== health Tests ====================

@@ -263,12 +263,9 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
-                let query = verifiable_storage::ColumnQuery::new(Self::TABLE_NAME, "said")
-                    .filter(verifiable_storage::Filter::Eq(
-                        "prefix".to_string(),
-                        verifiable_storage::Value::String(prefix.to_string()),
-                    ))
-                    .filter(verifiable_storage::Filter::NotExists(verifiable_storage::CorrelatedSubquery::new(
+                let query = verifiable_storage::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .not_exists(verifiable_storage::CorrelatedSubquery::new(
                         Self::TABLE_NAME,
                         "_cs",
                         Self::TABLE_NAME,
@@ -277,16 +274,22 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                             "_cs.prefix".to_string(),
                             verifiable_storage::Value::String(prefix.to_string()),
                         )],
-                    )))
-                    .order(verifiable_storage_postgres::Order::Asc);
+                    ))
+                    .order_by("said", verifiable_storage_postgres::Order::Asc);
 
-                let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
+                let tips: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
 
-                match tip_saids.len() {
-                    0 => Ok(None),
-                    1 => Ok(Some((tip_saids.into_iter().next().unwrap_or_default(), false))),
+                match tips.as_slice() {
+                    [] => Ok(None),
+                    [tip] => Ok(Some((tip.said.clone(), false))),
                     _ => {
-                        let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
+                        // Contested KELs return a fixed effective SAID so all
+                        // nodes agree regardless of archival progress.
+                        if tips.iter().any(|e| e.is_contest()) {
+                            return Ok(Some((kels::hash_tip_saids(&["contested"]), true)));
+                        }
+
+                        let refs: Vec<&str> = tips.iter().map(|e| e.said.as_str()).collect();
                         Ok(Some((kels::hash_tip_saids(&refs), true)))
                     }
                 }
