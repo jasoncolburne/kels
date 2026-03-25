@@ -95,6 +95,34 @@ impl KelStore for FileKelStore {
         Ok((events, false))
     }
 
+    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let path = self.kel_path(prefix);
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        let file =
+            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let reader = std::io::BufReader::new(file);
+        let limit = limit as usize;
+
+        // Collect all lines, keeping only the last `limit` in a ring buffer.
+        let mut ring: Vec<String> = Vec::with_capacity(limit);
+        for line in reader.lines() {
+            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+            if line.is_empty() {
+                continue;
+            }
+            if ring.len() == limit {
+                ring.remove(0);
+            }
+            ring.push(line);
+        }
+
+        ring.iter()
+            .map(|line| serde_json::from_str(line).map_err(Into::into))
+            .collect()
+    }
+
     async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let path = self.kel_path(prefix);
         let mut file = std::fs::OpenOptions::new()

@@ -75,7 +75,7 @@ pub use crypto::{
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
-pub use repository::{SignedEventRepository, load_signed_history};
+pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{

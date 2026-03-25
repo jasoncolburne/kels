@@ -196,8 +196,36 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(Some(self.assemble_signed_event(event).await?))
     }
 
+    /// Verify that the KEL has at least 2 events at the given serial.
+    ///
+    /// Contest is only meaningful on a divergent KEL. Call after inserting a
+    /// contest batch to confirm divergence actually exists, rather than
+    /// relying on pre-insertion state as a proxy. The DB cannot be trusted,
+    /// so verify the post-condition directly.
+    async fn verify_divergent_at(&mut self, serial: u64) -> Result<(), KelsError> {
+        let query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .eq("serial", serial)
+            .limit(3);
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+        if events.len() < 2 {
+            return Err(KelsError::InvalidKeyEvent(format!(
+                "Contest requires divergence at serial {} but found {} event(s)",
+                serial,
+                events.len(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Check if any event from `since_serial` onward reveals the recovery key.
     /// Single query — no pagination needed.
+    ///
+    /// **Precondition:** queries ALL events for this prefix from `since_serial`
+    /// onward, regardless of branch. Callers must ensure that events in this
+    /// range belong to the expected branch — either because `completed_verification`
+    /// has enforced the divergence invariants (max 1 event per serial past
+    /// `diverged_at`), or because no divergence exists yet.
     pub async fn has_recovery_revealing_events_since(
         &mut self,
         since_serial: u64,
@@ -803,6 +831,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
             let first_serial = new_events[0].event.serial;
 
+            // Broad query over all events from first_serial onward. Safe
+            // because `completed_verification` already enforced the
+            // divergence invariants (max 1 event per serial past
+            // diverged_at), so events past the fork belong to one branch.
             if self
                 .has_recovery_revealing_events_since(first_serial)
                 .await?
@@ -957,7 +989,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 for event in new_events {
                     self.insert_signed_event(event).await?;
                 }
-                return Ok((KelMergeResult::Contested, Some(branch_serial + 1)));
+                self.verify_divergent_at(diverged_at).await?;
+                return Ok((KelMergeResult::Contested, Some(diverged_at)));
             } else {
                 return Err(KelsError::ContestRequired);
             }
@@ -1104,7 +1137,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ) -> Result<(), KelsError> {
         if first_serial <= diverged_at {
             // Owner has no events at the divergence serial — all events
-            // from diverged_at onward are adversary.
+            // from diverged_at onward are adversary. Safe to query broadly
+            // because `completed_verification` already enforced divergence
+            // invariants (max 2 at diverged_at, max 1 per serial after).
             if self
                 .has_recovery_revealing_events_since(diverged_at)
                 .await?
@@ -1112,6 +1147,23 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 return Err(KelsError::ContestRequired);
             }
         } else {
+            // Owner has events at the divergence serial.
+            //
+            // `has_recovery_revealing_events_since(diverged_at + 1)` queries
+            // ALL events past the fork — safe despite untrusted DB because:
+            //
+            // - `completed_verification` (top of `merge_events`) already
+            //   verified the DB satisfies the divergence invariants: max 2
+            //   events at `diverged_at`, max 1 per serial after. Tampered
+            //   extra events would have failed verification before we get here.
+            //
+            // - `find_adversary_event` has two paths:
+            //   1. Direct match (rec_previous matches a divergent event):
+            //      owner's tip IS the divergent event (shorter chain, no
+            //      events past diverged_at), so the query only hits adversary.
+            //   2. N-case (rec_previous is past the fork): always returns
+            //      `adversary_has_chain = false` — broad query never runs.
+            //      If both divergent events have children, errors out.
             let (adversary, adversary_has_chain) =
                 self.find_adversary_event(diverged_at, rec_previous).await?;
 

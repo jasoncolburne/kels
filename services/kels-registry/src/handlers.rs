@@ -47,6 +47,8 @@ const SECS_PER_DAY: u64 = 86_400;
 
 /// Check whether adding `event_count` new events would exceed the daily limit.
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge.
+///
+/// Duplicated in `kels/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -69,6 +71,8 @@ fn check_prefix_rate_limit(
 }
 
 /// Accrue the actual number of new events after merge completes.
+///
+/// Duplicated in `kels/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(limits: &DashMap<String, (u32, Instant)>, prefix: &str, count: u32) {
     if count == 0 {
         return;

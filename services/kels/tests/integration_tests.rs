@@ -1008,6 +1008,8 @@ async fn test_recovery_from_divergence() {
     assert_eq!(recovery_records.len(), 1);
     let record = &recovery_records[0];
     assert_eq!(record.diverged_at, 3);
+    assert_eq!(record.recovery_serial, 4);
+    assert_eq!(record.owner_first_serial, 4);
     assert_eq!(record.kel_prefix, prefix);
     assert!(!record.said.is_empty());
     assert!(!record.rec_previous.is_empty());

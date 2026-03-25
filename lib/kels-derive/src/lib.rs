@@ -188,6 +188,29 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 Ok(result)
             }
 
+            /// Get the last `limit` signed events for a prefix, in serial-ascending order.
+            /// Single query with `ORDER BY serial DESC`, then reversed.
+            pub async fn get_signed_history_tail(
+                &self,
+                prefix: &str,
+                limit: u64,
+            ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
+                let mut tx = self.pool.begin_transaction().await?;
+                let result = kels::load_signed_history_tail(
+                    &mut tx,
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    prefix,
+                    limit,
+                )
+                .await
+                .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+                tx.commit().await?;
+                Ok(result)
+            }
+
             /// Get signed events after a given SAID (delta fetch — the since event itself is not returned).
             ///
             /// Uses a scalar subquery to find the serial of the since event, then fetches
@@ -399,6 +422,16 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 offset: u64,
             ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
                 #repo_name::get_signed_history(self, prefix, limit, offset)
+                    .await
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+            }
+
+            async fn get_signed_history_tail(
+                &self,
+                prefix: &str,
+                limit: u64,
+            ) -> Result<Vec<kels::SignedKeyEvent>, kels::KelsError> {
+                #repo_name::get_signed_history_tail(self, prefix, limit)
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }

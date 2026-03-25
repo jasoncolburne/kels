@@ -1600,6 +1600,21 @@ mod tests {
             }
         }
 
+        async fn load_tail(
+            &self,
+            prefix: &str,
+            limit: u64,
+        ) -> Result<Vec<SignedKeyEvent>, crate::error::KelsError> {
+            let guard = self.kels.read().unwrap();
+            match guard.get(prefix) {
+                Some(events) => {
+                    let start = events.len().saturating_sub(limit as usize);
+                    Ok(events[start..].to_vec())
+                }
+                None => Ok(vec![]),
+            }
+        }
+
         async fn append(
             &self,
             prefix: &str,

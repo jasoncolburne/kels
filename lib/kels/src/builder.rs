@@ -457,13 +457,17 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     /// Find local owner events that the server doesn't have.
     ///
-    /// Walks the local chain backward from the owner tail, collecting events
-    /// until we find one that exists on the server. Returns the missing events
-    /// in forward (serial-ascending) order.
+    /// Loads only the tail of the local KEL (bounded by `MINIMUM_PAGE_SIZE`)
+    /// and walks backward, probing the server until finding an event that
+    /// exists. Returns the missing events in forward (serial-ascending) order.
+    ///
+    /// Memory-bounded: the proactive ror invariant guarantees at most
+    /// `MINIMUM_PAGE_SIZE` events can be missing (the adversary's recovery
+    /// can only archive events back to the last recovery-revealing event).
     async fn find_missing_owner_events(&self) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let client = match &self.kels_client {
             Some(c) => c,
-            None => return Ok(Vec::new()), // no server connection — nothing to compare
+            None => return Ok(Vec::new()),
         };
         let store = match &self.kel_store {
             Some(s) => s,
@@ -471,32 +475,20 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         };
         let prefix = self.prefix().ok_or(KelsError::NotIncepted)?;
 
-        // Load all local events
-        let mut local_events: Vec<SignedKeyEvent> = Vec::new();
-        let mut offset = 0u64;
-        loop {
-            let (page, has_more) = store
-                .load(prefix, crate::page_size() as u64, offset)
-                .await?;
-            let page_len = page.len() as u64;
-            local_events.extend(page);
-            if !has_more {
-                break;
-            }
-            offset += page_len;
-        }
+        let tail = store
+            .load_tail(prefix, crate::MINIMUM_PAGE_SIZE as u64)
+            .await?;
 
-        // Check which local events exist on the server by probing from the
-        // tail backward. The first event the server has marks the boundary.
+        // Walk backward from the tail, probing the server for each event.
+        // The first event the server has marks the boundary.
         let mut missing: Vec<SignedKeyEvent> = Vec::new();
-        for event in local_events.iter().rev() {
+        for event in tail.iter().rev() {
             if client.event_exists(&event.event.said).await? {
                 break;
             }
             missing.push(event.clone());
         }
 
-        // Reverse to get forward (serial-ascending) order
         missing.reverse();
         Ok(missing)
     }
