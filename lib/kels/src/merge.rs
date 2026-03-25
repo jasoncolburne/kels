@@ -336,7 +336,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         // events are in the DB.
         let mut owner_saids: HashSet<String> = HashSet::new();
         let mut walk = Some(rec_previous.to_string());
-        for _ in 0..crate::page_size() {
+        for _ in 0..crate::MINIMUM_PAGE_SIZE {
             let Some(said) = walk.take() else { break };
             let q = Query::<KeyEvent>::for_table(self.events_table)
                 .eq("prefix", &self.prefix)
@@ -382,7 +382,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if adversary_has_chain {
             // Walk forward from adversary event to collect the chain
             let mut current_said = adversary.event.said.clone();
-            for _ in 0..crate::page_size() {
+            for _ in 0..crate::MINIMUM_PAGE_SIZE {
                 let child_query = Query::<KeyEvent>::for_table(self.events_table)
                     .eq("prefix", &self.prefix)
                     .eq("previous", &current_said)
@@ -740,7 +740,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                     "Contest cannot have serial 0".to_string(),
                 ));
             }
-            if !self.non_contest_recovery_revealed_since(cnt_serial).await? {
+            if !self
+                .non_contest_recovery_revealed_since(diverged_at)
+                .await?
+            {
                 return Err(KelsError::VerificationFailed(
                     "KEL is frozen — no recovery key revealed".to_string(),
                 ));
@@ -771,10 +774,14 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 establishment_tip: establishment,
             };
 
-            let mut event_verifier =
-                KelVerifier::from_branch_tip(prefix, &anchor_tip).map_err(|e| {
-                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-                })?;
+            let mut event_verifier = KelVerifier::from_branch_tip(
+                prefix,
+                &anchor_tip,
+                kel_verification.events_since_last_revealing(),
+            )
+            .map_err(|e| {
+                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+            })?;
             event_verifier
                 .verify_page(new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
@@ -803,9 +810,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 return Err(KelsError::ContestRequired);
             }
 
-            self.verify_chain_before_serial(prefix, first_serial)
-                .await?;
-
             let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
             })?;
@@ -830,10 +834,14 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 establishment_tip: establishment,
             };
 
-            let mut event_verifier =
-                KelVerifier::from_branch_tip(prefix, &anchor_tip).map_err(|e| {
-                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-                })?;
+            let mut event_verifier = KelVerifier::from_branch_tip(
+                prefix,
+                &anchor_tip,
+                kel_verification.events_since_last_revealing(),
+            )
+            .map_err(|e| {
+                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+            })?;
             event_verifier
                 .verify_page(new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
@@ -915,9 +923,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             establishment_tip: establishment,
         };
 
-        let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip).map_err(|e| {
-            KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-        })?;
+        let mut verifier = KelVerifier::from_branch_tip(
+            prefix,
+            &branch_tip,
+            kel_verification.events_since_last_revealing(),
+        )
+        .map_err(|e| KelsError::VerificationFailed(format!("KEL verification failed: {}", e)))?;
         verifier
             .verify_page(new_events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
@@ -1144,54 +1155,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Err(KelsError::StorageError(
             "Backward establishment trace exceeded iteration limit or reached chain start"
                 .to_string(),
-        ))
-    }
-
-    /// Verify a sub-chain from serial 0 up to (but not including) `stop_serial`.
-    async fn verify_chain_before_serial(
-        &mut self,
-        prefix: &str,
-        stop_serial: u64,
-    ) -> Result<KelVerifier, KelsError> {
-        let max_pages = crate::max_pages();
-        let mut verifier = KelVerifier::new(prefix);
-        let mut from_serial: u64 = 0;
-        let page_size = crate::page_size() as u64;
-
-        for _ in 0..max_pages {
-            let (page, has_more) = self
-                .get_signed_history_since(from_serial, page_size)
-                .await?;
-            if page.is_empty() {
-                return Ok(verifier);
-            }
-
-            let filtered: Vec<&SignedKeyEvent> = page
-                .iter()
-                .filter(|e| e.event.serial < stop_serial)
-                .collect();
-            if filtered.is_empty() {
-                return Ok(verifier);
-            }
-
-            let to_verify: Vec<SignedKeyEvent> = filtered.into_iter().cloned().collect();
-            verifier.verify_page(&to_verify).map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-            })?;
-
-            if page.last().is_some_and(|e| e.event.serial >= stop_serial) {
-                return Ok(verifier);
-            }
-            if let Some(last) = page.last() {
-                from_serial = last.event.serial + 1;
-            }
-            if !has_more {
-                return Ok(verifier);
-            }
-        }
-
-        Err(KelsError::StorageError(
-            "Scan exceeded max_pages limit — cannot verify sub-chain".to_string(),
         ))
     }
 

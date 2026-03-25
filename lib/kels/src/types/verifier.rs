@@ -39,9 +39,14 @@ struct BranchState {
     current_public_key: String,
     pending_rotation_hash: Option<String>,
     pending_recovery_hash: Option<String>,
+    /// Non-revealing events since the last recovery-revealing event on this branch.
+    events_since_last_revealing: usize,
 }
 
-fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsError> {
+fn branch_state_from_tip(
+    tip: &BranchTip,
+    events_since_last_revealing: usize,
+) -> Result<(String, BranchState), KelsError> {
     let pk = tip
         .establishment_tip
         .event
@@ -59,6 +64,7 @@ fn branch_state_from_tip(tip: &BranchTip) -> Result<(String, BranchState), KelsE
             current_public_key: pk.clone(),
             pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
             pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
+            events_since_last_revealing,
         },
     ))
 }
@@ -132,11 +138,15 @@ impl KelVerifier {
     /// merge path for verifying new events against an existing branch, which
     /// does not produce verifications consumed for delegation checks.
     /// Delegation-aware verification always starts from inception via `new()`.
-    pub fn from_branch_tip(prefix: impl Into<String>, tip: &BranchTip) -> Result<Self, KelsError> {
+    pub fn from_branch_tip(
+        prefix: impl Into<String>,
+        tip: &BranchTip,
+        events_since_last_revealing: usize,
+    ) -> Result<Self, KelsError> {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
-        let (said, state) = branch_state_from_tip(tip)?;
+        let (said, state) = branch_state_from_tip(tip, events_since_last_revealing)?;
         branches.insert(said, state);
 
         let last_verified_serial = Some(tip.tip.event.serial);
@@ -152,7 +162,7 @@ impl KelVerifier {
             rotation_count: 0,
             queried_saids: BTreeSet::new(),
             anchored_saids: BTreeSet::new(),
-            events_since_last_revealing: 0,
+            events_since_last_revealing,
             proactive_ror_compliant: true,
         })
     }
@@ -165,8 +175,9 @@ impl KelVerifier {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
+        let revealing_count = kel_verification.events_since_last_revealing();
         for bt in kel_verification.branch_tips() {
-            let (said, state) = branch_state_from_tip(bt)?;
+            let (said, state) = branch_state_from_tip(bt, revealing_count)?;
             branches.insert(said, state);
         }
 
@@ -248,6 +259,15 @@ impl KelVerifier {
 
     /// Consume the verifier and produce a `KelVerification` (proof-of-verification token).
     pub fn into_verification(self) -> Result<KelVerification, KelsError> {
+        // Derive global events_since_last_revealing from the max across branches.
+        // This is the most conservative value — the branch closest to the limit.
+        let events_since_last_revealing = self
+            .branches
+            .values()
+            .map(|bs| bs.events_since_last_revealing)
+            .max()
+            .unwrap_or(self.events_since_last_revealing);
+
         let mut branch_tips: Vec<BranchTip> = self
             .branches
             .into_values()
@@ -271,7 +291,7 @@ impl KelVerifier {
             self.anchored_saids,
             self.queried_saids,
             self.proactive_ror_compliant,
-            self.events_since_last_revealing,
+            events_since_last_revealing,
         );
         kel_verification
             .derive_said()
@@ -394,14 +414,9 @@ impl KelVerifier {
                 self.rotation_count += 1;
             }
 
-            // Track proactive ror compliance
-            if event.event.reveals_recovery_key() {
-                self.events_since_last_revealing = 0;
-            } else {
-                self.events_since_last_revealing += 1;
-                if self.events_since_last_revealing > crate::MAX_NON_REVEALING_EVENTS {
-                    self.proactive_ror_compliant = false;
-                }
+            // Track proactive ror compliance (per-branch)
+            if new_state.events_since_last_revealing > crate::MAX_NON_REVEALING_EVENTS {
+                self.proactive_ror_compliant = false;
             }
 
             new_branches.insert(event.event.said.clone(), new_state);
@@ -466,6 +481,7 @@ impl KelVerifier {
                 current_public_key: qb64.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
+                events_since_last_revealing: 0,
             },
         );
         self.last_verified_serial = Some(0);
@@ -522,6 +538,12 @@ impl KelVerifier {
             let public_key = PublicKey::from_qb64(qb64)?;
             Self::verify_signatures(signed_event, &public_key)?;
 
+            let events_since_last_revealing = if event.reveals_recovery_key() {
+                0
+            } else {
+                branch.events_since_last_revealing + 1
+            };
+
             let arc_event = Arc::new(signed_event.clone());
             Ok(BranchState {
                 tip: Arc::clone(&arc_event),
@@ -529,6 +551,7 @@ impl KelVerifier {
                 current_public_key: qb64.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
+                events_since_last_revealing,
             })
         } else {
             // Non-establishment: verify with branch's current public key
@@ -541,6 +564,7 @@ impl KelVerifier {
                 current_public_key: branch.current_public_key.clone(),
                 pending_rotation_hash: branch.pending_rotation_hash.clone(),
                 pending_recovery_hash: branch.pending_recovery_hash.clone(),
+                events_since_last_revealing: branch.events_since_last_revealing + 1,
             })
         }
     }
@@ -2538,7 +2562,7 @@ mod tests {
 
         let owner_ixn2 = owner.interact(&anchor("owner2")).await.unwrap();
 
-        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip).unwrap();
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &tip, 0).unwrap();
         verifier.verify_page(slice::from_ref(&owner_ixn2)).unwrap();
         let kel_verification = verifier.into_verification().unwrap();
 
@@ -3319,7 +3343,7 @@ mod tests {
         };
 
         // Verify recovery event against owner branch
-        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip).unwrap();
+        let mut verifier = KelVerifier::from_branch_tip(&icp.event.prefix, &owner_tip, 0).unwrap();
         verifier.verify_page(slice::from_ref(&rec)).unwrap();
         let kel_verification = verifier.into_verification().unwrap();
 

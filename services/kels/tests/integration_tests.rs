@@ -1103,6 +1103,216 @@ async fn test_contest_freezes_kel() {
     assert_ne!(response.status(), 200);
 }
 
+/// Contest on an already-divergent KEL where cnt_serial > diverged_at.
+///
+/// Regression test for claudit #3: the contest recovery-revealing check used
+/// `cnt_serial` instead of `diverged_at` as the scan origin, causing valid
+/// contests to be rejected when the owner's chain extended past the fork point.
+///
+/// Flow:
+///   1. KEL: icp + ixn1 + ixn2 (serials 0-2)
+///   2. Fork after ixn2 (owner = builder_a, adversary = builder_b)
+///   3. Owner submits ixn(3) → accepted (no divergence yet)
+///   4. Adversary submits ror(3) → divergence at serial 3 (reveals recovery key)
+///   5. Owner submits cnt(4) chaining from ixn(3) → should succeed
+///
+/// The bug: `non_contest_recovery_revealed_since(cnt_serial=4)` scans from
+/// serial 4, missing the adversary's ror at serial 3.
+#[tokio::test]
+async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Step 1: Create KEL: icp + ixn1 + ixn2
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn2")).await;
+
+    harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![inception, ixn1, ixn2])
+        .send()
+        .await
+        .unwrap();
+
+    // Step 2: Fork after ixn2 — adversary steals keys
+    let mut builder_b = builder_a.clone();
+
+    // Step 3: Owner submits ixn(3) — accepted, no divergence yet
+    let ixn3_a = create_interaction(&mut builder_a, &make_anchor("cnt3-owner-ixn3")).await;
+    assert_eq!(ixn3_a.event.serial, 3);
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![ixn3_a])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: SubmitEventsResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
+
+    // Step 4: Adversary submits ror(3) — divergence at serial 3, reveals recovery key
+    let ror_b = builder_b.rotate_recovery().await.unwrap();
+    assert_eq!(ror_b.event.serial, 3);
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![ror_b])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: SubmitEventsResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert_eq!(result.diverged_at, Some(3));
+
+    // Step 5: Owner submits cnt(4) chaining from ixn(3).
+    // cnt_serial = 4 > diverged_at = 3.
+    let cnt_event = {
+        let mut contest_builder = builder_a.clone();
+        contest_builder.contest().await.unwrap()
+    };
+    assert_eq!(cnt_event.event.serial, 4);
+    assert!(cnt_event.event.is_contest());
+
+    // Submit the contest. This hits handle_divergent_submission.
+    // With the bug, non_contest_recovery_revealed_since(4) scans from serial 4,
+    // missing the adversary's ror at serial 3.
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![cnt_event])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "Contest should succeed — adversary ror at serial 3 reveals recovery key"
+    );
+    let result: SubmitEventsResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_some());
+
+    // Verify the KEL contains the contest event
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert!(page.events.iter().any(|e| e.event.is_contest()));
+}
+
+/// Contest on a non-divergent KEL where the adversary appended a ror.
+///
+/// The cnt itself creates the divergence and freezes the KEL in one step.
+/// This tests handle_overlap_submission's contest path: the existing chain
+/// has a recovery-revealing event, and the submitted batch ends with cnt.
+///
+/// Flow:
+///   1. KEL: icp + ixn1 + ixn2 (serials 0-2)
+///   2. Fork after ixn2 — adversary steals keys
+///   3. Adversary submits ror(3) → accepted as normal append (no divergence)
+///   4. Owner submits cnt(3) branching from ixn2 → creates divergence + freeze
+#[tokio::test]
+async fn test_contest_creates_divergence_on_linear_kel() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    // Step 1: Create KEL: icp + ixn1 + ixn2
+    let (inception, mut builder_a) = create_inception().await;
+    let prefix = inception.event.prefix.clone();
+
+    let ixn1 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn1")).await;
+    let ixn2 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn2")).await;
+
+    harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![inception, ixn1, ixn2])
+        .send()
+        .await
+        .unwrap();
+
+    // Step 2: Fork after ixn2 — adversary steals keys
+    let mut builder_b = builder_a.clone();
+
+    // Step 3: Adversary submits ror(3) — accepted as normal append
+    let ror_b = builder_b.rotate_recovery().await.unwrap();
+    assert_eq!(ror_b.event.serial, 3);
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![ror_b])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: SubmitEventsResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
+
+    // Step 4: Owner submits cnt(3) branching from ixn2.
+    // This creates divergence at serial 3 and freezes the KEL.
+    let cnt_event = {
+        let mut contest_builder = builder_a.clone();
+        contest_builder.contest().await.unwrap()
+    };
+    assert_eq!(cnt_event.event.serial, 3);
+    assert!(cnt_event.event.is_contest());
+
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![cnt_event])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "Contest should create divergence + freeze on linear KEL with adversary ror"
+    );
+    let result: SubmitEventsResponse = response.json().await.unwrap();
+    assert!(result.applied);
+    assert!(result.diverged_at.is_some());
+
+    // Verify the KEL is contested
+    let response = harness
+        .client()
+        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: SignedKeyEventPage = response.json().await.unwrap();
+    assert!(page.events.iter().any(|e| e.event.is_contest()));
+
+    // Further submissions should be rejected
+    let ixn_after = create_interaction(&mut builder_a, &make_anchor("cntlin-post")).await;
+    let response = harness
+        .client()
+        .post(harness.url("/api/v1/kels/events"))
+        .json(&vec![ixn_after])
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.status(), 200);
+}
+
 /// Submit overlapping events (some already exist on server) that diverge mid-chain.
 /// This exercises handle_overlap_submission: the server deduplicates the overlap
 /// and stores only the divergent event.
