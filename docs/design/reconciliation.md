@@ -19,8 +19,7 @@ All proofs below depend on these invariants:
 | **Empty** | No events for this prefix |
 | **Normal** | Non-divergent, active |
 | **Divergent** | Fork detected, no `rec`/`cnt` yet |
-| **Recovering** | Divergent + `RecoveryRecord`, archival in progress |
-| **Recovered** | Clean chain after archival complete |
+| **Recovered** | Clean chain after synchronous archival in merge transaction |
 | **Contested** | `cnt` present, permanently frozen |
 | **Decommissioned** | `dec` present, permanently frozen |
 
@@ -33,11 +32,10 @@ What happens when a client submits events to the merge engine.
 | KEL State | ixn/rot | ror | rec/rec+rot | cnt/events+cnt | dec |
 |-----------|---------|-----|-------------|----------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Normal** | Append ✓ | Append ✓ | Append ✓ (proactive recovery) | Reject (no divergence) | Append ✓ |
+| **Normal** | Append ✓ | Append ✓ | Append ✓ (proactive recovery) | Overlap: Contest ✓ (creates divergence + freezes); Append: Reject | Append ✓ |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | `ContestRequired` (no recovery revealed) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
-| **Recovering** | `RecoverRequired` | `RecoverRequired` | `ContestRequired` (existing `rec` revealed recovery) | Contest ✓ → archival detects and stops | `RecoverRequired` |
-| **Recovered** | Same as Normal | Same as Normal | Same as Normal | Reject (no divergence) | Same as Normal |
+| **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
 | **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
 
@@ -68,12 +66,12 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 
 "Normal (owner)" means the sink has the legitimate owner's non-divergent chain. "Normal (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
 
-| Source | Sink: Empty | Sink: Normal (owner) | Sink: Normal (adversary) | Sink: Recovering | Sink: Contested |
-|--------|-------------|---------------------|-------------------------|-----------------|----------------|
+| Source | Sink: Empty | Sink: Normal (owner) | Sink: Normal (adversary) | Sink: Divergent | Sink: Contested |
+|--------|-------------|---------------------|-------------------------|----------------|----------------|
 | **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` |
-| **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → `RecoveryRecord` created ✓ | `RecoverRequired` (already recovering) | `ContestedKel` |
-| **Recovering** | Reordered: longer chain + fork + `rec`+`rot` ✓ | Adversary events create overlap + recovery ✓ | Owner events arrive, overlap + recovery ✓ | Duplicates ✓ | `ContestedKel` |
-| **Contested** | Longer chain + fork (`cnt` last) ✓ | Other chain + `cnt` → contest ✓ | Other chain + `cnt` → contest ✓ | `cnt` arrives → archival detects and stops ✓ | Effective SAIDs match (`hash("contested")`) ✓ |
+| **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` |
+| **Divergent** | Reordered: longer chain + fork + `rec`+`rot` ✓ | Adversary events create overlap + recovery ✓ | Owner events arrive, overlap + recovery ✓ | Duplicates ✓ | `ContestedKel` |
+| **Contested** | Longer chain + fork (`cnt` last) ✓ | Other chain + `cnt` → contest ✓ | Other chain + `cnt` → contest ✓ | `cnt` arrives → contest ✓ | Effective SAIDs match (`hash("contested")`) ✓ |
 | **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` |
 
 ### Effective SAID convergence
@@ -83,40 +81,31 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | State | Effective SAID computation | Converges? |
 |-------|---------------------------|------------|
 | **Normal** | Tip event SAID | ✓ (identical chains after gossip) |
-| **Recovering** | Composite hash of sorted tip SAIDs | Temporary divergence during archival; converges after archival completes |
+| **Divergent** | Composite hash of sorted tip SAIDs | Temporary; converges after recovery or contest |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
-| **Contested** | `hash_tip_saids(&["contested"])` — deterministic | ✓ (same value regardless of archival progress) |
+| **Contested** | `hash_tip_saids(&["contested"])` — deterministic | ✓ (same value on all nodes) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains) |
 
 ## Archival
 
-The background recovery task archives adversary events one page per cycle.
+Archival happens synchronously within the merge transaction that accepts the `rec` (or `rec+rot`) event. No background task or async processing.
 
 ### Owner identification
 
-The archival task identifies owner events via:
-1. Backward trace from `rec_previous` to the fork point
-2. Add `rec` and `rot`-after-`rec` explicitly
-3. Forward trace from the last owner event (rot or rec) to include post-recovery events
-4. Everything else at or after `diverged_at` is adversary
+The merge engine identifies owner events via two strategies depending on the divergence geometry:
 
-### Archival during contest
+- **`collect_all_adversary_saids`** (owner has no events at divergence serial): All events from `diverged_at` onward are adversary.
+- **`collect_adversary_chain_saids`** (owner has events at divergence serial): Walk backward from the adversary event at the divergence point to identify the adversary chain, then forward-trace to capture any adversary extensions.
 
-If a `cnt` event is submitted while archival is in progress:
-1. Archival task acquires advisory lock
-2. Checks for `cnt` in the KEL
-3. Verifies the full chain (including `cnt`) via `completed_verification`
-4. Transitions `RecoveryRecord` to `Contested` terminal state
-5. Archival stops immediately
+Everything not in the owner's chain is archived to mirror tables.
 
 ### Archival bounds
 
 | Metric | Bound | Source |
 |--------|-------|--------|
 | Adversary events to archive | ≤ 62 | Proactive ROR limits fork distance |
-| Events per archival cycle | 1 page (64) | `archive_one_page` batch window |
-| Maximum archival cycles | 1 | Adversary chain fits in one page |
-| Owner events never archived | ✓ | Owner SAID set includes backward trace + `rec` + `rot` + forward trace |
+| Archival scope | Single transaction | Synchronous in merge, bounded by `MINIMUM_PAGE_SIZE` |
+| Owner events never archived | ✓ | Owner chain identified by backward/forward trace from `rec_previous` |
 
 ## Edge Cases
 
@@ -126,24 +115,20 @@ The adversary submits `rec` to a non-divergent KEL (normal append, no divergence
 
 ### 2. Multiple adversary injections across nodes
 
-Adversary injects different events to different nodes. When gossip syncs, divergence is created. Only one adversary event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after archival completes.
+Adversary injects different events to different nodes. When gossip syncs, divergence is created. Only one adversary event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after recovery propagates via gossip.
 
 ### 3. Owner events archived by adversary's `rec`
 
-If the adversary submitted `rec` (creating a `RecoveryRecord`), archival may remove the owner's events. The owner's builder detects missing events via `find_missing_owner_events` (probes each local event against the server) and resubmits the minimal chain + `cnt` atomically.
+If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events` (probes the server backward from the owner's tail) and resubmits the minimal chain + `cnt` atomically.
 
 ### 4. Post-recovery events synced to adversary node
 
-After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the adversary chain), the overlap handler creates a `RecoveryRecord`. The archival task's `find_adversary_tip_all_adversary` includes a forward trace from `rot`-after-`rec` to capture post-recovery events in `owner_saids`, preventing them from being archived.
+After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the adversary chain), the overlap handler creates a `RecoveryRecord` and archives adversary events synchronously in the merge transaction.
 
-### 5. Contest during active archival
+### 5. Sink divergent when source syncs
 
-The archival task checks for `cnt` under advisory lock before each cycle. If found, it verifies the full chain and transitions to the `Contested` terminal state. The advisory lock prevents races between contest submission and archival.
+The sink's KEL is divergent (awaiting recovery). Gossip sync submits events → `RecoverRequired`. The sync fails, prefix is re-queued as stale. After recovery resolves the divergence, the next sync attempt succeeds.
 
-### 6. Sink already recovering when source syncs
+### 6. Contested KELs across nodes
 
-The sink's KEL is divergent (recovery in progress). Gossip sync submits events → `RecoverRequired`. The sync fails, prefix is re-queued as stale. After archival completes, the next sync attempt succeeds.
-
-### 7. Contested KELs with different archival progress
-
-Different nodes may have archived different amounts of adversary events before the contest arrived. Their event counts and digests differ, but `compute_prefix_effective_said` returns a deterministic `hash_tip_saids(&["contested"])` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived, another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_tip_saids(&["contested"])` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.

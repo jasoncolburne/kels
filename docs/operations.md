@@ -20,10 +20,8 @@ The standard recovery flow works for identity:
 
 1. **Rotate the recovery key offline.** The recovery key should be stored in a separate HSM or cold storage, not accessible to the compromised signing key.
 2. **Submit a `rec + rot` batch** using the recovery key. This can be done via the identity service's manage endpoint or directly against the kels service.
-3. **The merge engine detects divergence**, accepts the recovery atomically, and creates a `RecoveryRecord`.
-4. **The background archival task** removes adversary events newest-first, moving them to archive tables for auditability.
-5. **During recovery**, serve endpoints return the full KEL including adversary events — consumers verify independently. Anchors beyond the divergence serial are not honoured by the verifier. Non-recovery submissions return `RecoverRequired` (the divergent KEL is frozen until archival completes).
-6. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume.
+3. **The merge engine detects divergence**, identifies adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all atomically within the merge transaction.
+4. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume immediately.
 
 ### During active recovery
 

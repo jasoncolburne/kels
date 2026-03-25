@@ -16,7 +16,7 @@ The legitimate owner must be able to:
 1. **Store all valid events** - Don't reject conflicting events at the database level; let clients detect and resolve divergence
 2. **Derive state from data** - No separate divergence flag; compute from event structure
 3. **Freeze on divergence** - Prevent further damage until owner recovers
-4. **Archive asynchronously on recovery** - The `rec` (or `rec+rot`) is accepted atomically, placing the KEL in a recoverable divergent state. Adversary events are archived by a background task that removes them newest-first to maintain chain consistency at every step. This approach is necessary because an adversary's event count is unbounded (key compromise may go undetected for years), making synchronous archival impractical. The chained `RecoveryRecord` provides an immutable audit trail of the archival process.
+4. **Archive synchronously on recovery** - The `rec` (or `rec+rot`) is accepted atomically in the merge transaction. Adversary events are identified, archived to mirror tables, and removed from the live chain — all within the same transaction. The proactive ROR invariant (`MAX_NON_REVEALING_EVENTS = 62`) guarantees the adversary chain never exceeds one page, making synchronous archival feasible. A `RecoveryRecord` provides an immutable audit trail.
 5. **Simple client API** - `KeyEventBuilder` handles complexity internally
 
 ## Architecture
@@ -84,8 +84,8 @@ Client                              KELS Server
   │<──── BatchSubmitResponse ────────────│
   │      { applied: true }               │
   │                                      │
-  │ (background task archives adversary  │
-  │  events newest-first, one page/cycle)│
+  │ (adversary events archived           │
+  │  synchronously in merge transaction) │
 ```
 
 When KEL is already frozen (submitting to a divergent KEL):
@@ -196,37 +196,23 @@ CREATE INDEX kels_key_events_prefix_idx
 
 Events are linked by their `previous` SAID field rather than a version number. Multiple events can share the same `previous` value, indicating divergence.
 
-### Recovery Records and Async Archival
+### Recovery Records and Synchronous Archival
 
-When a `rec` (or `rec+rot`) event resolves divergence, the merge engine stores the recovery events atomically and creates a `RecoveryRecord`. The KEL is now in a recoverable divergent state: both the owner's recovery branch and the adversary's branch coexist in the database.
+When a `rec` (or `rec+rot`) event resolves divergence, the merge engine identifies the adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all within the same advisory-locked transaction. Recovery completes atomically: either the adversary is fully archived and the clean chain restored, or nothing changes.
 
-A background task archives adversary events asynchronously, removing them newest-first (backward from the adversary chain tip toward the divergence point). This preserves chain consistency at every step — consumers always see a valid chain with no orphaned events.
+**Why synchronous?** The proactive ROR invariant (`MAX_NON_REVEALING_EVENTS = 62`) guarantees that an adversary can only fork after the last recovery-revealing event. Combined with the proactive ROR enforcement, the adversary chain never exceeds one page (`MINIMUM_PAGE_SIZE = 64`), making synchronous archival in a single transaction feasible.
 
-**Why async?** An adversary's key compromise may go undetected for years. With a daily rate limit of 64 events, that's potentially 160,000+ adversary events. Synchronous archival of this many events in an HTTP handler is impractical. The async approach bounds each operation to one page (32 events) per cycle.
-
-**Why not truncate?** A database-level truncation (deleting all adversary events at once) would be faster but provides no audit trail. The async archival moves events to `kels_archived_events` and `kels_archived_event_signatures` (mirror tables with the same schema), and the chained `RecoveryRecord` provides an immutable record of when recovery happened, what was archived, and the state transitions involved.
-
-**During active recovery:**
-- Non-recovery submissions return `RecoverRequired` — the divergent KEL is frozen until adversary events are archived.
-- Serve endpoints return the full KEL including adversary events — consumers verify independently. The verifier does not honour anchors beyond the divergence serial, so adversary anchors have no effect.
-- The background task progresses through states: `pending` → `archiving` → `cleanup` → `recovered`.
-- After archival completes, the adversary events are gone from the live tables and the clean chain is all that remains.
+**Why archive instead of truncate?** A database-level truncation would lose the adversary events permanently. Archival moves events to `kels_archived_events` and `kels_archived_event_signatures` (mirror tables with the same schema), preserving them for forensic analysis. The `RecoveryRecord` provides an immutable audit trail linking archived events to the recovery that created them.
 
 ```sql
 CREATE TABLE kels_recovery (
     said TEXT PRIMARY KEY,
-    prefix TEXT NOT NULL,
-    previous TEXT,
-    version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     kel_prefix TEXT NOT NULL,
     recovery_serial BIGINT NOT NULL,
     diverged_at BIGINT NOT NULL,
     rec_previous TEXT NOT NULL,
-    owner_first_serial BIGINT NOT NULL,
-    state TEXT NOT NULL,        -- pending, archiving, cleanup, recovered
-    cursor_serial BIGINT NOT NULL,
-    adversary_tip_said TEXT
+    owner_first_serial BIGINT NOT NULL
 );
 
 CREATE TABLE kels_archived_events (LIKE kels_key_events INCLUDING ALL);
@@ -270,7 +256,7 @@ GET /api/v1/kels/kel/:prefix/audit
 Response: [RecoveryRecord, ...]
 ```
 
-Recovery records are separate from the paginated KEL endpoint. Each record represents a state transition in the recovery lifecycle (pending → archiving → cleanup → recovered).
+Recovery records are separate from the paginated KEL endpoint. Each record is an immutable audit entry documenting a recovery — when it happened, what serial the divergence was at, and what was archived.
 
 ## CLI Commands
 
