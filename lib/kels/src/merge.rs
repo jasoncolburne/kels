@@ -357,7 +357,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let all_query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .gte("serial", diverged_at)
-            .limit(crate::page_size() as u64 * 2);
+            .limit(crate::MINIMUM_PAGE_SIZE as u64 * 2);
         let all_events: Vec<KeyEvent> = self.tx.fetch(all_query).await?;
 
         Ok(all_events
@@ -397,7 +397,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                         current_said = adversary_children[0].said.clone();
                         saids.push(current_said.clone());
                     }
-                    _ => break,
+                    _ => {
+                        return Err(KelsError::StorageError(format!(
+                            "Multiple non-rec children at adversary event {} — possible DB tampering",
+                            current_said,
+                        )));
+                    }
                 }
             }
         }

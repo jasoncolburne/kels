@@ -54,6 +54,41 @@ wait_for_gossip() {
     sleep "$GOSSIP_PROPAGATION_DELAY"
 }
 
+get_archived_count() {
+    local url="$1"
+    local prefix="$2"
+    curl -s "$url/api/v1/kels/kel/$prefix/archived" | jq '.events | length'
+}
+
+archived_match_all() {
+    local prefix="$1"
+    local expected="$2"
+    local count_d count_e count_f
+    count_d=$(get_archived_count "$NODE_D_URL" "$prefix")
+    count_e=$(get_archived_count "$NODE_E_URL" "$prefix")
+    count_f=$(get_archived_count "$NODE_F_URL" "$prefix")
+    if [ "$count_d" = "$expected" ] && [ "$count_e" = "$expected" ] && [ "$count_f" = "$expected" ]; then
+        return 0
+    else
+        echo "Archived count mismatch (expected $expected): D=$count_d E=$count_e F=$count_f"
+        return 1
+    fi
+}
+
+wait_for_archived_convergence() {
+    local prefix="$1"
+    local expected="$2"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for archived events ($expected) to converge on all nodes..."
+    while [ $SECONDS -lt $deadline ]; do
+        if archived_match_all "$prefix" "$expected" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    archived_match_all "$prefix" "$expected"
+}
+
 get_kel_hash() {
     local url="$1"
     local prefix="$2"
@@ -174,6 +209,7 @@ echo "Adversary ixn injected on node-e"
 wait_for_gossip
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX1"
 run_test "All nodes converge after recovery" wait_for_convergence "$PREFIX1"
+run_test "Archived adversary ixn on all nodes" wait_for_archived_convergence "$PREFIX1" 1
 
 cleanup_adversary_backup
 echo ""
@@ -198,6 +234,7 @@ run_test "Owner recovers" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX2"
 # Add post-recovery event
 run_test "Owner anchors after recovery" kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX2" --said KPostRecoveryAnchor_________________________
 run_test "All nodes converge with post-recovery event" wait_for_convergence "$PREFIX2"
+run_test "Archived adversary ixn on all nodes" wait_for_archived_convergence "$PREFIX2" 1
 
 cleanup_adversary_backup
 echo ""
@@ -222,6 +259,7 @@ wait_for_gossip
 run_test "Owner recovers" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX3"
 run_test "Owner anchors after recovery" kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said KPostRotChainRecoveryAnchor_________________
 run_test "All nodes converge" wait_for_convergence "$PREFIX3"
+run_test "Archived adversary rot,ixn,ixn on all nodes" wait_for_archived_convergence "$PREFIX3" 3
 
 cleanup_adversary_backup
 echo ""
