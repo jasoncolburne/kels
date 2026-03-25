@@ -190,7 +190,6 @@ echo "Adversary ixn injected on node-e"
 
 wait_for_gossip
 run_test "Owner recovers on node-d" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX1"
-run_test "Recovery completes on node-d" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX1"
 run_test "All nodes converge after recovery" wait_for_convergence "$PREFIX1"
 
 cleanup_adversary_backup
@@ -212,7 +211,6 @@ kels-cli -u "$NODE_E_URL" adversary inject --prefix "$PREFIX2" --events ixn
 wait_for_gossip
 
 run_test "Owner recovers" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX2"
-run_test "Recovery completes" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX2"
 
 # Add post-recovery event
 run_test "Owner anchors after recovery" kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX2" --said KPostRecoveryAnchor_________________________
@@ -239,7 +237,6 @@ echo "Adversary rot,ixn,ixn injected on node-e"
 wait_for_gossip
 
 run_test "Owner recovers" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX3"
-run_test "Recovery completes" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX3"
 run_test "Owner anchors after recovery" kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX3" --said KPostRotChainRecoveryAnchor_________________
 run_test "All nodes converge" wait_for_convergence "$PREFIX3"
 
@@ -338,7 +335,6 @@ kels-cli -u "$NODE_E_URL" adversary inject --prefix "$PREFIX7" --events ixn
 wait_for_gossip
 
 run_test "Owner recovers" kels-cli -u "$NODE_D_URL" recover --prefix "$PREFIX7"
-run_test "Recovery completes" wait_for_recovery_complete "$NODE_D_URL" "$PREFIX7"
 
 # Adversary tries another rec — should fail with ContestRequired
 swap_to_adversary

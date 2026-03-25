@@ -61,8 +61,7 @@ spec:
               value: "${var.ipRateLimitBurst}"
             - name: KELS_NONCE_WINDOW_SECS
               value: "${var.nonceWindowSecs}"
-            - name: KELS_RECOVERY_INTERVAL_SECS
-              value: "${var.recoveryIntervalSecs}"
+
             # --- Test config (remove for production) ---
             - name: KELS_TEST_ENDPOINTS
               value: "${var.testEndpoints}"

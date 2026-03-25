@@ -982,8 +982,7 @@ async fn test_recovery_from_divergence() {
     // After recovery, the KEL should have the authoritative branch events
     assert!(page.events.iter().any(|e| e.event.is_recover()));
 
-    // Subsequent normal appends are rejected while adversary events are still
-    // in the DB (KEL appears divergent, merge returns RecoverRequired)
+    // Subsequent normal appends should work (adversary events archived synchronously)
     let ixn_after = create_interaction(&mut builder_a, &make_anchor("post-recovery")).await;
     let response = harness
         .client()
@@ -994,8 +993,8 @@ async fn test_recovery_from_divergence() {
         .unwrap();
     assert_eq!(response.status(), 200);
     let result: SubmitEventsResponse = response.json().await.unwrap();
-    // Not applied — KEL is divergent until archival completes
-    assert!(!result.applied);
+    assert!(result.applied);
+    assert!(result.diverged_at.is_none());
 
     // Audit endpoint should return the recovery record with correct fields
     let response = harness
@@ -1008,16 +1007,12 @@ async fn test_recovery_from_divergence() {
     let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
     assert_eq!(recovery_records.len(), 1);
     let record = &recovery_records[0];
-    assert_eq!(record.state, kels::RecoveryState::Pending);
     assert_eq!(record.diverged_at, 3);
     assert_eq!(record.kel_prefix, prefix);
-    assert_eq!(record.version, 0);
-    assert!(record.previous.is_none());
     assert!(!record.said.is_empty());
-    assert!(!record.prefix.is_empty());
     assert!(!record.rec_previous.is_empty());
 
-    // Archived events endpoint should be empty (archival hasn't run yet)
+    // Archived events endpoint should have adversary events (archived synchronously)
     let response = harness
         .client()
         .get(harness.url(&format!("/api/v1/kels/kel/{}/archived", prefix)))
@@ -1026,7 +1021,7 @@ async fn test_recovery_from_divergence() {
         .unwrap();
     assert_eq!(response.status(), 200);
     let archived: kels::SignedKeyEventPage = response.json().await.unwrap();
-    assert!(archived.events.is_empty());
+    assert!(!archived.events.is_empty());
 }
 
 /// Contest freezes a KEL after recovery key is revealed.

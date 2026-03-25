@@ -31,26 +31,17 @@ CREATE TABLE IF NOT EXISTS kels_key_event_signatures (
 CREATE INDEX IF NOT EXISTS kels_key_event_signatures_event_said_idx ON kels_key_event_signatures(event_said);
 CREATE UNIQUE INDEX IF NOT EXISTS kels_key_event_signatures_event_said_label_idx ON kels_key_event_signatures(event_said, label);
 
--- Recovery tracking: chained records for async adversary archival.
--- Each state transition creates a new version; records are never deleted.
+-- Recovery audit records: one row per recovery, written during merge.
 CREATE TABLE IF NOT EXISTS kels_recovery (
     said TEXT PRIMARY KEY,
-    prefix TEXT NOT NULL,
-    previous TEXT,
-    version BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     kel_prefix TEXT NOT NULL,
     recovery_serial BIGINT NOT NULL,
     diverged_at BIGINT NOT NULL,
     rec_previous TEXT NOT NULL,
-    owner_first_serial BIGINT NOT NULL,
-    state TEXT NOT NULL,
-    cursor_serial BIGINT NOT NULL,
-    adversary_tip_said TEXT
+    owner_first_serial BIGINT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_kels_recovery_prefix_version ON kels_recovery(prefix, version);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_kels_recovery_kel_prefix_version ON kels_recovery(kel_prefix, version);
 CREATE INDEX IF NOT EXISTS idx_kels_recovery_kel_prefix ON kels_recovery(kel_prefix);
 
 -- Archive tables: mirror the live tables for adversary events moved during recovery.

@@ -683,17 +683,10 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
             println!();
             println!("{}", "Recovery History:".yellow().bold());
             for (i, record) in recovery_records.iter().enumerate() {
+                println!("  [{}] {} ({})", i, &record.said[..16], record.created_at);
                 println!(
-                    "  [{}] {} v{} - {} ({})",
-                    i,
-                    record.state,
-                    record.version,
-                    &record.said[..16],
-                    record.created_at
-                );
-                println!(
-                    "      diverged_at={} recovery_serial={} cursor={}",
-                    record.diverged_at, record.recovery_serial, record.cursor_serial
+                    "      diverged_at={} recovery_serial={}",
+                    record.diverged_at, record.recovery_serial
                 );
             }
         } else {

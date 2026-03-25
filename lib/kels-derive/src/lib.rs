@@ -18,7 +18,7 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// ## Attributes
 ///
 /// - `signatures_table`: The signatures table name (required)
-/// - `recovery_table`: Recovery tracking table for async adversary archival (required)
+/// - `recovery_table`: Recovery audit table (required)
 ///
 /// ## Example
 ///
@@ -44,6 +44,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let mut signatures_table: Option<String> = None;
     let mut recovery_table: Option<String> = None;
+    let mut archived_events_table: Option<String> = None;
+    let mut archived_signatures_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -59,6 +61,18 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     recovery_table = Some(s.value());
                 }
+            } else if meta.path.is_ident("archived_events_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    archived_events_table = Some(s.value());
+                }
+            } else if meta.path.is_ident("archived_signatures_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    archived_signatures_table = Some(s.value());
+                }
             }
             Ok(())
         })
@@ -66,8 +80,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let signatures_table =
         signatures_table.expect("Missing signatures_table in #[signed_events(...)]");
-
     let recovery_table = recovery_table.expect("Missing recovery_table in #[signed_events(...)]");
+    let archived_events_table =
+        archived_events_table.expect("Missing archived_events_table in #[signed_events(...)]");
+    let archived_signatures_table = archived_signatures_table
+        .expect("Missing archived_signatures_table in #[signed_events(...)]");
 
     // Generate the methods
     let methods = quote! {
@@ -143,8 +160,6 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 self.pool.fetch_optional(query).await
             }
 
-            /// Query the recovery serial cap for a prefix. Returns `Some(serial)` if
-            /// an active (non-recovered) recovery exists, `None` otherwise.
             /// Get a paginated page of signed events for a prefix.
             ///
             /// Returns `(events, has_more)` — fetches `limit + 1` rows and pops the extra
@@ -179,9 +194,6 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// events with `serial >= that serial`, filtering out the since event itself.
             /// Returns `(events, has_more)` using the limit+2 pop pattern.
             /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
-            ///
-            /// Returns the full KEL without recovery filtering. For serve paths that
-            /// should cap events during active recovery, use `KelServer::load_page_since` instead.
             pub async fn get_signed_history_since(
                 &self,
                 prefix: &str,
@@ -359,6 +371,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
                     #recovery_table,
+                    #archived_events_table,
+                    #archived_signatures_table,
                 );
 
                 match merge_tx.merge_events(events).await {

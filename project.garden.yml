@@ -93,8 +93,6 @@ variables:
     maxWritesPerIpPerSecond: "200"
     ipRateLimitBurst: "1000"
     nonceWindowSecs: "60"
-    # Recovery archival
-    recoveryIntervalSecs: "1"
     # Test config (remove for production)
     testEndpoints: "false"
   gossip:

@@ -145,27 +145,6 @@ fetch_all_events() {
 
     echo "$all_events"
 }
-
-# Wait for async recovery archival to complete for a prefix.
-# The background task runs every 5s and needs multiple cycles
-# (pending → archiving → cleanup → recovered), so this polls
-# the audit endpoint until the latest recovery record reaches
-# the terminal "recovered" state.
-wait_for_recovery_complete() {
-    local url="$1"
-    local prefix="$2"
-    local timeout="${3:-30}"
-    echo "Waiting for recovery archival to complete (timeout: ${timeout}s)..."
-    for _ in $(seq 1 $((timeout * 5))); do
-        local latest_state
-        latest_state=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -r '.[-1].state // empty')
-        [ "$latest_state" = "recovered" ] && return 0
-        sleep 0.2
-    done
-    echo "Recovery did not complete within ${timeout}s (latest state: $latest_state)"
-    return 1
-}
-
 get_event_count() {
     local url="$1"
     local prefix="$2"

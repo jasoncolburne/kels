@@ -15,8 +15,8 @@ use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecuto
 
 use crate::{
     BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier, KelsError,
-    KeyEvent, RecoveryRecord, RecoveryState, SignedKeyEvent, completed_verification,
-    load_signed_history, repository::zip_events_with_signatures, types::PageLoader,
+    KeyEvent, RecoveryRecord, SignedKeyEvent, completed_verification, load_signed_history,
+    repository::zip_events_with_signatures, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -52,6 +52,8 @@ pub struct MergeTransaction<T: TransactionExecutor> {
     events_table: &'static str,
     signatures_table: &'static str,
     recovery_table: &'static str,
+    archived_events_table: &'static str,
+    archived_signatures_table: &'static str,
 }
 
 impl<T: TransactionExecutor> MergeTransaction<T> {
@@ -61,6 +63,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         events_table: &'static str,
         signatures_table: &'static str,
         recovery_table: &'static str,
+        archived_events_table: &'static str,
+        archived_signatures_table: &'static str,
     ) -> Self {
         Self {
             tx,
@@ -68,6 +72,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             events_table,
             signatures_table,
             recovery_table,
+            archived_events_table,
+            archived_signatures_table,
         }
     }
 
@@ -234,12 +240,169 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(self.tx.delete(delete).await?)
     }
 
-    /// Insert a recovery record.
+    /// Insert a recovery record (terminal audit-only).
     async fn insert_recovery_record(&mut self, record: &RecoveryRecord) -> Result<(), KelsError> {
         self.tx
             .insert_with_table(record, self.recovery_table)
             .await?;
         Ok(())
+    }
+
+    /// Archive adversary events synchronously: move events + signatures to
+    /// archive tables and delete from live tables. Bounded by proactive ror
+    /// enforcement — the adversary chain fits in one page.
+    async fn archive_adversary_events(
+        &mut self,
+        adversary_saids: Vec<String>,
+    ) -> Result<(), KelsError> {
+        if adversary_saids.is_empty() {
+            return Ok(());
+        }
+
+        // Fetch events and signatures to archive
+        let event_query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .r#in("said", adversary_saids.clone());
+        let events: Vec<KeyEvent> = self.tx.fetch(event_query).await?;
+
+        let sig_query = Query::<EventSignature>::for_table(self.signatures_table)
+            .r#in("event_said", adversary_saids.clone());
+        let signatures: Vec<EventSignature> = self.tx.fetch(sig_query).await?;
+
+        // Insert into archive tables
+        for event in &events {
+            self.tx
+                .insert_with_table(event, self.archived_events_table)
+                .await?;
+        }
+        for sig in &signatures {
+            self.tx
+                .insert_with_table(sig, self.archived_signatures_table)
+                .await?;
+        }
+
+        // Delete from live tables
+        let sig_saids: Vec<String> = signatures.iter().map(|s| s.said.clone()).collect();
+        if !sig_saids.is_empty() {
+            let sig_delete =
+                Delete::<EventSignature>::for_table(self.signatures_table).r#in("said", sig_saids);
+            self.tx.delete(sig_delete).await?;
+        }
+        let event_delete =
+            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
+        self.tx.delete(event_delete).await?;
+
+        Ok(())
+    }
+
+    /// Identify and archive all adversary events for a recovery.
+    ///
+    /// Two cases based on `first_serial` (first serial in the owner's submission):
+    /// - `first_serial <= diverged_at`: owner has no events at divergence serial,
+    ///   all events from `diverged_at` onward (except the just-inserted rec/rot) are adversary.
+    /// - `first_serial > diverged_at`: owner has events at divergence serial,
+    ///   use `find_adversary_event` to identify the adversary branch.
+    async fn archive_adversary_chain(
+        &mut self,
+        first_serial: u64,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<(), KelsError> {
+        let adversary_saids = if first_serial <= diverged_at {
+            // Owner has no events at divergence — all existing events from
+            // diverged_at onward are adversary.
+            self.collect_all_adversary_saids(diverged_at, rec_previous)
+                .await?
+        } else {
+            // Owner has events at divergence — identify adversary and walk chain.
+            self.collect_adversary_chain_saids(diverged_at, rec_previous)
+                .await?
+        };
+
+        self.archive_adversary_events(adversary_saids).await
+    }
+
+    /// Collect SAIDs of all adversary events when owner has no events at divergence.
+    /// Called BEFORE inserting rec/rot, so only pre-existing events are in the DB.
+    /// Walks backward from rec_previous to identify owner events, then everything
+    /// else from diverged_at onward is adversary.
+    async fn collect_all_adversary_saids(
+        &mut self,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<Vec<String>, KelsError> {
+        // Build owner SAID set by walking backward from rec_previous.
+        // Since rec/rot haven't been inserted yet, only pre-existing owner
+        // events are in the DB.
+        let mut owner_saids: HashSet<String> = HashSet::new();
+        let mut walk = Some(rec_previous.to_string());
+        for _ in 0..crate::page_size() {
+            let Some(said) = walk.take() else { break };
+            let q = Query::<KeyEvent>::for_table(self.events_table)
+                .eq("prefix", &self.prefix)
+                .eq("said", &said)
+                .limit(1);
+            let events: Vec<KeyEvent> = self.tx.fetch(q).await?;
+            let Some(event) = events.into_iter().next() else {
+                break;
+            };
+            if event.serial < diverged_at {
+                break;
+            }
+            owner_saids.insert(event.said.clone());
+            walk = event.previous;
+        }
+
+        // Everything from diverged_at onward that's not an owner event is adversary
+        let all_query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .gte("serial", diverged_at)
+            .limit(crate::page_size() as u64 * 2);
+        let all_events: Vec<KeyEvent> = self.tx.fetch(all_query).await?;
+
+        Ok(all_events
+            .into_iter()
+            .filter(|e| !owner_saids.contains(&e.said))
+            .map(|e| e.said)
+            .collect())
+    }
+
+    /// Collect SAIDs of the adversary chain when owner has events at divergence.
+    /// Identifies the adversary event and walks forward to the tip.
+    async fn collect_adversary_chain_saids(
+        &mut self,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<Vec<String>, KelsError> {
+        let (adversary, adversary_has_chain) =
+            self.find_adversary_event(diverged_at, rec_previous).await?;
+
+        let mut saids = vec![adversary.event.said.clone()];
+
+        if adversary_has_chain {
+            // Walk forward from adversary event to collect the chain
+            let mut current_said = adversary.event.said.clone();
+            for _ in 0..crate::page_size() {
+                let child_query = Query::<KeyEvent>::for_table(self.events_table)
+                    .eq("prefix", &self.prefix)
+                    .eq("previous", &current_said)
+                    .limit(2);
+                let children: Vec<KeyEvent> = self.tx.fetch(child_query).await?;
+                // Filter out owner's rec event
+                let adversary_children: Vec<&KeyEvent> =
+                    children.iter().filter(|e| !e.is_recover()).collect();
+                match adversary_children.len() {
+                    0 => break,
+                    1 => {
+                        current_said = adversary_children[0].said.clone();
+                        saids.push(current_said.clone());
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        Ok(saids)
     }
 
     /// Load a page of signed events by offset.
@@ -683,22 +846,23 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             self.check_contest_required(first_serial, diverged_at, rec_previous)
                 .await?;
 
-            // Insert all submitted events (adversary events stay in place —
-            // the background recovery task will archive them asynchronously)
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
+                .await?;
+
             for event in new_events {
                 self.insert_signed_event(event).await?;
             }
 
-            // Create a recovery record to track async archival
+            // Write terminal audit record
             let recovery_record = RecoveryRecord::create(
                 self.prefix.clone(),
                 rec_event.event.serial,
                 diverged_at,
                 rec_previous.to_string(),
                 first_serial,
-                RecoveryState::Pending,
-                0,
-                None,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.insert_recovery_record(&recovery_record).await?;
@@ -795,22 +959,25 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             // are adversary. The contest check above already verified they don't
             // reveal the recovery key.
 
-            // Insert all submitted events (adversary events stay in place —
-            // the background recovery task will archive them asynchronously)
+            let first_serial = new_events[0].event.serial;
+
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
+                .await?;
+
             for event in new_events {
                 self.insert_signed_event(event).await?;
             }
 
-            // Create a recovery record to track async archival
+            // Write terminal audit record
             let recovery_record = RecoveryRecord::create(
                 self.prefix.clone(),
                 rec_event.event.serial,
                 diverged_at,
                 rec_previous.to_string(),
-                new_events[0].event.serial,
-                RecoveryState::Pending,
-                0,
-                None,
+                first_serial,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.insert_recovery_record(&recovery_record).await?;
@@ -909,8 +1076,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     /// Check if the adversary revealed the recovery key, requiring contest
-    /// instead of recovery. Does NOT archive — archival is handled by the
-    /// background recovery task.
+    /// instead of recovery.
     ///
     /// Handles both cases: owner has events at the divergence serial
     /// (uses `find_adversary_event`) or owner has no events there.

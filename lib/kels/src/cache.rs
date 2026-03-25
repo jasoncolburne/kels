@@ -327,7 +327,6 @@ impl LocalCache {
 }
 
 /// Redis-backed KEL cache with pre-serialized responses (server-side with pub/sub)
-#[derive(Clone)]
 pub struct ServerKelCache {
     conn: ConnectionManager,
     key_prefix: String,
@@ -423,8 +422,6 @@ impl ServerKelCache {
     }
 
     /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
-    ///
-    /// Also used by the recovery background task via the `RecoveryCache` trait.
     pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let redis_key = self.redis_key(prefix);

@@ -41,7 +41,6 @@ variables:
   maxWritesPerIpPerSecond: "${var.kels.maxWritesPerIpPerSecond}"
   ipRateLimitBurst: "${var.kels.ipRateLimitBurst}"
   nonceWindowSecs: "${var.kels.nonceWindowSecs}"
-  recoveryIntervalSecs: "${var.kels.recoveryIntervalSecs}"
   testEndpoints: "${var.kels.testEndpoints}"
 
 spec:

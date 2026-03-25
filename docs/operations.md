@@ -27,12 +27,10 @@ The standard recovery flow works for identity:
 
 ### During active recovery
 
-While the `RecoveryRecord` is in `Pending`, `Archiving`, or `Cleanup` state:
+Adversary events are archived synchronously during the merge transaction. Recovery completes atomically — no window where the KEL appears divergent after a successful recovery submission.
 
-- Non-recovery submissions return `RecoverRequired` — the divergent KEL is frozen until adversary events are archived.
-- Serve endpoints return the full KEL including adversary events — consumers verify independently and the verifier does not honour anchors beyond the divergence serial.
-- The background archival task archives adversary events asynchronously (configurable interval via `KELS_RECOVERY_INTERVAL_SECS`, default 1s).
-- Monitor progress via `GET /api/v1/kels/kel/:prefix/audit` — the latest `RecoveryRecord` shows the current state.
+- A `RecoveryRecord` audit trail is written for each recovery. Query via `GET /api/v1/kels/kel/:prefix/audit`.
+- Archived adversary events are available via `GET /api/v1/kels/kel/:prefix/archived` for forensics.
 
 ### Recovery via database truncation
 

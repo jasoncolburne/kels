@@ -12,14 +12,16 @@ use libkels_derive::SignedEvents;
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
 #[signed_events(
     signatures_table = "kels_key_event_signatures",
-    recovery_table = "kels_recovery"
+    recovery_table = "kels_recovery",
+    archived_events_table = "kels_archived_events",
+    archived_signatures_table = "kels_archived_event_signatures"
 )]
 pub struct KeyEventRepository {
     pub pool: PgPool,
 }
 
 #[derive(Stored)]
-#[stored(item_type = RecoveryRecord, table = "kels_recovery")]
+#[stored(item_type = RecoveryRecord, table = "kels_recovery", chained = false)]
 pub struct RecoveryRecordRepository {
     pub pool: PgPool,
 }
@@ -186,7 +188,7 @@ impl RecoveryRecordRepository {
     ) -> Result<Vec<RecoveryRecord>, StorageError> {
         let query = Query::<RecoveryRecord>::new()
             .eq("kel_prefix", kel_prefix)
-            .order_by("version", Order::Asc);
+            .order_by("created_at", Order::Asc);
         self.pool.fetch(query).await
     }
 }

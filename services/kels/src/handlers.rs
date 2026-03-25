@@ -54,7 +54,7 @@ const SECS_PER_DAY: u64 = 86_400;
 
 /// Per-prefix rate limit: counts events (not submissions) in a daily window.
 /// Slows adversary event accumulation. The hard resilience guarantee comes
-/// from async archival (KELS-71), not from this rate limit.
+/// from bounded archival (KELS-71), not from this rate limit.
 /// Check whether adding `event_count` new events would exceed the daily limit.
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge
 /// with the actual number of new events inserted.

@@ -42,13 +42,12 @@ pub mod client;
 pub mod crypto;
 pub mod error;
 pub mod merge;
-pub mod recovery;
 pub mod repository;
 pub mod serving;
 pub mod store;
 pub mod types;
 
-use std::{env, sync::LazyLock, time::Duration};
+use std::{env, sync::LazyLock};
 
 #[cfg(feature = "redis")]
 pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
@@ -76,9 +75,6 @@ pub use crypto::{
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
-#[cfg(feature = "redis")]
-pub use recovery::recovery_archival_loop_with_cache;
-pub use recovery::{RecoveryConfig, recovery_archival_loop};
 pub use repository::{SignedEventRepository, load_signed_history};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
@@ -91,11 +87,11 @@ pub use types::{
     PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
     ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
-    RecoveryState, RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage,
-    SignedRequest, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
-    benchmark_key_events, completed_verification, compute_approval_threshold,
-    compute_rotation_hash, forward_key_events, generate_nonce, hash_tip_saids,
-    truncate_incomplete_generation, validate_timestamp, verify_key_events, verify_key_events_with,
+    RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
+    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
+    completed_verification, compute_approval_threshold, compute_rotation_hash, forward_key_events,
+    generate_nonce, hash_tip_saids, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
@@ -162,22 +158,6 @@ static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
 /// Read the max verification pages, cached from env on first access.
 pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
-}
-
-/// Default interval (seconds) for the background recovery archival task.
-/// Override with `KELS_RECOVERY_INTERVAL_SECS` environment variable.
-pub const DEFAULT_RECOVERY_INTERVAL_SECS: usize = 1;
-
-static RECOVERY_INTERVAL_SECS: LazyLock<usize> = LazyLock::new(|| {
-    env_usize(
-        "KELS_RECOVERY_INTERVAL_SECS",
-        DEFAULT_RECOVERY_INTERVAL_SECS,
-    )
-});
-
-/// Read the recovery interval, cached from env on first access.
-pub fn recovery_interval() -> Duration {
-    Duration::from_secs(*RECOVERY_INTERVAL_SECS as u64)
 }
 
 /// Sentinel limit for loading an entire KEL without pagination.
