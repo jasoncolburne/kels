@@ -103,16 +103,17 @@ impl KelStore for FileKelStore {
         let limit = limit as usize;
 
         // Collect all lines, keeping only the last `limit` in a ring buffer.
-        let mut ring: Vec<String> = Vec::with_capacity(limit);
+        let mut ring: std::collections::VecDeque<String> =
+            std::collections::VecDeque::with_capacity(limit);
         for line in reader.lines() {
             let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
             if line.is_empty() {
                 continue;
             }
             if ring.len() == limit {
-                ring.remove(0);
+                ring.pop_front();
             }
-            ring.push(line);
+            ring.push_back(line);
         }
 
         ring.iter()

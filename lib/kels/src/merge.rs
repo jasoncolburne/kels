@@ -5,8 +5,10 @@
 //! federation, and direct submissions all receive full verification and divergence
 //! handling.
 
-use std::collections::{HashMap, HashSet};
-use std::iter;
+use std::{
+    collections::{HashMap, HashSet},
+    iter,
+};
 
 use async_trait::async_trait;
 use cesr::{Matter, Signature};
