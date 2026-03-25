@@ -416,18 +416,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                     .eq("previous", &current_said)
                     .limit(2);
                 let children: Vec<KeyEvent> = self.tx.fetch(child_query).await?;
-                // Filter out owner's rec event
-                let adversary_children: Vec<&KeyEvent> =
-                    children.iter().filter(|e| !e.is_recover()).collect();
-                match adversary_children.len() {
+                match children.len() {
                     0 => break,
                     1 => {
-                        current_said = adversary_children[0].said.clone();
+                        current_said = children[0].said.clone();
                         saids.push(current_said.clone());
                     }
                     _ => {
                         return Err(KelsError::StorageError(format!(
-                            "Multiple non-rec children at adversary event {} — possible DB tampering",
+                            "Multiple children at adversary event {} — possible DB tampering",
                             current_said,
                         )));
                     }

@@ -40,9 +40,6 @@ impl FileKelStore {
     fn kel_path(&self, prefix: &str) -> std::path::PathBuf {
         self.kel_dir.join(format!("{}.kel.jsonl", prefix))
     }
-    fn owner_tail_path(&self, prefix: &str) -> std::path::PathBuf {
-        self.kel_dir.join(format!("{}.owner_tail", prefix))
-    }
 }
 
 #[async_trait]
@@ -163,10 +160,6 @@ impl KelStore for FileKelStore {
         let path = self.kel_path(prefix);
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        let tail_path = self.owner_tail_path(prefix);
-        if tail_path.exists() {
-            let _ = std::fs::remove_file(&tail_path);
         }
         Ok(())
     }
