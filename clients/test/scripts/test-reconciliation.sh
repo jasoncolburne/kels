@@ -80,7 +80,7 @@ kel_summary() {
     local live archived audit
     live=$(curl -s "$url/api/v1/kels/kel/$prefix" | jq -c '[.events[].event | {s:.serial, k:(.kind|split("/")|last), id:.said[0:8]}]')
     archived=$(curl -s "$url/api/v1/kels/kel/$prefix/archived" | jq -c '[.events[].event | {s:.serial, k:(.kind|split("/")|last), id:.said[0:8]}]')
-    audit=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -c '[.[] | {v:.version, st:.state[0:4]}]')
+    audit=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -c '[.[] | {id:.said[0:8], da:.divergedAt, rs:.recoverySerial}]')
     echo "{live:$live,arch:$archived,aud:$audit}"
 }
 
@@ -130,23 +130,6 @@ wait_for_all_contested() {
     all_nodes_contested "$prefix"
 }
 
-# Wait for recovery to complete, accepting either recovered or contested as terminal
-wait_for_recovery_or_contest() {
-    local url="$1"
-    local prefix="$2"
-    local timeout="${3:-30}"
-    echo "Waiting for recovery to reach terminal state (timeout: ${timeout}s)..."
-    for _ in $(seq 1 $((timeout * 5))); do
-        local latest_state
-        latest_state=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -r '.[-1].state // empty')
-        if [ "$latest_state" = "recovered" ] || [ "$latest_state" = "contested" ]; then
-            return 0
-        fi
-        sleep 0.2
-    done
-    echo "Recovery did not reach terminal state within ${timeout}s (latest state: $latest_state)"
-    return 1
-}
 
 echo "========================================="
 echo "KELS Reconciliation Proof Test Suite"
