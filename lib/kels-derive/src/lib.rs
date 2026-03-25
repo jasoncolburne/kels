@@ -286,7 +286,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // Contested KELs return a fixed effective SAID so all
                         // nodes agree regardless of archival progress.
                         if tips.iter().any(|e| e.is_contest()) {
-                            return Ok(Some((kels::hash_tip_saids(&["contested"]), true)));
+                            let contested_input = format!("contested:{}", prefix);
+                            return Ok(Some((kels::hash_tip_saids(&[&contested_input]), true)));
                         }
 
                         let refs: Vec<&str> = tips.iter().map(|e| e.said.as_str()).collect();

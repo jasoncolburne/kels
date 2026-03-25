@@ -352,9 +352,10 @@ test-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-reconciliation.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	$(MAKE) test-rotation
-	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
+	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || { scripts/dump-gossip; false; }
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-grow-federation
 	$(MAKE) test-shrink-federation

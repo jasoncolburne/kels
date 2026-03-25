@@ -1232,21 +1232,17 @@ async fn send_divergent_events(
             }
         }
 
-        // Longer chain goes first as non-divergent appends. The shorter chain
-        // contributes only its fork event (1 event) to create divergence — the
-        // merge engine writes just that one event. Then rec(+rot) resolves it.
+        // Longer chain goes first as non-divergent appends. Shorter chain's
+        // fork event creates divergence. Then rec(+rot) resolves it.
+        //
+        // When one chain is empty (owner recovered immediately from the fork
+        // point, or adversary had no events beyond the fork), the non-empty
+        // chain is the only non-divergent content. rec(+rot) creates the
+        // overlap/divergence and resolves it.
         let (longer, shorter_fork) = if owner_pre_rec.len() >= adversary_chain.len() {
-            let fork = adversary_chain
-                .into_iter()
-                .next()
-                .ok_or_else(|| KelsError::InvalidKel("Adversary chain is empty".to_string()))?;
-            (owner_pre_rec, fork)
+            (owner_pre_rec, adversary_chain.into_iter().next())
         } else {
-            let fork = owner_pre_rec
-                .into_iter()
-                .next()
-                .ok_or_else(|| KelsError::InvalidKel("Owner pre-rec chain is empty".to_string()))?;
-            (adversary_chain, fork)
+            (adversary_chain, owner_pre_rec.into_iter().next())
         };
 
         // Step 1: pre-divergence + longer chain (non-divergent appends)
@@ -1256,9 +1252,10 @@ async fn send_divergent_events(
             sink.store_page(prefix, chunk).await?;
         }
 
-        // Step 2: single fork event (creates divergence)
-        sink.store_page(prefix, slice::from_ref(&shorter_fork))
-            .await?;
+        // Step 2: fork event from shorter chain (creates divergence)
+        if let Some(ref fork) = shorter_fork {
+            sink.store_page(prefix, slice::from_ref(fork)).await?;
+        }
 
         // Step 3: rec(+rot) resolves divergence
         sink.store_page(prefix, &rec_rot).await?;
@@ -1314,8 +1311,25 @@ async fn send_divergent_events(
         sink.store_page(prefix, chunk).await?;
     }
 
-    // Single fork event from shorter chain (creates divergence)
-    if let Some(fork) = shorter.first() {
+    // Shorter chain: if it contains a cnt (or rec), send the full chain
+    // so the terminal event reaches the remote. The merge engine accepts
+    // [events + cnt] and [events + rec + rot] as atomic batches on divergent
+    // KELs. The chain is bounded by proactive ror and fits in one page.
+    // For pure divergence (no cnt/rec), only the fork event is needed.
+    let has_terminal = shorter
+        .iter()
+        .any(|e| e.event.is_contest() || e.event.is_recover());
+    if has_terminal {
+        match sink.store_page(prefix, &shorter).await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(
+                    "Shorter chain submission failed \
+                     (KEL may already be divergent): {e}"
+                );
+            }
+        }
+    } else if let Some(fork) = shorter.first() {
         match sink.store_page(prefix, slice::from_ref(fork)).await {
             Ok(()) => {}
             Err(e) => {
@@ -2579,24 +2593,6 @@ mod tests {
     // divergence at page boundaries, recovery, contest, decommission,
     // anchor checking across pages, resume/incremental verification,
     // delegated inception, sync abstraction, and truncation safety.
-
-    /// Build N interaction events on a builder, returning the last one.
-    async fn build_interactions(
-        builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
-        count: usize,
-        label_prefix: &str,
-    ) -> SignedKeyEvent {
-        let mut last = None;
-        for i in 0..count {
-            last = Some(
-                builder
-                    .interact(&anchor(&format!("{}-{}", label_prefix, i)))
-                    .await
-                    .unwrap(),
-            );
-        }
-        last.unwrap()
-    }
 
     // ---- Multi-page linear KEL with rotations ----
 
@@ -4024,6 +4020,51 @@ mod tests {
 
         let collected = sink.into_events().await;
         verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 1, "cnt");
+    }
+
+    // Regression: contested KEL must transfer the cnt event, not just the fork
+    #[tokio::test]
+    async fn test_transfer_contested_includes_cnt() {
+        // Owner has events after fork + cnt. The cnt must arrive at the sink.
+        let (events, prefix, _, _) = build_divergent_kel(3, 1, "cnt").await;
+
+        let source = MemoryKelSource::new(events);
+        let sink = CollectSink::new();
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
+            .await
+            .unwrap();
+
+        let collected = sink.into_events().await;
+
+        // The cnt event MUST be present in the collected events
+        let has_cnt = collected.iter().any(|e| e.event.is_contest());
+        assert!(
+            has_cnt,
+            "cnt event missing from transfer — remote would not know KEL is contested"
+        );
+    }
+
+    // Regression: contested KEL with longer adversary chain must transfer cnt
+    #[tokio::test]
+    async fn test_transfer_contested_longer_adversary_includes_cnt() {
+        // Adversary has the longer chain (ror + ixns). Owner has ixn + cnt.
+        // The owner's chain is shorter, so only the fork event is sent.
+        // The cnt must still reach the sink.
+        let (events, prefix, _, _) = build_divergent_kel(1, 3, "cnt").await;
+
+        let source = MemoryKelSource::new(events);
+        let sink = CollectSink::new();
+        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
+            .await
+            .unwrap();
+
+        let collected = sink.into_events().await;
+
+        let has_cnt = collected.iter().any(|e| e.event.is_contest());
+        assert!(
+            has_cnt,
+            "cnt event missing from transfer — remote would not know KEL is contested"
+        );
     }
 
     // Case 3b/4b: Multi-page adversary chain with small page_size

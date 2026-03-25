@@ -293,14 +293,21 @@ impl SyncHandler {
 
             // Forward events: delta with fallback to full fetch.
             // transfer_key_events handles divergence-aware ordering (streaming).
-            let result = forward_with_fallback(
-                prefix,
-                &remote_source,
-                &local_sink,
-                local_effective_said.as_deref(),
-                max_pages,
-            )
-            .await;
+            // When the remote SAID is not a real event (composite/contested hash),
+            // the remote KEL is divergent and delta fetch from the local tip can't
+            // reach events on other branches. Use full fetch instead.
+            let remote_is_real_event = self
+                .kels_client
+                .event_exists(remote_effective_said)
+                .await
+                .unwrap_or(false);
+            let since = if remote_is_real_event {
+                local_effective_said.as_deref()
+            } else {
+                None
+            };
+            let result =
+                forward_with_fallback(prefix, &remote_source, &local_sink, since, max_pages).await;
 
             match result {
                 Ok(()) => {
@@ -757,20 +764,26 @@ pub async fn run_anti_entropy_loop(
                     let mut any_peer_differs = false;
                     for (_, kels_url) in &ordered_peers {
                         let remote = KelsClient::new(kels_url);
-                        let remote_said = remote
-                            .fetch_effective_said(&prefix)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|(s, _)| s);
+                        let remote_effective =
+                            remote.fetch_effective_said(&prefix).await.ok().flatten();
+                        let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_str());
+                        let remote_is_divergent =
+                            remote_effective.as_ref().map(|(_, d)| *d).unwrap_or(false);
 
-                        if remote_said == local_said {
+                        if remote_said == local_said.as_deref() {
                             continue;
                         }
                         any_peer_differs = true;
 
-                        let result =
-                            sync_prefix(&remote, &local, &prefix, local_said.as_deref()).await;
+                        // When the remote KEL is divergent (or contested), delta
+                        // fetch from the local tip can't reach events on branches
+                        // at lower serials. Full fetch is required.
+                        let since_for_sync = if remote_is_divergent {
+                            None
+                        } else {
+                            local_said.as_deref()
+                        };
+                        let result = sync_prefix(&remote, &local, &prefix, since_for_sync).await;
                         if matches!(result, RepairResult::Contested) {
                             return (prefix, source, RepairResult::Contested);
                         }

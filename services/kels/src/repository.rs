@@ -98,10 +98,29 @@ impl KeyEventRepository {
             })
             .collect();
 
-        // Check if there are more results
+        // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
             prefix_states.last().map(|s| s.prefix.clone())
+        } else if let Some(cursor) = since {
+            // Wrap around: fill remaining slots from prefixes <= cursor
+            // (the beginning of the prefix space). No duplicates because
+            // the first query fetched prefix > cursor.
+            let remaining = limit - prefix_states.len();
+            if remaining > 0 {
+                let wrap_query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
+                    .distinct_on("prefix")
+                    .order_by("prefix", Order::Asc)
+                    .order_by("serial", Order::Desc)
+                    .lte("prefix", cursor)
+                    .limit(remaining as u64);
+                let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
+                prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {
+                    prefix: e.prefix,
+                    said: e.said,
+                }));
+            }
+            None
         } else {
             None
         };
