@@ -145,6 +145,7 @@ fetch_all_events() {
 
     echo "$all_events"
 }
+
 get_event_count() {
     local url="$1"
     local prefix="$2"
