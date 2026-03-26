@@ -546,6 +546,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             })?;
         }
 
+        // Reject batches containing both rec and cnt — contradictory intent
+        let has_rec = events.iter().any(|e| e.event.is_recover());
+        let has_cnt = events.iter().any(|e| e.event.is_contest());
+        if has_rec && has_cnt {
+            return Err(KelsError::InvalidKeyEvent(
+                "Batch cannot contain both recovery and contest events".to_string(),
+            ));
+        }
+
         // Route based on verified context
         let first_previous = events[0].event.previous.clone();
         let is_normal_append = kel_verification.branch_tips().len() == 1
@@ -574,7 +583,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if kel_verification.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
-        if events[0].event.is_contest() {
+        if events.iter().any(|e| e.event.is_contest()) {
             return Err(KelsError::InvalidKeyEvent(
                 "Contest requires divergence".to_string(),
             ));
