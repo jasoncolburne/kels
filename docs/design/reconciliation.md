@@ -83,7 +83,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Normal** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | Composite hash of sorted tip SAIDs | Temporary; converges after recovery or contest |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
-| **Contested** | `hash_tip_saids(&["contested"])` — deterministic | ✓ (same value on all nodes) |
+| **Contested** | `hash_tip_saids(&["contested:{prefix}"])` — deterministic | ✓ (same value on all nodes) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains) |
 
 ## Archival
@@ -131,4 +131,4 @@ The sink's KEL is divergent (awaiting recovery). Gossip sync submits events → 
 
 ### 6. Contested KELs across nodes
 
-Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived, another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_tip_saids(&["contested"])` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived, another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_tip_saids(&["contested:{prefix}"])` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
