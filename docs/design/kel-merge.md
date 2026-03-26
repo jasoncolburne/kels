@@ -54,55 +54,38 @@ for each event:
 
 ### 2. Handle Already-Divergent KEL
 
-If the KEL is already divergent (frozen):
+If the KEL is already divergent (frozen), the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the owner's chain in the fork.
 
+**Contest path** (`cnt` anywhere in batch, must be last):
 ```
-if KEL has divergence AND first event does NOT reveal recovery key:
-    // Look ahead for a rec event in the batch — handles the case where
-    // the owner's pre-recovery events precede the recovery event
-    // (e.g., [owner_ixn, rec] submitted to a KEL frozen with only adversary events)
-    if batch contains a rec event:
-        add pre-rec events to establish owner's chain in the fork
-        process rec event via recovery path below
-        return Recovered
-    return RecoverRequired  // No recovery event in batch
-```
-
-### 3. Recovery from Divergent KEL
-
-If the KEL is divergent and receiving a recovery-revealing event:
-
-**Contest path** (`cnt` event):
-```
-if first event is contest:
+if batch contains a cnt event:
+    if cnt is not the last event: return Error("Contest must be last")
     if KEL does NOT reveal recovery in divergent events:
         return RecoverRequired  // No recovery revealed — recover, don't contest
-    if more than one event submitted:
-        return Error("Cannot append events after contest")
-    append contest event
-    verify KEL
+    verify batch against branch tip
+    append all events (owner's chain + cnt)
     return Contested
 ```
 
-**Recovery path** (`rec` event):
+**Recovery path** (`rec` anywhere in batch):
 ```
-if batch contains a rec event (at any position):
-    add pre-rec events to establish owner's chain in the fork
-    if KEL reveals recovery in divergent events:
-        return Error(ContestRequired)  // Adversary has recovery key, must contest
-    trace owner's chain from recovery event's previous field
-    remove adversary events (those not in owner's chain)
-    append recovery events
-    verify KEL
+if batch contains a rec event:
+    if existing events reveal recovery key:
+        return ContestRequired  // Adversary has recovery key, must contest
+    verify batch against branch tip
+    check if adversary revealed recovery key (detailed check via find_adversary_event)
+    archive adversary events
+    append all events (owner's chain + rec + optional rot)
+    create RecoveryRecord
     return Recovered
 ```
 
-**No recovery event in batch**:
+**No `cnt` or `rec` in batch**:
 ```
 return RecoverRequired  // Only rec/cnt can resolve a divergent KEL
 ```
 
-### 4. Normal Merge (Non-divergent KEL)
+### 3. Normal Merge (Non-divergent KEL)
 
 Determine where new events fit by following `previous` links:
 
@@ -132,36 +115,35 @@ if first_event.previous not found in KEL:
     return Error("Events not contiguous - missing previous event")
 ```
 
-### 5. Divergence Handling
+### 4. Divergence Handling (Overlap)
 
-When divergence is detected (multiple events share same `previous`):
+When submitted events chain from an earlier point in a non-divergent KEL, creating a fork:
 
 ```
-divergent_old_events = existing events from divergence point (walk back from current tail)
-divergent_new_events = submitted events not already in KEL
+diverged_at = branch_point.serial + 1
+verify batch against branch tip
 
-// Check if existing divergent events reveal recovery key
-if old events reveal recovery:
-    if divergent new event is contest:
-        if more than one event submitted:
-            return Error("Cannot append events after contest")
-        append contest event
+// Check if existing events from divergence onward reveal recovery key
+if existing events reveal recovery:
+    if batch contains cnt (must be last):
+        append all events (owner's chain + cnt)
         return Contested
     else:
         return ContestRequired  // Owner must contest, not recover
-else if batch contains a rec event (at any position):
-    add pre-rec events to establish owner's chain in the fork
-    trace owner's chain from recovery event's previous field
-    remove adversary events (those not in owner's chain)
-    append recovery events
+
+// Check for recovery in submitted events
+if batch contains rec:
+    archive existing adversary events
+    append all events (owner's chain + rec + optional rot)
+    create RecoveryRecord
     return Recovered
-else:
-    // No recovery event in batch - freeze KEL, mark as divergent
-    push single divergent event
-    return Diverged
+
+// No recovery event — insert single forking event to establish divergence
+push single divergent event
+return Diverged
 ```
 
-### 6. Post-merge Verification
+### 5. Post-merge Verification
 
 After any successful merge that modified the KEL:
 ```
