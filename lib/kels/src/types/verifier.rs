@@ -1246,53 +1246,65 @@ async fn send_divergent_events(
         }
     }
 
-    // Longer chain goes first as non-divergent appends. Only the fork
-    // event from the shorter chain is sent (creates divergence — the merge
-    // engine writes just that one event, freezing the KEL). When chains
-    // are equal length, defer the recovery-revealing one.
-    let (longer, shorter) = if chain_a.len() > chain_b.len() {
-        (chain_a, chain_b)
-    } else if chain_b.len() > chain_a.len() {
-        (chain_b, chain_a)
-    } else if chain_b.iter().any(|e| e.event.reveals_recovery_key()) {
-        (chain_a, chain_b)
-    } else {
-        (chain_b, chain_a)
-    };
+    if has_contest {
+        // Contested: partition by which chain has cnt, not by length.
+        // Send non-cnt chain first (establishes one branch), then cnt chain
+        // (creates divergence + freezes). Both fit in one page due to the
+        // proactive ROR invariant.
+        let chain_a_has_cnt = chain_a.iter().any(|e| e.event.is_contest());
+        let (non_cnt_chain, cnt_chain) = if chain_a_has_cnt {
+            (chain_b, chain_a)
+        } else {
+            (chain_a, chain_b)
+        };
 
-    // Pre-divergence + longer chain (non-divergent appends)
-    let mut non_divergent = pre_divergence.to_vec();
-    non_divergent.extend(longer);
-    for chunk in non_divergent.chunks(page_size) {
-        sink.store_page(prefix, chunk).await?;
-    }
+        // Step 1: pre-divergence + non-cnt chain (non-divergent appends)
+        let mut non_divergent = pre_divergence.to_vec();
+        non_divergent.extend(non_cnt_chain);
+        for chunk in non_divergent.chunks(page_size) {
+            sink.store_page(prefix, chunk).await?;
+        }
 
-    // Shorter chain: if it contains a cnt (or rec), send the full chain
-    // so the terminal event reaches the remote. The merge engine accepts
-    // [events + cnt] and [events + rec + rot] as atomic batches on divergent
-    // KELs. The chain is bounded by proactive ror and fits in one page.
-    // For pure divergence (no cnt/rec), only the fork event is needed.
-    let has_terminal = shorter
-        .iter()
-        .any(|e| e.event.is_contest() || e.event.is_recover());
-    if has_terminal {
-        match sink.store_page(prefix, &shorter).await {
+        // Step 2: cnt chain as atomic batch (creates divergence + contest)
+        match sink.store_page(prefix, &cnt_chain).await {
             Ok(()) => {}
             Err(e) => {
                 warn!(
-                    "Shorter chain submission failed \
+                    "Contest chain submission failed \
                      (KEL may already be divergent): {e}"
                 );
             }
         }
-    } else if let Some(fork) = shorter.first() {
-        match sink.store_page(prefix, slice::from_ref(fork)).await {
-            Ok(()) => {}
-            Err(e) => {
-                warn!(
-                    "Deferred branch submission failed \
-                     (KEL may already be divergent): {e}"
-                );
+    } else {
+        // Unrecovered: longer chain first as non-divergent appends, then
+        // just the fork event from the shorter chain to establish divergence.
+        let (longer, shorter) = if chain_a.len() > chain_b.len() {
+            (chain_a, chain_b)
+        } else if chain_b.len() > chain_a.len() {
+            (chain_b, chain_a)
+        } else if chain_b.iter().any(|e| e.event.reveals_recovery_key()) {
+            (chain_a, chain_b)
+        } else {
+            (chain_b, chain_a)
+        };
+
+        // Pre-divergence + longer chain (non-divergent appends)
+        let mut non_divergent = pre_divergence.to_vec();
+        non_divergent.extend(longer);
+        for chunk in non_divergent.chunks(page_size) {
+            sink.store_page(prefix, chunk).await?;
+        }
+
+        // Fork event from shorter chain (creates divergence)
+        if let Some(fork) = shorter.first() {
+            match sink.store_page(prefix, slice::from_ref(fork)).await {
+                Ok(()) => {}
+                Err(e) => {
+                    warn!(
+                        "Deferred branch submission failed \
+                         (KEL may already be divergent): {e}"
+                    );
+                }
             }
         }
     }

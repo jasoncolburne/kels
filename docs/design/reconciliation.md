@@ -58,7 +58,7 @@ For divergent source KELs, `send_divergent_events` reorders events to ensure the
 
 - **Divergent with rec (no cnt)**: Rejected with error. This state cannot exist through normal merge paths — synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
 - **Unrecovered (no rec, no cnt)**: Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver).
-- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the longer chain first as non-divergent appends. If the shorter chain contains a `cnt`, sends the full shorter chain as an atomic batch (the merge engine accepts `[events + cnt]` on divergent KELs). Otherwise sends only the fork event.
+- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive ROR invariant).
 
 ### Source → Sink state matrix
 
