@@ -75,7 +75,11 @@ Client                              KELS Server
   │      { applied: true,                │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │ create rec event from owner's tail   │
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
+  │                                      │
+  │ determine if adversary rotated       │
+  │ create rec (+ rot if needed)         │
   │                                      │
   │──── submit_events([rec]) ───────────>│
   │                                      │ store rec (+ rot if needed)
@@ -99,7 +103,11 @@ Client                              KELS Server
   │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │  create rec event from owner's tail  │
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
+  │                                      │
+  │ determine if adversary rotated       │
+  │ create rec (+ rot if needed)         │
   │                                      │
   │──── submit_events([rec]) ───────────>│
   │                                      │
@@ -121,7 +129,11 @@ Client                              KELS Server
   │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │           create rec event           │
+  │───── get_kel(prefix) ───────────────>│
+  │<──── SignedKeyEventPage ─────────────│
+  │                                      │
+  │ determine if adversary rotated       │
+  │ create rec (+ rot if needed)         │
   │                                      │
   │──── submit_events([event,rec]) ─────>│
   │                                      │ ...
