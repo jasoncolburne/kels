@@ -987,7 +987,7 @@ echo ""
 # Scenario 19: Contest/Recover on Clean KEL
 # ========================================
 echo -e "${CYAN}=== Scenario 19: Contest/Recover on Clean KEL ===${NC}"
-echo "Recovery on a non-divergent KEL succeeds (proactive recovery). Contest should still fail."
+echo "Recovery on a non-divergent KEL succeeds (rec accepted as normal append). Contest should still fail."
 echo ""
 
 # Setup
@@ -999,7 +999,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX19" --said "KOwnerAnchorOnCleanK
 # Verify KEL is OK (not divergent)
 run_test "KEL status is OK (clean)" check_kel_status "$PREFIX19" "OK"
 
-# Recovery on clean KEL succeeds (proactive recovery — no divergence, no archival needed)
+# Recovery on clean KEL succeeds (rec accepted as normal append — no divergence, no archival)
 run_test "Recovery succeeds on clean KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX19"
 
 # Try to contest - should fail (nothing to contest)
@@ -1168,8 +1168,8 @@ run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX23" \
 run_test "First recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 run_test "KEL status is OK after first recovery" check_kel_status "$PREFIX23" "OK"
 
-# Proactive recovery (no divergence, no archival — just rotates keys)
-run_test "Proactive recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
+# rec on clean KEL (no divergence, no archival — just rotates keys)
+run_test "rec on clean KEL succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 run_test "KEL status still OK" check_kel_status "$PREFIX23" "OK"
 
 # Re-steal keys after recovery so adversary has current keys
