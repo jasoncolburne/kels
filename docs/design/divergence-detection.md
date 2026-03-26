@@ -13,11 +13,12 @@ The legitimate owner must be able to:
 
 ## Design Goals
 
-1. **Store all valid events** - Don't reject conflicting events at the database level; let clients detect and resolve divergence
+1. **Store enough valid events to describe security state** - Don't reject the first conflicting event at the database level; let clients detect and resolve divergence
 2. **Derive state from data** - No separate divergence flag; compute from event structure
 3. **Freeze on divergence** - Prevent further damage until owner recovers
 4. **Archive synchronously on recovery** - The `rec` (or `rec+rot`) is accepted atomically in the merge transaction. Adversary events are identified, archived to mirror tables, and removed from the live chain — all within the same transaction. The proactive ROR invariant (`MAX_NON_REVEALING_EVENTS = 62`) guarantees the adversary chain never exceeds one page, making synchronous archival feasible. A `RecoveryRecord` provides an immutable audit trail.
-5. **Simple client API** - `KeyEventBuilder` handles complexity internally
+5. **Contest mechanism** - Clarifies state is totally compromised through data representation, preventing further additions
+6. **Simple client API** - `KeyEventBuilder` handles complexity internally
 
 ## Architecture
 
@@ -44,6 +45,8 @@ The owner's tail is the **source of truth** for chaining all events:
 2. Recovery operations chain from the owner's tail
 3. The tail identifies which events belong to the owner in a divergent KEL
 4. Determines if the owner has rotated since divergence began
+
+* It's impossible to truly know whether events in the owner tail were submitted by the owner and not an adversary, but the distinction helps with reasoning. The 'owner' is assumed to be the recovering/contesting party.
 
 ### Event Flow
 
@@ -72,10 +75,6 @@ Client                              KELS Server
   │      { applied: true,                │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel(prefix) ───────────────>│
-  │<──── SignedKeyEventPage ─────────────│
-  │                                      │
-  │ detect divergence locally            │
   │ create rec event from owner's tail   │
   │                                      │
   │──── submit_events([rec]) ───────────>│
@@ -100,13 +99,31 @@ Client                              KELS Server
   │      { applied: false,               │
   │        diverged_at: Some(N) }        │
   │                                      │
-  │───── get_kel(prefix) ───────────────>│
-  │<──── SignedKeyEventPage ─────────────│
-  │                                      │
-  │ sync local state with server         │
-  │ create rec event from owner's tail   │
+  │  create rec event from owner's tail  │
   │                                      │
   │──── submit_events([rec]) ───────────>│
+  │                                      │
+  │   original data, chained from rec    |
+  │                                      │
+  │──── submit_events([event*]) ────────>│
+  │                                      │ ...
+```
+
+It is also possible to prepend the event in a batch when recovering:
+
+```
+Client                              KELS Server
+  │                                      │
+  │──── submit_events([event]) ─────────>│
+  │                                      │ KEL already divergent
+  │                                      │ reject event (not stored)
+  │<──── BatchSubmitResponse ────────────│
+  │      { applied: false,               │
+  │        diverged_at: Some(N) }        │
+  │                                      │
+  │           create rec event           │
+  │                                      │
+  │──── submit_events([event,rec]) ─────>│
   │                                      │ ...
 ```
 
@@ -161,7 +178,7 @@ The `rec` event establishes new forward keys:
 - A fresh next key is committed via `rotation_hash`
 - A fresh recovery key is committed via `recovery_hash`
 
-**Recovery Chaining**: The `rec` event chains from the owner's tail event (tracked via `owner_tail`), not the last agreed event. This ensures the `rotation_hash` in the chain-from event matches the owner's current rotation key.
+**Recovery Chaining**: The `rec` event chains from the owner's tail event, not the remote event. This ensures the `rotation_hash` in the chain-from event matches the owner's current rotation key.
 
 **Conditional Rotation After Recovery**: After submitting `rec`, the owner may need an additional `rot` event to escape a potentially compromised key:
 
@@ -194,13 +211,13 @@ CREATE INDEX kels_key_events_prefix_idx
   ON kels_key_events(prefix);
 ```
 
-Events are linked by their `previous` SAID field rather than a version number. Multiple events can share the same `previous` value, indicating divergence.
+Events are linked by their `previous` SAID field rather than a serial number. Multiple events can share the same `previous` value, indicating divergence. That said, in a KEL, divergent events may also share serial numbers.
 
 ### Recovery Records and Synchronous Archival
 
 When a `rec` (or `rec+rot`) event resolves divergence, the merge engine identifies the adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all within the same advisory-locked transaction. Recovery completes atomically: either the adversary is fully archived and the clean chain restored, or nothing changes.
 
-**Why synchronous?** The proactive ROR invariant (`MAX_NON_REVEALING_EVENTS = 62`) guarantees that an adversary can only fork after the last recovery-revealing event. Combined with the proactive ROR enforcement, the adversary chain never exceeds one page (`MINIMUM_PAGE_SIZE = 64`), making synchronous archival in a single transaction feasible.
+**How?** The proactive ROR invariant (`MAX_NON_REVEALING_EVENTS = 62`) guarantees that an adversary can only fork after the last recovery-revealing event. Combined with the proactive ROR enforcement, the adversary chain never exceeds one page (`MINIMUM_PAGE_SIZE = 64`), making synchronous archival in a single transaction feasible.
 
 **Why archive instead of truncate?** A database-level truncation would lose the adversary events permanently. Archival moves events to `kels_archived_events` and `kels_archived_event_signatures` (mirror tables with the same schema), preserving them for forensic analysis. The `RecoveryRecord` provides an immutable audit trail linking archived events to the recovery that created them.
 
@@ -246,7 +263,7 @@ GET /api/v1/kels/kel/:prefix?limit=32&since=<SAID>
 Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 ```
 
-Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-32, default 32). Loop with `hasMore` for full retrieval.
+Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-64, default 64). Loop with `hasMore` for full retrieval.
 
 ### Fetch Recovery History
 
@@ -285,7 +302,7 @@ kels-cli adversary inject --prefix <prefix> --events ixn,rot
 swap_to_owner        # Switch back to owner state
 ```
 
-The `adversary inject` command submits events to the server without updating local state. Combined with state directory swapping, this simulates an adversary who captured the owner's keys at a point in time.
+The `adversary inject` command submits events to the server without updating local state. While useful for extending a KEL without divergence, when combined with state directory swapping allows for divergence injection. This simulates an adversary who captured the owner's keys at a point in time.
 
 ## Security Considerations
 
@@ -294,11 +311,11 @@ The `adversary inject` command submits events to the server without updating loc
 Once divergence is detected, the KEL is frozen:
 - No new events accepted except `rec` or `cnt` (and `cnt` only when recovery key has been revealed)
 - Prevents adversary from extending their fork
-- Server returns `{ applied: false, diverged_at: N }` for rejected submissions, allowing client to sync
+- Server returns `{ applied: false, diverged_at: N }` for rejected submissions, allowing client to recover or sync
 
-### Recovery Protection
+### Contest Escalation
 
-Protection is based on whether existing divergent events reveal the recovery key, not on generation comparison:
+Contest escalation is based on whether existing divergent events reveal the recovery key, not on generation comparison:
 - If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions return `ContestRequired` — the owner must contest, not recover
 - If no recovery key has been revealed, `cnt` returns `RecoverRequired` — the owner should recover, not contest
 - Enables proactive protection: rotating recovery key (`ror`) causes future adversary submissions before that point to require contest
@@ -342,3 +359,15 @@ A KEL with any `cnt` event is permanently frozen and will reject all new submiss
 14. **Submission When Frozen** - All operations rejected on contested KEL
 15. **Proactive Recovery Protection via ROR** - Owner rotates recovery key, preventing historical injection
 16. **Post-Recovery Protection** - After recovery, adversary cannot re-diverge at earlier generations
+
+**test-reconciliation.sh - Multi-Node Reconciliation:**
+1. **Recovered KEL → Adversary Node** - Owner recovers on node-d, recovery propagates to node-e (which has adversary chain), all nodes converge with 1 archived event
+2. **Post-Recovery Events → Adversary Node** - After recovery, owner anchors new data; post-recovery events propagate to nodes that had adversary chain
+3. **Adversary rot,ixn,ixn + Recovery Propagation** - Adversary rotation chain on node-e, owner recovers on node-d with extra rot, all nodes converge with 3 archived events
+4. **Contested KEL Propagation (cnt on shorter chain)** - Adversary ror+ixn (longer chain) on node-e, owner contests on node-d; cnt reaches all nodes despite being on shorter chain
+5. **Contested KEL Propagation (cnt on longer chain)** - Adversary ror (shorter) on node-e, owner has ixn+cnt (longer chain); cnt propagates naturally
+6. **Contest During Active Archival** - Adversary submits rec on node-d, owner contests; archival detects cnt and transitions to contested terminal state
+7. **Double Recovery Rejected** - Owner recovers, then adversary tries second rec; rejected with ContestRequired
+8. **Contested Effective SAID Convergence** - After contest, all nodes report same effective SAID even if event counts differ
+9. **Submissions Rejected on Contested KEL** - All event types (ixn, rot, dec) rejected on contested KEL
+10. **Submissions Rejected on Decommissioned KEL** - Events rejected after decommission
