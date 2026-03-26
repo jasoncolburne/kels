@@ -35,26 +35,85 @@ During recovery, adversary events are identified, archived to mirror tables, and
 
 ## Merge Flow
 
-### 0. Inception Dedup (Re-submission from Genesis)
+`merge_events` is the single entry point. It validates, verifies the existing KEL, then routes to one of three handlers.
 
-If the submitted events start from inception (`previous` is `None`) and the KEL already has events, merge skips known duplicates and recurses with the remaining new events. This allows callers to submit a full KEL (including inception) without triggering "Events not contiguous" errors. If the inception event SAID doesn't match the existing KEL's inception, the merge returns an error. If all events are duplicates, the merge returns `Accepted` with no changes.
-
-### 1. Pre-merge Validation
+### 1. Validation and Verification
 
 ```
-if events is empty:
-    return Error("No events to add")
+validate all events belong to this prefix
+validate all signatures (format, dual-sig for recovery events)
+verify entire existing KEL via completed_verification → KelVerification token
+validate event structure (SAID, required fields)
+reject batches containing both rec and cnt (contradictory intent)
+```
 
+The `KelVerification` token is the trusted context for all routing decisions. The DB cannot be trusted directly (verification invariant).
+
+### 2. Routing
+
+Three handlers based on the `KelVerification` and the submitted events:
+
+```
+if events chain from current tip (normal append):
+    → handle_normal_append
+else if KEL is empty and events start from inception:
+    → handle_new_kel
+else:
+    → handle_full_path
+```
+
+### 3. Normal Append (~99% of submissions)
+
+Events chain directly from the current tip of a non-divergent KEL.
+
+```
+if KEL is decommissioned:
+    return Error("KEL decommissioned")
+if batch contains contest:
+    return Error("Contest requires divergence")
+continue KEL verification with submitted events (via KelVerifier::resume from tip)
+check proactive ROR compliance
+insert events
+return Accepted
+```
+
+### 4. New KEL
+
+Events start from inception (`previous` is `None`) and no KEL exists yet.
+
+```
+verify events via KelVerifier::new (full verification from inception)
+insert events
+return Accepted
+```
+
+### 5. Full Path (divergence/recovery/overlap)
+
+Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
+
+#### 5a. Contested check
+
+```
 if KEL is contested:
     return Error("KEL is already contested")
-
-for each event:
-    validate event structure (SAID, required fields)
 ```
 
-### 2. Handle Already-Divergent KEL
+#### 5b. Deduplication
 
-If the KEL is already divergent (frozen), the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the owner's chain in the fork.
+```
+check submitted SAIDs against existing SAIDs in DB
+filter out events that already exist
+if all events are duplicates:
+    return Accepted (no changes)
+if first remaining event has no previous:
+    return Error("Inception event SAID mismatch")
+```
+
+This handles partial re-submissions (e.g., gossip sending a full KEL including events the node already has). After dedup, if the remaining events chain from the current tip, they are processed as a normal append.
+
+#### 5c. Divergent KEL
+
+If the `KelVerification` shows the KEL is already divergent, the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the owner's chain in the fork.
 
 **Contest path** (`cnt` anywhere in batch, must be last):
 ```
@@ -62,7 +121,7 @@ if batch contains a cnt event:
     if cnt is not the last event: return Error("Contest must be last")
     if KEL does NOT reveal recovery in divergent events:
         return RecoverRequired  // No recovery revealed — recover, don't contest
-    verify batch against branch tip
+    continue KEL verification with submitted events (from branch tip)
     append all events (owner's chain + cnt)
     return Contested
 ```
@@ -72,7 +131,7 @@ if batch contains a cnt event:
 if batch contains a rec event:
     if existing events reveal recovery key:
         return ContestRequired  // Adversary has recovery key, must contest
-    verify batch against branch tip
+    continue KEL verification with submitted events (from branch tip)
     check if adversary revealed recovery key (detailed check via find_adversary_event)
     archive adversary events
     append all events (owner's chain + rec + optional rot)
@@ -82,46 +141,16 @@ if batch contains a rec event:
 
 **No `cnt` or `rec` in batch**:
 ```
-return RecoverRequired  // Only rec/cnt can resolve a divergent KEL
+return RecoverRequired/ContestRequired  // Only rec/cnt can resolve a divergent KEL
 ```
 
-### 3. Normal Merge (Non-divergent KEL)
+#### 5d. Overlap (non-divergent KEL)
 
-Determine where new events fit by following `previous` links:
-
-**Case A: Append (chains from current tail)**
-```
-if first_event.previous == current_tail.said:
-    if KEL is decommissioned:
-        return Error("KEL decommissioned")
-    append all events
-    return Accepted
-```
-
-**Case B: Overlap (potential divergence)**
-```
-for each event where previous already has a successor:
-    if existing_successor.said != new_event.said:
-        // Divergence detected!
-        goto divergence_handling
-
-if all events already exist (same SAIDs):
-    return Accepted  // Idempotent submission
-```
-
-**Case C: Gap**
-```
-if first_event.previous not found in KEL:
-    return Error("Events not contiguous - missing previous event")
-```
-
-### 4. Divergence Handling (Overlap)
-
-When submitted events chain from an earlier point in a non-divergent KEL, creating a fork:
+Events chain from an earlier point in a non-divergent KEL, creating a potential fork. The branch point is the existing event whose SAID matches the first submitted event's `previous`.
 
 ```
 diverged_at = branch_point.serial + 1
-verify batch against branch tip
+continue KEL verification with submitted events (from branch point)
 
 // Check if existing events from divergence onward reveal recovery key
 if existing events reveal recovery:
@@ -141,14 +170,6 @@ if batch contains rec:
 // No recovery event — insert single forking event to establish divergence
 push single divergent event
 return Diverged
-```
-
-### 5. Post-merge Verification
-
-After any successful merge that modified the KEL:
-```
-verify KEL integrity
-return result
 ```
 
 ## State Diagram
@@ -191,22 +212,15 @@ The `SignedEvents` derive macro generates a `save_with_merge(prefix, events)` me
 
 ## Submit Handler Architecture
 
-The KELS service's `submit_events` handler routes submissions through two paths based on the `KelVerification` token obtained from `completed_verification()` under an advisory lock:
+The merge engine (`merge_events`) handles all routing internally. The KELS service's `submit_events` handler calls `save_with_merge` which acquires an advisory lock, constructs a `MergeTransaction`, and calls `merge_events`. The merge engine:
 
-### Fast Path (~99% of submissions)
+1. Validates and verifies the existing KEL under the advisory lock
+2. Routes to the appropriate handler (normal append, new KEL, or full path)
+3. Each handler verifies the submitted events and inserts them
 
-Conditions: single tip (non-divergent), submitted events chain from the tip, KEL not contested.
+**Normal append** (~99% of submissions): Uses `KelVerifier::resume` for incremental verification. No full KEL load — the `KelVerification` carries the branch tip and establishment state.
 
-Uses `KelVerifier::resume(prefix, &kel_verification)` for incremental verification against the verified `KelVerification` token. **No full KEL load** — the `KelVerification` carries the branch tip and establishment state needed to continue. Events are inserted directly.
-
-### Full Path (divergence/recovery/overlap)
-
-Uses bounded DB operations with the verified `KelVerification` token. No full KEL in memory. Each case is handled independently:
-
-- **Already divergent + contest**: Query events from `diverged_at_serial` onward to check recovery key revelation. Verify contest event, insert.
-- **Already divergent + recovery**: Walk owner chain backward via paginated DB queries, collect adversary events, archive them, insert recovery events.
-- **New divergence/overlap**: Fetch referenced event by SAID, check for duplicates, fork if needed.
-- **Inception overlap**: Batch check submitted SAIDs, skip duplicates, process remaining.
+**Full path** (divergence/recovery/overlap): Uses bounded DB operations with the `KelVerification` token. No full KEL in memory. Deduplicates first, then routes to divergent or overlap handlers.
 
 ## Pagination
 
