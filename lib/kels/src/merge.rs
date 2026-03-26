@@ -771,9 +771,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .non_contest_recovery_revealed_since(diverged_at)
                 .await?
             {
-                return Err(KelsError::VerificationFailed(
-                    "KEL is frozen — no recovery key revealed".to_string(),
-                ));
+                // No recovery key revealed — contest is not applicable.
+                // Return RecoverRequired so the caller knows to submit rec.
+                return Ok((KelMergeResult::RecoverRequired, Some(diverged_at)));
             }
 
             let first_serial = new_events[0].event.serial;

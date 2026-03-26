@@ -76,7 +76,7 @@ If the KEL is divergent and receiving a recovery-revealing event:
 ```
 if first event is contest:
     if KEL does NOT reveal recovery in divergent events:
-        return Error(Frozen)  // Can only contest if adversary also revealed recovery
+        return RecoverRequired  // No recovery revealed — recover, don't contest
     if more than one event submitted:
         return Error("Cannot append events after contest")
     append contest event

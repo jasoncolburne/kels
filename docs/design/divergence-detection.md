@@ -292,15 +292,15 @@ The `adversary inject` command submits events to the server without updating loc
 ### Frozen State
 
 Once divergence is detected, the KEL is frozen:
-- No new events accepted except `rec` or `cnt`
+- No new events accepted except `rec` or `cnt` (and `cnt` only when recovery key has been revealed)
 - Prevents adversary from extending their fork
 - Server returns `{ applied: false, diverged_at: N }` for rejected submissions, allowing client to sync
 
 ### Recovery Protection
 
 Protection is based on whether existing divergent events reveal the recovery key, not on generation comparison:
-- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions return `ContestRequired`
-- Only contest (`cnt`) events are allowed through when divergence occurs before a recovery-revealing event — once anyone reveals recovery, the only valid response is to contest
+- If any divergent event in the KEL reveals the recovery key (`rec`, `ror`, `cnt`, `dec`), non-contest submissions return `ContestRequired` — the owner must contest, not recover
+- If no recovery key has been revealed, `cnt` returns `RecoverRequired` — the owner should recover, not contest
 - Enables proactive protection: rotating recovery key (`ror`) causes future adversary submissions before that point to require contest
 
 ### Contest Finality

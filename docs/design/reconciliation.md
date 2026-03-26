@@ -32,12 +32,12 @@ What happens when a client submits events to the merge engine.
 | KEL State | ixn/rot | ror | rec/rec+rot | cnt/events+cnt | dec |
 |-----------|---------|-----|-------------|----------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Normal** | Append ✓ | Append ✓ | Append ✓ (proactive recovery) | Overlap: Contest ✓ (creates divergence + freezes); Append: Reject | Append ✓ |
-| **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | `ContestRequired` (no recovery revealed) | `RecoverRequired` |
+| **Normal** | Append ✓ | Append ✓ | Append ✓ (proactive recovery) | Overlap: Contest ✓ (requires existing recovery-revealing event, creates divergence + freezes); Append: Reject | Append ✓ |
+| **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (no recovery revealed — recover, don't contest) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
 | **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
-| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
+| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | Overlap: Contest ✓ (`dec` reveals recovery); Append: `KelDecommissioned` | `KelDecommissioned` |
 
 ### Batch submissions
 
