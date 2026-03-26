@@ -1203,91 +1203,23 @@ async fn send_divergent_events(
         ));
     }
 
-    // Contested KELs use the chain-building path — the rec in a contested KEL
-    // is part of one branch (the adversary's), not a recovery to build from.
+    // With synchronous archival, a divergent KEL should only contain cnt
+    // (contested) or no terminal events (unrecovered, awaiting owner action).
+    // A divergent KEL with rec but no cnt indicates possible DB tampering —
+    // recovery archives adversary events atomically, so both branches should
+    // never coexist with a rec in the live tables. Refuse to propagate.
     let has_contest = post_divergence.iter().any(|e| e.event.is_contest());
+    let has_recovery = post_divergence.iter().any(|e| e.event.is_recover());
 
-    if !has_contest && let Some(rec_idx) = post_divergence.iter().position(|e| e.event.is_recover())
-    {
-        // === Recovered divergence ===
-        let rec_said = post_divergence[rec_idx].event.said.clone();
-
-        // Build owner SAID set: rec, optional rot after rec, and all events
-        // tracing backward from rec via previous pointers to the fork point.
-        let mut owner_saids = HashSet::new();
-        owner_saids.insert(rec_said.clone());
-
-        // Include rot after rec (previous = rec.said)
-        for e in &post_divergence {
-            if e.event.previous.as_deref() == Some(rec_said.as_str()) && e.event.is_rotation() {
-                owner_saids.insert(e.event.said.clone());
-                break;
-            }
-        }
-
-        // Trace backward from rec to fork point
-        let mut current_prev = post_divergence[rec_idx].event.previous.clone();
-        while let Some(ref prev_said) = current_prev {
-            if let Some(evt) = post_divergence.iter().find(|e| e.event.said == *prev_said) {
-                owner_saids.insert(evt.event.said.clone());
-                current_prev = evt.event.previous.clone();
-            } else {
-                break;
-            }
-        }
-
-        // Partition into owner pre-rec, rec+rot, and adversary
-        let is_rec_or_rot = |e: &SignedKeyEvent| {
-            e.event.said == rec_said
-                || (e.event.previous.as_deref() == Some(rec_said.as_str()) && e.event.is_rotation())
-        };
-
-        let mut owner_pre_rec: Vec<SignedKeyEvent> = Vec::new();
-        let mut rec_rot: Vec<SignedKeyEvent> = Vec::new();
-        let mut adversary_chain: Vec<SignedKeyEvent> = Vec::new();
-
-        for evt in post_divergence {
-            if is_rec_or_rot(&evt) {
-                rec_rot.push(evt);
-            } else if owner_saids.contains(&evt.event.said) {
-                owner_pre_rec.push(evt);
-            } else {
-                adversary_chain.push(evt);
-            }
-        }
-
-        // Longer chain goes first as non-divergent appends. Shorter chain's
-        // fork event creates divergence. Then rec(+rot) resolves it.
-        //
-        // When one chain is empty (owner recovered immediately from the fork
-        // point, or adversary had no events beyond the fork), the non-empty
-        // chain is the only non-divergent content. rec(+rot) creates the
-        // overlap/divergence and resolves it.
-        let (longer, shorter_fork) = if owner_pre_rec.len() >= adversary_chain.len() {
-            (owner_pre_rec, adversary_chain.into_iter().next())
-        } else {
-            (adversary_chain, owner_pre_rec.into_iter().next())
-        };
-
-        // Step 1: pre-divergence + longer chain (non-divergent appends)
-        let mut non_divergent = pre_divergence.to_vec();
-        non_divergent.extend(longer);
-        for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
-        }
-
-        // Step 2: fork event from shorter chain (creates divergence)
-        if let Some(ref fork) = shorter_fork {
-            sink.store_page(prefix, slice::from_ref(fork)).await?;
-        }
-
-        // Step 3: rec(+rot) resolves divergence
-        sink.store_page(prefix, &rec_rot).await?;
-
-        return Ok(());
+    if has_recovery && !has_contest {
+        return Err(KelsError::InvalidKel(
+            "Divergent KEL contains rec without cnt — possible DB tampering \
+             (recovery archival is synchronous)"
+                .to_string(),
+        ));
     }
 
-    // === Unrecovered or contested divergence ===
+    // Unrecovered or contested divergence.
     // Build two chains by tracing forward from each fork event.
     let mut chain_a_saids = HashSet::new();
     let mut chain_b_saids = HashSet::new();
@@ -3831,206 +3763,115 @@ mod tests {
         (all_events, prefix, owner_saids, adversary_fork_said)
     }
 
-    /// Helper: verify transfer output ordering.
-    /// For recovered KELs: last events should be shorter_fork + rec(+rot).
-    /// For unrecovered/contested: shorter fork should be last.
+    /// Helper: verify transfer output ordering for unrecovered/contested KELs.
+    /// Shorter fork should be last.
     fn verify_transfer_ordering(
         collected: &[SignedKeyEvent],
         owner_saids: &[String],
         adversary_fork_said: Option<&str>,
         owner_event_count: usize,
         adversary_event_count: usize,
-        recovery: &str,
     ) {
-        match recovery {
-            "rec" | "rec+rot" => {
-                // The rec (and rot) should be at the very end
-                let rec_rot_count = if recovery == "rec+rot" { 2 } else { 1 };
-                let tail = &collected[collected.len() - rec_rot_count..];
-                for evt in tail {
-                    assert!(
-                        owner_saids.contains(&evt.event.said),
-                        "Expected rec/rot in tail, got {}",
-                        evt.event.said
-                    );
-                }
-
-                // The event just before rec/rot should be the shorter chain's fork
-                let fork_idx = collected.len() - rec_rot_count - 1;
-                let fork_event = &collected[fork_idx];
-                if owner_event_count < adversary_event_count {
-                    // Owner is shorter — owner fork just before rec/rot
-                    assert!(
-                        owner_saids.contains(&fork_event.event.said),
-                        "Expected owner fork before rec/rot"
-                    );
-                } else {
-                    // Adversary is shorter (or equal) — adversary fork just before rec/rot
-                    assert_eq!(
-                        fork_event.event.said,
-                        adversary_fork_said.unwrap(),
-                        "Expected adversary fork before rec/rot"
-                    );
-                }
-            }
-            "none" | "cnt" => {
-                // Shorter chain's fork should be last
-                if owner_event_count > adversary_event_count {
-                    assert_eq!(
-                        collected.last().unwrap().event.said,
-                        adversary_fork_said.unwrap(),
-                        "Expected adversary fork last (shorter chain)"
-                    );
-                } else if adversary_event_count > owner_event_count {
-                    assert!(
-                        owner_saids.contains(&collected.last().unwrap().event.said),
-                        "Expected owner fork last (shorter chain)"
-                    );
-                }
-                // Equal length: either could be last, just check all present
-            }
-            _ => {}
+        // Shorter chain's fork should be last
+        if owner_event_count > adversary_event_count {
+            assert_eq!(
+                collected.last().unwrap().event.said,
+                adversary_fork_said.unwrap(),
+                "Expected adversary fork last (shorter chain)"
+            );
+        } else if adversary_event_count > owner_event_count {
+            assert!(
+                owner_saids.contains(&collected.last().unwrap().event.said),
+                "Expected owner fork last (shorter chain)"
+            );
         }
+        // Equal length: either could be last, just check all present
     }
 
-    // Case 1: Owner:1, Adversary:1, rec
+    // Case 1: Owner:1, Adversary:1, rec — divergent KEL with rec is rejected
+    // (synchronous archival means this state indicates DB tampering)
     #[tokio::test]
     async fn test_transfer_divergent_case1_owner1_adv1_rec() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 1, "rec").await;
+        let (events, prefix, _owner_saids, _adv_fork) = build_divergent_kel(1, 1, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 1, "rec");
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err(), "Divergent KEL with rec should be rejected");
     }
 
-    // Case 2: Owner:1, Adversary:1, rec+rot
+    // Case 2: Owner:1, Adversary:1, rec+rot — same rejection
     #[tokio::test]
     async fn test_transfer_divergent_case2_owner1_adv1_rec_rot() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 1, "rec+rot").await;
+        let (events, prefix, _owner_saids, _adv_fork) = build_divergent_kel(1, 1, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(
-            &collected,
-            &owner_saids,
-            adv_fork.as_deref(),
-            1,
-            1,
-            "rec+rot",
-        );
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err(), "Divergent KEL with rec should be rejected");
     }
 
-    // Case 3: Owner:1, Adversary:N (full page), rec
+    // Cases 3-6: Various owner/adversary chain lengths with rec/rec+rot — all rejected
     #[tokio::test]
     async fn test_transfer_divergent_case3_owner1_adv_n_rec() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 30, "rec").await;
+        let (events, prefix, _, _) = build_divergent_kel(1, 30, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 30, "rec");
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
-    // Case 4: Owner:1, Adversary:N (full page), rec+rot
     #[tokio::test]
     async fn test_transfer_divergent_case4_owner1_adv_n_rec_rot() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 30, "rec+rot").await;
+        let (events, prefix, _, _) = build_divergent_kel(1, 30, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(
-            &collected,
-            &owner_saids,
-            adv_fork.as_deref(),
-            1,
-            30,
-            "rec+rot",
-        );
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
-    // Case 5: Owner:N (full page), Adversary:1, rec
     #[tokio::test]
     async fn test_transfer_divergent_case5_owner_n_adv1_rec() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(30, 1, "rec").await;
+        let (events, prefix, _, _) = build_divergent_kel(30, 1, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 30, 1, "rec");
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
-    // Case 6: Owner:N (full page), Adversary:1, rec+rot
     #[tokio::test]
     async fn test_transfer_divergent_case6_owner_n_adv1_rec_rot() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(30, 1, "rec+rot").await;
+        let (events, prefix, _, _) = build_divergent_kel(30, 1, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(
-            &collected,
-            &owner_saids,
-            adv_fork.as_deref(),
-            30,
-            1,
-            "rec+rot",
-        );
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
     // Case 7: Owner:N, Adversary:N (both large), rec
     #[tokio::test]
     async fn test_transfer_divergent_case7_owner_n_adv_n_rec() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(15, 30, "rec").await;
+        let (events, prefix, _, _) = build_divergent_kel(15, 30, "rec").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 15, 30, "rec");
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
-    // Case 8: Owner:N, Adversary:N (both large), rec+rot
+    // Case 8: Owner:N, Adversary:N (both large), rec+rot — rejected
     #[tokio::test]
     async fn test_transfer_divergent_case8_owner_n_adv_n_rec_rot() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(15, 30, "rec+rot").await;
+        let (events, prefix, _, _) = build_divergent_kel(15, 30, "rec+rot").await;
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(
-            &collected,
-            &owner_saids,
-            adv_fork.as_deref(),
-            15,
-            30,
-            "rec+rot",
-        );
+        let result =
+            forward_key_events(&prefix, &source, &sink, crate::page_size(), 100, None).await;
+        assert!(result.is_err());
     }
 
     // Case 9: Unrecovered divergence (owner longer)
@@ -4044,7 +3885,7 @@ mod tests {
             .unwrap();
 
         let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 5, 1, "none");
+        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 5, 1);
     }
 
     // Case 10: Contested KEL (adversary reveals recovery key, owner contests)
@@ -4058,7 +3899,7 @@ mod tests {
             .unwrap();
 
         let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 1, "cnt");
+        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 1);
     }
 
     // Regression: contested KEL must transfer the cnt event, not just the fork
@@ -4109,39 +3950,27 @@ mod tests {
     // Case 3b/4b: Multi-page adversary chain with small page_size
     #[tokio::test]
     async fn test_transfer_divergent_multi_page_adversary() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(1, 20, "rec").await;
+        let (events, prefix, _, _) = build_divergent_kel(1, 20, "rec").await;
 
         // Use page_size=8 to force multiple pages during collection
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 8, 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 20, "rec");
+        let result = forward_key_events(&prefix, &source, &sink, 8, 100, None).await;
+        assert!(result.is_err(), "Divergent KEL with rec should be rejected");
     }
 
-    // Case 5b/6b: Multi-page owner chain with small page_size
+    // Case 5b/6b: Multi-page owner chain with small page_size — same rejection
     #[tokio::test]
     async fn test_transfer_divergent_multi_page_owner() {
-        let (events, prefix, owner_saids, adv_fork) = build_divergent_kel(20, 1, "rec+rot").await;
+        let (events, prefix, _, _) = build_divergent_kel(20, 1, "rec+rot").await;
 
         // Use page_size=8 to force multiple pages during collection
         let source = MemoryKelSource::new(events);
         let sink = CollectSink::new();
-        forward_key_events(&prefix, &source, &sink, 8, 100, None)
-            .await
-            .unwrap();
-
-        let collected = sink.into_events().await;
-        verify_transfer_ordering(
-            &collected,
-            &owner_saids,
-            adv_fork.as_deref(),
-            20,
-            1,
-            "rec+rot",
+        let result = forward_key_events(&prefix, &source, &sink, 8, 100, None).await;
+        assert!(
+            result.is_err(),
+            "Divergent KEL with rec+rot should be rejected"
         );
     }
 

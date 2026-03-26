@@ -54,11 +54,11 @@ When node A syncs a KEL to node B, `transfer_key_events` reads from A and writes
 
 ### Transfer ordering
 
-For divergent/recovering source KELs, `send_divergent_events` reorders events:
+For divergent source KELs, `send_divergent_events` reorders events to ensure the KEL is reconstructed the same way. With synchronous archival, a recovered source KEL is always a clean linear chain — the adversary events are archived in the merge transaction. In normal operation, only unrecovered and contested cases reach `send_divergent_events`.
 
-- **Recovered (rec found, no cnt)**: Longer chain first (non-divergent appends), then single fork event from shorter chain (creates divergence), then `rec`(+`rot`) resolves it.
-- **Contested (cnt found)**: Skips the recovery path (the `rec` in a contested KEL is part of one branch, not a recovery event). Builds two chains by forward-tracing from the two fork events. Sends the longer chain first as non-divergent appends. If the shorter chain contains a `cnt`, sends the full shorter chain as an atomic batch (the merge engine accepts `[events + cnt]` on divergent KELs). Otherwise sends only the fork event.
+- **Divergent with rec (no cnt)**: Rejected with error. This state cannot exist through normal merge paths — synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
 - **Unrecovered (no rec, no cnt)**: Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver).
+- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the longer chain first as non-divergent appends. If the shorter chain contains a `cnt`, sends the full shorter chain as an atomic batch (the merge engine accepts `[events + cnt]` on divergent KELs). Otherwise sends only the fork event.
 
 ### Source → Sink state matrix
 
@@ -70,7 +70,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 |--------|-------------|---------------------|-------------------------|----------------|----------------|
 | **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` |
-| **Divergent** | Reordered: longer chain + fork + `rec`+`rot` ✓ | Adversary events create overlap + recovery ✓ | Owner events arrive, overlap + recovery ✓ | Duplicates ✓ | `ContestedKel` |
+| **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Duplicates ✓ | `ContestedKel` |
 | **Contested** | Longer chain + fork (`cnt` last) ✓ | Other chain + `cnt` → contest ✓ | Other chain + `cnt` → contest ✓ | `cnt` arrives → contest ✓ | Effective SAIDs match (`hash("contested")`) ✓ |
 | **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` |
 
