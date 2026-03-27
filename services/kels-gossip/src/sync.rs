@@ -112,30 +112,6 @@ fn max_fetches_per_peer_per_minute() -> u32 {
 /// Maps kel_prefix → source_node_prefix.
 const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 
-/// Redis key prefix for per-prefix sets of remote effective SAIDs we've already
-/// tried and failed to sync.
-///
-/// Replaces the flat `kels:anti_entropy:divergent` set. Instead of permanently
-/// skipping all divergent prefixes (which also blocks recovery), we track *which
-/// remote states* we've already attempted. This way:
-/// - Same remote effective SAID → skip (already tried, merge will fail again)
-/// - New remote effective SAID (e.g., after recovery) → retry → succeeds → clear
-/// - Different 3rd-branch combo from another peer → try → fail → add to seen set
-///
-/// Each key `kels:anti_entropy:seen_saids:<prefix>` is a Redis SET of SAID strings.
-/// The set size per prefix is bounded by the number of KELS nodes in the network —
-/// each node holds at most one divergent pair (KEL freezes on first divergence),
-/// so each node contributes at most one unique effective SAID.
-const SEEN_SAIDS_PREFIX: &str = "kels:anti_entropy:seen_saids:";
-
-/// Redis sorted set tracking which prefixes have seen-SAIDs entries, scored by
-/// timestamp. Used to bound the number of tracked prefixes via FIFO eviction.
-const SEEN_SAIDS_ORDER_KEY: &str = "kels:anti_entropy:seen_saids_order";
-
-/// Maximum number of prefixes tracked in the seen-SAIDs mechanism.
-/// When exceeded, the oldest prefix (by timestamp) is evicted.
-const MAX_SEEN_SAID_PREFIXES: i64 = 10_000;
-
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
@@ -497,122 +473,6 @@ pub async fn record_stale_prefix(
     }
 }
 
-/// Record a remote effective SAID that we've tried and failed to sync for a prefix.
-///
-/// Adds the SAID to the per-prefix seen set and updates the eviction order.
-/// If the number of tracked prefixes exceeds [`MAX_SEEN_SAID_PREFIXES`], the
-/// oldest prefix is evicted.
-async fn record_seen_said(
-    redis: &redis::aio::ConnectionManager,
-    kel_prefix: &str,
-    remote_said: &str,
-) {
-    let mut conn = redis.clone();
-    let key = format!("{}{}", SEEN_SAIDS_PREFIX, kel_prefix);
-
-    if let Err(e) = redis::cmd("SADD")
-        .arg(&key)
-        .arg(remote_said)
-        .query_async::<()>(&mut conn)
-        .await
-    {
-        warn!(
-            "Failed to record seen SAID {} for prefix {}: {}",
-            remote_said, kel_prefix, e
-        );
-        return;
-    }
-
-    // Update eviction order (ZADD with current timestamp as score)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-
-    if let Err(e) = redis::cmd("ZADD")
-        .arg(SEEN_SAIDS_ORDER_KEY)
-        .arg(now)
-        .arg(kel_prefix)
-        .query_async::<()>(&mut conn)
-        .await
-    {
-        warn!(
-            "Failed to update seen-SAIDs order for {}: {}",
-            kel_prefix, e
-        );
-        return;
-    }
-
-    // Evict oldest if over limit
-    let count: i64 = redis::cmd("ZCARD")
-        .arg(SEEN_SAIDS_ORDER_KEY)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or(0);
-
-    if count > MAX_SEEN_SAID_PREFIXES {
-        let evicted: Vec<String> = redis::cmd("ZPOPMIN")
-            .arg(SEEN_SAIDS_ORDER_KEY)
-            .arg(1)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or_default();
-
-        // ZPOPMIN returns [member, score], so first element is the prefix
-        if let Some(evicted_prefix) = evicted.first() {
-            let evicted_key = format!("{}{}", SEEN_SAIDS_PREFIX, evicted_prefix);
-            let _ = redis::cmd("DEL")
-                .arg(&evicted_key)
-                .query_async::<()>(&mut conn)
-                .await;
-            debug!(
-                "Evicted oldest seen-SAIDs prefix {} to stay under limit",
-                evicted_prefix
-            );
-        }
-    }
-
-    info!(
-        "Recorded seen SAID {} for prefix {} (will skip same remote state)",
-        remote_said, kel_prefix
-    );
-}
-
-/// Check if we've already tried (and failed) to sync a specific remote effective SAID.
-async fn has_seen_said(
-    redis: &redis::aio::ConnectionManager,
-    kel_prefix: &str,
-    remote_said: &str,
-) -> bool {
-    let mut conn = redis.clone();
-    let key = format!("{}{}", SEEN_SAIDS_PREFIX, kel_prefix);
-    redis::cmd("SISMEMBER")
-        .arg(&key)
-        .arg(remote_said)
-        .query_async::<bool>(&mut conn)
-        .await
-        .unwrap_or(false)
-}
-
-/// Clear all seen SAIDs for a prefix (e.g., after recovery resolves divergence).
-async fn clear_seen_saids(redis: &redis::aio::ConnectionManager, kel_prefix: &str) {
-    let mut conn = redis.clone();
-    let key = format!("{}{}", SEEN_SAIDS_PREFIX, kel_prefix);
-    if let Err(e) = redis::cmd("DEL")
-        .arg(&key)
-        .query_async::<()>(&mut conn)
-        .await
-    {
-        warn!("Failed to clear seen SAIDs for {}: {}", kel_prefix, e);
-    }
-    let _ = redis::cmd("ZREM")
-        .arg(SEEN_SAIDS_ORDER_KEY)
-        .arg(kel_prefix)
-        .query_async::<()>(&mut conn)
-        .await;
-    debug!("Cleared seen SAIDs for prefix {}", kel_prefix);
-}
-
 /// Result of submitting fetched events to a KELS node.
 pub(crate) enum RepairResult {
     /// Events applied successfully (includes divergence — events were still stored).
@@ -814,7 +674,6 @@ pub async fn run_anti_entropy_loop(
                 match result {
                     RepairResult::Repaired => {
                         info!("Anti-entropy: repaired {}", kel_prefix);
-                        clear_seen_saids(redis.as_ref(), &kel_prefix).await;
                     }
                     RepairResult::Contested => {
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
@@ -878,60 +737,39 @@ pub async fn run_anti_entropy_loop(
             if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
                 continue;
             }
-            if has_seen_said(redis.as_ref(), &state.prefix, &state.said).await {
-                continue;
-            }
-            // Resolving: fetch local effective SAID and divergence flag for delta comparison
-            let (local_said, local_divergent) = match local_client
+            // Resolving: fetch local effective SAID for delta comparison
+            let local_said = local_client
                 .fetch_effective_said(&state.prefix)
                 .await
                 .ok()
                 .flatten()
-            {
-                Some((said, divergent)) => (Some(said), Some(divergent)),
-                None => (None, None),
-            };
-            to_fetch.push((state, local_said, local_divergent));
+                .map(|(said, _)| said);
+            to_fetch.push((state, local_said));
         }
 
         // Sync each mismatched prefix concurrently via forward_key_events
         if !to_fetch.is_empty() {
             let tasks: Vec<_> = to_fetch
                 .iter()
-                .map(|(state, local_said, local_divergent)| {
+                .map(|(state, local_said)| {
                     let remote = remote_client.clone();
                     let local = local_client.clone();
                     let prefix = state.prefix.clone();
-                    let remote_said = state.said.clone();
                     let since = local_said.clone();
-                    let divergent = *local_divergent;
                     async move {
                         let result = sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
-                        (prefix, remote_said, divergent, result)
+                        (prefix, result)
                     }
                 })
                 .collect();
 
-            for (prefix, remote_said, local_divergent, result) in join_all(tasks).await {
+            for (prefix, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
                         info!("Anti-entropy: repaired {} from remote", prefix);
-                        clear_seen_saids(redis.as_ref(), &prefix).await;
                     }
                     RepairResult::Failed => {
-                        // Resolving: check if local KEL is already divergent (three-way).
-                        // Only suppress retries when we know the local KEL is divergent,
-                        // indicating a three-way divergence scenario.
-                        if local_divergent == Some(true) {
-                            // Local KEL is divergent and merge failed — likely three-way
-                            // divergence (nodes hold different adversary branch pairs). Record
-                            // the remote's SAID as seen to stop retrying. This is a resolving
-                            // heuristic: a wrong guess either causes an unnecessary retry or
-                            // skips one sync cycle — neither is a security issue.
-                            record_seen_said(redis.as_ref(), &prefix, &remote_said).await;
-                        } else {
-                            record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
-                        }
+                        record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
                     }
                     _ => {}
                 }
@@ -943,12 +781,6 @@ pub async fn run_anti_entropy_loop(
             if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
                 continue;
             }
-            if let Some(&remote_said) = remote_map.get(state.prefix.as_str())
-                && has_seen_said(redis.as_ref(), &state.prefix, remote_said).await
-            {
-                continue;
-            }
-
             // Resolving: get remote effective SAID for delta push
             let since = remote_client
                 .fetch_effective_said(&state.prefix)

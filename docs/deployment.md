@@ -146,8 +146,7 @@ Redis uses per-service ACL users with least-privilege command sets and key patte
 | User | Keys | Channels | Commands |
 |------|------|----------|----------|
 | `kels` | `kels:kel:*`, `kels:verified-peer:*`, `kels:gossip:ready` (read-only) | `kel_updates` | `GET`, `SET`, `SETEX`, `DEL`, `PUBLISH`, `PING` |
-| `gossip` | `kels:gossip:*`, `kels:anti_entropy:*` | `kel_updates` | `GET`, `SET`, `DEL`, `SUBSCRIBE`, `HSET`, `HGETALL`, `SADD`, `SREM`, `SISMEMBER`, `ZADD`, `ZCARD`, `ZPOPMIN`, `ZREM`, `PING` |
-| `registry` | `kels-registry:*` | — | `GET`, `SET`, `DEL`, `SADD`, `SREM`, `SMEMBERS`, `MULTI`, `EXEC`, `PING` |
+| `gossip` | `kels:gossip:*`, `kels:anti_entropy:*` | `kel_updates` | `GET`, `SET`, `DEL`, `SUBSCRIBE`, `HSET`, `HGETALL`, `PING` |
 
 ### Connection URLs
 
