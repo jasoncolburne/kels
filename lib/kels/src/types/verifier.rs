@@ -1248,9 +1248,10 @@ async fn send_divergent_events(
 
     if has_contest {
         // Contested: partition by which chain has cnt, not by length.
-        // Send non-cnt chain first (establishes one branch), then cnt chain
-        // (creates divergence + freezes). Both fit in one page due to the
-        // proactive ROR invariant.
+        // Send non-cnt chain first as paged appends (may exceed one page if
+        // the adversary extended with multiple ROR cycles before detection),
+        // then cnt chain as atomic batch (bounded to one page by proactive
+        // ROR invariant).
         let chain_a_has_cnt = chain_a.iter().any(|e| e.event.is_contest());
         let (non_cnt_chain, cnt_chain) = if chain_a_has_cnt {
             (chain_b, chain_a)
@@ -1265,7 +1266,16 @@ async fn send_divergent_events(
             sink.store_page(prefix, chunk).await?;
         }
 
-        // Step 2: cnt chain as atomic batch (creates divergence + contest)
+        // Step 2: cnt chain as atomic batch (creates divergence + contest).
+        // The cnt chain must fit in one page (proactive ROR invariant). If it
+        // doesn't, the DB has been tampered with — refuse to propagate.
+        if cnt_chain.len() > crate::MINIMUM_PAGE_SIZE {
+            return Err(KelsError::InvalidKel(format!(
+                "Contest chain exceeds page bound ({} > {}) — possible DB tampering",
+                cnt_chain.len(),
+                crate::MINIMUM_PAGE_SIZE,
+            )));
+        }
         match sink.store_page(prefix, &cnt_chain).await {
             Ok(()) => {}
             Err(e) => {

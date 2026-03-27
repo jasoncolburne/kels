@@ -58,7 +58,7 @@ For divergent source KELs, `send_divergent_events` reorders events to ensure the
 
 - **Divergent with rec (no cnt)**: Rejected with error. This state cannot exist through normal merge paths — synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
 - **Unrecovered (no rec, no cnt)**: Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver).
-- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive ROR invariant).
+- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive ROR invariant). If the cnt chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
 
 ### Source → Sink state matrix
 
@@ -71,7 +71,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 | **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` |
 | **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Duplicates ✓ | `ContestedKel` |
-| **Contested** | Longer chain + fork (`cnt` last) ✓ | Other chain + `cnt` → contest ✓ | Other chain + `cnt` → contest ✓ | `cnt` arrives → contest ✓ | Effective SAIDs match (`hash("contested")`) ✓ |
+| **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ |
 | **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` |
 
 ### Effective SAID convergence
