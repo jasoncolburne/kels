@@ -135,7 +135,7 @@ impl KelVerification {
     ///
     /// - Single branch: tip event SAID
     /// - Contested: `hash("contested:{prefix}")` — deterministic across all nodes
-    /// - Divergent: `hash("diverged:{prefix}")` — deterministic regardless of which
+    /// - Divergent: `hash("divergent:{prefix}")` — deterministic regardless of which
     ///   fork events each node has, avoiding wasted anti-entropy sync attempts
     pub fn effective_tail_said(&self) -> Option<String> {
         if self.branch_tips.is_empty() {
@@ -148,7 +148,7 @@ impl KelVerification {
             let input = format!("contested:{}", self.prefix);
             return Some(crate::hash_tip_saids(&[&input]));
         }
-        let input = format!("diverged:{}", self.prefix);
+        let input = format!("divergent:{}", self.prefix);
         Some(crate::hash_tip_saids(&[&input]))
     }
 

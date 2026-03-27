@@ -136,7 +136,7 @@ Derived accessors:
 - `last_establishment_event()` → `None` if divergent
 - `is_decommissioned()` → contested, or single branch with decommission tip
 - `is_divergent()` → `branch_tips.len() > 1`
-- `effective_tail_said()` → single tip SAID, `hash("contested:{prefix}")` for contested, `hash("diverged:{prefix}")` for divergent
+- `effective_tail_said()` → single tip SAID, `hash("contested:{prefix}")` for contested, `hash("divergent:{prefix}")` for divergent
 - `is_said_anchored()`, `anchors_all_saids()` → inline anchor checking results
 
 ## Key Properties Verified

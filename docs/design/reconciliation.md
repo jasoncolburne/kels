@@ -70,7 +70,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 |--------|-------------|---------------------|-------------------------|----------------|----------------|
 | **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` |
-| **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("diverged:{prefix}")`) ✓ | `ContestedKel` |
+| **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedKel` |
 | **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ |
 | **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` |
 
@@ -81,7 +81,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | State | Effective SAID computation | Converges? |
 |-------|---------------------------|------------|
 | **Normal** | Tip event SAID | ✓ (identical chains after gossip) |
-| **Divergent** | `hash_tip_saids(&["diverged:{prefix}"])` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
+| **Divergent** | `hash_tip_saids(&["divergent:{prefix}"])` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
 | **Contested** | `hash_tip_saids(&["contested:{prefix}"])` — deterministic | ✓ (same value on all nodes) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains) |

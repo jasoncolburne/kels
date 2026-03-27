@@ -331,8 +331,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // the divergence serial — syncing between them would just
                         // return RecoverRequired. The deterministic hash avoids
                         // wasted anti-entropy attempts.
-                        let diverged_input = format!("diverged:{}", prefix);
-                        Ok(Some((kels::hash_tip_saids(&[&diverged_input]), true)))
+                        let divergent_input = format!("divergent:{}", prefix);
+                        Ok(Some((kels::hash_tip_saids(&[&divergent_input]), true)))
                     }
                 }
             }

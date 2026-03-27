@@ -232,10 +232,10 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 
 **Phase 2 — Random sampling (runs every cycle):**
 - Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
-- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs it's `hash("diverged:{prefix}")`; for contested KELs it's `hash("contested:{prefix}")`
+- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs it's `hash("divergent:{prefix}")`; for contested KELs it's `hash("contested:{prefix}")`
 - If digests match, done for this cycle
 - If different, reconciles: fetches missing/different KELs in both directions
-- Divergent and contested KELs use deterministic effective SAIDs (`hash("diverged:{prefix}")` and `hash("contested:{prefix}")`), so nodes with different fork events or archival states report the same SAID. Anti-entropy sees matching SAIDs and skips the prefix, avoiding wasted sync attempts that would just return `RecoverRequired`
+- Divergent and contested KELs use deterministic effective SAIDs (`hash("divergent:{prefix}")` and `hash("contested:{prefix}")`), so nodes with different fork events or archival states report the same SAID. Anti-entropy sees matching SAIDs and skips the prefix, avoiding wasted sync attempts that would just return `RecoverRequired`
 
 Stale prefix entries are populated by bootstrap sync failures, gossip fetch failures, and anti-entropy mismatches.
 
