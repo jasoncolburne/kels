@@ -122,6 +122,7 @@ if batch contains a cnt event:
     if KEL does NOT reveal recovery in divergent events:
         return RecoverRequired  // No recovery revealed — recover, don't contest
     continue KEL verification with submitted events (from branch tip)
+    check proactive ROR compliance
     append all events (owner's chain + cnt)
     return Contested
 ```
@@ -132,6 +133,7 @@ if batch contains a rec event:
     if existing events reveal recovery key:
         return ContestRequired  // Adversary has recovery key, must contest
     continue KEL verification with submitted events (from branch tip)
+    check proactive ROR compliance
     check if adversary revealed recovery key (detailed check via find_adversary_event)
     archive adversary events
     append all events (owner's chain + rec + optional rot)
@@ -151,6 +153,7 @@ Events chain from an earlier point in a non-divergent KEL, creating a potential 
 ```
 diverged_at = branch_point.serial + 1
 continue KEL verification with submitted events (from branch point)
+check proactive ROR compliance
 
 // Check if existing events from divergence onward reveal recovery key
 if existing events reveal recovery:
