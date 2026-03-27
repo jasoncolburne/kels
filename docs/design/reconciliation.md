@@ -81,7 +81,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | State | Effective SAID computation | Converges? |
 |-------|---------------------------|------------|
 | **Normal** | Tip event SAID | ✓ (identical chains after gossip) |
-| **Divergent** | Composite hash of sorted tip SAIDs | Temporary; converges after recovery or contest |
+| **Divergent** | `hash_tip_saids(&["diverged:{prefix}"])` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
 | **Contested** | `hash_tip_saids(&["contested:{prefix}"])` — deterministic | ✓ (same value on all nodes) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains) |

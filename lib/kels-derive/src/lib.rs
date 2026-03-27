@@ -325,8 +325,14 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                             return Ok(Some((kels::hash_tip_saids(&[&contested_input]), true)));
                         }
 
-                        let refs: Vec<&str> = tips.iter().map(|e| e.said.as_str()).collect();
-                        Ok(Some((kels::hash_tip_saids(&refs), true)))
+                        // Divergent KELs return a fixed effective SAID so all
+                        // nodes agree regardless of which fork events they have.
+                        // Different nodes may have different adversary events at
+                        // the divergence serial — syncing between them would just
+                        // return RecoverRequired. The deterministic hash avoids
+                        // wasted anti-entropy attempts.
+                        let diverged_input = format!("diverged:{}", prefix);
+                        Ok(Some((kels::hash_tip_saids(&[&diverged_input]), true)))
                     }
                 }
             }

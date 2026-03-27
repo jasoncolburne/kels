@@ -132,6 +132,11 @@ impl KelVerification {
     }
 
     /// Compute the effective tail SAID from verified tips.
+    ///
+    /// - Single branch: tip event SAID
+    /// - Contested: `hash("contested:{prefix}")` — deterministic across all nodes
+    /// - Divergent: `hash("diverged:{prefix}")` — deterministic regardless of which
+    ///   fork events each node has, avoiding wasted anti-entropy sync attempts
     pub fn effective_tail_said(&self) -> Option<String> {
         if self.branch_tips.is_empty() {
             return None;
@@ -139,13 +144,12 @@ impl KelVerification {
         if self.branch_tips.len() == 1 {
             return Some(self.branch_tips[0].tip.event.said.clone());
         }
-        let mut tip_saids: Vec<&str> = self
-            .branch_tips
-            .iter()
-            .map(|bt| bt.tip.event.said.as_str())
-            .collect();
-        tip_saids.sort();
-        Some(crate::hash_tip_saids(&tip_saids))
+        if self.is_contested {
+            let input = format!("contested:{}", self.prefix);
+            return Some(crate::hash_tip_saids(&[&input]));
+        }
+        let input = format!("diverged:{}", self.prefix);
+        Some(crate::hash_tip_saids(&[&input]))
     }
 
     /// Check if a specific SAID was found anchored in the verified KEL.
