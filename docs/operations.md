@@ -18,7 +18,7 @@ Additionally, the binding chain audit detects inconsistencies between HSM key bi
 
 The standard recovery flow works for identity:
 
-1. **Run `identity-admin recover`** to submit a `rec + rot` batch via the identity service's manage endpoint. The HSM provides both the rotation and recovery keys for dual signing.
+1. **Run `identity-admin recover`** or **`identity-admin contest`** via the identity service's manage endpoint. The HSM provides both the rotation and recovery keys for dual signing.
 2. **The merge engine detects divergence**, identifies adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all atomically within the merge transaction.
 3. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume immediately.
 
