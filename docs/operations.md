@@ -2,7 +2,7 @@
 
 ## Identity Service Recovery
 
-The identity service manages the registry's own KEL and signing keys. It is the sole writer to its own prefix, forwarding events to the kels service. If the identity database is tampered with — for example, an adversary compromises the signing key and injects valid events — the following procedures apply.
+The identity service manages the registry's own KEL and signing keys. It is the sole writer to its own prefix, forwarding events to the kels service. An adversary with broken keys could submit new or divergent events to the kels service - posing as the identity service. They could also impersonate the identity-backed service in raft or gossip.
 
 ### Detection
 
@@ -22,7 +22,7 @@ The standard recovery flow works for identity:
 2. **The merge engine detects divergence**, identifies adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all atomically within the merge transaction.
 3. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume immediately.
 
-### During active recovery
+### Recovery
 
 Adversary events are archived synchronously during the merge transaction. Recovery completes atomically — no window where the KEL appears divergent after a successful recovery submission.
 
