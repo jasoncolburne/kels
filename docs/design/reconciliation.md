@@ -119,7 +119,7 @@ Adversary injects different events to different nodes. When gossip syncs, diverg
 
 ### 3. Owner events archived by adversary's `rec`
 
-If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events` (probes the server backward from the owner's tail) and resubmits the minimal chain + `cnt` atomically.
+If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the adversary's `rec`. The builder resubmits those missing events + `cnt` as an atomic batch.
 
 ### 4. Post-recovery events synced to adversary node
 
