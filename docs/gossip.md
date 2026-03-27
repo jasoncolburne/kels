@@ -232,7 +232,7 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 
 **Phase 2 — Random sampling (runs every cycle):**
 - Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
-- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs this is a deterministic Blake3 hash of sorted tip SAIDs
+- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs it's `hash("diverged:{prefix}")`; for contested KELs it's `hash("contested:{prefix}")`
 - If digests match, done for this cycle
 - If different, reconciles: fetches missing/different KELs in both directions
 - Previously-seen remote effective SAIDs are skipped via per-prefix Redis SETs (`kels:anti_entropy:seen_saids:<prefix>`) — when a sync attempt fails (e.g., three-way divergence where nodes hold different adversary branch pairs), the remote's effective SAID is recorded so the same mismatch isn't retried. A new effective SAID (e.g., after recovery) will be retried and, on success, clears the seen set. The number of tracked prefixes is bounded by a sorted set with FIFO eviction

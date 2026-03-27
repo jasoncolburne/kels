@@ -35,7 +35,7 @@ pub(crate) fn test_endpoints_enabled() -> bool {
 }
 
 fn max_events_per_prefix_per_day() -> u32 {
-    kels::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 64) as u32
+    kels::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 256) as u32
 }
 
 fn max_writes_per_ip_per_second() -> u32 {

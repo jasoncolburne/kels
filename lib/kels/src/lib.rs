@@ -145,7 +145,7 @@ pub fn page_size() -> usize {
 
 /// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
-/// At 32 events per page, 64 pages = 2048 max events before failing secure.
+/// At 64 events per page, 64 pages = 4096 max events before failing secure.
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
 
 static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
