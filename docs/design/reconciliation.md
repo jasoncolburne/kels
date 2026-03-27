@@ -8,7 +8,7 @@ All proofs below depend on these invariants:
 
 1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2` (62) non-revealing events. Surfaced by the verification engine and enforced by the merge engine; the builder auto-inserts `ror` when needed.
 
-2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point.
+2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive ROR enforcement limits them to at most 62 events before rejection.
 
 3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contest batch (`events + cnt`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
