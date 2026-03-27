@@ -629,6 +629,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .verify_page(events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
+
         let tip = events.last().map(|e| e.event.said.clone());
         let count = events.len();
         for event in events {

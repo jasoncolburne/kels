@@ -83,6 +83,7 @@ Events start from inception (`previous` is `None`) and no KEL exists yet.
 
 ```
 verify events via KelVerifier::new (full verification from inception)
+check proactive ROR compliance
 insert events
 return Accepted
 ```
