@@ -6,7 +6,7 @@ Exhaustive enumeration of all KEL state × submission type × gossip sync combin
 
 All proofs below depend on these invariants:
 
-1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2` (62) non-revealing events. Enforced by the merge engine; the builder auto-inserts `ror` when needed.
+1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2` (62) non-revealing events. Surfaced by the verification engine and enforced by the merge engine; the builder auto-inserts `ror` when needed.
 
 2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point.
 
