@@ -40,3 +40,11 @@ For registry identity:
 For both:
 - Verify the identity KEL is non-divergent (check logs — the auto-rotation loop logs `SECURITY` warnings on divergence).
 - Audit the adversary's events (available in the archive tables or recovery chain) to understand what was signed and whether downstream consumers were affected.
+
+## Datastore Tampering
+
+Datastore tampering without key compromise is not a security threat — all KEL data is cryptographically verified (signatures, SAID integrity, chain linkage) before use. An attacker with only database access cannot forge valid events.
+
+However, an attacker who has **both database access and broken keys** can write cryptographically valid but protocol-violating data directly to the database, bypassing the merge engine's invariant enforcement. For example, writing a chain that violates proactive ROR compliance (more than 62 non-revealing events between recovery-revealing events) would cause the verification engine to reject the KEL entirely, preventing normal operations including recovery.
+
+In these cases, manual database surgery may be required to restore the KEL to a valid state before protocol-level recovery (`rec` or `cnt`) can proceed. The verification engine will reject the tampered KEL (fail-secure), but this also blocks recovery since the merge engine verifies the existing chain before accepting new events.
