@@ -125,10 +125,6 @@ If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the 
 
 After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the adversary chain), the overlap handler creates a `RecoveryRecord` and archives adversary events synchronously in the merge transaction.
 
-### 5. Sink divergent when source syncs
-
-The sink's KEL is divergent (awaiting recovery). Gossip sync submits events → `RecoverRequired`. The sync fails, prefix is re-queued as stale. After recovery resolves the divergence, the next sync attempt succeeds.
-
-### 6. Contested KELs across nodes
+### 5. Contested KELs across nodes
 
 Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived, another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_tip_saids(&["contested:{prefix}"])` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
