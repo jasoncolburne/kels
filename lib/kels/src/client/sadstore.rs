@@ -166,6 +166,27 @@ impl SadStoreClient {
         }
     }
 
+    /// List SAD chain prefixes (paginated). Used for bootstrap and anti-entropy.
+    pub async fn fetch_sad_prefixes(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::PrefixListResponse, KelsError> {
+        let mut url = format!("{}/api/v1/sad/prefixes?limit={}", self.base_url, limit);
+        if let Some(cursor) = cursor {
+            url.push_str(&format!("&cursor={}", cursor));
+        }
+
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
     /// Verify a SAD record chain and return a verification token.
     ///
     /// Fetches the full chain, verifies structural integrity (SAID, chain linkage,

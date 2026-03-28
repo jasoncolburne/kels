@@ -9,12 +9,13 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use cesr::{Matter, Signature, VerificationKey};
 use dashmap::DashMap;
+use serde::Deserialize;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -166,8 +167,13 @@ pub async fn put_sad_object(
             .into_response();
     }
 
-    // Write to MinIO
-    if let Err(e) = state.object_store.put(&said, &body).await {
+    // Store in MinIO + track in DB index atomically
+    if let Err(e) = state
+        .repo
+        .sad_objects
+        .store(&said, &state.object_store, &body)
+        .await
+    {
         warn!("Failed to store SAD object: {}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
     }
@@ -403,6 +409,101 @@ pub async fn get_sad_effective_said(
         Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+// === Prefix Listing (for bootstrap + anti-entropy) ===
+
+const MAX_PREFIX_PAGE_SIZE: u64 = 100;
+
+#[derive(Deserialize)]
+pub struct PrefixListQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<u64>,
+}
+
+pub async fn list_sad_objects(
+    Query(query): Query<PrefixListQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let limit = query
+        .limit
+        .unwrap_or(MAX_PREFIX_PAGE_SIZE)
+        .min(MAX_PREFIX_PAGE_SIZE);
+
+    match state
+        .repo
+        .sad_objects
+        .list(query.cursor.as_deref(), limit + 1)
+        .await
+    {
+        Ok(saids) => {
+            let has_more = saids.len() as u64 > limit;
+            let saids: Vec<_> = saids.into_iter().take(limit as usize).collect();
+            let next_cursor = if has_more {
+                saids.last().cloned()
+            } else {
+                None
+            };
+            let prefixes = saids
+                .into_iter()
+                .map(|said| kels::PrefixState {
+                    prefix: said.clone(),
+                    said,
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(kels::PrefixListResponse {
+                    prefixes,
+                    next_cursor,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!("Failed to list SAD objects: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+pub async fn list_sad_prefixes(
+    Query(query): Query<PrefixListQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let limit = query
+        .limit
+        .unwrap_or(MAX_PREFIX_PAGE_SIZE)
+        .min(MAX_PREFIX_PAGE_SIZE);
+
+    match state
+        .repo
+        .sad_records
+        .list_prefixes(query.cursor.as_deref(), limit + 1)
+        .await
+    {
+        Ok(prefixes) => {
+            let has_more = prefixes.len() as u64 > limit;
+            let prefixes: Vec<_> = prefixes.into_iter().take(limit as usize).collect();
+            let next_cursor = if has_more {
+                prefixes.last().map(|p| p.prefix.clone())
+            } else {
+                None
+            };
+            (
+                StatusCode::OK,
+                Json(kels::PrefixListResponse {
+                    prefixes,
+                    next_cursor,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!("Failed to list prefixes: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }

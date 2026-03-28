@@ -145,6 +145,94 @@ impl BootstrapSync {
         Ok(())
     }
 
+    /// Preload SAD records from Ready peers.
+    ///
+    /// Lists chain prefixes from each Ready peer's SADStore, compares with local
+    /// state, and syncs any chains that are missing or behind.
+    pub async fn preload_sad_records(&self) -> Result<(), BootstrapError> {
+        let ready_peers = self.get_ready_peers().await;
+
+        if ready_peers.is_empty() {
+            info!("No Ready peers found for SAD preload");
+            return Ok(());
+        }
+
+        info!(
+            "Preloading SAD records from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+
+        let local_sadstore_url =
+            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
+        let local_client = kels::SadStoreClient::new(&local_sadstore_url);
+
+        for peer in &ready_peers {
+            let peer_sadstore_url = peer.kels_url.replace("kels.", "kels-sadstore.");
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = match remote_client
+                    .fetch_sad_prefixes(cursor.as_deref(), self.config.page_size)
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to fetch SAD prefixes from {}: {}", peer.node_id, e);
+                        break;
+                    }
+                };
+
+                for state in &page.prefixes {
+                    // Check if we already have this chain at the same state
+                    let local_said = local_client
+                        .fetch_sad_effective_said(&state.prefix)
+                        .await
+                        .ok()
+                        .flatten();
+
+                    if local_said.as_deref() == Some(&state.said) {
+                        continue;
+                    }
+
+                    // Fetch and sync the chain
+                    if let Ok(chain_page) = remote_client.fetch_sad_chain(&state.prefix, None).await
+                    {
+                        for stored in &chain_page.records {
+                            // Fetch content objects
+                            if let Some(ref content_said) = stored.record.content_said
+                                && let Ok(object) = remote_client.get_sad_object(content_said).await
+                            {
+                                let _ = local_client.put_sad_object(&object).await;
+                            }
+
+                            // Submit chain record
+                            let submission = kels::SadRecordSubmission {
+                                record: stored.record.clone(),
+                                signature: stored.signature.clone(),
+                            };
+                            if let Err(e) = local_client.submit_sad_record(&submission).await {
+                                warn!(
+                                    "Failed to submit SAD record {} during bootstrap: {}",
+                                    stored.record.said, e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        info!("SAD record preload complete");
+        Ok(())
+    }
+
     /// Get peers from allowlist that are ready (respond to /ready with success).
     async fn get_ready_peers(&self) -> Vec<kels::Peer> {
         let allowlist = self.allowlist.read().await;

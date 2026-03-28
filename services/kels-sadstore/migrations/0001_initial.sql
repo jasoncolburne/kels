@@ -25,4 +25,12 @@ CREATE TABLE IF NOT EXISTS sad_record_signatures (
 
 CREATE UNIQUE INDEX IF NOT EXISTS sad_record_signatures_record_said_idx ON sad_record_signatures(record_said);
 
+-- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
+CREATE TABLE IF NOT EXISTS sad_objects (
+    said TEXT PRIMARY KEY,
+    sad_said TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sad_objects_sad_said_idx ON sad_objects(sad_said);
+
 COMMIT;

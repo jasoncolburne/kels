@@ -1,7 +1,9 @@
 //! PostgreSQL Repository for KELS SADStore
 
 use kels::{SadRecord, SadRecordSignature};
-use verifiable_storage::{QueryExecutor as _, StorageError, TransactionExecutor};
+use verifiable_storage::{
+    ChainedRepository, QueryExecutor as _, StorageError, TransactionExecutor, UnchainedRepository,
+};
 use verifiable_storage_postgres::{PgPool, Stored};
 
 #[derive(Stored)]
@@ -113,7 +115,7 @@ impl SadRecordRepository {
             }
         }
 
-        tx.insert_with_table(record, Self::TABLE_NAME).await?;
+        self.insert_in(&mut tx, record.clone()).await?;
         tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
             .await?;
 
@@ -127,8 +129,6 @@ impl SadRecordRepository {
         &self,
         prefix: &str,
     ) -> Result<Vec<kels::SignedSadRecord>, StorageError> {
-        use verifiable_storage::ChainedRepository;
-
         let records = self.get_history(prefix).await?;
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
@@ -165,8 +165,122 @@ impl SadRecordRepository {
 
     /// Get the effective SAID (tip record's SAID) for a chain prefix.
     pub async fn effective_said(&self, prefix: &str) -> Result<Option<String>, StorageError> {
-        use verifiable_storage::ChainedRepository;
         Ok(self.get_latest(prefix).await?.map(|r| r.said))
+    }
+
+    /// List chain prefixes with their tip SAIDs, paginated by cursor.
+    pub async fn list_prefixes(
+        &self,
+        cursor: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<kels::PrefixState>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        // Get distinct prefixes with their tip SAID (latest version)
+        let records: Vec<SadRecord> = if let Some(cursor) = cursor {
+            let query =
+                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                    .distinct_on("prefix")
+                    .gt("prefix", cursor)
+                    .order_by("prefix", verifiable_storage_postgres::Order::Asc)
+                    .order_by("version", verifiable_storage_postgres::Order::Desc)
+                    .limit(limit);
+            self.pool.fetch(query).await?
+        } else {
+            let query =
+                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                    .distinct_on("prefix")
+                    .order_by("prefix", verifiable_storage_postgres::Order::Asc)
+                    .order_by("version", verifiable_storage_postgres::Order::Desc)
+                    .limit(limit);
+            self.pool.fetch(query).await?
+        };
+
+        Ok(records
+            .into_iter()
+            .map(|r| kels::PrefixState {
+                prefix: r.prefix,
+                said: r.said,
+            })
+            .collect())
+    }
+}
+
+/// Tracks SAD object SAIDs stored in MinIO (for bootstrap/anti-entropy discovery).
+///
+/// Uses `SadObjectEntry` as the storable type — a minimal SelfAddressed struct
+/// with just a SAID field, matching the `sad_objects` table.
+#[derive(Stored)]
+#[stored(item_type = kels::SadObjectEntry, table = "sad_objects", chained = false)]
+pub struct SadObjectIndex {
+    pub pool: PgPool,
+}
+
+impl SadObjectIndex {
+    /// Store a SAD object in MinIO and track it in the index atomically.
+    ///
+    /// Opens a DB transaction, inserts the index entry, writes to MinIO,
+    /// then commits. If MinIO fails, the transaction rolls back on drop.
+    pub async fn store(
+        &self,
+        sad_said: &str,
+        object_store: &crate::object_store::ObjectStore,
+        data: &[u8],
+    ) -> Result<(), StorageError> {
+        let entry = kels::SadObjectEntry::create(sad_said.to_string())?;
+
+        let mut tx = self.pool.begin_transaction().await?;
+
+        match self.insert_in(&mut tx, entry).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate key") => {
+                tx.commit().await?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+
+        object_store
+            .put(sad_said, data)
+            .await
+            .map_err(|e| StorageError::StorageError(e.to_string()))?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Check if a SAD object is tracked.
+    pub async fn is_tracked(&self, sad_said: &str) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query =
+            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
+                .eq("sad_said", sad_said)
+                .limit(1);
+        Ok(self.pool.fetch_optional(query).await?.is_some())
+    }
+
+    /// List SAD object SAIDs (the MinIO keys), paginated by cursor.
+    pub async fn list(
+        &self,
+        cursor: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = if let Some(cursor) = cursor {
+            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
+                .gt("sad_said", cursor)
+                .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
+                .limit(limit)
+        } else {
+            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
+                .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
+                .limit(limit)
+        };
+
+        let entries = self.pool.fetch(query).await?;
+        Ok(entries.into_iter().map(|e| e.sad_said).collect())
     }
 }
 
@@ -174,4 +288,6 @@ impl SadRecordRepository {
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
     pub sad_records: SadRecordRepository,
+    #[allow(dead_code)]
+    pub sad_objects: SadObjectIndex,
 }

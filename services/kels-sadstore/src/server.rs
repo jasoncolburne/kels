@@ -31,6 +31,9 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/sad/chain/:prefix/effective-said",
             get(handlers::get_sad_effective_said),
         )
+        // Listing (for bootstrap + anti-entropy)
+        .route("/api/v1/sad/objects", get(handlers::list_sad_objects))
+        .route("/api/v1/sad/prefixes", get(handlers::list_sad_prefixes))
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
 }
