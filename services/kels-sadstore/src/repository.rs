@@ -294,6 +294,5 @@ impl SadObjectIndex {
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
     pub sad_records: SadRecordRepository,
-    #[allow(dead_code)]
     pub sad_objects: SadObjectIndex,
 }

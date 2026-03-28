@@ -198,7 +198,6 @@ pub struct SadRecordVerification {
 
 impl SadRecordVerification {
     /// Create a new verification token. Crate-internal only.
-    #[allow(dead_code)]
     pub(crate) fn new(tip: SadRecord, establishment_serial: u64) -> Self {
         Self {
             tip,
