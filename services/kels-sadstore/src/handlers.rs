@@ -9,13 +9,15 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
+use cesr::{Matter, Signature, VerificationKey};
 use dashmap::DashMap;
+use serde::Deserialize;
 use tracing::{debug, warn};
-use verifiable_storage::SelfAddressed;
+use verifiable_storage::{Chained, ChainedRepository, SelfAddressed};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
@@ -128,34 +130,251 @@ pub async fn get_sad_object(
 
 pub async fn submit_sad_record(
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    State(_state): State<Arc<AppState>>,
-    Json(_body): Json<kels::SignedSadRecord>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<kels::SignedSadRecord>,
 ) -> impl IntoResponse {
-    // TODO: Phase 4 — Verify SAID, check content exists, verify KEL signature, store
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "Chain record submission not yet implemented",
+    let record = &body.record;
+    let signature_str = &body.signature;
+
+    // 1. Verify record SAID integrity
+    if record.verify_said().is_err() {
+        return (StatusCode::BAD_REQUEST, "Record SAID verification failed").into_response();
+    }
+
+    // 2. If content_said present, verify content exists in MinIO
+    if let Some(ref content_said) = record.content_said {
+        match state.object_store.exists(content_said).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "Content SAID not found in object store — PUT content first",
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                warn!("Failed to check content existence: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+        }
+    }
+
+    // 3. Verify signature against KEL — find the most recent establishment event
+    let kel_prefix = &record.kel_prefix;
+    let verifier = kels::KelVerifier::new(kel_prefix);
+    let verification = match kels::verify_key_events(
+        kel_prefix,
+        &state.kels_client.as_kel_source(),
+        verifier,
+        kels::page_size(),
+        kels::max_pages(),
     )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("KEL verification failed: {}", e),
+            )
+                .into_response();
+        }
+    };
+
+    if verification.is_divergent() {
+        return (StatusCode::CONFLICT, "KEL is divergent").into_response();
+    }
+
+    let Some(public_key_qb64) = verification.current_public_key() else {
+        return (StatusCode::BAD_REQUEST, "No public key in verified KEL").into_response();
+    };
+
+    // Verify signature over the record's SAID
+    let public_key = match VerificationKey::from_qb64(public_key_qb64) {
+        Ok(k) => k,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid public key: {}", e),
+            )
+                .into_response();
+        }
+    };
+
+    let sig = match Signature::from_qb64(signature_str) {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("Invalid signature: {}", e)).into_response();
+        }
+    };
+
+    if public_key.verify(record.said.as_bytes(), &sig).is_err() {
+        return (StatusCode::FORBIDDEN, "Signature verification failed").into_response();
+    }
+
+    // Get establishment serial from the verification
+    let establishment_serial = verification
+        .last_establishment_event()
+        .map(|e| e.event.serial)
+        .unwrap_or(0);
+
+    // 4. Chain integrity checks
+    if record.version == 0 {
+        // v0: verify prefix derivation matches content
+        if record.verify_prefix().is_err() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Prefix derivation verification failed",
+            )
+                .into_response();
+        }
+        // Confirm chain doesn't already exist
+        match state.repo.sad_records.exists(&record.prefix).await {
+            Ok(true) => {
+                return (StatusCode::CONFLICT, "Chain already exists").into_response();
+            }
+            Ok(false) => {}
+            Err(e) => {
+                warn!("Failed to check chain existence: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+        }
+    } else {
+        // v1+: verify previous matches current tip, prefix/kel_prefix/kind match
+        let tip = match state.repo.sad_records.get_latest(&record.prefix).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                return (StatusCode::NOT_FOUND, "Chain not found").into_response();
+            }
+            Err(e) => {
+                warn!("Failed to get chain tip: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+        };
+
+        if record.previous.as_deref() != Some(&tip.said) {
+            return (
+                StatusCode::CONFLICT,
+                "Previous SAID does not match chain tip",
+            )
+                .into_response();
+        }
+
+        if record.kel_prefix != tip.kel_prefix {
+            return (StatusCode::BAD_REQUEST, "kel_prefix mismatch").into_response();
+        }
+
+        if record.kind != tip.kind {
+            return (StatusCode::BAD_REQUEST, "kind mismatch").into_response();
+        }
+
+        if record.version != tip.version + 1 {
+            return (StatusCode::CONFLICT, "Version is not sequential").into_response();
+        }
+    }
+
+    // 5. Store record + signature atomically
+    let sig_record = kels::SadRecordSignature::create(
+        record.said.clone(),
+        signature_str.clone(),
+        establishment_serial,
+    );
+    let sig_record = match sig_record {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to create signature record: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+
+    if let Err(e) = state
+        .repo
+        .sad_records
+        .insert_with_signature(record, &sig_record)
+        .await
+    {
+        // Unique constraint on (prefix, version) prevents divergence
+        warn!("Failed to store record: {}", e);
+        return (
+            StatusCode::CONFLICT,
+            "Failed to store record (possible duplicate)",
+        )
+            .into_response();
+    }
+
+    // 6. Publish to Redis for gossip
+    if let Some(ref conn) = state.redis_conn {
+        let mut conn = conn.clone();
+        let message = format!("{}:{}", record.prefix, record.said);
+        if let Err(e) = redis::cmd("PUBLISH")
+            .arg("sad_chain_updates")
+            .arg(&message)
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            warn!("Failed to publish chain update: {}", e);
+        }
+    }
+
+    (StatusCode::CREATED, "stored").into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ChainQuery {
+    pub since: Option<u64>,
 }
 
 pub async fn get_sad_chain(
-    Path(_prefix): Path<String>,
-    State(_state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    Query(query): Query<ChainQuery>,
+    State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // TODO: Phase 4 — Fetch paginated chain from Postgres
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "Chain fetch not yet implemented",
-    )
+    let records = if let Some(since) = query.since {
+        state
+            .repo
+            .sad_records
+            .get_history_since(&prefix, since)
+            .await
+    } else {
+        state.repo.sad_records.get_history(&prefix).await
+    };
+
+    match records {
+        Ok(records) if records.is_empty() => {
+            (StatusCode::NOT_FOUND, "Chain not found").into_response()
+        }
+        Ok(records) => {
+            let page = kels::SadRecordPage {
+                has_more: false,
+                records,
+            };
+            (StatusCode::OK, Json(page)).into_response()
+        }
+        Err(e) => {
+            warn!("Failed to get chain: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
 }
 
 pub async fn get_sad_effective_said(
-    Path(_prefix): Path<String>,
-    State(_state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // TODO: Phase 4 — Get tip SAID for sync comparison
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "Effective SAID not yet implemented",
-    )
+    match state.repo.sad_records.effective_said(&prefix).await {
+        Ok(Some(said)) => (
+            StatusCode::OK,
+            Json(kels::EffectiveSaidResponse {
+                said,
+                divergent: false,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
+        Err(e) => {
+            warn!("Failed to get effective SAID: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
 }

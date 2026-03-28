@@ -17,9 +17,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS sad_records_prefix_version_idx ON sad_records(
 
 -- SAD record signatures (1:1 with sad_records, separate to keep SAID table clean)
 CREATE TABLE IF NOT EXISTS sad_record_signatures (
-    record_said TEXT PRIMARY KEY REFERENCES sad_records(said),
+    said TEXT PRIMARY KEY,
+    record_said TEXT NOT NULL,
     signature TEXT NOT NULL,
     establishment_serial BIGINT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS sad_record_signatures_record_said_idx ON sad_record_signatures(record_said);
 
 COMMIT;

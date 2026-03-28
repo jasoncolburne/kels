@@ -60,9 +60,13 @@ pub fn compute_sad_prefix(kel_prefix: &str, kind: &str) -> Result<String, Storag
 ///
 /// Stored in `sad_record_signatures` table (1:1 with `sad_records`).
 /// The `establishment_serial` is server-derived, not client-provided.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Has its own content-addressed SAID (following the `EventSignature` pattern).
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "sad_record_signatures")]
 #[serde(rename_all = "camelCase")]
 pub struct SadRecordSignature {
+    #[said]
+    pub said: String,
     pub record_said: String,
     pub signature: String,
     pub establishment_serial: u64,
