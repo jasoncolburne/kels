@@ -67,6 +67,7 @@ pub async fn run(
 
     let minio_endpoint =
         std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://minio:9000".to_string());
+    let minio_region = std::env::var("MINIO_REGION").unwrap_or_else(|_| "us-east-1".to_string());
     let minio_access_key =
         std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
     let minio_secret_key =
@@ -76,6 +77,7 @@ pub async fn run(
     info!("Connecting to MinIO at {}", minio_endpoint);
     let object_store = ObjectStore::new(
         &minio_endpoint,
+        &minio_region,
         &sad_bucket,
         &minio_access_key,
         &minio_secret_key,

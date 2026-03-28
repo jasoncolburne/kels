@@ -26,12 +26,18 @@ pub struct ObjectStore {
 
 impl ObjectStore {
     /// Create a new object store client.
-    pub fn new(endpoint: &str, bucket_name: &str, access_key: &str, secret_key: &str) -> Self {
+    pub fn new(
+        endpoint: &str,
+        region: &str,
+        bucket_name: &str,
+        access_key: &str,
+        secret_key: &str,
+    ) -> Self {
         let credentials = Credentials::new(access_key, secret_key, None, None, "static");
 
         let config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
+            .region(Region::new(region.to_string()))
             .endpoint_url(endpoint)
             .credentials_provider(credentials)
             .force_path_style(true)
