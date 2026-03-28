@@ -199,6 +199,7 @@ const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
+    sadstore_client: kels::SadStoreClient,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<String, String>,
     /// Shared allowlist for peer URL lookups
@@ -214,12 +215,14 @@ pub struct SyncHandler {
 impl SyncHandler {
     pub fn new(
         kels_url: &str,
+        sadstore_url: &str,
         allowlist: SharedAllowlist,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
     ) -> Self {
         Self {
             kels_client: KelsClient::new(kels_url),
+            sadstore_client: kels::SadStoreClient::new(sadstore_url),
             local_saids: HashMap::new(),
             allowlist,
             recently_stored,
@@ -295,7 +298,7 @@ impl SyncHandler {
             return;
         };
 
-        let local_client = self.get_local_sadstore_client();
+        let local_client = self.sadstore_client.clone();
         let remote_client = kels::SadStoreClient::new(&sadstore_url);
 
         // Check if we already have it locally
@@ -336,7 +339,7 @@ impl SyncHandler {
             return;
         };
 
-        let local_client = self.get_local_sadstore_client();
+        let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
         let local_said = match local_client.fetch_sad_effective_said(chain_prefix).await {
@@ -411,21 +414,14 @@ impl SyncHandler {
         }
     }
 
-    /// Get the local SADStore client URL from environment.
-    fn get_local_sadstore_client(&self) -> kels::SadStoreClient {
-        let url =
-            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
-        kels::SadStoreClient::new(&url)
-    }
-
-    /// Look up a peer's SADStore URL from the allowlist.
-    /// Uses the same host as the KELS URL but with the SADStore port/path.
+    /// Derive a peer's SADStore URL from their KELS URL.
+    ///
+    /// Extracts the base domain from the KELS URL (strips `http://kels.` prefix)
+    /// and prepends `http://kels-sadstore.`.
     async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
         let guard = self.allowlist.read().await;
         let peer = guard.get(peer_prefix)?;
-        // Derive SADStore URL from KELS URL by replacing the service name
-        // Convention: if KELS is at http://kels.ns:80, SADStore is at http://kels-sadstore.ns:80
-        Some(peer.kels_url.replace("kels.", "kels-sadstore."))
+        Some(sadstore_url_from_kels_url(&peer.kels_url))
     }
 
     /// Handle an announcement from a peer.
@@ -627,8 +623,10 @@ impl SyncHandler {
 /// If `peer_connected_tx` is provided, it will be signaled on the first
 /// `PeerConnected` event. This allows the bootstrap flow to wait for
 /// connectivity without consuming the event stream directly.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_sync_handler(
     kels_url: String,
+    sadstore_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
@@ -636,7 +634,7 @@ pub async fn run_sync_handler(
     redis: OptionalRedis,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, redis);
+    let mut handler = SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis);
 
     while let Some(event) = event_rx.recv().await {
         // Signal first PeerConnected to the bootstrap flow
@@ -1059,6 +1057,22 @@ pub async fn run_anti_entropy_loop(
     }
 }
 
+/// Derive a SADStore URL from a KELS URL by swapping the service name.
+///
+/// `http://kels.node-a.kels` → `http://kels-sadstore.node-a.kels`
+/// `http://kels.node-a.kels:80` → `http://kels-sadstore.node-a.kels:80`
+fn sadstore_url_from_kels_url(kels_url: &str) -> String {
+    // Strip scheme, swap service prefix, reconstruct
+    if let Some(rest) = kels_url.strip_prefix("http://kels.") {
+        format!("http://kels-sadstore.{}", rest)
+    } else if let Some(rest) = kels_url.strip_prefix("https://kels.") {
+        format!("https://kels-sadstore.{}", rest)
+    } else {
+        // Fallback: just append -sadstore after kels
+        kels_url.replacen("kels", "kels-sadstore", 1)
+    }
+}
+
 // ==================== SAD Anti-Entropy ====================
 
 /// Redis hash key for SAD chain anti-entropy stale prefix tracking.
@@ -1093,6 +1107,7 @@ pub async fn record_sad_stale_prefix(
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
+    sadstore_url: String,
     interval: Duration,
 ) {
     loop {
@@ -1113,9 +1128,7 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         }
 
-        let local_sadstore_url =
-            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
-        let local_client = kels::SadStoreClient::new(&local_sadstore_url);
+        let local_client = kels::SadStoreClient::new(&sadstore_url);
 
         // Phase 1: Process known-stale chain prefixes
         let stale_entries = match drain_stale_hash(redis.as_ref(), SAD_STALE_PREFIX_KEY).await {
@@ -1235,7 +1248,13 @@ mod tests {
     fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
-        SyncHandler::new("http://localhost:8080", allowlist, recently_stored, None)
+        SyncHandler::new(
+            "http://localhost:8080",
+            "http://localhost:8081",
+            allowlist,
+            recently_stored,
+            None,
+        )
     }
 
     // ==================== Constants Tests ====================
@@ -1310,6 +1329,7 @@ mod tests {
         // run_sync_handler should complete when receiver closes
         let result = run_sync_handler(
             "http://localhost:8080".to_string(),
+            "http://localhost:8082".to_string(),
             event_rx,
             command_tx,
             allowlist,

@@ -357,11 +357,15 @@ test-suite:
 	$(MAKE) test-rotation
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || { scripts/dump-gossip; false; }
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
+	$(MAKE) test-kem-upgrade
+	scripts/coredns.sh apply
+
+test-grow-shrink:
 	$(MAKE) test-grow-federation
 	$(MAKE) test-shrink-federation
-	$(MAKE) test-kem-upgrade
+
+test-consistency:
 	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
-	scripts/coredns.sh apply
 
 test-kem-upgrade:
 	# Upgrade node-a identity to ML-DSA-87: first rotation commits the new algorithm,
@@ -390,4 +394,4 @@ test-node: clean-standalone
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite test-grow-shrink test-consistency

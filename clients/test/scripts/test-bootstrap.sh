@@ -222,8 +222,8 @@ echo ""
 
 # Create some KELs first
 echo "Creating test KELs..."
-PREFIX1=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
-PREFIX2=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX1=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX2=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created: $PREFIX1, $PREFIX2"
 
 # Test prefix listing (POST with mock signed request — test endpoint skips auth)
@@ -250,7 +250,7 @@ echo ""
 
 # Create a few more KELs
 for i in {1..3}; do
-    kels-cli -u "$NODE_A_URL" incept > /dev/null 2>&1
+    kels-cli --kels-url "$NODE_A_URL" incept > /dev/null 2>&1
 done
 
 # Test pagination with limit=2
@@ -310,7 +310,7 @@ TEST_SAID="KTestAnchorSaid_$(date +%s)_________________________"
 TEST_SAID="${TEST_SAID:0:44}"
 echo "Submitting anchor event via node-d with SAID: $TEST_SAID"
 
-ANCHOR_OUTPUT=$(kels-cli -u "$NODE_D_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID" 2>&1)
+ANCHOR_OUTPUT=$(kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID" 2>&1)
 echo "$ANCHOR_OUTPUT"
 
 if echo "$ANCHOR_OUTPUT" | grep -q "Anchored"; then

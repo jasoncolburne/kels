@@ -100,7 +100,7 @@ echo "Create KEL on node-a, verify it propagates to node-b"
 echo ""
 
 # Create KEL on node-a
-PREFIX1=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX1=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX1"
 
 # Verify it exists on node-a
@@ -120,7 +120,7 @@ echo "Rotate key on node-a, verify rotation propagates to node-b"
 echo ""
 
 # Rotate on node-a
-run_test "Rotate signing key on node-a" kels-cli -u "$NODE_A_URL" rotate --prefix "$PREFIX1"
+run_test "Rotate signing key on node-a" kels-cli --kels-url "$NODE_A_URL" rotate --prefix "$PREFIX1"
 
 # Get new SAID on node-a
 SAID_AFTER_ROTATE=$(get_latest_said "$NODE_A_URL" "$PREFIX1")
@@ -140,7 +140,7 @@ echo ""
 
 # Anchor on node-a
 TEST_SAID="KGossipTestAnchor___________________________"
-run_test "Anchor data on node-a" kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID"
+run_test "Anchor data on node-a" kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID"
 
 # Verify anchor propagated
 run_test "Anchor propagated to node-b" wait_for_convergence "$PREFIX1"
@@ -155,15 +155,15 @@ echo "Submit multiple events rapidly on node-a, verify all propagate"
 echo ""
 
 # Create a new KEL for this test
-PREFIX4=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX4=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX4"
 
 # Submit multiple anchors rapidly
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti1_______________________________"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti2_______________________________"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti3_______________________________"
-kels-cli -u "$NODE_A_URL" rotate --prefix "$PREFIX4"
-kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti4_______________________________"
+kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti1_______________________________"
+kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti2_______________________________"
+kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti3_______________________________"
+kels-cli --kels-url "$NODE_A_URL" rotate --prefix "$PREFIX4"
+kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX4" --said "KGossipMulti4_______________________________"
 
 COUNT_A=$(get_event_count "$NODE_A_URL" "$PREFIX4")
 echo "Node-a has $COUNT_A events"
@@ -186,7 +186,7 @@ export KELS_CLI_HOME="$TEMP_DIR/node-b-state"
 mkdir -p "$KELS_CLI_HOME"
 
 # Fetch the KEL from node-b to get local state
-kels-cli -u "$NODE_B_URL" get "$PREFIX4" > /dev/null 2>&1 || true
+kels-cli --kels-url "$NODE_B_URL" get "$PREFIX4" > /dev/null 2>&1 || true
 
 # Now try to submit - this may fail if node-b doesn't have keys
 # Since the CLI stores keys locally, we need the same keys
@@ -208,19 +208,19 @@ echo ""
 # Check if dev-tools feature is available
 if kels-cli --help 2>&1 | grep -q "adversary"; then
     # Create new KEL
-    PREFIX6=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+    PREFIX6=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
     echo "Created KEL on node-a: $PREFIX6"
 
-    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KPreDivergence______________________________"
+    kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KPreDivergence______________________________"
 
     # Wait for pre-divergence events to propagate
     run_test "Pre-divergence KEL converged" wait_for_convergence "$PREFIX6"
 
     # Inject adversary event on node-a
-    kels-cli -u "$NODE_A_URL" adversary inject --prefix "$PREFIX6" --events ixn || true
+    kels-cli --kels-url "$NODE_A_URL" adversary inject --prefix "$PREFIX6" --events ixn || true
 
     # Owner event creates divergence
-    kels-cli -u "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KOwnerCausesDivergence______________________" 2>&1 || true
+    kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KOwnerCausesDivergence______________________" 2>&1 || true
 
     # Wait for divergent events to propagate to node-b (4 events: icp, anchor, adv_ixn, owner_ixn)
     run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4"
@@ -242,7 +242,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     # Continue from scenario 6 - PREFIX6 should be divergent
     if [ -n "$PREFIX6" ]; then
         # Recover on node-a
-        run_test "Owner recovers on node-a" kels-cli -u "$NODE_A_URL" recover --prefix "$PREFIX6"
+        run_test "Owner recovers on node-a" kels-cli --kels-url "$NODE_A_URL" recover --prefix "$PREFIX6"
 
         # Verify recovery propagated
         run_test "Recovery propagated to node-b" wait_for_convergence "$PREFIX6"
@@ -265,14 +265,14 @@ echo "Decommission KEL on node-a, verify it propagates to node-b"
 echo ""
 
 # Create a new KEL for decommission test
-PREFIX8=$(kels-cli -u "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX8=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX8"
 
 # Wait for KEL to propagate before decommission
 run_test "KEL propagated before decommission" wait_for_kel_on_both_nodes "$PREFIX8"
 
 # Decommission on node-a
-run_test "Decommission KEL on node-a" kels-cli -u "$NODE_A_URL" decommission --prefix "$PREFIX8"
+run_test "Decommission KEL on node-a" kels-cli --kels-url "$NODE_A_URL" decommission --prefix "$PREFIX8"
 
 # Verify decommission propagated
 run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8"

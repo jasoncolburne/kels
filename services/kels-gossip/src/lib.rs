@@ -77,8 +77,13 @@ fn registry_kel_store(
 pub struct Config {
     /// Unique node identifier (e.g., "node-a")
     pub node_id: String,
-    /// Local KELS HTTP endpoint (for this service to use)
+    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// KELS URL = http://kels.{base_domain}, SADStore URL = http://kels-sadstore.{base_domain}
+    pub base_domain: String,
+    /// Local KELS HTTP endpoint (derived from base_domain)
     pub kels_url: String,
+    /// Local SADStore HTTP endpoint (derived from base_domain)
+    pub sadstore_url: String,
     /// Advertised KELS HTTP endpoint for clients and node-to-node sync
     pub kels_advertise_url: String,
     /// PostgreSQL database URL for local registry KEL store
@@ -111,6 +116,7 @@ pub struct Config {
 #[derive(Default)]
 pub struct EnvValues {
     pub node_id: Option<String>,
+    pub base_domain: Option<String>,
     pub kels_url: Option<String>,
     pub kels_advertise_url: Option<String>,
     pub database_url: Option<String>,
@@ -152,7 +158,18 @@ impl Config {
 
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
-            kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
+            base_domain: env.base_domain.clone().unwrap_or_default(),
+            kels_url: env.kels_url.unwrap_or_else(|| {
+                env.base_domain
+                    .as_ref()
+                    .map(|d| format!("http://kels.{}", d))
+                    .unwrap_or_else(|| "http://kels".to_string())
+            }),
+            sadstore_url: env
+                .base_domain
+                .as_ref()
+                .map(|d| format!("http://kels-sadstore.{}", d))
+                .unwrap_or_else(|| "http://kels-sadstore".to_string()),
             kels_advertise_url,
             database_url: env.database_url.unwrap_or_else(|| {
                 "postgres://kels_admin:password@postgres:5432/kels_gossip".to_string()
@@ -183,6 +200,7 @@ impl Config {
     pub fn from_env() -> Result<Self, ServiceError> {
         let env = EnvValues {
             node_id: env::var("NODE_ID").ok(),
+            base_domain: env::var("BASE_DOMAIN").ok(),
             kels_url: env::var("KELS_URL").ok(),
             kels_advertise_url: env::var("KELS_ADVERTISE_URL").ok(),
             database_url: env::var("DATABASE_URL").ok(),
@@ -354,6 +372,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
         kels_url: config.kels_url.clone(),
+        sadstore_url: config.sadstore_url.clone(),
         http_port: config.http_listen_port,
         page_size: 100,
     };
@@ -576,12 +595,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // they arrive. A oneshot channel signals back when the first peer connects.
     let (peer_connected_tx, peer_connected_rx) = tokio::sync::oneshot::channel::<()>();
     let kels_url = config.kels_url.clone();
+    let sadstore_url = config.sadstore_url.clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
+            sadstore_url,
             event_rx,
             sync_command_tx,
             sync_allowlist,
@@ -659,9 +680,16 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
         let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_sadstore_url = config.sadstore_url.clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
-            sync::run_sad_anti_entropy_loop(sad_ae_redis, sad_ae_allowlist, sad_ae_interval).await;
+            sync::run_sad_anti_entropy_loop(
+                sad_ae_redis,
+                sad_ae_allowlist,
+                sad_ae_sadstore_url,
+                sad_ae_interval,
+            )
+            .await;
         });
     }
 

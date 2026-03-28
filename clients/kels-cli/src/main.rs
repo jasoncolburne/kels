@@ -15,16 +15,16 @@ use kels::{
     VerificationKeyCode,
 };
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
+const DEFAULT_BASE_DOMAIN: &str = "kels-node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
-const DEFAULT_SADSTORE_URL: &str = "http://kels-sadstore.kels-node-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// KELS server URL (ignored if --auto-select is used)
-    #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
-    url: String,
+    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// KELS URL = http://kels.{domain}, SADStore URL = http://kels-sadstore.{domain}
+    #[arg(short = 'd', long, env = "BASE_DOMAIN", default_value = DEFAULT_BASE_DOMAIN)]
+    base_domain: String,
 
     /// Registry URLs for node discovery (comma-separated)
     #[arg(long, env = "KELS_REGISTRY_URLS", default_value = DEFAULT_REGISTRY_URL)]
@@ -34,9 +34,13 @@ struct Cli {
     #[arg(long)]
     auto_select: bool,
 
-    /// SADStore server URL
-    #[arg(long, env = "SADSTORE_URL", default_value = DEFAULT_SADSTORE_URL)]
-    sadstore_url: String,
+    /// Override KELS URL (takes precedence over base_domain)
+    #[arg(long, env = "KELS_URL")]
+    kels_url: Option<String>,
+
+    /// Override SADStore URL (takes precedence over base_domain)
+    #[arg(long, env = "SADSTORE_URL")]
+    sadstore_url: Option<String>,
 
     /// Config directory (default: ~/.kels-cli)
     #[arg(long, env = "KELS_CLI_HOME")]
@@ -329,7 +333,21 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         };
         Ok(KelsClient::new(&url))
     } else {
-        Ok(KelsClient::new(&cli.url))
+        Ok(KelsClient::new(&cli.kels_url()))
+    }
+}
+
+impl Cli {
+    fn kels_url(&self) -> String {
+        self.kels_url
+            .clone()
+            .unwrap_or_else(|| format!("http://kels.{}", self.base_domain))
+    }
+
+    fn sadstore_url(&self) -> String {
+        self.sadstore_url
+            .clone()
+            .unwrap_or_else(|| format!("http://kels-sadstore.{}", self.base_domain))
     }
 }
 
@@ -1063,7 +1081,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
     let value: serde_json::Value =
         serde_json::from_str(&data).context("Failed to parse JSON file")?;
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let client = kels::SadStoreClient::new(&cli.sadstore_url());
     let said = client
         .put_sad_object(&value)
         .await
@@ -1074,7 +1092,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let client = kels::SadStoreClient::new(&cli.sadstore_url());
     let value = client
         .get_sad_object(said)
         .await
@@ -1090,7 +1108,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
     let submission: kels::SadRecordSubmission =
         serde_json::from_str(&data).context("Failed to parse SadRecordSubmission JSON")?;
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let client = kels::SadStoreClient::new(&cli.sadstore_url());
     client
         .submit_sad_record(&submission)
         .await
@@ -1101,7 +1119,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let client = kels::SadStoreClient::new(&cli.sadstore_url());
     let page = client
         .fetch_sad_chain(prefix, None)
         .await

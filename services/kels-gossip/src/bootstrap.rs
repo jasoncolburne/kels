@@ -47,6 +47,8 @@ pub struct BootstrapConfig {
     pub node_id: String,
     /// Local KELS URL (for this node to use)
     pub kels_url: String,
+    /// Local SADStore URL
+    pub sadstore_url: String,
     /// HTTP port for the gossip service (used to query peer /ready endpoints)
     pub http_port: u16,
     /// Page size for prefix listing
@@ -58,6 +60,7 @@ impl Default for BootstrapConfig {
         Self {
             node_id: String::new(),
             kels_url: String::new(),
+            sadstore_url: String::new(),
             http_port: 80,
             page_size: 100,
         }
@@ -162,9 +165,7 @@ impl BootstrapSync {
             ready_peers.len()
         );
 
-        let local_sadstore_url =
-            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
-        let local_client = kels::SadStoreClient::new(&local_sadstore_url);
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url);
 
         for peer in &ready_peers {
             let peer_sadstore_url = peer.kels_url.replace("kels.", "kels-sadstore.");
@@ -468,6 +469,7 @@ mod tests {
         let config = BootstrapConfig {
             node_id: "node-1".to_string(),
             kels_url: "http://localhost:8080".to_string(),
+            sadstore_url: "http://localhost:8082".to_string(),
             http_port: 8081,
             page_size: 50,
         };
