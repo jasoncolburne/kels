@@ -17,6 +17,7 @@ use kels::{
 
 const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
+const DEFAULT_SADSTORE_URL: &str = "http://kels-sadstore.kels-node-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -32,6 +33,10 @@ struct Cli {
     /// Auto-select the fastest available node from registry (requires --registry)
     #[arg(long)]
     auto_select: bool,
+
+    /// SADStore server URL
+    #[arg(long, env = "SADSTORE_URL", default_value = DEFAULT_SADSTORE_URL)]
+    sadstore_url: String,
 
     /// Config directory (default: ~/.kels-cli)
     #[arg(long, env = "KELS_CLI_HOME")]
@@ -156,6 +161,10 @@ enum Commands {
         yes: bool,
     },
 
+    /// SAD store commands (self-addressed data)
+    #[command(subcommand)]
+    Sad(SadCommands),
+
     /// Development and testing commands
     #[cfg(feature = "dev-tools")]
     #[command(subcommand)]
@@ -201,6 +210,42 @@ enum AdversaryCommands {
         /// Comma-separated list of event types to inject (e.g., "ixn,ixn,rot")
         #[arg(long)]
         events: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SadCommands {
+    /// Store a self-addressed JSON object in the SAD store
+    Put {
+        /// Path to JSON file containing the self-addressed object
+        file: PathBuf,
+    },
+
+    /// Retrieve a self-addressed object by SAID
+    Get {
+        /// The SAID of the object to retrieve
+        said: String,
+    },
+
+    /// Submit a signed SAD record to a chain
+    Submit {
+        /// Path to JSON file containing the SadRecordSubmission
+        file: PathBuf,
+    },
+
+    /// Fetch and display a SAD record chain
+    Chain {
+        /// The chain prefix to fetch
+        prefix: String,
+    },
+
+    /// Compute a SAD chain prefix from a KEL prefix and kind
+    Prefix {
+        /// The KEL prefix
+        kel_prefix: String,
+
+        /// The record kind (e.g., "kels/v1/mlkem-pubkey")
+        kind: String,
     },
 }
 
@@ -1010,6 +1055,69 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     Ok(())
 }
 
+// ==================== SAD Commands ====================
+
+async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
+    let data = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&data).context("Failed to parse JSON file")?;
+
+    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let said = client
+        .put_sad_object(&value)
+        .await
+        .context("Failed to store SAD object")?;
+
+    println!("{}", said);
+    Ok(())
+}
+
+async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
+    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let value = client
+        .get_sad_object(said)
+        .await
+        .context("Failed to retrieve SAD object")?;
+
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
+    let data = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    let submission: kels::SadRecordSubmission =
+        serde_json::from_str(&data).context("Failed to parse SadRecordSubmission JSON")?;
+
+    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    client
+        .submit_sad_record(&submission)
+        .await
+        .context("Failed to submit SAD record")?;
+
+    println!("{}", "SAD record submitted".green());
+    Ok(())
+}
+
+async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
+    let client = kels::SadStoreClient::new(&cli.sadstore_url);
+    let page = client
+        .fetch_sad_chain(prefix, None)
+        .await
+        .context("Failed to fetch SAD chain")?;
+
+    println!("{}", serde_json::to_string_pretty(&page)?);
+    Ok(())
+}
+
+fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
+    let prefix =
+        kels::compute_sad_prefix(kel_prefix, kind).context("Failed to compute SAD prefix")?;
+    println!("{}", prefix);
+    Ok(())
+}
+
 // ==================== Main ====================
 
 #[tokio::main]
@@ -1070,6 +1178,14 @@ async fn main() -> Result<()> {
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
         Commands::Reset { prefix, yes } => cmd_reset(&cli, prefix.as_deref(), *yes).await,
+
+        Commands::Sad(sad_cmd) => match sad_cmd {
+            SadCommands::Put { file } => cmd_sad_put(&cli, file).await,
+            SadCommands::Get { said } => cmd_sad_get(&cli, said).await,
+            SadCommands::Submit { file } => cmd_sad_submit(&cli, file).await,
+            SadCommands::Chain { prefix } => cmd_sad_chain(&cli, prefix).await,
+            SadCommands::Prefix { kel_prefix, kind } => cmd_sad_prefix(kel_prefix, kind),
+        },
 
         #[cfg(feature = "dev-tools")]
         Commands::Dev(dev_cmd) => match dev_cmd {

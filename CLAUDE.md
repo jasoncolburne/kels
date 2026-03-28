@@ -105,7 +105,8 @@ When events are submitted, the KEL merge produces one of:
 ### Services
 
 - **kels** — Core KEL service. REST API for event submission and KEL retrieval.
-- **kels-gossip** — Gossip service. Syncs KELs between peers (HyParView + PlumTree). See `docs/gossip.md`.
+- **kels-sadstore** — Replicated self-addressed data store. Content-addressed objects (MinIO) + authenticated chained records (PostgreSQL). See `docs/design/sadstore.md`.
+- **kels-gossip** — Gossip service. Syncs KELs and SAD data between peers (HyParView + PlumTree). See `docs/gossip.md`.
 - **kels-registry** — Registry service. Peer lifecycle via OpenRaft consensus. See `docs/registry.md`.
 - **identity** — Identity service. Manages the registry's own KEL and signing keys.
 
