@@ -17,7 +17,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cesr::{Digest, Matter, PublicKey, Signature};
+use cesr::{Digest, Matter, Signature, VerificationKey};
 use tracing::warn;
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -465,7 +465,7 @@ impl KelVerifier {
         })?;
 
         // Verify signature with the event's own public key
-        let public_key = PublicKey::from_qb64(qb64)?;
+        let public_key = VerificationKey::from_qb64(qb64)?;
         Self::verify_signatures(signed_event, &public_key)?;
 
         // Capture delegating prefix from dip events
@@ -535,7 +535,7 @@ impl KelVerifier {
             }
 
             // Verify signature with this event's own public key
-            let public_key = PublicKey::from_qb64(qb64)?;
+            let public_key = VerificationKey::from_qb64(qb64)?;
             Self::verify_signatures(signed_event, &public_key)?;
 
             let events_since_last_revealing = if event.reveals_recovery_key() {
@@ -555,7 +555,7 @@ impl KelVerifier {
             })
         } else {
             // Non-establishment: verify with branch's current public key
-            let public_key = PublicKey::from_qb64(&branch.current_public_key)?;
+            let public_key = VerificationKey::from_qb64(&branch.current_public_key)?;
             Self::verify_signatures(signed_event, &public_key)?;
 
             Ok(BranchState {
@@ -592,7 +592,7 @@ impl KelVerifier {
 
     fn verify_signatures(
         signed_event: &SignedKeyEvent,
-        public_key: &PublicKey,
+        public_key: &VerificationKey,
     ) -> Result<(), KelsError> {
         let event = &signed_event.event;
 
@@ -626,7 +626,7 @@ impl KelVerifier {
                 ))
             })?;
 
-            let recovery_public_key = PublicKey::from_qb64(recovery_key_qb64)?;
+            let recovery_public_key = VerificationKey::from_qb64(recovery_key_qb64)?;
             let recovery_signature = Signature::from_qb64(&recovery_sig.signature)?;
             recovery_public_key
                 .verify(event.said.as_bytes(), &recovery_signature)
@@ -1444,7 +1444,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cesr::{Matter, PrivateKey, VerificationKeyCode};
+    use cesr::{Matter, SigningKey, VerificationKeyCode};
 
     use super::*;
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider, store::KelStore};
@@ -1452,7 +1452,7 @@ mod tests {
     /// Helper to clone all keys from a builder's key provider
     fn clone_keys(
         builder: &KeyEventBuilder<SoftwareKeyProvider>,
-    ) -> (PrivateKey, PrivateKey, PrivateKey) {
+    ) -> (SigningKey, SigningKey, SigningKey) {
         let software = builder.key_provider();
         (
             software.current_private_key().unwrap().clone(),

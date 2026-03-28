@@ -169,7 +169,7 @@ pub async fn refresh_allowlist(
         {
             Ok(verification) => {
                 if let Some(qb64_key) = verification.current_public_key()
-                    && let Ok(pk) = cesr::PublicKey::from_qb64(qb64_key)
+                    && let Ok(pk) = cesr::VerificationKey::from_qb64(qb64_key)
                     && pk.code() == cesr::VerificationKeyCode::MlDsa87.code()
                 {
                     debug!(peer_prefix, "Peer uses ML-DSA-87, requiring ML-KEM-1024");

@@ -1,6 +1,6 @@
 //! Key Event Builder
 
-use cesr::{Matter, PublicKey};
+use cesr::{Matter, VerificationKey};
 
 use crate::{
     client::KelsClient,
@@ -135,7 +135,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             .unwrap_or(0)
     }
 
-    pub async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+    pub async fn current_public_key(&self) -> Result<VerificationKey, KelsError> {
         self.key_provider.current_public_key().await
     }
 

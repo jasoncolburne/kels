@@ -8,7 +8,7 @@
 //! All signing goes through the identity service, which holds the node's single
 //! cryptographic identity (HSM-backed key pair + KEL).
 
-use cesr::{Matter, PublicKey as CesrPublicKey, Signature as CesrSignature};
+use cesr::{Matter, Signature as CesrSignature, VerificationKey};
 use thiserror::Error;
 use tracing::warn;
 
@@ -68,14 +68,14 @@ impl Signer for IdentityGossipSigner {
         self.node_prefix
     }
 
-    fn kem_algorithm(&self) -> cesr::KemKeyCode {
+    fn kem_algorithm(&self) -> cesr::EncapsulationKeyCode {
         if self
             .requires_kem_1024
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            cesr::KemKeyCode::MlKem1024
+            cesr::EncapsulationKeyCode::MlKem1024
         } else {
-            cesr::KemKeyCode::MlKem768
+            cesr::EncapsulationKeyCode::MlKem768
         }
     }
 
@@ -159,7 +159,10 @@ impl KelsPeerVerifier {
     }
 
     /// Get the current public key from a peer's verified KEL.
-    async fn public_key_from_key_events(&self, prefix: &str) -> Result<CesrPublicKey, GossipError> {
+    async fn public_key_from_key_events(
+        &self,
+        prefix: &str,
+    ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
         let source = kels::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}");
         let kel_verification = kels::verify_key_events(
@@ -185,7 +188,7 @@ impl KelsPeerVerifier {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
-        CesrPublicKey::from_qb64(qb64_key).map_err(|e| {
+        VerificationKey::from_qb64(qb64_key).map_err(|e| {
             GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
         })
     }
@@ -195,7 +198,7 @@ impl KelsPeerVerifier {
         &self,
         data: &[u8],
         signature_qb64: &[u8],
-        public_key: &CesrPublicKey,
+        public_key: &VerificationKey,
     ) -> Result<(), GossipError> {
         let sig_str = std::str::from_utf8(signature_qb64)
             .map_err(|e| GossipError::VerificationFailed(format!("Signature not UTF-8: {}", e)))?;

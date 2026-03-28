@@ -10,7 +10,8 @@ use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpStream;
 
 use cesr::{
-    KemCiphertext, KemKeyCode, KemPublicKey, Matter, generate_ml_kem_768, generate_ml_kem_1024,
+    EncapsulationKey, EncapsulationKeyCode, KemCiphertext, Matter, generate_ml_kem_768,
+    generate_ml_kem_1024,
 };
 use futures::{AsyncReadExt, AsyncWriteExt};
 use socket2::SockRef;
@@ -63,8 +64,8 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     let (shared_secret, our_ek_qb64, their_ek_qb64) =
         mlkem_key_exchange(&mut stream, is_initiator, kem_algo).await?;
     let kem_name = match kem_algo {
-        KemKeyCode::MlKem768 => "ML-KEM-768",
-        KemKeyCode::MlKem1024 => "ML-KEM-1024",
+        EncapsulationKeyCode::MlKem768 => "ML-KEM-768",
+        EncapsulationKeyCode::MlKem1024 => "ML-KEM-1024",
     };
     debug!(peer = %their_id, algorithm = kem_name, "ML-KEM key exchange complete");
 
@@ -124,13 +125,13 @@ async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
 async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     stream: &mut S,
     is_initiator: bool,
-    kem_algo: KemKeyCode,
+    kem_algo: EncapsulationKeyCode,
 ) -> Result<([u8; 32], String, String), Error> {
     if is_initiator {
         // Generate ML-KEM keypair
         let (ek, dk) = match kem_algo {
-            KemKeyCode::MlKem768 => generate_ml_kem_768(),
-            KemKeyCode::MlKem1024 => generate_ml_kem_1024(),
+            EncapsulationKeyCode::MlKem768 => generate_ml_kem_768(),
+            EncapsulationKeyCode::MlKem1024 => generate_ml_kem_1024(),
         }
         .map_err(|e| Error::Handshake(format!("ML-KEM keygen failed: {}", e)))?;
         let ek_qb64 = ek.qb64();
@@ -156,11 +157,13 @@ async fn mlkem_key_exchange<S: futures::AsyncRead + futures::AsyncWrite + Unpin>
         let ek_bytes = recv_length_prefixed(stream).await?;
         let ek_qb64 = String::from_utf8(ek_bytes)
             .map_err(|_| Error::Handshake("Invalid encapsulation key encoding".into()))?;
-        let ek = KemPublicKey::from_qb64(&ek_qb64)
+        let ek = EncapsulationKey::from_qb64(&ek_qb64)
             .map_err(|e| Error::Handshake(format!("Invalid encapsulation key: {}", e)))?;
 
         // Reject if peer offered a weaker KEM than we require
-        if kem_algo == KemKeyCode::MlKem1024 && ek.algorithm() == KemKeyCode::MlKem768 {
+        if kem_algo == EncapsulationKeyCode::MlKem1024
+            && ek.algorithm() == EncapsulationKeyCode::MlKem768
+        {
             return Err(Error::Handshake(
                 "Peer offered ML-KEM-768 but ML-KEM-1024 is required".into(),
             ));

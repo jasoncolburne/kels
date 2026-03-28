@@ -277,7 +277,7 @@ pub async fn federation_rpc(
     State(state): State<Arc<FederationState>>,
     Json(signed_rpc): Json<SignedFederationRpc>,
 ) -> Result<Json<FederationRpcResponse>, ApiError> {
-    use cesr::{Matter, PublicKey, Signature};
+    use cesr::{Matter, Signature, VerificationKey};
 
     // Verify sender is a federation member
     if !state.node.config().is_member(&signed_rpc.sender_prefix) {
@@ -335,7 +335,7 @@ pub async fn federation_rpc(
     let current_key = kel_verification.current_public_key().ok_or_else(|| {
         ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
     })?;
-    let public_key = PublicKey::from_qb64(current_key)
+    let public_key = VerificationKey::from_qb64(current_key)
         .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
     let signature = Signature::from_qb64(&signed_rpc.signature)
         .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;

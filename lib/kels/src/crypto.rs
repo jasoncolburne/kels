@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use cesr::{
-    Matter, PrivateKey, PublicKey, Signature, VerificationKeyCode, generate_ml_dsa_65,
+    Matter, Signature, SigningKey, VerificationKey, VerificationKeyCode, generate_ml_dsa_65,
     generate_ml_dsa_87, generate_secp256r1,
 };
 use serde::{Deserialize, Serialize};
@@ -262,11 +262,13 @@ pub trait KeyProvider: Send + Sync {
     }
 
     /// Returns the current signing public key.
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError>;
+    async fn current_public_key(&self) -> Result<VerificationKey, KelsError>;
 
     // ==================== Key Generation ====================
 
-    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError>;
+    async fn generate_initial_keys(
+        &mut self,
+    ) -> Result<(VerificationKey, String, String), KelsError>;
 
     // ==================== Query Methods ====================
 
@@ -286,10 +288,10 @@ pub trait KeyProvider: Send + Sync {
     // ==================== Rotation Operations ====================
 
     /// Prepares a key rotation. Returns the new current public key (what next will become).
-    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError>;
 
     /// Prepares a recovery key rotation. Returns (current_recovery_pub, new_recovery_pub).
-    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError>;
+    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError>;
 
     /// Commits a staged key rotation (pending becomes active).
     async fn commit(&mut self) -> Result<(), KelsError>;
@@ -344,7 +346,7 @@ pub trait KeyProvider: Send + Sync {
 
 fn generate_for_algorithm(
     algorithm: VerificationKeyCode,
-) -> Result<(PublicKey, PrivateKey), KelsError> {
+) -> Result<(VerificationKey, SigningKey), KelsError> {
     match algorithm {
         VerificationKeyCode::Secp256r1 => {
             generate_secp256r1().map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))
@@ -364,8 +366,8 @@ fn generate_for_algorithm(
 pub struct SoftwareKeyProvider {
     signing_algorithm: VerificationKeyCode,
     recovery_algorithm: VerificationKeyCode,
-    keys: Vec<PrivateKey>,
-    recovery_keys: Vec<PrivateKey>,
+    keys: Vec<SigningKey>,
+    recovery_keys: Vec<SigningKey>,
 }
 
 impl Default for SoftwareKeyProvider {
@@ -389,7 +391,7 @@ impl SoftwareKeyProvider {
         }
     }
 
-    pub fn with_all_keys(current: PrivateKey, next: PrivateKey, recovery: PrivateKey) -> Self {
+    pub fn with_all_keys(current: SigningKey, next: SigningKey, recovery: SigningKey) -> Self {
         // Infer signing algorithm from next key (what future rotations will use)
         let signing_algorithm = next.algorithm();
         let recovery_algorithm = recovery.algorithm();
@@ -403,11 +405,11 @@ impl SoftwareKeyProvider {
 
     // ==================== Key Generation ====================
 
-    fn generate_signing_keypair(&self) -> Result<(PublicKey, PrivateKey), KelsError> {
+    fn generate_signing_keypair(&self) -> Result<(VerificationKey, SigningKey), KelsError> {
         generate_for_algorithm(self.signing_algorithm)
     }
 
-    fn generate_recovery_keypair(&self) -> Result<(PublicKey, PrivateKey), KelsError> {
+    fn generate_recovery_keypair(&self) -> Result<(VerificationKey, SigningKey), KelsError> {
         generate_for_algorithm(self.recovery_algorithm)
     }
 
@@ -432,15 +434,15 @@ impl SoftwareKeyProvider {
 
         let current_qb64 = std::fs::read_to_string(&current_path)
             .map_err(|e| KelsError::HardwareError(format!("Failed to read current key: {}", e)))?;
-        let current = PrivateKey::from_qb64(current_qb64.trim())?;
+        let current = SigningKey::from_qb64(current_qb64.trim())?;
 
         let next_qb64 = std::fs::read_to_string(&next_path)
             .map_err(|e| KelsError::HardwareError(format!("Failed to read next key: {}", e)))?;
-        let next = PrivateKey::from_qb64(next_qb64.trim())?;
+        let next = SigningKey::from_qb64(next_qb64.trim())?;
 
         let recovery_qb64 = std::fs::read_to_string(&recovery_path)
             .map_err(|e| KelsError::HardwareError(format!("Failed to read recovery key: {}", e)))?;
-        let recovery = PrivateKey::from_qb64(recovery_qb64.trim())?;
+        let recovery = SigningKey::from_qb64(recovery_qb64.trim())?;
 
         Ok(Self::with_all_keys(current, next, recovery))
     }
@@ -492,15 +494,15 @@ impl SoftwareKeyProvider {
 // Test-only private key accessors
 #[cfg(test)]
 impl SoftwareKeyProvider {
-    pub fn current_private_key(&self) -> Option<&PrivateKey> {
+    pub fn current_private_key(&self) -> Option<&SigningKey> {
         self.keys.first()
     }
 
-    pub fn next_private_key(&self) -> Option<&PrivateKey> {
+    pub fn next_private_key(&self) -> Option<&SigningKey> {
         self.keys.last()
     }
 
-    pub fn recovery_private_key(&self) -> Option<&PrivateKey> {
+    pub fn recovery_private_key(&self) -> Option<&SigningKey> {
         self.recovery_keys.first()
     }
 }
@@ -509,16 +511,18 @@ impl SoftwareKeyProvider {
 
 #[async_trait::async_trait]
 impl KeyProvider for SoftwareKeyProvider {
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+    async fn current_public_key(&self) -> Result<VerificationKey, KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoCurrentKey);
         }
 
         let index = self.keys.len() - 2;
-        Ok(self.keys[index].public_key())
+        Ok(self.keys[index].verification_key())
     }
 
-    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
+    async fn generate_initial_keys(
+        &mut self,
+    ) -> Result<(VerificationKey, String, String), KelsError> {
         let (public, private) = self.generate_signing_keypair()?;
         let (next_public, next_private) = self.generate_signing_keypair()?;
         let (recovery_public, recovery_private) = self.generate_recovery_keypair()?;
@@ -552,14 +556,14 @@ impl KeyProvider for SoftwareKeyProvider {
         self.recovery_keys.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
 
         let new_current_pub = {
             let length = self.keys.len();
-            self.keys[length - 1].public_key()
+            self.keys[length - 1].verification_key()
         };
 
         let (new_next_pub, new_next_priv) = self.generate_signing_keypair()?;
@@ -570,12 +574,12 @@ impl KeyProvider for SoftwareKeyProvider {
         Ok((new_current_pub, rotation_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
 
-        let current_recovery = self.recovery_keys[0].public_key();
+        let current_recovery = self.recovery_keys[0].verification_key();
 
         let (new_recovery_pub, new_recovery_priv) = self.generate_recovery_keypair()?;
         self.recovery_keys.push(new_recovery_priv);
@@ -678,15 +682,15 @@ impl KeyProvider for SoftwareKeyProvider {
         let state: SoftwareKeyState =
             serde_json::from_slice(&data).map_err(|e| KelsError::StorageError(e.to_string()))?;
 
-        let keys: Vec<PrivateKey> = state
+        let keys: Vec<SigningKey> = state
             .keys
             .iter()
-            .map(|qb64| PrivateKey::from_qb64(qb64))
+            .map(|qb64| SigningKey::from_qb64(qb64))
             .collect::<Result<Vec<_>, _>>()?;
-        let recovery_keys: Vec<PrivateKey> = state
+        let recovery_keys: Vec<SigningKey> = state
             .recovery_keys
             .iter()
-            .map(|qb64| PrivateKey::from_qb64(qb64))
+            .map(|qb64| SigningKey::from_qb64(qb64))
             .collect::<Result<Vec<_>, _>>()?;
 
         if keys.len() < 2 {

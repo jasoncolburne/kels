@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use base64::Engine;
-use cesr::{Matter, PublicKey, Signature, VerificationKeyCode};
+use cesr::{Matter, Signature, VerificationKey, VerificationKeyCode};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -149,7 +149,7 @@ impl HardwareKeyProvider {
         format!("{}-recovery-{}", key_namespace, generation)
     }
 
-    async fn generate_internal(&mut self) -> Result<PublicKey, KelsError> {
+    async fn generate_internal(&mut self) -> Result<VerificationKey, KelsError> {
         let mut generation = self.signing_generation.write().await;
         let label = self.generate_label(*generation);
         *generation += 1;
@@ -161,7 +161,7 @@ impl HardwareKeyProvider {
         Ok(public_key)
     }
 
-    async fn generate_recovery_internal(&mut self) -> Result<PublicKey, KelsError> {
+    async fn generate_recovery_internal(&mut self) -> Result<VerificationKey, KelsError> {
         let mut generation = self.recovery_generation.write().await;
         let label = self.generate_recovery_label(*generation);
         *generation += 1;
@@ -196,7 +196,7 @@ impl KeyProvider for HardwareKeyProvider {
         key_handles.get(1).map(|h| h.label.clone())
     }
 
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+    async fn current_public_key(&self) -> Result<VerificationKey, KelsError> {
         // this is correct
         if !self.has_next().await {
             return Err(KelsError::NoCurrentKey);
@@ -215,7 +215,9 @@ impl KeyProvider for HardwareKeyProvider {
         }
     }
 
-    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
+    async fn generate_initial_keys(
+        &mut self,
+    ) -> Result<(VerificationKey, String, String), KelsError> {
         let current_pub = self.generate_internal().await?;
         let next_pub = self.generate_internal().await?.qb64();
         let recovery_pub = self.generate_recovery_internal().await?.qb64();
@@ -251,7 +253,7 @@ impl KeyProvider for HardwareKeyProvider {
         key_handles.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -276,7 +278,7 @@ impl KeyProvider for HardwareKeyProvider {
         Ok((new_current_pub, next_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if self.has_staged_recovery().await {
             return Err(KelsError::AlreadyStagedRecovery);
         }

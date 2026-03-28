@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use async_trait::async_trait;
-use cesr::{Matter, PublicKey, Signature, SignatureCode, VerificationKeyCode};
+use cesr::{Matter, Signature, SignatureCode, VerificationKey, VerificationKeyCode};
 use cryptoki::{
     context::{CInitializeArgs, CInitializeFlags, Pkcs11},
     mechanism::{Mechanism, dsa::HedgeType, dsa::SignAdditionalContext},
@@ -46,8 +46,8 @@ pub trait HsmOperations: Send + Sync {
         &self,
         label: &str,
         algorithm: &str,
-    ) -> Result<(KeyHandle, PublicKey), KelsError>;
-    async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError>;
+    ) -> Result<(KeyHandle, VerificationKey), KelsError>;
+    async fn get_public_key(&self, handle: &KeyHandle) -> Result<VerificationKey, KelsError>;
     async fn sign(&self, handle: &KeyHandle, data: &[u8]) -> Result<Signature, KelsError>;
 }
 
@@ -140,7 +140,7 @@ impl HsmOperations for Pkcs11Client {
         &self,
         label: &str,
         algorithm: &str,
-    ) -> Result<(KeyHandle, PublicKey), KelsError> {
+    ) -> Result<(KeyHandle, VerificationKey), KelsError> {
         let session = self.session.lock().await;
 
         let parameter_set = match algorithm {
@@ -178,13 +178,13 @@ impl HsmOperations for Pkcs11Client {
         let key_code = key_code_from_parameter_set(&attrs)?;
         let value_bytes = extract_value(attrs)?;
 
-        let public_key = PublicKey::from_raw(key_code, value_bytes)
+        let public_key = VerificationKey::from_raw(key_code, value_bytes)
             .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
 
         Ok((KeyHandle::new(label), public_key))
     }
 
-    async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError> {
+    async fn get_public_key(&self, handle: &KeyHandle) -> Result<VerificationKey, KelsError> {
         let session = self.session.lock().await;
 
         let template = vec![
@@ -210,7 +210,7 @@ impl HsmOperations for Pkcs11Client {
         let key_code = key_code_from_parameter_set(&attrs)?;
         let value_bytes = extract_value(attrs)?;
 
-        PublicKey::from_raw(key_code, value_bytes)
+        VerificationKey::from_raw(key_code, value_bytes)
             .map_err(|e| KelsError::CryptoError(e.to_string()))
     }
 
@@ -345,7 +345,7 @@ impl HsmKeyProvider {
         }
     }
 
-    async fn generate_signing_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
+    async fn generate_signing_key(&self) -> Result<(KeyHandle, VerificationKey), KelsError> {
         let algorithm = self.signing_algorithm.read().await.clone();
         let mut generation = self.signing_generation.write().await;
         let label = format!("{}-{}", self.label_prefix, *generation);
@@ -353,7 +353,7 @@ impl HsmKeyProvider {
         self.hsm.generate_keypair(&label, &algorithm).await
     }
 
-    async fn generate_recovery_key(&self) -> Result<(KeyHandle, PublicKey), KelsError> {
+    async fn generate_recovery_key(&self) -> Result<(KeyHandle, VerificationKey), KelsError> {
         let algorithm = self.recovery_algorithm.read().await.clone();
         let mut generation = self.recovery_generation.write().await;
         let label = format!("{}-recovery-{}", self.label_prefix, *generation);
@@ -393,7 +393,7 @@ impl KeyProvider for HsmKeyProvider {
         recovery_handles.first().map(|h| h.as_str().to_string())
     }
 
-    async fn current_public_key(&self) -> Result<PublicKey, KelsError> {
+    async fn current_public_key(&self) -> Result<VerificationKey, KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoCurrentKey);
         }
@@ -406,7 +406,9 @@ impl KeyProvider for HsmKeyProvider {
         self.hsm.get_public_key(handle).await
     }
 
-    async fn generate_initial_keys(&mut self) -> Result<(PublicKey, String, String), KelsError> {
+    async fn generate_initial_keys(
+        &mut self,
+    ) -> Result<(VerificationKey, String, String), KelsError> {
         let (current_handle, current_pub) = self.generate_signing_key().await?;
         let (next_handle, next_pub) = self.generate_signing_key().await?;
         let (recovery_handle, recovery_pub) = self.generate_recovery_key().await?;
@@ -461,7 +463,7 @@ impl KeyProvider for HsmKeyProvider {
         Ok(())
     }
 
-    async fn stage_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -482,7 +484,7 @@ impl KeyProvider for HsmKeyProvider {
         Ok((new_current_pub, next_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(PublicKey, String), KelsError> {
+    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
@@ -659,7 +661,7 @@ mod tests {
             &self,
             label: &str,
             algorithm: &str,
-        ) -> Result<(KeyHandle, PublicKey), KelsError> {
+        ) -> Result<(KeyHandle, VerificationKey), KelsError> {
             let mut count = self.call_count.lock().await;
             *count += 1;
 
@@ -684,7 +686,7 @@ mod tests {
                 }
             };
 
-            let public_key = PublicKey::from_raw(key_code, pk_bytes)
+            let public_key = VerificationKey::from_raw(key_code, pk_bytes)
                 .map_err(|e| KelsError::KeyGenerationFailed(e.to_string()))?;
 
             let mut keys = self.keys.lock().await;
@@ -696,12 +698,12 @@ mod tests {
             Ok((KeyHandle::new(label), public_key))
         }
 
-        async fn get_public_key(&self, handle: &KeyHandle) -> Result<PublicKey, KelsError> {
+        async fn get_public_key(&self, handle: &KeyHandle) -> Result<VerificationKey, KelsError> {
             let keys = self.keys.lock().await;
             let qb64 = keys
                 .get(handle.as_str())
                 .ok_or_else(|| KelsError::HsmKeyNotFound(handle.as_str().to_string()))?;
-            PublicKey::from_qb64(qb64).map_err(|e| KelsError::CryptoError(e.to_string()))
+            VerificationKey::from_qb64(qb64).map_err(|e| KelsError::CryptoError(e.to_string()))
         }
 
         async fn sign(&self, handle: &KeyHandle, _data: &[u8]) -> Result<Signature, KelsError> {

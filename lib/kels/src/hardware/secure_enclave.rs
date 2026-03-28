@@ -6,7 +6,7 @@
 use apple_cryptokit::asymmetric::SEP256PrivateKey;
 use apple_cryptokit::quantum::{SEMLDsa65PrivateKey, SEMLDsa87PrivateKey, SignaturePublicKey};
 
-use cesr::{PublicKey, Signature, SignatureCode, VerificationKeyCode};
+use cesr::{Signature, SignatureCode, VerificationKey, VerificationKeyCode};
 
 use crate::error::KelsError;
 
@@ -32,10 +32,11 @@ pub trait SecureEnclaveOperations: Send + Sync {
         &self,
         label: &str,
         algorithm: VerificationKeyCode,
-    ) -> Result<(SecureEnclaveKeyHandle, PublicKey), KelsError>;
+    ) -> Result<(SecureEnclaveKeyHandle, VerificationKey), KelsError>;
 
     /// Get the public key for a handle
-    fn get_public_key(&self, handle: &SecureEnclaveKeyHandle) -> Result<PublicKey, KelsError>;
+    fn get_public_key(&self, handle: &SecureEnclaveKeyHandle)
+    -> Result<VerificationKey, KelsError>;
 
     /// Sign data with a key
     fn sign(&self, handle: &SecureEnclaveKeyHandle, data: &[u8]) -> Result<Signature, KelsError>;
@@ -74,7 +75,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
         &self,
         label: &str,
         algorithm: VerificationKeyCode,
-    ) -> Result<(SecureEnclaveKeyHandle, PublicKey), KelsError> {
+    ) -> Result<(SecureEnclaveKeyHandle, VerificationKey), KelsError> {
         match algorithm {
             VerificationKeyCode::MlDsa65 => {
                 let se_key = SEMLDsa65PrivateKey::generate()
@@ -83,7 +84,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .public_key()
                     .map_err(|e| KelsError::HardwareError(format!("SE public key failed: {}", e)))?
                     .to_bytes();
-                let public_key = PublicKey::from_raw(VerificationKeyCode::MlDsa65, pub_bytes)
+                let public_key = VerificationKey::from_raw(VerificationKeyCode::MlDsa65, pub_bytes)
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))?;
                 let handle = SecureEnclaveKeyHandle {
                     label: label.to_string(),
@@ -99,7 +100,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .public_key()
                     .map_err(|e| KelsError::HardwareError(format!("SE public key failed: {}", e)))?
                     .to_bytes();
-                let public_key = PublicKey::from_raw(VerificationKeyCode::MlDsa87, pub_bytes)
+                let public_key = VerificationKey::from_raw(VerificationKeyCode::MlDsa87, pub_bytes)
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))?;
                 let handle = SecureEnclaveKeyHandle {
                     label: label.to_string(),
@@ -124,8 +125,9 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                 compressed.push(prefix);
                 compressed.extend_from_slice(x);
 
-                let public_key = PublicKey::from_raw(VerificationKeyCode::Secp256r1, compressed)
-                    .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))?;
+                let public_key =
+                    VerificationKey::from_raw(VerificationKeyCode::Secp256r1, compressed)
+                        .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))?;
                 let handle = SecureEnclaveKeyHandle {
                     label: label.to_string(),
                     algorithm,
@@ -136,7 +138,10 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
         }
     }
 
-    fn get_public_key(&self, handle: &SecureEnclaveKeyHandle) -> Result<PublicKey, KelsError> {
+    fn get_public_key(
+        &self,
+        handle: &SecureEnclaveKeyHandle,
+    ) -> Result<VerificationKey, KelsError> {
         match handle.algorithm {
             VerificationKeyCode::MlDsa65 => {
                 let se_key = SEMLDsa65PrivateKey::from_data_representation(&handle.key_data);
@@ -144,7 +149,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .public_key()
                     .map_err(|e| KelsError::HardwareError(format!("SE public key failed: {}", e)))?
                     .to_bytes();
-                PublicKey::from_raw(VerificationKeyCode::MlDsa65, pub_bytes)
+                VerificationKey::from_raw(VerificationKeyCode::MlDsa65, pub_bytes)
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))
             }
             VerificationKeyCode::MlDsa87 => {
@@ -153,7 +158,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                     .public_key()
                     .map_err(|e| KelsError::HardwareError(format!("SE public key failed: {}", e)))?
                     .to_bytes();
-                PublicKey::from_raw(VerificationKeyCode::MlDsa87, pub_bytes)
+                VerificationKey::from_raw(VerificationKeyCode::MlDsa87, pub_bytes)
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))
             }
             VerificationKeyCode::Secp256r1 => {
@@ -170,7 +175,7 @@ impl SecureEnclaveOperations for DefaultSecureEnclave {
                 compressed.push(prefix);
                 compressed.extend_from_slice(x);
 
-                PublicKey::from_raw(VerificationKeyCode::Secp256r1, compressed)
+                VerificationKey::from_raw(VerificationKeyCode::Secp256r1, compressed)
                     .map_err(|e| KelsError::HardwareError(format!("CESR key failed: {}", e)))
             }
         }
