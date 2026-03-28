@@ -104,6 +104,90 @@ pub async fn run_redis_subscriber(
     Ok(())
 }
 
+/// Redis pub/sub channel for SAD object updates
+const SAD_PUBSUB_CHANNEL: &str = "sad_updates";
+
+/// Redis pub/sub channel for SAD chain updates
+const SAD_CHAIN_PUBSUB_CHANNEL: &str = "sad_chain_updates";
+
+/// Runs the Redis subscriber for SAD store updates (both objects and chains).
+/// Broadcasts announcements to the gossip network on the SAD topic.
+pub async fn run_sad_redis_subscriber(
+    redis_url: &str,
+    local_peer_prefix: String,
+    command_tx: mpsc::Sender<GossipCommand>,
+    recently_stored: RecentlyStoredFromGossip,
+) -> Result<(), SyncError> {
+    let client = redis::Client::open(redis_url)?;
+    let mut pubsub = client.get_async_pubsub().await?;
+
+    pubsub.subscribe(SAD_PUBSUB_CHANNEL).await?;
+    pubsub.subscribe(SAD_CHAIN_PUBSUB_CHANNEL).await?;
+    info!(
+        "Subscribed to Redis channels: {}, {}",
+        SAD_PUBSUB_CHANNEL, SAD_CHAIN_PUBSUB_CHANNEL
+    );
+
+    let mut stream = pubsub.on_message();
+    while let Some(msg) = stream.next().await {
+        let channel: String = match msg.get_channel_name().parse() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let payload: String = match msg.get_payload() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to get SAD Redis message payload: {}", e);
+                continue;
+            }
+        };
+
+        // Feedback loop prevention
+        {
+            let mut guard = recently_stored.write().await;
+            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
+            let cache_key = format!("sad:{}", payload);
+            if guard.contains_key(&cache_key) {
+                debug!("Skipping SAD Redis message (recently stored from gossip)");
+                continue;
+            }
+        }
+
+        let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
+            // Object update: payload is just the SAID
+            kels::SadGossipMessage::Object {
+                said: payload,
+                origin: local_peer_prefix.clone(),
+            }
+        } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
+            // Chain update: payload is "{chain_prefix}:{said}"
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
+                kels::SadGossipMessage::Chain {
+                    chain_prefix: ann.prefix,
+                    said: ann.said,
+                    origin: local_peer_prefix.clone(),
+                }
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        if command_tx
+            .send(GossipCommand::AnnounceSad(gossip_message))
+            .await
+            .is_err()
+        {
+            error!("Failed to send SAD announce command - channel closed");
+            return Err(SyncError::ChannelClosed);
+        }
+    }
+
+    warn!("SAD Redis subscriber stream ended");
+    Ok(())
+}
+
 fn max_fetches_per_peer_per_minute() -> u32 {
     kels::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 8192) as u32
 }
@@ -170,6 +254,9 @@ impl SyncHandler {
             GossipEvent::AnnouncementReceived { announcement } => {
                 self.handle_announcement(announcement).await?;
             }
+            GossipEvent::SadAnnouncementReceived { message } => {
+                self.handle_sad_announcement(message).await;
+            }
             GossipEvent::PeerConnected(peer_prefix) => {
                 debug!("Peer connected: {}", peer_prefix);
             }
@@ -178,6 +265,158 @@ impl SyncHandler {
             }
         }
         Ok(())
+    }
+
+    /// Handle a SAD gossip announcement.
+    ///
+    /// For chain announcements: compare tip SAIDs and fetch chain if different.
+    /// For object announcements: check existence and fetch if missing.
+    async fn handle_sad_announcement(&self, message: kels::SadGossipMessage) {
+        match message {
+            kels::SadGossipMessage::Object { said, origin } => {
+                self.handle_sad_object_announcement(&said, &origin).await;
+            }
+            kels::SadGossipMessage::Chain {
+                chain_prefix,
+                said,
+                origin,
+            } => {
+                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin)
+                    .await;
+            }
+        }
+    }
+
+    /// Handle a SAD object announcement — fetch the object if we don't have it.
+    async fn handle_sad_object_announcement(&self, said: &str, origin: &str) {
+        // Look up origin peer's SADStore URL
+        let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
+            debug!("No SADStore URL for origin peer {}", origin);
+            return;
+        };
+
+        let local_client = self.get_local_sadstore_client();
+        let remote_client = kels::SadStoreClient::new(&sadstore_url);
+
+        // Check if we already have it locally
+        match local_client.get_sad_object(said).await {
+            Ok(_) => {
+                debug!("SAD object {} already exists locally", said);
+                return;
+            }
+            Err(kels::KelsError::EventNotFound(_)) => {} // need to fetch
+            Err(e) => {
+                warn!("Failed to check local SAD object {}: {}", said, e);
+                return;
+            }
+        }
+
+        // Fetch from remote and store locally
+        match remote_client.get_sad_object(said).await {
+            Ok(object) => {
+                if let Err(e) = local_client.put_sad_object(&object).await {
+                    warn!("Failed to store SAD object {} locally: {}", said, e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch SAD object {} from {}: {}", said, origin, e);
+            }
+        }
+    }
+
+    /// Handle a SAD chain announcement — fetch the chain if our tip differs.
+    async fn handle_sad_chain_announcement(
+        &self,
+        chain_prefix: &str,
+        remote_said: &str,
+        origin: &str,
+    ) {
+        let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
+            debug!("No SADStore URL for origin peer {}", origin);
+            return;
+        };
+
+        let local_client = self.get_local_sadstore_client();
+
+        // Compare effective SAIDs
+        let local_said = match local_client.fetch_sad_effective_said(chain_prefix).await {
+            Ok(said) => said,
+            Err(e) => {
+                warn!(
+                    "Failed to get local effective SAID for {}: {}",
+                    chain_prefix, e
+                );
+                None
+            }
+        };
+
+        if local_said.as_deref() == Some(remote_said) {
+            debug!("SAD chain {} already in sync", chain_prefix);
+            return;
+        }
+
+        // Fetch the full chain from the remote peer
+        let remote_client = kels::SadStoreClient::new(&sadstore_url);
+        match remote_client.fetch_sad_chain(chain_prefix, None).await {
+            Ok(page) => {
+                // Submit each record to our local SADStore
+                // The local service will verify and store
+                for record in &page.records {
+                    // For records with content, fetch the content object too
+                    if let Some(ref content_said) = record.content_said {
+                        match remote_client.get_sad_object(content_said).await {
+                            Ok(object) => {
+                                if let Err(e) = local_client.put_sad_object(&object).await {
+                                    warn!(
+                                        "Failed to store content {} locally: {}",
+                                        content_said, e
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to fetch content {} from {}: {}",
+                                    content_said, origin, e
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+                // TODO: Submit chain records to local SADStore.
+                // This requires forwarding SignedSadRecords (with signatures),
+                // which the chain fetch endpoint currently doesn't return.
+                // For now, the content objects are replicated.
+                debug!(
+                    "Replicated {} SAD content objects for chain {}",
+                    page.records.len(),
+                    chain_prefix
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch SAD chain {} from {}: {}",
+                    chain_prefix, origin, e
+                );
+            }
+        }
+    }
+
+    /// Get the local SADStore client URL from environment.
+    fn get_local_sadstore_client(&self) -> kels::SadStoreClient {
+        let url =
+            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
+        kels::SadStoreClient::new(&url)
+    }
+
+    /// Look up a peer's SADStore URL from the allowlist.
+    /// Uses the same host as the KELS URL but with the SADStore port/path.
+    async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
+        let guard = self.allowlist.read().await;
+        let peer = guard.get(peer_prefix)?;
+        // Derive SADStore URL from KELS URL by replacing the service name
+        // Convention: if KELS is at http://kels.ns:80, SADStore is at http://kels-sadstore.ns:80
+        Some(peer.kels_url.replace("kels.", "kels-sadstore."))
     }
 
     /// Handle an announcement from a peer.

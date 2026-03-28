@@ -1,7 +1,7 @@
 //! Gossip networking layer for KELS.
 //!
 //! Wraps the custom gossip protocol (HyParView + PlumTree) to broadcast KEL
-//! update announcements between peers.
+//! update announcements and SAD store announcements between peers.
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -18,6 +18,9 @@ use crate::protocol::KelAnnouncement;
 /// Default gossip topic name for KEL announcements
 pub const DEFAULT_TOPIC: &str = "kels/events/v1";
 
+/// Gossip topic name for SAD store announcements
+pub const SAD_TOPIC: &str = "kels/sad/v1";
+
 #[derive(Error, Debug)]
 pub enum GossipError {
     #[error("Transport error: {0}")]
@@ -33,8 +36,10 @@ pub enum GossipError {
 /// Events emitted by the gossip layer to the sync layer
 #[derive(Debug)]
 pub enum GossipEvent {
-    /// Received an announcement from a peer
+    /// Received a KEL announcement from a peer
     AnnouncementReceived { announcement: KelAnnouncement },
+    /// Received a SAD announcement from a peer
+    SadAnnouncementReceived { message: kels::SadGossipMessage },
     /// New peer connected
     PeerConnected(String),
     /// Peer disconnected
@@ -44,8 +49,10 @@ pub enum GossipEvent {
 /// Commands sent from sync layer to gossip layer
 #[derive(Debug)]
 pub enum GossipCommand {
-    /// Broadcast an announcement to the network
+    /// Broadcast a KEL announcement to the network
     Announce(KelAnnouncement),
+    /// Broadcast a SAD announcement to the network
+    AnnounceSad(kels::SadGossipMessage),
 }
 
 /// Derive a TopicId from a topic name string (Blake3 hash → first 32 bytes).
@@ -61,7 +68,8 @@ pub fn topic_id_from_name(name: &str) -> TopicId {
 /// and forwards events to the sync handler.
 pub async fn run_gossip(
     gossip_handle: Gossip,
-    topic: TopicId,
+    kel_topic: TopicId,
+    sad_topic: TopicId,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
     local_node_prefix: NodePrefix,
@@ -75,10 +83,18 @@ pub async fn run_gossip(
                 match cmd {
                     GossipCommand::Announce(announcement) => {
                         let data = serde_json::to_vec(&announcement)?;
-                        if let Err(e) = gossip_handle.broadcast(topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
-                            warn!("Failed to broadcast announcement: {}", e);
+                        if let Err(e) = gossip_handle.broadcast(kel_topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
+                            warn!("Failed to broadcast KEL announcement: {}", e);
                         } else {
-                            debug!("Broadcast announcement for prefix: {}", announcement.prefix);
+                            debug!("Broadcast KEL announcement for prefix: {}", announcement.prefix);
+                        }
+                    }
+                    GossipCommand::AnnounceSad(message) => {
+                        let data = serde_json::to_vec(&message)?;
+                        if let Err(e) = gossip_handle.broadcast(sad_topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
+                            warn!("Failed to broadcast SAD announcement: {}", e);
+                        } else {
+                            debug!("Broadcast SAD announcement");
                         }
                     }
                 }
@@ -93,22 +109,40 @@ pub async fn run_gossip(
                             continue;
                         }
 
-                        match serde_json::from_slice::<KelAnnouncement>(&msg.content) {
-                            Ok(announcement) => {
-                                let delivered_from_str = msg.delivered_from.to_option_string()
-                                    .unwrap_or_else(|| "<invalid>".to_string());
-                                debug!(
-                                    "Received announcement via {}: prefix={}, said={}",
-                                    delivered_from_str, announcement.prefix, announcement.said
-                                );
-                                event_tx
-                                    .send(GossipEvent::AnnouncementReceived { announcement })
-                                    .await
-                                    .map_err(|_| GossipError::ChannelClosed)?;
+                        // Route by topic
+                        if msg.topic == kel_topic {
+                            match serde_json::from_slice::<KelAnnouncement>(&msg.content) {
+                                Ok(announcement) => {
+                                    let delivered_from_str = msg.delivered_from.to_option_string()
+                                        .unwrap_or_else(|| "<invalid>".to_string());
+                                    debug!(
+                                        "Received KEL announcement via {}: prefix={}, said={}",
+                                        delivered_from_str, announcement.prefix, announcement.said
+                                    );
+                                    event_tx
+                                        .send(GossipEvent::AnnouncementReceived { announcement })
+                                        .await
+                                        .map_err(|_| GossipError::ChannelClosed)?;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse KEL announcement: {}", e);
+                                }
                             }
-                            Err(e) => {
-                                warn!("Failed to parse announcement: {}", e);
+                        } else if msg.topic == sad_topic {
+                            match serde_json::from_slice::<kels::SadGossipMessage>(&msg.content) {
+                                Ok(message) => {
+                                    debug!("Received SAD announcement");
+                                    event_tx
+                                        .send(GossipEvent::SadAnnouncementReceived { message })
+                                        .await
+                                        .map_err(|_| GossipError::ChannelClosed)?;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse SAD announcement: {}", e);
+                                }
                             }
+                        } else {
+                            debug!("Received message for unknown topic");
                         }
                     }
                     Ok(Event::NeighborUp(id)) => {
@@ -146,6 +180,11 @@ mod tests {
     }
 
     #[test]
+    fn test_sad_topic_constant() {
+        assert_eq!(SAD_TOPIC, "kels/sad/v1");
+    }
+
+    #[test]
     fn test_gossip_error_display() {
         let transport_err = GossipError::Transport("connection failed".to_string());
         assert!(transport_err.to_string().contains("Transport error"));
@@ -178,5 +217,12 @@ mod tests {
         let id1 = topic_id_from_name("kels/events/v1");
         let id2 = topic_id_from_name("kels/events/v2");
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_kel_and_sad_topics_differ() {
+        let kel = topic_id_from_name(DEFAULT_TOPIC);
+        let sad = topic_id_from_name(SAD_TOPIC);
+        assert_ne!(kel, sad);
     }
 }

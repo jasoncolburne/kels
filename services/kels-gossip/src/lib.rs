@@ -490,6 +490,24 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
+    // Start SAD Redis subscriber (listens for SAD object and chain updates)
+    let sad_redis_command_tx = command_tx.clone();
+    let sad_redis_url = config.redis_url.clone();
+    let sad_redis_recently_stored = recently_stored.clone();
+    let sad_redis_peer_prefix = peer_prefix_str.clone();
+    tokio::spawn(async move {
+        if let Err(e) = sync::run_sad_redis_subscriber(
+            &sad_redis_url,
+            sad_redis_peer_prefix,
+            sad_redis_command_tx,
+            sad_redis_recently_stored,
+        )
+        .await
+        {
+            error!("SAD Redis subscriber error: {}", e);
+        }
+    });
+
     // Create gossip signer and verifier (signer uses identity service)
     let signer = IdentityGossipSigner::new(
         &config.identity_url,
@@ -517,12 +535,17 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             .await
             .map_err(|e| ServiceError::Config(format!("Failed to start gossip: {}", e)))?;
 
-    // Derive topic ID and join with bootstrap peers
+    // Derive topic IDs and join with bootstrap peers
     let topic_id = gossip_layer::topic_id_from_name(&config.topic);
+    let sad_topic_id = gossip_layer::topic_id_from_name(gossip_layer::SAD_TOPIC);
     gossip_instance
-        .join(topic_id, peer_addrs)
+        .join(topic_id, peer_addrs.clone())
         .await
-        .map_err(|e| ServiceError::Config(format!("Failed to join gossip topic: {}", e)))?;
+        .map_err(|e| ServiceError::Config(format!("Failed to join KEL gossip topic: {}", e)))?;
+    gossip_instance
+        .join(sad_topic_id, peer_addrs)
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to join SAD gossip topic: {}", e)))?;
 
     // Get local NodePrefix for the gossip event loop
     let local_node_prefix = gossip::identity::NodePrefix::option_from_str(&peer_prefix_str)
@@ -534,6 +557,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         gossip_layer::run_gossip(
             gossip_instance_clone,
             topic_id,
+            sad_topic_id,
             command_rx,
             event_tx,
             local_node_prefix,
