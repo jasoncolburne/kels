@@ -19,13 +19,20 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 ///
 /// - `signatures_table`: The signatures table name (required)
 /// - `recovery_table`: Recovery audit table (required)
+/// - `archived_events_table`: Mirror table for archived adversary events (required)
+/// - `archived_signatures_table`: Mirror table for archived adversary signatures (required)
 ///
 /// ## Example
 ///
 /// ```text
 /// #[derive(Stored, SignedEvents)]
 /// #[stored(item_type = KeyEvent, table = "kels_key_events")]
-/// #[signed_events(signatures_table = "kels_key_event_signatures", recovery_table = "kels_recovery")]
+/// #[signed_events(
+///     signatures_table = "kels_key_event_signatures",
+///     recovery_table = "kels_recovery",
+///     archived_events_table = "kels_archived_events",
+///     archived_signatures_table = "kels_archived_event_signatures",
+/// )]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
 /// }
