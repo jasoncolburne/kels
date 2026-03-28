@@ -16,7 +16,7 @@ use axum::{
 use cesr::{Matter, Signature, VerificationKey};
 use dashmap::DashMap;
 use tracing::{debug, warn};
-use verifiable_storage::{Chained, ChainedRepository, SelfAddressed};
+use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
@@ -218,62 +218,16 @@ pub async fn submit_sad_record(
         .map(|e| e.event.serial)
         .unwrap_or(0);
 
-    // 4. Chain integrity checks
-    if record.version == 0 {
-        // v0: verify prefix derivation matches content
-        if record.verify_prefix().is_err() {
-            return (
-                StatusCode::BAD_REQUEST,
-                "Prefix derivation verification failed",
-            )
-                .into_response();
-        }
-        // Confirm chain doesn't already exist
-        match state.repo.sad_records.exists(&record.prefix).await {
-            Ok(true) => {
-                return (StatusCode::CONFLICT, "Chain already exists").into_response();
-            }
-            Ok(false) => {}
-            Err(e) => {
-                warn!("Failed to check chain existence: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
-            }
-        }
-    } else {
-        // v1+: verify previous matches current tip, prefix/kel_prefix/kind match
-        let tip = match state.repo.sad_records.get_latest(&record.prefix).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                return (StatusCode::NOT_FOUND, "Chain not found").into_response();
-            }
-            Err(e) => {
-                warn!("Failed to get chain tip: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
-            }
-        };
-
-        if record.previous.as_deref() != Some(&tip.said) {
-            return (
-                StatusCode::CONFLICT,
-                "Previous SAID does not match chain tip",
-            )
-                .into_response();
-        }
-
-        if record.kel_prefix != tip.kel_prefix {
-            return (StatusCode::BAD_REQUEST, "kel_prefix mismatch").into_response();
-        }
-
-        if record.kind != tip.kind {
-            return (StatusCode::BAD_REQUEST, "kind mismatch").into_response();
-        }
-
-        if record.version != tip.version + 1 {
-            return (StatusCode::CONFLICT, "Version is not sequential").into_response();
-        }
+    // 4. Verify prefix derivation for v0
+    if record.version == 0 && record.verify_prefix().is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Prefix derivation verification failed",
+        )
+            .into_response();
     }
 
-    // 5. Store record + signature atomically
+    // 5. Store record + signature atomically (with advisory lock + chain integrity check)
     let sig_record = kels::SadRecordSignature::create(
         record.said.clone(),
         signature_str.clone(),
@@ -290,16 +244,11 @@ pub async fn submit_sad_record(
     if let Err(e) = state
         .repo
         .sad_records
-        .insert_with_signature(record, &sig_record)
+        .save_with_chain_check(record, &sig_record)
         .await
     {
-        // Unique constraint on (prefix, version) prevents divergence
         warn!("Failed to store record: {}", e);
-        return (
-            StatusCode::CONFLICT,
-            "Failed to store record (possible duplicate)",
-        )
-            .into_response();
+        return (StatusCode::CONFLICT, format!("{}", e)).into_response();
     }
 
     // 6. Publish to Redis for gossip
