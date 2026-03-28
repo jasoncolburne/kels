@@ -56,7 +56,6 @@ spec:
               value: "${var.federationSelfPrefix}"
             - name: FEDERATION_URLS
               value: "${var.federationUrls}"
-
           livenessProbe:
             httpGet:
               path: /health
