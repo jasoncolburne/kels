@@ -15,6 +15,7 @@ default = ["native"]
 native = ["kels/native"]
 secure-enclave = ["kels/secure-enclave"]
 dev-tools = ["kels/dev-tools"]
+federation = ["kels/federation"]
 
 [dependencies]
 kels = { path = "../kels", package = "libkels", default-features = false }

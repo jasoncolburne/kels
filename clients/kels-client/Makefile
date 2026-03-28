@@ -16,11 +16,11 @@ export TRUSTED_REGISTRY_PREFIXES
 
 # Compute feature flags based on DEV_TOOLS
 ifeq ($(DEV_TOOLS),1)
-CARGO_FEATURES = secure-enclave,dev-tools
+CARGO_FEATURES = secure-enclave,federation,dev-tools
 SWIFT_FLAGS = -DDEV_TOOLS
 C_FLAGS = -DDEV_TOOLS
 else
-CARGO_FEATURES = secure-enclave
+CARGO_FEATURES = secure-enclave,federation
 SWIFT_FLAGS =
 C_FLAGS =
 endif
