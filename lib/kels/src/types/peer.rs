@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use cesr::{Matter, PublicKey, Signature};
+use cesr::{Matter, Signature, VerificationKey};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
@@ -51,7 +51,7 @@ impl<T: Serialize> SignedRequest<T> {
             .current_public_key()
             .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
 
-        let public_key = PublicKey::from_qb64(public_key_qb64)
+        let public_key = VerificationKey::from_qb64(public_key_qb64)
             .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
 
         let signature = Signature::from_qb64(&self.signature)

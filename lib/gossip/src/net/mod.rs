@@ -90,8 +90,8 @@ pub trait Signer: Send + Sync + 'static {
     /// KEM algorithm for handshake key exchange.
     /// Default: ML-KEM-1024 (fail secure). Implementations may relax to ML-KEM-768
     /// after verifying no peer in the federation uses ML-DSA-87.
-    fn kem_algorithm(&self) -> cesr::KemKeyCode {
-        cesr::KemKeyCode::MlKem1024
+    fn kem_algorithm(&self) -> cesr::EncapsulationKeyCode {
+        cesr::EncapsulationKeyCode::MlKem1024
     }
 }
 

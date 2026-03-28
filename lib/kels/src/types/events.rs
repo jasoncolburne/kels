@@ -403,7 +403,7 @@ impl KeyEvent {
     /// Validates that the event has the correct fields for its kind.
     /// Returns Ok(()) if valid, Err with description if invalid.
     pub fn validate_structure(&self) -> Result<(), String> {
-        use cesr::{Digest, DigestCode, Matter, PublicKey};
+        use cesr::{Digest, DigestCode, Matter, VerificationKey};
 
         // Helper to check field presence
         let require = |name: &str, present: bool| -> Result<(), String> {
@@ -429,7 +429,7 @@ impl KeyEvent {
             Ok(())
         };
         let validate_public_key = |name: &str, value: &str| -> Result<(), String> {
-            PublicKey::from_qb64(value)
+            VerificationKey::from_qb64(value)
                 .map_err(|_| format!("{} is not a valid CESR public key", name))?;
             Ok(())
         };
