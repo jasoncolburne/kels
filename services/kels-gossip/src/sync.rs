@@ -361,9 +361,9 @@ impl SyncHandler {
             Ok(page) => {
                 // Submit each record to our local SADStore
                 // The local service will verify and store
-                for record in &page.records {
+                for stored in &page.records {
                     // For records with content, fetch the content object too
-                    if let Some(ref content_said) = record.content_said {
+                    if let Some(ref content_said) = stored.record.content_said {
                         match remote_client.get_sad_object(content_said).await {
                             Ok(object) => {
                                 if let Err(e) = local_client.put_sad_object(&object).await {
@@ -382,13 +382,22 @@ impl SyncHandler {
                             }
                         }
                     }
+
+                    // Submit the chain record with its signature to the local SADStore
+                    let signed = kels::SadRecordSubmission {
+                        record: stored.record.clone(),
+                        signature: stored.signature.clone(),
+                    };
+                    if let Err(e) = local_client.submit_sad_record(&signed).await {
+                        warn!(
+                            "Failed to submit SAD record {} locally: {}",
+                            stored.record.said, e
+                        );
+                        return;
+                    }
                 }
-                // TODO: Submit chain records to local SADStore.
-                // This requires forwarding SignedSadRecords (with signatures),
-                // which the chain fetch endpoint currently doesn't return.
-                // For now, the content objects are replicated.
                 debug!(
-                    "Replicated {} SAD content objects for chain {}",
+                    "Replicated {} SAD records for chain {}",
                     page.records.len(),
                     chain_prefix
                 );

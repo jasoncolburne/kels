@@ -72,25 +72,38 @@ pub struct SadRecordSignature {
     pub establishment_serial: u64,
 }
 
-/// A signed SAD record for transmission over the wire.
+/// A SAD record submission — record + signature, no establishment serial.
 ///
 /// The `establishment_serial` is NOT included — the server determines it by
 /// finding the most recent establishment event in the KEL and verifying the
 /// signature against that key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SignedSadRecord {
+pub struct SadRecordSubmission {
     pub record: SadRecord,
     /// Signature over the record's SAID, using the current KEL signing key.
     pub signature: String,
 }
 
-/// A chain of SAD records for verification.
+/// A signed SAD record as returned by the API.
+///
+/// Analogous to `SignedKeyEvent` (event + signatures). Includes the
+/// server-derived `establishment_serial` so verifiers know which KEL
+/// establishment key to check against.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedSadRecord {
+    pub record: SadRecord,
+    pub signature: String,
+    pub establishment_serial: u64,
+}
+
+/// A chain of stored SAD records for verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadRecordChain {
     pub prefix: String,
-    pub records: Vec<SadRecord>,
+    pub records: Vec<SignedSadRecord>,
 }
 
 impl SadRecordChain {
@@ -110,11 +123,12 @@ impl SadRecordChain {
             ));
         }
 
-        let expected_kel_prefix = &self.records[0].kel_prefix;
-        let expected_kind = &self.records[0].kind;
+        let expected_kel_prefix = &self.records[0].record.kel_prefix;
+        let expected_kind = &self.records[0].record.kind;
         let mut last_said: Option<String> = None;
 
-        for (i, record) in self.records.iter().enumerate() {
+        for (i, stored) in self.records.iter().enumerate() {
+            let record = &stored.record;
             record.verify()?;
 
             if record.prefix != self.prefix {
@@ -165,8 +179,8 @@ impl SadRecordChain {
         Ok(())
     }
 
-    /// Get the latest (tip) record in the chain.
-    pub fn tip(&self) -> Option<&SadRecord> {
+    /// Get the latest (tip) stored record in the chain.
+    pub fn tip(&self) -> Option<&SignedSadRecord> {
         self.records.last()
     }
 }
@@ -248,11 +262,11 @@ pub enum SadGossipMessage {
     },
 }
 
-/// A page of SAD records returned by the chain API.
+/// A page of stored SAD records returned by the chain API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadRecordPage {
-    pub records: Vec<SadRecord>,
+    pub records: Vec<SignedSadRecord>,
     pub has_more: bool,
 }
 
@@ -262,6 +276,15 @@ mod tests {
     use verifiable_storage::{Chained, SelfAddressed};
 
     use super::*;
+
+    /// Wrap a SadRecord into a SignedSadRecord with dummy signature for tests.
+    fn stored(record: SadRecord) -> SignedSadRecord {
+        SignedSadRecord {
+            record,
+            signature: "test_sig".to_string(),
+            establishment_serial: 0,
+        }
+    }
 
     #[test]
     fn test_compute_sad_prefix_deterministic() {
@@ -331,7 +354,7 @@ mod tests {
 
         let chain = SadRecordChain {
             prefix: v0.prefix.clone(),
-            records: vec![v0, v1],
+            records: vec![stored(v0), stored(v1)],
         };
         assert!(chain.verify_records().is_ok());
     }
@@ -368,7 +391,7 @@ mod tests {
 
         let chain = SadRecordChain {
             prefix: v0.prefix.clone(),
-            records: vec![v0, v1],
+            records: vec![stored(v0), stored(v1)],
         };
         let err = chain.verify_records().unwrap_err();
         assert!(
@@ -393,7 +416,7 @@ mod tests {
 
         let chain = SadRecordChain {
             prefix: v0.prefix.clone(),
-            records: vec![v0, v1],
+            records: vec![stored(v0), stored(v1)],
         };
         let err = chain.verify_records().unwrap_err();
         assert!(
@@ -421,7 +444,7 @@ mod tests {
 
         let chain = SadRecordChain {
             prefix: v0.prefix.clone(),
-            records: vec![v0, v1],
+            records: vec![stored(v0), stored(v1)],
         };
         let err = chain.verify_records().unwrap_err();
         assert!(
@@ -452,6 +475,23 @@ mod tests {
     }
 
     #[test]
+    fn test_sad_record_submission_serialization() {
+        let record = SadRecord::create(
+            "Ekel123".to_string(),
+            "kels/v1/mlkem-pubkey".to_string(),
+            None,
+        )
+        .unwrap();
+        let submission = SadRecordSubmission {
+            record,
+            signature: "sig123".to_string(),
+        };
+        let json = serde_json::to_string(&submission).unwrap();
+        let parsed: SadRecordSubmission = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.signature, "sig123");
+    }
+
+    #[test]
     fn test_signed_sad_record_serialization() {
         let record = SadRecord::create(
             "Ekel123".to_string(),
@@ -462,10 +502,12 @@ mod tests {
         let signed = SignedSadRecord {
             record,
             signature: "sig123".to_string(),
+            establishment_serial: 2,
         };
         let json = serde_json::to_string(&signed).unwrap();
         let parsed: SignedSadRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.signature, "sig123");
+        assert_eq!(parsed.establishment_serial, 2);
     }
 
     #[test]
@@ -516,8 +558,8 @@ mod tests {
 
         let chain = SadRecordChain {
             prefix: v0.prefix.clone(),
-            records: vec![v0, v1.clone()],
+            records: vec![stored(v0), stored(v1.clone())],
         };
-        assert_eq!(chain.tip().unwrap().said, v1.said);
+        assert_eq!(chain.tip().unwrap().record.said, v1.said);
     }
 }

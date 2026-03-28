@@ -9,13 +9,12 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use cesr::{Matter, Signature, VerificationKey};
 use dashmap::DashMap;
-use serde::Deserialize;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, ChainedRepository, SelfAddressed};
 
@@ -131,7 +130,7 @@ pub async fn get_sad_object(
 pub async fn submit_sad_record(
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(body): Json<kels::SignedSadRecord>,
+    Json(body): Json<kels::SadRecordSubmission>,
 ) -> impl IntoResponse {
     let record = &body.record;
     let signature_str = &body.signature;
@@ -320,27 +319,11 @@ pub async fn submit_sad_record(
     (StatusCode::CREATED, "stored").into_response()
 }
 
-#[derive(Deserialize)]
-pub struct ChainQuery {
-    pub since: Option<u64>,
-}
-
 pub async fn get_sad_chain(
     Path(prefix): Path<String>,
-    Query(query): Query<ChainQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let records = if let Some(since) = query.since {
-        state
-            .repo
-            .sad_records
-            .get_history_since(&prefix, since)
-            .await
-    } else {
-        state.repo.sad_records.get_history(&prefix).await
-    };
-
-    match records {
+    match state.repo.sad_records.get_stored_chain(&prefix).await {
         Ok(records) if records.is_empty() => {
             (StatusCode::NOT_FOUND, "Chain not found").into_response()
         }
