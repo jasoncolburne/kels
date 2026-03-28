@@ -85,7 +85,11 @@ pub async fn run(
         &minio_access_key,
         &minio_secret_key,
     );
-    info!("Object store configured (bucket: {})", sad_bucket);
+    object_store
+        .ensure_bucket()
+        .await
+        .map_err(|e| format!("Failed to ensure bucket: {}", e))?;
+    info!("Object store ready (bucket: {})", sad_bucket);
 
     let kels_client = kels::KelsClient::new(kels_url);
 

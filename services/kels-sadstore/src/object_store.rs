@@ -8,7 +8,7 @@ use aws_sdk_s3::{
     config::{BehaviorVersion, Credentials, Region},
     primitives::ByteStream,
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ObjectStoreError {
@@ -48,6 +48,27 @@ impl ObjectStore {
         Self {
             client,
             bucket: bucket_name.to_string(),
+        }
+    }
+
+    /// Ensure the bucket exists, creating it if necessary.
+    pub async fn ensure_bucket(&self) -> Result<(), ObjectStoreError> {
+        match self.client.head_bucket().bucket(&self.bucket).send().await {
+            Ok(_) => {
+                debug!("Bucket {} exists", self.bucket);
+                Ok(())
+            }
+            Err(_) => {
+                info!("Bucket {} not found, creating...", self.bucket);
+                self.client
+                    .create_bucket()
+                    .bucket(&self.bucket)
+                    .send()
+                    .await
+                    .map_err(|e| ObjectStoreError::S3(format!("Failed to create bucket: {}", e)))?;
+                info!("Created bucket {}", self.bucket);
+                Ok(())
+            }
         }
     }
 
