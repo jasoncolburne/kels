@@ -632,7 +632,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Spawn periodic anti-entropy loop (repairs silent divergence and failed gossip fetches)
+    // Spawn periodic anti-entropy loops (repairs silent divergence and failed gossip fetches)
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
@@ -648,6 +648,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 ae_interval,
             )
             .await;
+        });
+
+        // SAD anti-entropy loop
+        let sad_ae_redis = redis.clone();
+        let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
+        tokio::spawn(async move {
+            sync::run_sad_anti_entropy_loop(sad_ae_redis, sad_ae_allowlist, sad_ae_interval).await;
         });
     }
 

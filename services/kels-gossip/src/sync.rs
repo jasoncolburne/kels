@@ -759,13 +759,14 @@ pub(crate) async fn sync_prefix(
     }
 }
 
-/// Drain the stale prefix hash from Redis, returning entries and deleting the key atomically.
-async fn drain_stale_prefixes(
+/// Drain a stale hash from Redis, returning entries and deleting the key atomically.
+async fn drain_stale_hash(
     redis: &redis::aio::ConnectionManager,
+    key: &str,
 ) -> Option<HashMap<String, String>> {
     let mut conn = redis.clone();
     let flat: Vec<String> = redis::cmd("HGETALL")
-        .arg(STALE_PREFIX_KEY)
+        .arg(key)
         .query_async(&mut conn)
         .await
         .ok()?;
@@ -783,12 +784,19 @@ async fn drain_stale_prefixes(
 
     if !map.is_empty() {
         let _ = redis::cmd("DEL")
-            .arg(STALE_PREFIX_KEY)
+            .arg(key)
             .query_async::<()>(&mut conn)
             .await;
     }
 
     Some(map)
+}
+
+/// Drain the stale prefix hash from Redis.
+async fn drain_stale_prefixes(
+    redis: &redis::aio::ConnectionManager,
+) -> Option<HashMap<String, String>> {
+    drain_stale_hash(redis, STALE_PREFIX_KEY).await
 }
 
 /// Periodically runs anti-entropy repair to detect and fix silent divergence.
@@ -1048,6 +1056,173 @@ pub async fn run_anti_entropy_loop(
                 info!("Anti-entropy: pushed {} to remote", state.prefix);
             }
         }
+    }
+}
+
+// ==================== SAD Anti-Entropy ====================
+
+/// Redis hash key for SAD chain anti-entropy stale prefix tracking.
+const SAD_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sad_chain_stale";
+
+/// Record a SAD chain prefix as stale for anti-entropy repair.
+pub async fn record_sad_stale_prefix(
+    redis: &redis::aio::ConnectionManager,
+    chain_prefix: &str,
+    source_node_prefix: &str,
+) {
+    let mut conn = redis.clone();
+    if let Err(e) = redis::cmd("HSET")
+        .arg(SAD_STALE_PREFIX_KEY)
+        .arg(chain_prefix)
+        .arg(source_node_prefix)
+        .query_async::<()>(&mut conn)
+        .await
+    {
+        warn!(
+            "Failed to record SAD stale prefix {} from {}: {}",
+            chain_prefix, source_node_prefix, e
+        );
+    }
+}
+
+/// Periodically runs anti-entropy repair for SAD chain data.
+///
+/// Two phases per cycle:
+/// - **Phase 1 (targeted):** Process known-stale chain prefixes from Redis hash.
+/// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a random peer.
+pub async fn run_sad_anti_entropy_loop(
+    redis: Arc<redis::aio::ConnectionManager>,
+    allowlist: SharedAllowlist,
+    interval: Duration,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let peers: Vec<(String, String)> = {
+            let guard = allowlist.read().await;
+            guard
+                .values()
+                .map(|p| {
+                    let sadstore_url = p.kels_url.replace("kels.", "kels-sadstore.");
+                    (p.peer_prefix.clone(), sadstore_url)
+                })
+                .collect()
+        };
+
+        if peers.is_empty() {
+            continue;
+        }
+
+        let local_sadstore_url =
+            std::env::var("SADSTORE_URL").unwrap_or_else(|_| "http://kels-sadstore:80".to_string());
+        let local_client = kels::SadStoreClient::new(&local_sadstore_url);
+
+        // Phase 1: Process known-stale chain prefixes
+        let stale_entries = match drain_stale_hash(redis.as_ref(), SAD_STALE_PREFIX_KEY).await {
+            Some(map) => map,
+            None => {
+                warn!("SAD anti-entropy: failed to read stale prefixes");
+                continue;
+            }
+        };
+
+        if !stale_entries.is_empty() {
+            info!(
+                "SAD anti-entropy: processing {} stale chain prefixes",
+                stale_entries.len()
+            );
+
+            let mut tasks = Vec::new();
+            for (chain_prefix, source_node_prefix) in &stale_entries {
+                let mut ordered_peers: Vec<(String, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                    ordered_peers.push(source.clone());
+                }
+                for peer in &peers {
+                    if peer.0 != *source_node_prefix {
+                        ordered_peers.push(peer.clone());
+                    }
+                }
+                if ordered_peers.is_empty() {
+                    continue;
+                }
+
+                let local = local_client.clone();
+                let prefix = chain_prefix.clone();
+                let source = source_node_prefix.clone();
+                tasks.push(async move {
+                    let local_said = local.fetch_sad_effective_said(&prefix).await.ok().flatten();
+
+                    for (_, sadstore_url) in &ordered_peers {
+                        let remote = kels::SadStoreClient::new(sadstore_url);
+                        let remote_said = remote
+                            .fetch_sad_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten();
+
+                        if remote_said == local_said {
+                            continue;
+                        }
+
+                        // Fetch the full chain from remote and submit locally
+                        if let Ok(page) = remote.fetch_sad_chain(&prefix, None).await {
+                            let mut success = true;
+                            for stored in &page.records {
+                                // Fetch content objects
+                                if let Some(ref content_said) = stored.record.content_said
+                                    && let Ok(object) = remote.get_sad_object(content_said).await
+                                {
+                                    let _ = local.put_sad_object(&object).await;
+                                }
+                                // Submit chain record
+                                let submission = kels::SadRecordSubmission {
+                                    record: stored.record.clone(),
+                                    signature: stored.signature.clone(),
+                                };
+                                if local.submit_sad_record(&submission).await.is_err() {
+                                    success = false;
+                                    break;
+                                }
+                            }
+                            if success {
+                                return (prefix, source, true);
+                            }
+                        }
+                    }
+                    (prefix, source, false)
+                });
+            }
+
+            for (chain_prefix, source_node_prefix, success) in join_all(tasks).await {
+                if success {
+                    info!("SAD anti-entropy: repaired chain {}", chain_prefix);
+                } else {
+                    warn!("SAD anti-entropy: re-queuing stale chain {}", chain_prefix);
+                    record_sad_stale_prefix(redis.as_ref(), &chain_prefix, &source_node_prefix)
+                        .await;
+                }
+            }
+        }
+
+        // Phase 2: Random sampling — compare chain effective SAIDs with a random peer
+        let (_, peer_sadstore_url) = {
+            let mut rng = rand::thread_rng();
+            match peers.choose(&mut rng) {
+                Some(p) => p.clone(),
+                None => continue,
+            }
+        };
+
+        let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+
+        // Fetch a chain from the remote to see if we're missing anything.
+        // SAD chains don't have a prefix listing endpoint yet, so we rely on
+        // stale prefix tracking from gossip failures for now.
+        // Full random sampling requires a list_prefixes endpoint on the SADStore
+        // service, which can be added in a follow-up.
+        debug!("SAD anti-entropy: random sampling phase (stale-only for now)");
+        let _ = remote_client;
     }
 }
 

@@ -16,9 +16,11 @@ impl SadRecordRepository {
 
     /// Store a record with its signature, with advisory lock and chain integrity checks.
     ///
-    /// Acquires an advisory lock on the chain prefix, validates the chain
-    /// (v0: no existing chain; v1+: previous matches tip, consistent kel_prefix/kind/version),
-    /// then inserts both the record and signature atomically.
+    /// Acquires an advisory lock on the chain prefix, validates the chain, and handles
+    /// conflicts deterministically: if a record already exists at the same version,
+    /// the record with the lexicographically smaller SAID wins. This ensures all nodes
+    /// converge on the same record regardless of write order (prevents split-brain from
+    /// concurrent writes to different nodes).
     ///
     /// Returns `Ok(())` on success, or an error describing the chain integrity violation.
     pub async fn save_with_chain_check(
@@ -30,47 +32,84 @@ impl SadRecordRepository {
 
         tx.acquire_advisory_lock(&record.prefix).await?;
 
-        // Chain integrity check under lock
-        let tip: Option<SadRecord> = {
+        // Check for existing record at this version (conflict detection)
+        let existing_at_version: Option<SadRecord> = {
             let query =
                 verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
                     .eq("prefix", &record.prefix)
-                    .order_by("version", verifiable_storage_postgres::Order::Desc)
+                    .eq("version", record.version)
                     .limit(1);
             tx.fetch(query).await?.into_iter().next()
         };
 
-        if record.version == 0 {
-            if tip.is_some() {
-                return Err(StorageError::StorageError(
-                    "Chain already exists".to_string(),
-                ));
+        if let Some(existing) = existing_at_version {
+            if existing.said == record.said {
+                // Identical record already stored — idempotent success
+                tx.commit().await?;
+                return Ok(());
             }
+
+            // Conflict: two different records at the same version.
+            // Deterministic resolution: smallest SAID wins.
+            if record.said >= existing.said {
+                // Incoming record loses — reject silently
+                tx.commit().await?;
+                return Ok(());
+            }
+
+            // Incoming record wins — replace existing record + signature
+            let delete_record =
+                verifiable_storage::Delete::<SadRecord>::for_table(Self::TABLE_NAME)
+                    .eq("said", &existing.said);
+            tx.delete(delete_record).await?;
+            let delete_sig = verifiable_storage::Delete::<SadRecordSignature>::for_table(
+                Self::SIGNATURES_TABLE_NAME,
+            )
+            .eq("record_said", &existing.said);
+            tx.delete(delete_sig).await?;
         } else {
-            let Some(tip) = tip else {
-                return Err(StorageError::StorageError("Chain not found".to_string()));
+            // No conflict — validate chain integrity
+            let tip: Option<SadRecord> = {
+                let query =
+                    verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                        .eq("prefix", &record.prefix)
+                        .order_by("version", verifiable_storage_postgres::Order::Desc)
+                        .limit(1);
+                tx.fetch(query).await?.into_iter().next()
             };
 
-            if record.previous.as_deref() != Some(&tip.said) {
-                return Err(StorageError::StorageError(
-                    "Previous SAID does not match chain tip".to_string(),
-                ));
-            }
+            if record.version == 0 {
+                if tip.is_some() {
+                    return Err(StorageError::StorageError(
+                        "Chain already exists".to_string(),
+                    ));
+                }
+            } else {
+                let Some(tip) = tip else {
+                    return Err(StorageError::StorageError("Chain not found".to_string()));
+                };
 
-            if record.kel_prefix != tip.kel_prefix {
-                return Err(StorageError::StorageError(
-                    "kel_prefix mismatch".to_string(),
-                ));
-            }
+                if record.previous.as_deref() != Some(&tip.said) {
+                    return Err(StorageError::StorageError(
+                        "Previous SAID does not match chain tip".to_string(),
+                    ));
+                }
 
-            if record.kind != tip.kind {
-                return Err(StorageError::StorageError("kind mismatch".to_string()));
-            }
+                if record.kel_prefix != tip.kel_prefix {
+                    return Err(StorageError::StorageError(
+                        "kel_prefix mismatch".to_string(),
+                    ));
+                }
 
-            if record.version != tip.version + 1 {
-                return Err(StorageError::StorageError(
-                    "Version is not sequential".to_string(),
-                ));
+                if record.kind != tip.kind {
+                    return Err(StorageError::StorageError("kind mismatch".to_string()));
+                }
+
+                if record.version != tip.version + 1 {
+                    return Err(StorageError::StorageError(
+                        "Version is not sequential".to_string(),
+                    ));
+                }
             }
         }
 
