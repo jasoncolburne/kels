@@ -75,7 +75,7 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in identity kels kels-gossip kels-registry; do \
+	@for service in identity kels kels-gossip kels-registry kels-sadstore; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done

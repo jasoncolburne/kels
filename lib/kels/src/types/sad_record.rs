@@ -56,6 +56,18 @@ pub fn compute_sad_prefix(kel_prefix: &str, kind: &str) -> Result<String, Storag
     Ok(record.prefix)
 }
 
+/// Signature for a SAD record, stored separately from the record itself.
+///
+/// Stored in `sad_record_signatures` table (1:1 with `sad_records`).
+/// The `establishment_serial` is server-derived, not client-provided.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SadRecordSignature {
+    pub record_said: String,
+    pub signature: String,
+    pub establishment_serial: u64,
+}
+
 /// A signed SAD record for transmission over the wire.
 ///
 /// The `establishment_serial` is NOT included — the server determines it by

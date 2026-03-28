@@ -88,11 +88,12 @@ pub use types::{
     ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
     RemovalHistory, RemovalWithVotes, SadGossipMessage, SadRecord, SadRecordChain, SadRecordPage,
-    SadRecordVerification, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadRecord,
-    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
-    completed_verification, compute_approval_threshold, compute_rotation_hash, compute_sad_prefix,
-    forward_key_events, generate_nonce, hash_effective_said, truncate_incomplete_generation,
-    validate_timestamp, verify_key_events, verify_key_events_with,
+    SadRecordSignature, SadRecordVerification, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
+    SignedSadRecord, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
+    benchmark_key_events, completed_verification, compute_approval_threshold,
+    compute_rotation_hash, compute_sad_prefix, forward_key_events, generate_nonce,
+    hash_effective_said, truncate_incomplete_generation, validate_timestamp, verify_key_events,
+    verify_key_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
