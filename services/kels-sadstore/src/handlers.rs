@@ -371,11 +371,22 @@ pub async fn submit_sad_record(
     (StatusCode::CREATED, "stored").into_response()
 }
 
+#[derive(Deserialize)]
+pub struct ChainQuery {
+    pub since: Option<u64>,
+}
+
 pub async fn get_sad_chain(
     Path(prefix): Path<String>,
+    Query(query): Query<ChainQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    match state.repo.sad_records.get_stored_chain(&prefix).await {
+    match state
+        .repo
+        .sad_records
+        .get_stored_chain(&prefix, query.since)
+        .await
+    {
         Ok(records) if records.is_empty() => {
             (StatusCode::NOT_FOUND, "Chain not found").into_response()
         }

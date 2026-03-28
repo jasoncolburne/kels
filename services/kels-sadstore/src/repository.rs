@@ -124,12 +124,18 @@ impl SadRecordRepository {
         Ok(())
     }
 
-    /// Get the full chain with signatures as `SignedSadRecord`s.
+    /// Get the chain with signatures as `SignedSadRecord`s.
+    /// If `since_version` is provided, returns only records with version >= that value.
     pub async fn get_stored_chain(
         &self,
         prefix: &str,
+        since_version: Option<u64>,
     ) -> Result<Vec<kels::SignedSadRecord>, StorageError> {
-        let records = self.get_history(prefix).await?;
+        let records = if let Some(since) = since_version {
+            self.get_history_since(prefix, since).await?
+        } else {
+            self.get_history(prefix).await?
+        };
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
             let sig = self.get_signature(&record.said).await?;
