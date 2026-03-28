@@ -1880,8 +1880,8 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
         let path = entry.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Delete .kel.json and .keys.json files
-        let should_delete = file_name.ends_with(".kel.json") || file_name.ends_with(".keys.json");
+        // Delete .kel.jsonl files (NDJSON KEL storage)
+        let should_delete = file_name.ends_with(".kel.jsonl");
 
         if should_delete && std::fs::remove_file(&path).is_err() {
             set_last_error(&format!("Failed to delete {}", file_name));
