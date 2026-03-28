@@ -146,10 +146,10 @@ impl KelVerification {
         }
         if self.is_contested {
             let input = format!("contested:{}", self.prefix);
-            return Some(crate::hash_tip_saids(&[&input]));
+            return Some(crate::hash_effective_said(&input));
         }
         let input = format!("divergent:{}", self.prefix);
-        Some(crate::hash_tip_saids(&[&input]))
+        Some(crate::hash_effective_said(&input))
     }
 
     /// Check if a specific SAID was found anchored in the verified KEL.

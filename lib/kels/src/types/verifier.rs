@@ -3476,28 +3476,34 @@ mod tests {
     }
 
     impl MemoryKelSource {
-        /// Compute effective SAID the same way the real serving layer does:
-        /// find branch tips (events whose SAID is not referenced as `previous`
-        /// by any other event), then single tip → its SAID, multiple → composite.
+        /// Compute effective SAID matching the real serving layer:
+        /// single tip → its SAID, contested → hash("contested:{prefix}"),
+        /// divergent → hash("divergent:{prefix}").
         fn effective_said(&self) -> Option<String> {
             if self.events.is_empty() {
                 return None;
             }
+            let prefix = &self.events[0].event.prefix;
             let referenced: std::collections::HashSet<&str> = self
                 .events
                 .iter()
                 .filter_map(|e| e.event.previous.as_deref())
                 .collect();
-            let tips: Vec<&str> = self
+            let tips: Vec<&SignedKeyEvent> = self
                 .events
                 .iter()
                 .filter(|e| !referenced.contains(e.event.said.as_str()))
-                .map(|e| e.event.said.as_str())
                 .collect();
             match tips.len() {
                 0 => None,
-                1 => Some(tips[0].to_string()),
-                _ => Some(crate::hash_tip_saids(&tips)),
+                1 => Some(tips[0].event.said.clone()),
+                _ => {
+                    if tips.iter().any(|e| e.event.is_contest()) {
+                        Some(crate::hash_effective_said(&format!("contested:{}", prefix)))
+                    } else {
+                        Some(crate::hash_effective_said(&format!("divergent:{}", prefix)))
+                    }
+                }
             }
         }
     }

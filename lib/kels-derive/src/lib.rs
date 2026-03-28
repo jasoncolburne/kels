@@ -329,7 +329,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // nodes agree regardless of archival progress.
                         if tips.iter().any(|e| e.is_contest()) {
                             let contested_input = format!("contested:{}", prefix);
-                            return Ok(Some((kels::hash_tip_saids(&[&contested_input]), true)));
+                            return Ok(Some((kels::hash_effective_said(&contested_input), true)));
                         }
 
                         // Divergent KELs return a fixed effective SAID so all
@@ -339,7 +339,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // return RecoverRequired. The deterministic hash avoids
                         // wasted anti-entropy attempts.
                         let divergent_input = format!("divergent:{}", prefix);
-                        Ok(Some((kels::hash_tip_saids(&[&divergent_input]), true)))
+                        Ok(Some((kels::hash_effective_said(&divergent_input), true)))
                     }
                 }
             }
