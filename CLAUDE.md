@@ -88,7 +88,7 @@ When conflicting events exist at the same serial number in a KEL (e.g., from com
 
 ### Effective SAID
 
-A single identifier representing the current state of a KEL, including divergent KELs. For non-divergent KELs, this is the tip event's SAID. For divergent KELs (multiple branch tips), this is a deterministic Blake3 hash of the sorted tip SAIDs (`hash_tip_saids`). Used for delta sync and anti-entropy comparison across nodes.
+A single identifier representing the current state of a KEL. For non-divergent KELs, this is the tip event's SAID. For divergent KELs, this is `hash_effective_said("divergent:{prefix}")`. For contested KELs, `hash_effective_said("contested:{prefix}")`. Used for delta sync and anti-entropy comparison across nodes.
 
 ### Merge Results
 
