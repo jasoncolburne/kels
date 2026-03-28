@@ -107,6 +107,20 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
+  minio:
+    host: minio
+    port: "9000"
+    region: "us-east-1"
+    accessKey: "minioadmin"
+    secretKey: "minioadmin"
+  sadstore:
+    replicas: 1
+    port: "80"
+    bucket: "kels-sad"
+    maxRecordsPerPrefixPerDay: "16"
+    maxWritesPerIpPerSecond: "100"
+    ipRateLimitBurst: "500"
+    maxObjectSize: "1048576"
   identity:
     port: "80"
     host: identity

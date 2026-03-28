@@ -11,6 +11,7 @@ data:
     SELECT 'CREATE DATABASE kels_gossip' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kels_gossip')\gexec
     SELECT 'CREATE DATABASE kels_registry' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kels_registry')\gexec
     SELECT 'CREATE DATABASE identity' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity')\gexec
+    SELECT 'CREATE DATABASE sadstore' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sadstore')\gexec
 
 ---
 

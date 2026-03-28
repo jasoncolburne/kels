@@ -1,0 +1,41 @@
+kind: Build
+name: kels-sadstore
+type: container
+
+# SADStore is not needed in the registry environment
+disabled: ${var.envType == "registry"}
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/kels-derive/**/*
+  - services/kels-sadstore/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/kels-sadstore/Dockerfile
+
+---
+
+kind: Deploy
+name: kels-sadstore
+type: kubernetes
+
+# SADStore is not needed in the registry environment
+disabled: ${var.envType == "registry"}
+
+dependencies:
+  - build.kels-sadstore
+  - deploy.postgres
+  - deploy.minio
+
+variables:
+  sadstoreDatabaseUrl: ${var.postgres.url}/sadstore
+  redisUrl: "${var.envType != 'standalone' ? var.redis.kelsUrl : ''}"
+  kelsUrl: ${var.kels.url}
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl
