@@ -6,8 +6,10 @@
 )]
 
 mod handlers;
+pub mod object_store;
 pub mod repository;
 mod server;
 
+pub use object_store::ObjectStore;
 pub use repository::SadStoreRepository;
 pub use server::run;

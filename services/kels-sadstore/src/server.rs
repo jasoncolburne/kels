@@ -13,6 +13,7 @@ use verifiable_storage_postgres::RepositoryConnection;
 
 use crate::{
     handlers::{self, AppState},
+    object_store::ObjectStore,
     repository::SadStoreRepository,
 };
 
@@ -64,10 +65,28 @@ pub async fn run(
         None
     };
 
+    let minio_endpoint =
+        std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://minio:9000".to_string());
+    let minio_access_key =
+        std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+    let minio_secret_key =
+        std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+    let sad_bucket = std::env::var("KELS_SAD_BUCKET").unwrap_or_else(|_| "kels-sad".to_string());
+
+    info!("Connecting to MinIO at {}", minio_endpoint);
+    let object_store = ObjectStore::new(
+        &minio_endpoint,
+        &sad_bucket,
+        &minio_access_key,
+        &minio_secret_key,
+    );
+    info!("Object store configured (bucket: {})", sad_bucket);
+
     let kels_client = kels::KelsClient::new(kels_url);
 
     let state = Arc::new(AppState {
         repo: Arc::new(repo),
+        object_store: Arc::new(object_store),
         kels_client,
         redis_conn,
         prefix_rate_limits: dashmap::DashMap::new(),

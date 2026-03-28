@@ -42,6 +42,10 @@ async-trait = "0.1"
 # Per-prefix rate limiting
 dashmap = "6"
 
+# S3-compatible object storage (MinIO)
+aws-sdk-s3 = "1"
+aws-config = "1"
+
 # Redis for pub/sub announcements
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
