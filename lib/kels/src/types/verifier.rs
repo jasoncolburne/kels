@@ -175,9 +175,9 @@ impl KelVerifier {
         let prefix = prefix.into();
         let mut branches = HashMap::new();
 
-        let revealing_count = kel_verification.events_since_last_revealing();
+        let since_revealing_count = kel_verification.events_since_last_revealing();
         for bt in kel_verification.branch_tips() {
-            let (said, state) = branch_state_from_tip(bt, revealing_count)?;
+            let (said, state) = branch_state_from_tip(bt, since_revealing_count)?;
             branches.insert(said, state);
         }
 
