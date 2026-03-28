@@ -3,7 +3,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -20,8 +20,77 @@ use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Max chain records per prefix per day. Low — chains represent stable state.
+fn max_records_per_prefix_per_day() -> u32 {
+    kels::env_usize("SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY", 16) as u32
+}
+
+/// Max write operations per IP per second (token bucket refill rate).
+fn max_writes_per_ip_per_second() -> u32 {
+    kels::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 100) as u32
+}
+
+/// Token bucket burst size per IP.
+fn ip_rate_limit_burst() -> u32 {
+    kels::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 500) as u32
+}
+
+/// Max SAD object size in bytes (default 1 MiB).
+fn max_sad_object_size() -> usize {
+    kels::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
+}
+
+/// Per-chain-prefix daily rate limit. Returns error string on rejection.
+fn check_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+) -> Result<(), String> {
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+
+    if entry.0 >= max_records_per_prefix_per_day() {
+        return Err("Too many records for this chain prefix".to_string());
+    }
+
+    Ok(())
+}
+
+/// Accrue one record to the prefix rate limit after successful store.
+fn accrue_prefix_rate_limit(limits: &DashMap<String, (u32, Instant)>, prefix: &str) {
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    entry.0 += 1;
+}
+
+/// Per-IP token bucket rate limit. Returns error string on rejection.
+fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> Result<(), String> {
+    let now = Instant::now();
+    let mut entry = limits.entry(ip).or_insert((ip_rate_limit_burst(), now));
+    let elapsed = now.duration_since(entry.1);
+    let refill = (elapsed.as_secs_f64() * max_writes_per_ip_per_second() as f64) as u32;
+    if refill > 0 {
+        entry.0 = (entry.0 + refill).min(ip_rate_limit_burst());
+        entry.1 = now;
+    }
+    if entry.0 == 0 {
+        return Err("Too many requests".to_string());
+    }
+    entry.0 -= 1;
+    Ok(())
+}
+
 /// Shared application state.
-#[allow(dead_code)]
 pub struct AppState {
     pub repo: Arc<SadStoreRepository>,
     pub object_store: Arc<ObjectStore>,
@@ -44,10 +113,25 @@ pub async fn ready() -> impl IntoResponse {
 // === Layer 1: SAD Object Store (MinIO) ===
 
 pub async fn put_sad_object(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(said): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> impl IntoResponse {
+    // Per-IP rate limit
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    // Size limit
+    if body.len() > max_sad_object_size() {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("Object exceeds max size of {} bytes", max_sad_object_size()),
+        )
+            .into_response();
+    }
+
     // HEAD check — short-circuit if already exists
     match state.object_store.exists(&said).await {
         Ok(true) => {
@@ -128,12 +212,22 @@ pub async fn get_sad_object(
 // === Layer 2: Chain Records (Postgres) ===
 
 pub async fn submit_sad_record(
-    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(body): Json<kels::SadRecordSubmission>,
 ) -> impl IntoResponse {
     let record = &body.record;
     let signature_str = &body.signature;
+
+    // Per-IP rate limit
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    // Per-chain-prefix daily rate limit
+    if let Err(msg) = check_prefix_rate_limit(&state.prefix_rate_limits, &record.prefix) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
 
     // 1. Verify record SAID integrity
     if record.verify_said().is_err() {
@@ -250,6 +344,9 @@ pub async fn submit_sad_record(
         warn!("Failed to store record: {}", e);
         return (StatusCode::CONFLICT, format!("{}", e)).into_response();
     }
+
+    // Accrue to prefix rate limit after successful store
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, &record.prefix);
 
     // 6. Publish to Redis for gossip
     if let Some(ref conn) = state.redis_conn {
