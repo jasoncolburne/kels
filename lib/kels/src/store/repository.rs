@@ -31,6 +31,10 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         self.repo.get_signed_history(prefix, limit, offset).await
     }
 
+    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        self.repo.get_signed_history_tail(prefix, limit).await
+    }
+
     async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         self.repo.save_with_merge(prefix, events).await?;
         Ok(())

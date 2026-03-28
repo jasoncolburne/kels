@@ -6,6 +6,7 @@ mod federation;
 mod node;
 mod peer;
 mod raft;
+mod recovery;
 mod sync;
 #[allow(clippy::too_many_arguments)]
 mod verification;
@@ -17,6 +18,7 @@ pub use federation::*;
 pub use node::*;
 pub use peer::*;
 pub use raft::*;
+pub use recovery::*;
 pub use sync::*;
 pub use verification::*;
 pub use verifier::*;

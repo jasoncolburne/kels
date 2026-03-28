@@ -1,13 +1,14 @@
-//! KEL merge engine — verification, divergence detection, recovery, contest, adversary archival.
+//! KEL merge engine — verification, divergence detection, recovery, and contest handling.
 //!
 //! Provides the core merge logic used by all write paths. Every database-backed
 //! repository funnels through [`MergeTransaction::merge_events`] so that gossip,
 //! federation, and direct submissions all receive full verification and divergence
 //! handling.
 
-use std::collections::{HashMap, HashSet};
-use std::iter;
-use std::slice;
+use std::{
+    collections::{HashMap, HashSet},
+    iter,
+};
 
 use async_trait::async_trait;
 use cesr::{Matter, Signature};
@@ -15,9 +16,9 @@ use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
 use crate::{
-    BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier,
-    KelsAuditRecord, KelsError, KeyEvent, SignedKeyEvent, completed_verification,
-    load_signed_history, repository::zip_events_with_signatures, types::PageLoader,
+    BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier, KelsError,
+    KeyEvent, RecoveryRecord, SignedKeyEvent, completed_verification, load_signed_history,
+    repository::zip_events_with_signatures, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -26,6 +27,8 @@ pub struct MergeOutcome {
     pub result: KelMergeResult,
     pub diverged_at: Option<u64>,
     pub tip_said: Option<String>,
+    /// Number of new events actually inserted (excludes duplicates).
+    pub new_event_count: usize,
 }
 
 impl MergeOutcome {
@@ -34,6 +37,7 @@ impl MergeOutcome {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: None,
+            new_event_count: 0,
         }
     }
 }
@@ -49,7 +53,9 @@ pub struct MergeTransaction<T: TransactionExecutor> {
     prefix: String,
     events_table: &'static str,
     signatures_table: &'static str,
-    audit_table: Option<&'static str>,
+    recovery_table: &'static str,
+    archived_events_table: &'static str,
+    archived_signatures_table: &'static str,
 }
 
 impl<T: TransactionExecutor> MergeTransaction<T> {
@@ -58,14 +64,18 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         prefix: String,
         events_table: &'static str,
         signatures_table: &'static str,
-        audit_table: Option<&'static str>,
+        recovery_table: &'static str,
+        archived_events_table: &'static str,
+        archived_signatures_table: &'static str,
     ) -> Self {
         Self {
             tx,
             prefix,
             events_table,
             signatures_table,
-            audit_table,
+            recovery_table,
+            archived_events_table,
+            archived_signatures_table,
         }
     }
 
@@ -188,8 +198,36 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(Some(self.assemble_signed_event(event).await?))
     }
 
+    /// Verify that the KEL has at least 2 events at the given serial.
+    ///
+    /// Contest is only meaningful on a divergent KEL. Call after inserting a
+    /// contest batch to confirm divergence actually exists, rather than
+    /// relying on pre-insertion state as a proxy. The DB cannot be trusted,
+    /// so verify the post-condition directly.
+    async fn verify_divergent_at(&mut self, serial: u64) -> Result<(), KelsError> {
+        let query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .eq("serial", serial)
+            .limit(3);
+        let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
+        if events.len() < 2 {
+            return Err(KelsError::InvalidKeyEvent(format!(
+                "Contest requires divergence at serial {} but found {} event(s)",
+                serial,
+                events.len(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Check if any event from `since_serial` onward reveals the recovery key.
     /// Single query — no pagination needed.
+    ///
+    /// **Precondition:** queries ALL events for this prefix from `since_serial`
+    /// onward, regardless of branch. Callers must ensure that events in this
+    /// range belong to the expected branch — either because `completed_verification`
+    /// has enforced the divergence invariants (max 1 event per serial past
+    /// `diverged_at`), or because no divergence exists yet.
     pub async fn has_recovery_revealing_events_since(
         &mut self,
         since_serial: u64,
@@ -232,12 +270,171 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(self.tx.delete(delete).await?)
     }
 
-    /// Insert an audit record. No-op if no audit table is configured.
-    pub async fn insert_audit_record(&mut self, record: &KelsAuditRecord) -> Result<(), KelsError> {
-        if let Some(audit_table) = self.audit_table {
-            self.tx.insert_with_table(record, audit_table).await?;
-        }
+    /// Insert a recovery record (terminal audit-only).
+    async fn insert_recovery_record(&mut self, record: &RecoveryRecord) -> Result<(), KelsError> {
+        self.tx
+            .insert_with_table(record, self.recovery_table)
+            .await?;
         Ok(())
+    }
+
+    /// Archive adversary events synchronously: move events + signatures to
+    /// archive tables and delete from live tables. Bounded by proactive ror
+    /// enforcement — the adversary chain fits in one page.
+    async fn archive_adversary_events(
+        &mut self,
+        adversary_saids: Vec<String>,
+    ) -> Result<(), KelsError> {
+        if adversary_saids.is_empty() {
+            return Ok(());
+        }
+
+        // Fetch events and signatures to archive
+        let event_query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .r#in("said", adversary_saids.clone());
+        let events: Vec<KeyEvent> = self.tx.fetch(event_query).await?;
+
+        let sig_query = Query::<EventSignature>::for_table(self.signatures_table)
+            .r#in("event_said", adversary_saids.clone());
+        let signatures: Vec<EventSignature> = self.tx.fetch(sig_query).await?;
+
+        // Insert into archive tables
+        for event in &events {
+            self.tx
+                .insert_with_table(event, self.archived_events_table)
+                .await?;
+        }
+        for sig in &signatures {
+            self.tx
+                .insert_with_table(sig, self.archived_signatures_table)
+                .await?;
+        }
+
+        // Delete from live tables
+        let sig_saids: Vec<String> = signatures.iter().map(|s| s.said.clone()).collect();
+        if !sig_saids.is_empty() {
+            let sig_delete =
+                Delete::<EventSignature>::for_table(self.signatures_table).r#in("said", sig_saids);
+            self.tx.delete(sig_delete).await?;
+        }
+        let event_delete =
+            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
+        self.tx.delete(event_delete).await?;
+
+        Ok(())
+    }
+
+    /// Identify and archive all adversary events for a recovery.
+    ///
+    /// Two cases based on `first_serial` (first serial in the owner's submission):
+    /// - `first_serial <= diverged_at`: owner has no events at divergence serial,
+    ///   all events from `diverged_at` onward (except the just-inserted rec/rot) are adversary.
+    /// - `first_serial > diverged_at`: owner has events at divergence serial,
+    ///   use `find_adversary_event` to identify the adversary branch.
+    async fn archive_adversary_chain(
+        &mut self,
+        first_serial: u64,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<(), KelsError> {
+        let adversary_saids = if first_serial <= diverged_at {
+            // Owner has no events at divergence — all existing events from
+            // diverged_at onward are adversary.
+            self.collect_all_adversary_saids(diverged_at, rec_previous)
+                .await?
+        } else {
+            // Owner has events at divergence — identify adversary and walk chain.
+            self.collect_adversary_chain_saids(diverged_at, rec_previous)
+                .await?
+        };
+
+        self.archive_adversary_events(adversary_saids).await
+    }
+
+    /// Collect SAIDs of all adversary events when owner has no events at divergence.
+    /// Called BEFORE inserting rec/rot, so only pre-existing events are in the DB.
+    /// Walks backward from rec_previous to identify owner events, then everything
+    /// else from diverged_at onward is adversary.
+    async fn collect_all_adversary_saids(
+        &mut self,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<Vec<String>, KelsError> {
+        // Build owner SAID set by walking backward from rec_previous.
+        // Since rec/rot haven't been inserted yet, only pre-existing owner
+        // events are in the DB.
+        let mut owner_saids: HashSet<String> = HashSet::new();
+        let mut walk = Some(rec_previous.to_string());
+        for _ in 0..crate::MINIMUM_PAGE_SIZE {
+            let Some(said) = walk.take() else { break };
+            let q = Query::<KeyEvent>::for_table(self.events_table)
+                .eq("prefix", &self.prefix)
+                .eq("said", &said)
+                .limit(1);
+            let events: Vec<KeyEvent> = self.tx.fetch(q).await?;
+            let Some(event) = events.into_iter().next() else {
+                break;
+            };
+            if event.serial < diverged_at {
+                break;
+            }
+            owner_saids.insert(event.said.clone());
+            walk = event.previous;
+        }
+
+        // Everything from diverged_at onward that's not an owner event is adversary
+        let all_query = Query::<KeyEvent>::for_table(self.events_table)
+            .eq("prefix", &self.prefix)
+            .gte("serial", diverged_at)
+            .limit(crate::MINIMUM_PAGE_SIZE as u64 * 2);
+        let all_events: Vec<KeyEvent> = self.tx.fetch(all_query).await?;
+
+        Ok(all_events
+            .into_iter()
+            .filter(|e| !owner_saids.contains(&e.said))
+            .map(|e| e.said)
+            .collect())
+    }
+
+    /// Collect SAIDs of the adversary chain when owner has events at divergence.
+    /// Identifies the adversary event and walks forward to the tip.
+    async fn collect_adversary_chain_saids(
+        &mut self,
+        diverged_at: u64,
+        rec_previous: &str,
+    ) -> Result<Vec<String>, KelsError> {
+        let (adversary, adversary_has_chain) =
+            self.find_adversary_event(diverged_at, rec_previous).await?;
+
+        let mut saids = vec![adversary.event.said.clone()];
+
+        if adversary_has_chain {
+            // Walk forward from adversary event to collect the chain
+            let mut current_said = adversary.event.said.clone();
+            for _ in 0..crate::MINIMUM_PAGE_SIZE {
+                let child_query = Query::<KeyEvent>::for_table(self.events_table)
+                    .eq("prefix", &self.prefix)
+                    .eq("previous", &current_said)
+                    .limit(2);
+                let children: Vec<KeyEvent> = self.tx.fetch(child_query).await?;
+                match children.len() {
+                    0 => break,
+                    1 => {
+                        current_said = children[0].said.clone();
+                        saids.push(current_said.clone());
+                    }
+                    _ => {
+                        return Err(KelsError::StorageError(format!(
+                            "Multiple children at adversary event {} — possible DB tampering",
+                            current_said,
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(saids)
     }
 
     /// Load a page of signed events by offset.
@@ -349,6 +546,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             })?;
         }
 
+        // Reject batches containing both rec and cnt — contradictory intent
+        let has_rec = events.iter().any(|e| e.event.is_recover());
+        let has_cnt = events.iter().any(|e| e.event.is_contest());
+        if has_rec && has_cnt {
+            return Err(KelsError::InvalidKeyEvent(
+                "Batch cannot contain both recovery and contest events".to_string(),
+            ));
+        }
+
         // Route based on verified context
         let first_previous = events[0].event.previous.clone();
         let is_normal_append = kel_verification.branch_tips().len() == 1
@@ -377,7 +583,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if kel_verification.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
-        if events[0].event.is_contest() {
+        if events.iter().any(|e| e.event.is_contest()) {
             return Err(KelsError::InvalidKeyEvent(
                 "Contest requires divergence".to_string(),
             ));
@@ -391,7 +597,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .verify_page(events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
+        // Reject if the new events violate proactive ror compliance
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
+
         let tip = events.last().map(|e| e.event.said.clone());
+        let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
         }
@@ -400,6 +614,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: tip,
+            new_event_count: count,
         })
     }
 
@@ -414,7 +629,14 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .verify_page(events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
 
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
+
         let tip = events.last().map(|e| e.event.said.clone());
+        let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
         }
@@ -423,6 +645,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             result: KelMergeResult::Accepted,
             diverged_at: None,
             tip_said: tip,
+            new_event_count: count,
         })
     }
 
@@ -454,6 +677,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result: KelMergeResult::Accepted,
                 diverged_at: kel_verification.diverged_at_serial(),
                 tip_said: None,
+                new_event_count: 0,
             });
         }
 
@@ -477,7 +701,13 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             verifier
                 .verify_page(&new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !verifier.is_proactive_ror_compliant() {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+                ));
+            }
             let tip = new_events.last().map(|e| e.event.said.clone());
+            let count = new_events.len();
             for event in &new_events {
                 self.insert_signed_event(event).await?;
             }
@@ -485,9 +715,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result: KelMergeResult::Accepted,
                 diverged_at: None,
                 tip_said: tip,
+                new_event_count: count,
             });
         }
 
+        let new_count = new_events.len();
         if kel_verification.is_divergent() {
             let (result, diverged_at) = self
                 .handle_divergent_submission(kel_verification, &new_events, prefix)
@@ -496,6 +728,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result,
                 diverged_at,
                 tip_said: None,
+                new_event_count: new_count,
             })
         } else {
             let (result, diverged_at) = self
@@ -505,6 +738,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 result,
                 diverged_at,
                 tip_said: None,
+                new_event_count: new_count,
             })
         }
     }
@@ -524,13 +758,14 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         };
 
-        let first = &new_events[0];
-
-        // === Contest ===
-        if first.event.is_contest() {
-            if new_events.len() > 1 {
+        // === Contest (cnt event anywhere in batch, must be last) ===
+        // The owner may need to resubmit their archived chain alongside cnt
+        // to restore verifiability (e.g., if the adversary's rec triggered
+        // archival of the owner's events before the owner could contest).
+        if let Some(cnt_idx) = new_events.iter().position(|e| e.event.is_contest()) {
+            if cnt_idx != new_events.len() - 1 {
                 return Err(KelsError::InvalidKeyEvent(
-                    "Cannot append events after contest".to_string(),
+                    "Contest must be the last event in the batch".to_string(),
                 ));
             }
 
@@ -540,56 +775,67 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let cnt_serial = first.event.serial;
+            let cnt_event = &new_events[cnt_idx];
+            let cnt_serial = cnt_event.event.serial;
             if cnt_serial == 0 {
                 return Err(KelsError::InvalidKeyEvent(
                     "Contest cannot have serial 0".to_string(),
                 ));
             }
-            if !self.non_contest_recovery_revealed_since(cnt_serial).await? {
-                return Err(KelsError::VerificationFailed(
-                    "KEL is frozen — no recovery key revealed".to_string(),
+            if !self
+                .non_contest_recovery_revealed_since(diverged_at)
+                .await?
+            {
+                // No recovery key revealed — contest is not applicable.
+                // Return RecoverRequired so the caller knows to submit rec.
+                return Ok((KelMergeResult::RecoverRequired, Some(diverged_at)));
+            }
+
+            let first_serial = new_events[0].event.serial;
+            let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
+                KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
+            })?;
+
+            let anchor_event = self
+                .get_event_by_said(first_previous)
+                .await?
+                .ok_or_else(|| {
+                    KelsError::InvalidKeyEvent("Contest does not extend a known event".to_string())
+                })?;
+            if anchor_event.event.serial >= first_serial {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Contest chain-from event is not before first submitted serial".to_string(),
                 ));
             }
 
-            let full_kel_verification = completed_verification(
-                self,
+            let establishment = self
+                .trace_establishment_backward(&anchor_event.event.said)
+                .await?;
+            let anchor_tip = BranchTip {
+                tip: anchor_event,
+                establishment_tip: establishment,
+            };
+
+            let mut event_verifier = KelVerifier::from_branch_tip(
                 prefix,
-                crate::page_size(),
-                crate::max_pages(),
-                iter::empty::<String>(),
+                &anchor_tip,
+                kel_verification.events_since_last_revealing(),
             )
-            .await
             .map_err(|e| {
                 KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
             })?;
-
-            let contest_previous = first.event.previous.as_deref().ok_or_else(|| {
-                KelsError::InvalidKeyEvent("Contest has no previous pointer".to_string())
-            })?;
-            let anchor_event =
-                self.get_event_by_said(contest_previous)
-                    .await?
-                    .ok_or_else(|| {
-                        KelsError::InvalidKeyEvent(
-                            "Contest does not extend a known event".to_string(),
-                        )
-                    })?;
-            if anchor_event.event.serial != cnt_serial - 1 {
+            event_verifier
+                .verify_page(new_events)
+                .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !event_verifier.is_proactive_ror_compliant() {
                 return Err(KelsError::InvalidKeyEvent(
-                    "Contest previous event is not at the expected serial".to_string(),
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
                 ));
             }
 
-            let mut verifier =
-                KelVerifier::resume(prefix, &full_kel_verification).map_err(|e| {
-                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-                })?;
-            verifier
-                .verify_page(slice::from_ref(first))
-                .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
-
-            self.insert_signed_event(first).await?;
+            for event in new_events {
+                self.insert_signed_event(event).await?;
+            }
             return Ok((KelMergeResult::Contested, Some(diverged_at)));
         }
 
@@ -599,15 +845,16 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
             let first_serial = new_events[0].event.serial;
 
+            // Broad query over all events from first_serial onward. Safe
+            // because `completed_verification` already enforced the
+            // divergence invariants (max 1 event per serial past
+            // diverged_at), so events past the fork belong to one branch.
             if self
                 .has_recovery_revealing_events_since(first_serial)
                 .await?
             {
                 return Err(KelsError::ContestRequired);
             }
-
-            self.verify_chain_before_serial(prefix, first_serial)
-                .await?;
 
             let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
@@ -633,28 +880,51 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 establishment_tip: establishment,
             };
 
-            let mut event_verifier =
-                KelVerifier::from_branch_tip(prefix, &anchor_tip).map_err(|e| {
-                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-                })?;
+            let mut event_verifier = KelVerifier::from_branch_tip(
+                prefix,
+                &anchor_tip,
+                kel_verification.events_since_last_revealing(),
+            )
+            .map_err(|e| {
+                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+            })?;
             event_verifier
                 .verify_page(new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+            if !event_verifier.is_proactive_ror_compliant() {
+                return Err(KelsError::InvalidKeyEvent(
+                    "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+                ));
+            }
 
             let rec_previous = rec_event.event.previous.as_deref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Recovery event has no previous".to_string())
             })?;
 
-            // Archive adversary events BEFORE inserting any new events. Inserting
-            // pre_rec events first would create a temporary 3-event-at-same-serial
-            // state when the owner's pre_rec event is at the divergence serial
-            // (e.g., ror@1 when both events at serial 1 are adversary).
-            self.check_contest_and_archive_adversary(first_serial, diverged_at, rec_previous)
+            // Check if adversary revealed recovery key (contest required instead)
+            self.check_contest_required(first_serial, diverged_at, rec_previous)
+                .await?;
+
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
                 .await?;
 
             for event in new_events {
                 self.insert_signed_event(event).await?;
             }
+
+            // Write terminal audit record
+            let recovery_record = RecoveryRecord::create(
+                self.prefix.clone(),
+                rec_event.event.serial,
+                diverged_at,
+                rec_previous.to_string(),
+                first_serial,
+            )
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            self.insert_recovery_record(&recovery_record).await?;
 
             return Ok((KelMergeResult::Recovered, None));
         }
@@ -699,12 +969,20 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             establishment_tip: establishment,
         };
 
-        let mut verifier = KelVerifier::from_branch_tip(prefix, &branch_tip).map_err(|e| {
-            KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-        })?;
+        let mut verifier = KelVerifier::from_branch_tip(
+            prefix,
+            &branch_tip,
+            kel_verification.events_since_last_revealing(),
+        )
+        .map_err(|e| KelsError::VerificationFailed(format!("KEL verification failed: {}", e)))?;
         verifier
             .verify_page(new_events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
+        if !verifier.is_proactive_ror_compliant() {
+            return Err(KelsError::InvalidKeyEvent(
+                "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
+            ));
+        }
 
         // Check if any existing event from divergence onward reveals recovery key
         let diverged_at = branch_serial + 1;
@@ -713,21 +991,20 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .await?;
 
         if old_reveals_recovery {
-            let divergent_event = new_events
-                .iter()
-                .find(|e| e.event.previous.as_deref() == Some(first_previous))
-                .ok_or_else(|| {
-                    KelsError::InvalidKeyEvent("Cannot find divergent event".to_string())
-                })?;
-
-            if divergent_event.event.is_contest() {
-                if new_events.len() > 1 {
+            // Check if the batch contains a contest (must be last). The owner
+            // may need to resubmit their archived chain alongside cnt when the
+            // adversary's rec triggered archival of the owner's events.
+            if let Some(cnt_idx) = new_events.iter().position(|e| e.event.is_contest()) {
+                if cnt_idx != new_events.len() - 1 {
                     return Err(KelsError::InvalidKeyEvent(
-                        "Cannot append events after contest".to_string(),
+                        "Contest must be the last event in the batch".to_string(),
                     ));
                 }
-                self.insert_signed_event(divergent_event).await?;
-                return Ok((KelMergeResult::Contested, Some(branch_serial + 1)));
+                for event in new_events {
+                    self.insert_signed_event(event).await?;
+                }
+                self.verify_divergent_at(diverged_at).await?;
+                return Ok((KelMergeResult::Contested, Some(diverged_at)));
             } else {
                 return Err(KelsError::ContestRequired);
             }
@@ -735,28 +1012,38 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Check for recovery in submitted events
         if let Some(rec_idx) = new_events.iter().position(|e| e.event.is_recover()) {
-            let pre_rec = &new_events[..rec_idx];
-            let post_rec = &new_events[rec_idx..];
             let rec_event = &new_events[rec_idx];
-
-            for event in pre_rec {
-                self.insert_signed_event(event).await?;
-            }
 
             let rec_previous = rec_event.event.previous.as_deref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Recovery event has no previous".to_string())
             })?;
 
-            self.check_contest_and_archive_adversary(
-                rec_event.event.serial,
-                diverged_at,
-                rec_previous,
-            )
-            .await?;
+            // In the overlap case, all existing events from diverged_at onward
+            // are adversary. The contest check above already verified they don't
+            // reveal the recovery key.
 
-            for event in post_rec {
+            let first_serial = new_events[0].event.serial;
+
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
+                .await?;
+
+            for event in new_events {
                 self.insert_signed_event(event).await?;
             }
+
+            // Write terminal audit record
+            let recovery_record = RecoveryRecord::create(
+                self.prefix.clone(),
+                rec_event.event.serial,
+                diverged_at,
+                rec_previous.to_string(),
+                first_serial,
+            )
+            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            self.insert_recovery_record(&recovery_record).await?;
 
             return Ok((KelMergeResult::Recovered, None));
         }
@@ -851,113 +1138,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
     }
 
-    /// Archive the adversary's entire chain starting from their event at the
-    /// divergence serial. Pages forward, identifying chain events by following
-    /// `previous` pointers from the adversary event. Audits and deletes
-    /// adversary events page by page. The adversary event itself is prepended
-    /// to the first page.
+    /// Check if the adversary revealed the recovery key, requiring contest
+    /// instead of recovery.
     ///
-    /// Callers must check `has_recovery_revealing_events_since` before calling
-    /// this method to determine if `ContestRequired` should be returned instead.
-    async fn archive_adversary_chain(
-        &mut self,
-        adversary_event: SignedKeyEvent,
-        diverged_at: u64,
-    ) -> Result<(), KelsError> {
-        let max_pages = crate::max_pages();
-        let mut last_adversary_said = adversary_event.event.said.clone();
-
-        let mut from_serial = diverged_at + 1;
-        let mut first_page = true;
-
-        for _ in 0..max_pages {
-            let (page, has_more) = self
-                .get_signed_history_since(from_serial, crate::page_size() as u64)
-                .await?;
-
-            let mut page_adversary: Vec<SignedKeyEvent> = Vec::new();
-            if first_page {
-                page_adversary.push(adversary_event.clone());
-                first_page = false;
-            }
-
-            for event in &page {
-                if event.event.previous.as_deref() == Some(last_adversary_said.as_str()) {
-                    last_adversary_said = event.event.said.clone();
-                    page_adversary.push(event.clone());
-                }
-            }
-
-            if !page_adversary.is_empty() {
-                let audit_record =
-                    KelsAuditRecord::for_recovery(self.prefix.clone(), &page_adversary)?;
-                self.insert_audit_record(&audit_record).await?;
-                let saids: Vec<String> = page_adversary
-                    .iter()
-                    .map(|e| e.event.said.clone())
-                    .collect();
-                self.delete_events_by_said(saids).await?;
-            }
-
-            if page.is_empty() || !has_more {
-                break;
-            }
-            if let Some(last) = page.last() {
-                from_serial = last.event.serial + 1;
-            }
-        }
-
-        // If first_page is still true, there were no pages after diverged_at.
-        // Just audit+delete the adversary event itself.
-        if first_page {
-            let audit_record = KelsAuditRecord::for_recovery(
-                self.prefix.clone(),
-                slice::from_ref(&adversary_event),
-            )?;
-            self.insert_audit_record(&audit_record).await?;
-            self.delete_events_by_said(vec![adversary_event.event.said])
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Archive ALL events from `from_serial` onward. Used when all events at
-    /// and after the divergence serial are adversary (owner has no events there).
-    /// Audits and deletes page by page.
-    async fn archive_all_from_serial(&mut self, from_serial: u64) -> Result<(), KelsError> {
-        let max_pages = crate::max_pages();
-        let mut serial = from_serial;
-
-        for _ in 0..max_pages {
-            let (page, has_more) = self
-                .get_signed_history_since(serial, crate::page_size() as u64)
-                .await?;
-
-            if page.is_empty() {
-                break;
-            }
-
-            let audit_record = KelsAuditRecord::for_recovery(self.prefix.clone(), &page)?;
-            self.insert_audit_record(&audit_record).await?;
-            let saids: Vec<String> = page.iter().map(|e| e.event.said.clone()).collect();
-            if let Some(last) = page.last() {
-                serial = last.event.serial + 1;
-            }
-            self.delete_events_by_said(saids).await?;
-
-            if !has_more {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check if the adversary revealed the recovery key and archive adversary
-    /// events. Handles both cases: owner has events at the divergence serial
-    /// (uses `find_adversary_event`) or owner has no events there (archives all).
-    async fn check_contest_and_archive_adversary(
+    /// Handles both cases: owner has events at the divergence serial
+    /// (uses `find_adversary_event`) or owner has no events there.
+    async fn check_contest_required(
         &mut self,
         first_serial: u64,
         diverged_at: u64,
@@ -965,15 +1151,33 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ) -> Result<(), KelsError> {
         if first_serial <= diverged_at {
             // Owner has no events at the divergence serial — all events
-            // from diverged_at onward are adversary.
+            // from diverged_at onward are adversary. Safe to query broadly
+            // because `completed_verification` already enforced divergence
+            // invariants (max 2 at diverged_at, max 1 per serial after).
             if self
                 .has_recovery_revealing_events_since(diverged_at)
                 .await?
             {
                 return Err(KelsError::ContestRequired);
             }
-            self.archive_all_from_serial(diverged_at).await
         } else {
+            // Owner has events at the divergence serial.
+            //
+            // `has_recovery_revealing_events_since(diverged_at + 1)` queries
+            // ALL events past the fork — safe despite untrusted DB because:
+            //
+            // - `completed_verification` (top of `merge_events`) already
+            //   verified the DB satisfies the divergence invariants: max 2
+            //   events at `diverged_at`, max 1 per serial after. Tampered
+            //   extra events would have failed verification before we get here.
+            //
+            // - `find_adversary_event` has two paths:
+            //   1. Direct match (rec_previous matches a divergent event):
+            //      owner's tip IS the divergent event (shorter chain, no
+            //      events past diverged_at), so the query only hits adversary.
+            //   2. N-case (rec_previous is past the fork): always returns
+            //      `adversary_has_chain = false` — broad query never runs.
+            //      If both divergent events have children, errors out.
             let (adversary, adversary_has_chain) =
                 self.find_adversary_event(diverged_at, rec_previous).await?;
 
@@ -985,9 +1189,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             {
                 return Err(KelsError::ContestRequired);
             }
-
-            self.archive_adversary_chain(adversary, diverged_at).await
         }
+        Ok(())
     }
 
     /// Walk backward from `start_said` following `previous` pointers until finding
@@ -1018,54 +1221,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Err(KelsError::StorageError(
             "Backward establishment trace exceeded iteration limit or reached chain start"
                 .to_string(),
-        ))
-    }
-
-    /// Verify a sub-chain from serial 0 up to (but not including) `stop_serial`.
-    async fn verify_chain_before_serial(
-        &mut self,
-        prefix: &str,
-        stop_serial: u64,
-    ) -> Result<KelVerifier, KelsError> {
-        let max_pages = crate::max_pages();
-        let mut verifier = KelVerifier::new(prefix);
-        let mut from_serial: u64 = 0;
-        let page_size = crate::page_size() as u64;
-
-        for _ in 0..max_pages {
-            let (page, has_more) = self
-                .get_signed_history_since(from_serial, page_size)
-                .await?;
-            if page.is_empty() {
-                return Ok(verifier);
-            }
-
-            let filtered: Vec<&SignedKeyEvent> = page
-                .iter()
-                .filter(|e| e.event.serial < stop_serial)
-                .collect();
-            if filtered.is_empty() {
-                return Ok(verifier);
-            }
-
-            let to_verify: Vec<SignedKeyEvent> = filtered.into_iter().cloned().collect();
-            verifier.verify_page(&to_verify).map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-            })?;
-
-            if page.last().is_some_and(|e| e.event.serial >= stop_serial) {
-                return Ok(verifier);
-            }
-            if let Some(last) = page.last() {
-                from_serial = last.event.serial + 1;
-            }
-            if !has_more {
-                return Ok(verifier);
-            }
-        }
-
-        Err(KelsError::StorageError(
-            "Scan exceeded max_pages limit — cannot verify sub-chain".to_string(),
         ))
     }
 

@@ -37,6 +37,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/kels/kel/:prefix/audit",
             get(handlers::get_kel_audit),
         )
+        .route(
+            "/api/v1/kels/kel/:prefix/archived",
+            get(handlers::get_kel_archived),
+        )
         // RESOLVING ONLY — unverified, for sync comparison. See handler doc.
         .route(
             "/api/v1/kels/kel/:prefix/effective-said",

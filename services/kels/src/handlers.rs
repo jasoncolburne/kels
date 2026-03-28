@@ -17,8 +17,9 @@ use redis::AsyncCommands;
 use tracing::warn;
 
 use kels::{
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsAuditRecord, KelsError,
-    KeyEventsQuery, PrefixListResponse, ServerKelCache, SignedKeyEvent, SubmitEventsResponse,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
+    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    SubmitEventsResponse,
 };
 
 use crate::repository::KelsRepository;
@@ -33,8 +34,8 @@ pub(crate) fn test_endpoints_enabled() -> bool {
     *TEST_ENDPOINTS_ENABLED
 }
 
-fn max_submissions_per_prefix_per_minute() -> u32 {
-    kels::env_usize("KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE", 128) as u32
+fn max_events_per_prefix_per_day() -> u32 {
+    kels::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 256) as u32
 }
 
 fn max_writes_per_ip_per_second() -> u32 {
@@ -49,13 +50,64 @@ fn nonce_window_secs() -> u64 {
     kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
 }
 
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Per-prefix rate limit: counts events (not submissions) in a daily window.
+/// Slows adversary event accumulation. The hard resilience guarantee comes
+/// from bounded archival (KELS-71), not from this rate limit.
+/// Check whether adding `event_count` new events would exceed the daily limit.
+/// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge
+/// with the actual number of new events inserted.
+///
+/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+fn check_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    event_count: u32,
+    max_events: u32,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+
+    if entry.0 + event_count > max_events {
+        return Err(ApiError::rate_limited("Too many events for this prefix"));
+    }
+
+    Ok(())
+}
+
+/// Accrue the actual number of new events after merge completes.
+///
+/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+fn accrue_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    new_event_count: u32,
+) {
+    if new_event_count == 0 {
+        return;
+    }
+    let now = Instant::now();
+    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    entry.0 += new_event_count;
+}
+
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
     pub(crate) kel_store: Arc<dyn kels::KelStore>,
     pub(crate) kel_cache: Option<ServerKelCache>,
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
-    /// Per-prefix rate limiting: maps prefix -> (count, window_start)
+    /// Per-prefix daily rate limiting: counts events (not submissions).
     pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
@@ -313,26 +365,13 @@ pub(crate) async fn submit_events(
     // Get prefix from first event
     let prefix = events[0].event.prefix.clone();
 
-    // Per-prefix rate limiting (before expensive signature validation)
-    {
-        let now = Instant::now();
-        let mut entry = state
-            .prefix_rate_limits
-            .entry(prefix.clone())
-            .or_insert((0, now));
-        if now.duration_since(entry.1) >= Duration::from_secs(60) {
-            // Reset window
-            entry.0 = 1;
-            entry.1 = now;
-        } else {
-            entry.0 += 1;
-            if entry.0 > max_submissions_per_prefix_per_minute() {
-                return Err(ApiError::rate_limited(
-                    "Too many submissions for this prefix",
-                ));
-            }
-        }
-    }
+    // Per-prefix daily rate limiting (counts events, not submissions)
+    check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        &prefix,
+        events.len() as u32,
+        max_events_per_prefix_per_day(),
+    )?;
 
     // Validate signatures upfront (fast rejection before acquiring advisory lock)
     for signed_event in &events {
@@ -372,6 +411,13 @@ pub(crate) async fn submit_events(
             ),
             _ => ApiError::internal_error(e.to_string()),
         })?;
+
+    // Accrue only the actual new events (duplicates don't count)
+    accrue_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        &prefix,
+        outcome.new_event_count as u32,
+    );
 
     let applied = match outcome.result {
         KelMergeResult::Accepted
@@ -496,13 +542,48 @@ pub(crate) async fn get_kel(
     Ok(Json(page).into_response())
 }
 
-/// Dedicated audit endpoint — returns only audit records for a prefix.
+/// Dedicated audit endpoint — returns recovery history for a prefix.
 pub(crate) async fn get_kel_audit(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-) -> Result<Json<Vec<KelsAuditRecord>>, ApiError> {
-    let audit_records = state.repo.audit_records.get_by_kel_prefix(&prefix).await?;
-    Ok(Json(audit_records))
+) -> Result<Json<Vec<RecoveryRecord>>, ApiError> {
+    let records = state
+        .repo
+        .recovery_records
+        .get_by_kel_prefix(&prefix)
+        .await?;
+    Ok(Json(records))
+}
+
+/// Query parameters for the archived events endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ArchivedEventsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<u64>,
+}
+
+/// Archived adversary events for a prefix — paginated.
+///
+/// `?limit=N` controls page size (1-32, default 32).
+/// `?offset=N` skips the first N events.
+pub(crate) async fn get_kel_archived(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (events, has_more) = state
+        .repo
+        .key_events
+        .get_archived_events(&prefix, limit, offset)
+        .await?;
+
+    Ok(Json(SignedKeyEventPage { events, has_more }))
 }
 
 // ==================== Event Exists ====================
@@ -795,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(kels::page_size(), 32);
+        assert_eq!(kels::page_size(), kels::MINIMUM_PAGE_SIZE);
     }
 
     // ==================== health Tests ====================

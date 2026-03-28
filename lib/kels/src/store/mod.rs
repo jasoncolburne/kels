@@ -45,6 +45,10 @@ pub trait KelStore: Send + Sync {
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
+    /// Load the last `limit` events for a prefix, returned in serial-ascending order.
+    /// Used for bounded tail access without loading the entire KEL.
+    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError>;
+
     /// Append events for a prefix (merges with any existing events).
     async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
 
@@ -133,6 +137,24 @@ mod tests {
                     Ok((page, has_more))
                 }
                 None => Ok((vec![], false)),
+            }
+        }
+
+        async fn load_tail(
+            &self,
+            prefix: &str,
+            limit: u64,
+        ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+            let guard = match self.kels.read() {
+                Ok(g) => g,
+                Err(_) => return Ok(vec![]),
+            };
+            match guard.get(prefix) {
+                Some(events) => {
+                    let start = events.len().saturating_sub(limit as usize);
+                    Ok(events[start..].to_vec())
+                }
+                None => Ok(vec![]),
             }
         }
 

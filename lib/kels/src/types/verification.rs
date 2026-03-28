@@ -44,6 +44,14 @@ pub struct KelVerification {
     rotation_count: usize,
     anchored_saids: BTreeSet<String>,
     queried_saids: BTreeSet<String>,
+    /// Whether the KEL maintains proactive recovery rotation compliance:
+    /// no more than `MAX_NON_REVEALING_EVENTS` non-revealing events between
+    /// consecutive recovery-revealing events. Required to ensure all server
+    /// operations (archival, contest, recovery) are bounded to a single page.
+    proactive_ror_compliant: bool,
+    /// Non-revealing events since the last recovery-revealing event.
+    /// Preserved across resume so incremental verification continues tracking.
+    events_since_last_revealing: usize,
 }
 
 impl KelVerification {
@@ -124,6 +132,11 @@ impl KelVerification {
     }
 
     /// Compute the effective tail SAID from verified tips.
+    ///
+    /// - Single branch: tip event SAID
+    /// - Contested: `hash("contested:{prefix}")` — deterministic across all nodes
+    /// - Divergent: `hash("divergent:{prefix}")` — deterministic regardless of which
+    ///   fork events each node has, avoiding wasted anti-entropy sync attempts
     pub fn effective_tail_said(&self) -> Option<String> {
         if self.branch_tips.is_empty() {
             return None;
@@ -131,13 +144,12 @@ impl KelVerification {
         if self.branch_tips.len() == 1 {
             return Some(self.branch_tips[0].tip.event.said.clone());
         }
-        let mut tip_saids: Vec<&str> = self
-            .branch_tips
-            .iter()
-            .map(|bt| bt.tip.event.said.as_str())
-            .collect();
-        tip_saids.sort();
-        Some(crate::hash_tip_saids(&tip_saids))
+        if self.is_contested {
+            let input = format!("contested:{}", self.prefix);
+            return Some(crate::hash_effective_said(&input));
+        }
+        let input = format!("divergent:{}", self.prefix);
+        Some(crate::hash_effective_said(&input))
     }
 
     /// Check if a specific SAID was found anchored in the verified KEL.
@@ -153,6 +165,16 @@ impl KelVerification {
     /// Whether all queried SAIDs were found anchored.
     pub fn anchors_all_saids(&self) -> bool {
         self.queried_saids.is_subset(&self.anchored_saids)
+    }
+
+    /// Whether the KEL maintains proactive recovery rotation compliance.
+    pub fn is_proactive_ror_compliant(&self) -> bool {
+        self.proactive_ror_compliant
+    }
+
+    /// Non-revealing events since the last recovery-revealing event.
+    pub fn events_since_last_revealing(&self) -> usize {
+        self.events_since_last_revealing
     }
 
     /// Whether the KEL is empty (no events).

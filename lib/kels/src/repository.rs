@@ -33,6 +33,7 @@ pub(crate) fn zip_events_with_signatures(
 /// Queries events by prefix with the standard `serial ASC, kind priority ASC, said ASC`
 /// ordering, fetches their signatures, and assembles into `SignedKeyEvent`s.
 /// Returns `(events, has_more)` using the limit+1 pop pattern.
+///
 pub async fn load_signed_history(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
@@ -72,6 +73,42 @@ pub async fn load_signed_history(
     Ok((result, has_more))
 }
 
+/// Load the last `limit` signed events for a prefix, returned in serial-ascending order.
+///
+/// Queries with `serial DESC` ordering, reverses the result. Single query, no pagination.
+pub async fn load_signed_history_tail(
+    tx: &mut impl TransactionExecutor,
+    events_table: &str,
+    signatures_table: &str,
+    prefix: &str,
+    limit: u64,
+) -> Result<Vec<SignedKeyEvent>, KelsError> {
+    let query = Query::<KeyEvent>::for_table(events_table)
+        .eq("prefix", prefix)
+        .order_by("serial", Order::Desc)
+        .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Desc)
+        .order_by("said", Order::Desc)
+        .limit(limit);
+    let mut events: Vec<KeyEvent> = tx.fetch(query).await?;
+
+    if events.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Reverse to serial-ascending order
+    events.reverse();
+
+    let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+    let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
+    let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
+    let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+    for sig in signatures {
+        sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+    }
+
+    zip_events_with_signatures(events, &sig_map)
+}
+
 /// Implemented by repositories generated with `#[derive(SignedEvents)]`.
 /// Wrap with `RepositoryKelStore` to use as `KelStore`.
 #[async_trait]
@@ -84,6 +121,13 @@ pub trait SignedEventRepository: Send + Sync {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<crate::SignedKeyEvent>, bool), KelsError>;
+
+    /// Get the last `limit` signed events for a prefix, in serial-ascending order.
+    async fn get_signed_history_tail(
+        &self,
+        prefix: &str,
+        limit: u64,
+    ) -> Result<Vec<crate::SignedKeyEvent>, KelsError>;
 
     async fn get_signature_by_said(
         &self,

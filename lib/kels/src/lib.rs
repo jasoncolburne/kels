@@ -47,8 +47,7 @@ pub mod serving;
 pub mod store;
 pub mod types;
 
-use std::env;
-use std::sync::LazyLock;
+use std::{env, sync::LazyLock};
 
 #[cfg(feature = "redis")]
 pub use cache::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel};
@@ -76,32 +75,49 @@ pub use crypto::{
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
-pub use repository::{SignedEventRepository, load_signed_history};
+pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
 pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
     EventSignature, FederationStatus, HttpKelSink, HttpKelSource, KelMergeResult, KelVerification,
-    KelVerifier, KelsAuditRecord, KeyEvent, KeyEventSignature, NodeInfo, NodeStatus, NodeType,
-    PageLoader, PagedKelSink, PagedKelSource, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal,
-    ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
-    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RemovalHistory,
-    RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest, StoreKelSource,
-    StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events, completed_verification,
-    compute_approval_threshold, compute_rotation_hash, forward_key_events, generate_nonce,
-    hash_tip_saids, truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_with,
+    KelVerifier, KeyEvent, KeyEventSignature, NodeInfo, NodeStatus, NodeType, PageLoader,
+    PagedKelSink, PagedKelSource, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
+    ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
+    RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
+    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
+    completed_verification, compute_approval_threshold, compute_rotation_hash, forward_key_events,
+    generate_nonce, hash_effective_said, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
 pub use types::resolve_key_events;
 
+/// Minimum page size. Defines the security bound for proactive recovery rotation:
+/// between any two recovery-revealing events, at most `MINIMUM_PAGE_SIZE - 2`
+/// non-revealing events are allowed. An adversary can only fork after the last
+/// recovery-revealing event (forking before triggers ContestRequired), so the
+/// worst-case recovery batch is `[62 events, rec, rot] = 64` and the worst-case
+/// contest batch is `[62 events, cnt] = 63`. Both fit in one page submission.
+///
+/// At 64 events, a full page of ML-DSA-65 events stays under 256KB and
+/// ML-DSA-87 events under 512KB.
+pub const MINIMUM_PAGE_SIZE: usize = 64;
+
+/// Maximum non-revealing events between recovery-revealing events.
+/// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
+pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
+
 /// Default page size for all KEL operations: submissions, queries, and responses.
-/// ML-DSA-65 signatures are ~3.3KB each, so 32 events ≈ 100KB per page.
+/// Clamped to at least `MINIMUM_PAGE_SIZE` at parse time. Operators may increase
+/// this for deployments that need larger batches, but the security bound is always
+/// defined by `MINIMUM_PAGE_SIZE`.
 /// Override with `KELS_PAGE_SIZE` environment variable.
-pub const DEFAULT_PAGE_SIZE: usize = 32;
+pub const DEFAULT_PAGE_SIZE: usize = MINIMUM_PAGE_SIZE;
 
 pub fn env_usize(name: &str, default: usize) -> usize {
     match env::var(name) {
@@ -120,7 +136,7 @@ pub fn env_usize(name: &str, default: usize) -> usize {
 }
 
 static PAGE_SIZE: LazyLock<usize> =
-    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE));
+    LazyLock::new(|| env_usize("KELS_PAGE_SIZE", DEFAULT_PAGE_SIZE).max(MINIMUM_PAGE_SIZE));
 
 /// Read the page size, cached from env on first access.
 pub fn page_size() -> usize {
@@ -129,7 +145,7 @@ pub fn page_size() -> usize {
 
 /// Default maximum number of pages to walk during `completed_verification()`.
 /// Override with `KELS_MAX_VERIFICATION_PAGES` environment variable.
-/// At 32 events per page, 64 pages = 2048 max events before failing secure.
+/// At 64 events per page, 64 pages = 4096 max events before failing secure.
 pub const DEFAULT_MAX_VERIFICATION_PAGES: usize = 64;
 
 static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {

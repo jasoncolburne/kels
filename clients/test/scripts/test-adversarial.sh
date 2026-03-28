@@ -987,7 +987,7 @@ echo ""
 # Scenario 19: Contest/Recover on Clean KEL
 # ========================================
 echo -e "${CYAN}=== Scenario 19: Contest/Recover on Clean KEL ===${NC}"
-echo "Recovery on a non-divergent KEL succeeds (proactive recovery). Contest should still fail."
+echo "Recovery on a non-divergent KEL succeeds (rec accepted as normal append). Contest should still fail."
 echo ""
 
 # Setup
@@ -999,7 +999,7 @@ kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX19" --said "KOwnerAnchorOnCleanK
 # Verify KEL is OK (not divergent)
 run_test "KEL status is OK (clean)" check_kel_status "$PREFIX19" "OK"
 
-# Recovery on clean KEL succeeds (proactive recovery rotates keys)
+# Recovery on clean KEL succeeds (rec accepted as normal append — no divergence, no archival)
 run_test "Recovery succeeds on clean KEL" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX19"
 
 # Try to contest - should fail (nothing to contest)
@@ -1168,11 +1168,42 @@ run_test_expect_divergence "Owner anchor triggers divergence" "$PREFIX23" \
 run_test "First recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 run_test "KEL status is OK after first recovery" check_kel_status "$PREFIX23" "OK"
 
-# Second recovery succeeds (proactive recovery on non-divergent KEL)
-run_test "Second recovery succeeds (proactive)" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
-
-# KEL should still be OK
+# rec on clean KEL (no divergence, no archival — just rotates keys)
+run_test "rec on clean KEL succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
 run_test "KEL status still OK" check_kel_status "$PREFIX23" "OK"
+
+# Re-steal keys after recovery so adversary has current keys
+cleanup_adversary_backup
+save_adversary_keys
+
+# Second adversary attack with post-recovery keys
+swap_to_adversary
+run_test "Adversary injects second ixn" kels-cli -u "$KELS_URL" adversary inject --prefix "$PREFIX23" --events ixn
+swap_to_owner
+
+# Owner triggers divergence again
+run_test_expect_divergence "Owner anchor triggers second divergence" "$PREFIX23" \
+    kels-cli -u "$KELS_URL" anchor --prefix "$PREFIX23" --said "KOwnerAnchorSecondDivergence________________"
+
+# Second archival recovery
+run_test "Second recovery succeeds" kels-cli -u "$KELS_URL" recover --prefix "$PREFIX23"
+run_test "KEL status is OK after second recovery" check_kel_status "$PREFIX23" "OK"
+
+# Verify audit endpoint has exactly 2 recovery records (proactive doesn't create one)
+audit_count=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq 'length')
+run_test "Audit has 2 recovery records" [ "$audit_count" -eq 2 ]
+
+# Verify both records reference the correct prefix
+audit_prefixes=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq -r '.[].kelPrefix' | sort -u)
+run_test "Both audit records reference correct prefix" [ "$audit_prefixes" = "$PREFIX23" ]
+
+# Verify records have distinct SAIDs
+audit_saids=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq -r '.[].said' | sort -u | wc -l | tr -d ' ')
+run_test "Audit records have distinct SAIDs" [ "$audit_saids" -eq 2 ]
+
+# Verify archived events exist from both recoveries
+archived_count=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/archived" | jq '.events | length')
+run_test "Archived adversary events exist" [ "$archived_count" -gt 0 ]
 
 cleanup_adversary_backup
 

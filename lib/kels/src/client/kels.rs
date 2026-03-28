@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::{
     error::KelsError,
     types::{
-        ErrorCode, ErrorResponse, KelsAuditRecord, SignedKeyEvent, SignedKeyEventPage,
+        ErrorCode, ErrorResponse, RecoveryRecord, SignedKeyEvent, SignedKeyEventPage,
         SubmitEventsResponse,
     },
 };
@@ -256,8 +256,8 @@ impl KelsClient {
         }
     }
 
-    /// Fetch audit records for a prefix (separate endpoint from KEL events).
-    pub async fn fetch_kel_audit(&self, prefix: &str) -> Result<Vec<KelsAuditRecord>, KelsError> {
+    /// Fetch recovery records for a prefix (recovery history and audit trail).
+    pub async fn fetch_kel_audit(&self, prefix: &str) -> Result<Vec<RecoveryRecord>, KelsError> {
         let resp = self
             .client
             .get(format!(

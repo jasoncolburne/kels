@@ -102,7 +102,18 @@ wait_for_prefix_counts_match() {
         fi
         sleep 1
     done
-    echo "Timeout: counts A=$(get_prefix_count "$url_a") B=$(get_prefix_count "$url_b")"
+    local count_a count_b
+    count_a=$(get_prefix_count "$url_a")
+    count_b=$(get_prefix_count "$url_b")
+    echo "Timeout: counts A=$count_a B=$count_b"
+    # Dump prefixes unique to each node
+    local body_diag
+    body_diag=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,since:null,limit:1000},peerPrefix:"test",publicKey:"test",signature:"test"}')
+    local pa pb
+    pa=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body_diag" "$url_a/api/test/prefixes" | jq -r '.prefixes[].prefix' | sort)
+    pb=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body_diag" "$url_b/api/test/prefixes" | jq -r '.prefixes[].prefix' | sort)
+    echo "Only on A: $(comm -23 <(echo "$pa") <(echo "$pb"))"
+    echo "Only on B: $(comm -13 <(echo "$pa") <(echo "$pb"))"
     return 1
 }
 

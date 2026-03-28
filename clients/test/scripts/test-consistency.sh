@@ -220,33 +220,53 @@ while IFS= read -r prefix; do
         digest_names+=("$name")
     done
 
+    # Check if all nodes agree this KEL is contested — contested KELs may
+    # have different event counts/digests depending on how far archival
+    # progressed before the contest arrived, but the terminal state is
+    # consistent and absolute.
+    unique_states=$(printf '%s\n' "${states[@]}" | sort -u | wc -l | tr -d ' ')
+    all_contested=false
+    if [ "$unique_states" -eq 1 ] && [ "${states[0]}" = "contested" ]; then
+        all_contested=true
+    fi
+
     # Compare counts
     unique_counts=$(printf '%s\n' "${counts[@]}" | sort -u | wc -l | tr -d ' ')
     if [ "$unique_counts" -ne 1 ]; then
-        echo
-        echo -e "  ${RED}EVENT COUNT MISMATCH for ${prefix}:${NC}"
-        for j in "${!digest_names[@]}"; do
-            echo -e "    node-${digest_names[$j]}: ${counts[$j]} events"
-        done
-        ((count_mismatches++))
-        ((FAILURES++))
+        if $all_contested; then
+            echo
+            echo -e "  ${YELLOW}EVENT COUNT DIFFERS for contested ${prefix} (OK — terminal state)${NC}"
+        else
+            echo
+            echo -e "  ${RED}EVENT COUNT MISMATCH for ${prefix}:${NC}"
+            for j in "${!digest_names[@]}"; do
+                echo -e "    node-${digest_names[$j]}: ${counts[$j]} events"
+            done
+            ((count_mismatches++))
+            ((FAILURES++))
+        fi
     fi
 
     # Compare digests
     unique_digests=$(printf '%s\n' "${digests[@]}" | sort -u | wc -l | tr -d ' ')
     if [ "$unique_digests" -ne 1 ]; then
-        echo
-        echo -e "  ${RED}KEL DIGEST MISMATCH for ${prefix}:${NC}"
-        for j in "${!digest_names[@]}"; do
-            echo -e "    node-${digest_names[$j]}: ${digests[$j]}"
-        done
-        ((kel_mismatches++))
-        ((FAILURES++))
+        if $all_contested; then
+            echo
+            echo -e "  ${YELLOW}KEL DIGEST DIFFERS for contested ${prefix} (OK — terminal state)${NC}"
+            ((behaviorally_consistent++))
+        else
+            echo
+            echo -e "  ${RED}KEL DIGEST MISMATCH for ${prefix}:${NC}"
+            for j in "${!digest_names[@]}"; do
+                echo -e "    node-${digest_names[$j]}: ${digests[$j]}"
+            done
+            ((kel_mismatches++))
+            ((FAILURES++))
+        fi
     fi
 
-    # For mismatched KELs, check if behavioral state is at least consistent
-    if [ "$unique_counts" -ne 1 ] || [ "$unique_digests" -ne 1 ]; then
-        unique_states=$(printf '%s\n' "${states[@]}" | sort -u | wc -l | tr -d ' ')
+    # For non-contested mismatched KELs, check if behavioral state is at least consistent
+    if ! $all_contested && { [ "$unique_counts" -ne 1 ] || [ "$unique_digests" -ne 1 ]; }; then
         if [ "$unique_states" -eq 1 ]; then
             echo -e "    ${YELLOW}behavioral state consistent: ${states[0]}${NC}"
             ((behaviorally_consistent++))

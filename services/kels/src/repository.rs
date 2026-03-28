@@ -5,22 +5,24 @@ use std::collections::HashSet;
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
-use kels::{KelsAuditRecord, KeyEvent, PrefixListResponse, PrefixState};
+use kels::{KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord, SignedKeyEvent};
 use libkels_derive::SignedEvents;
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
 #[signed_events(
     signatures_table = "kels_key_event_signatures",
-    audit_table = "kels_audit_records"
+    recovery_table = "kels_recovery",
+    archived_events_table = "kels_archived_events",
+    archived_signatures_table = "kels_archived_event_signatures"
 )]
 pub struct KeyEventRepository {
     pub pool: PgPool,
 }
 
 #[derive(Stored)]
-#[stored(item_type = KelsAuditRecord, table = "kels_audit_records", chained = false)]
-pub struct AuditRecordRepository {
+#[stored(item_type = RecoveryRecord, table = "kels_recovery", chained = false)]
+pub struct RecoveryRecordRepository {
     pub pool: PgPool,
 }
 
@@ -28,10 +30,33 @@ pub struct AuditRecordRepository {
 #[stored(migrations = "migrations")]
 pub struct KelsRepository {
     pub key_events: KeyEventRepository,
-    pub audit_records: AuditRecordRepository,
+    pub recovery_records: RecoveryRecordRepository,
 }
 
 impl KeyEventRepository {
+    /// Paginated query of archived adversary events for a prefix.
+    pub async fn get_archived_events(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+        use verifiable_storage::TransactionExecutor;
+
+        let mut tx = self.pool.begin_transaction().await?;
+        let result = kels::load_signed_history(
+            &mut tx,
+            "kels_archived_events",
+            "kels_archived_event_signatures",
+            prefix,
+            limit,
+            offset,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
     /// Check if an event with the given SAID exists (efficient SELECT EXISTS query).
     pub async fn event_exists_by_said(&self, said: &str) -> Result<bool, StorageError> {
         let query = Query::<KeyEvent>::for_table(Self::TABLE_NAME).eq("said", said);
@@ -75,10 +100,29 @@ impl KeyEventRepository {
             })
             .collect();
 
-        // Check if there are more results
+        // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
             prefix_states.last().map(|s| s.prefix.clone())
+        } else if let Some(cursor) = since {
+            // Wrap around: fill remaining slots from prefixes <= cursor
+            // (the beginning of the prefix space). No duplicates because
+            // the first query fetched prefix > cursor.
+            let remaining = limit - prefix_states.len();
+            if remaining > 0 {
+                let wrap_query = Query::<KeyEvent>::for_table(Self::TABLE_NAME)
+                    .distinct_on("prefix")
+                    .order_by("prefix", Order::Asc)
+                    .order_by("serial", Order::Desc)
+                    .lte("prefix", cursor)
+                    .limit(remaining as u64);
+                let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
+                prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {
+                    prefix: e.prefix,
+                    said: e.said,
+                }));
+            }
+            None
         } else {
             None
         };
@@ -137,14 +181,14 @@ impl KeyEventRepository {
     }
 }
 
-impl AuditRecordRepository {
+impl RecoveryRecordRepository {
     pub async fn get_by_kel_prefix(
         &self,
         kel_prefix: &str,
-    ) -> Result<Vec<KelsAuditRecord>, StorageError> {
-        let query = Query::<KelsAuditRecord>::new()
+    ) -> Result<Vec<RecoveryRecord>, StorageError> {
+        let query = Query::<RecoveryRecord>::new()
             .eq("kel_prefix", kel_prefix)
-            .order_by("recorded_at", Order::Asc);
+            .order_by("created_at", Order::Asc);
         self.pool.fetch(query).await
     }
 }

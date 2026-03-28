@@ -65,3 +65,20 @@ CREATE TABLE IF NOT EXISTS identity_key_event_signatures (
 
 CREATE INDEX IF NOT EXISTS idx_identity_key_event_signatures_event_said ON identity_key_event_signatures(event_said);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_key_event_signatures_event_label ON identity_key_event_signatures(event_said, label);
+
+-- Recovery audit records for identity KEL
+CREATE TABLE IF NOT EXISTS identity_recovery (
+    said TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    kel_prefix TEXT NOT NULL,
+    recovery_serial BIGINT NOT NULL,
+    diverged_at BIGINT NOT NULL,
+    rec_previous TEXT NOT NULL,
+    owner_first_serial BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_identity_recovery_kel_prefix ON identity_recovery(kel_prefix);
+
+-- Archive tables for identity KEL
+CREATE TABLE IF NOT EXISTS identity_archived_events (LIKE identity_key_events INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS identity_archived_event_signatures (LIKE identity_key_event_signatures INCLUDING ALL);

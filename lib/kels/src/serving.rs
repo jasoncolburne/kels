@@ -38,7 +38,7 @@ pub trait KelServer: Send + Sync {
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
     /// Compute the effective SAID for a prefix.
-    /// Single tip -> tip SAID. Multiple tips (divergent) -> hash_tip_saids().
+    /// Single tip -> tip SAID. Multiple tips -> deterministic hash (divergent/contested).
     async fn effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError>;
 
     /// Look up the prefix of an event by its SAID.

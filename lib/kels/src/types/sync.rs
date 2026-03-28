@@ -10,15 +10,13 @@ pub fn generate_nonce() -> String {
     Digest::blake3_256(&entropy).qb64()
 }
 
-/// Hash sorted tip SAIDs into a single deterministic CESR-encoded Blake3 digest.
+/// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
 ///
-/// Used to represent the state of a divergent KEL where multiple branch tips exist.
-/// The SAIDs are sorted alphabetically, concatenated, and Blake3-hashed.
-pub fn hash_tip_saids(saids: &[&str]) -> String {
-    let mut sorted: Vec<&str> = saids.to_vec();
-    sorted.sort();
-    let concatenated = sorted.join("");
-    Digest::blake3_256(concatenated.as_bytes()).qb64()
+/// Used for deterministic effective SAIDs for divergent and contested KELs:
+/// - `hash_effective_said("divergent:{prefix}")` — all divergent nodes agree
+/// - `hash_effective_said("contested:{prefix}")` — all contested nodes agree
+pub fn hash_effective_said(input: &str) -> String {
+    Digest::blake3_256(input.as_bytes()).qb64()
 }
 
 /// Request payload for authenticated prefix listing.

@@ -40,9 +40,6 @@ impl FileKelStore {
     fn kel_path(&self, prefix: &str) -> std::path::PathBuf {
         self.kel_dir.join(format!("{}.kel.jsonl", prefix))
     }
-    fn owner_tail_path(&self, prefix: &str) -> std::path::PathBuf {
-        self.kel_dir.join(format!("{}.owner_tail", prefix))
-    }
 }
 
 #[async_trait]
@@ -95,6 +92,35 @@ impl KelStore for FileKelStore {
         Ok((events, false))
     }
 
+    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let path = self.kel_path(prefix);
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        let file =
+            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let reader = std::io::BufReader::new(file);
+        let limit = limit as usize;
+
+        // Collect all lines, keeping only the last `limit` in a ring buffer.
+        let mut ring: std::collections::VecDeque<String> =
+            std::collections::VecDeque::with_capacity(limit);
+        for line in reader.lines() {
+            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+            if line.is_empty() {
+                continue;
+            }
+            if ring.len() == limit {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        }
+
+        ring.iter()
+            .map(|line| serde_json::from_str(line).map_err(Into::into))
+            .collect()
+    }
+
     async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         let path = self.kel_path(prefix);
         let mut file = std::fs::OpenOptions::new()
@@ -135,10 +161,6 @@ impl KelStore for FileKelStore {
         let path = self.kel_path(prefix);
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        let tail_path = self.owner_tail_path(prefix);
-        if tail_path.exists() {
-            let _ = std::fs::remove_file(&tail_path);
         }
         Ok(())
     }

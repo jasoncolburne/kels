@@ -18,14 +18,21 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// ## Attributes
 ///
 /// - `signatures_table`: The signatures table name (required)
-/// - `audit_table`: Optional audit table name for archiving adversary events during recovery
+/// - `recovery_table`: Recovery audit table (required)
+/// - `archived_events_table`: Mirror table for archived adversary events (required)
+/// - `archived_signatures_table`: Mirror table for archived adversary signatures (required)
 ///
 /// ## Example
 ///
 /// ```text
 /// #[derive(Stored, SignedEvents)]
 /// #[stored(item_type = KeyEvent, table = "kels_key_events")]
-/// #[signed_events(signatures_table = "kels_key_event_signatures", audit_table = "kels_audit_records")]
+/// #[signed_events(
+///     signatures_table = "kels_key_event_signatures",
+///     recovery_table = "kels_recovery",
+///     archived_events_table = "kels_archived_events",
+///     archived_signatures_table = "kels_archived_event_signatures",
+/// )]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
 /// }
@@ -43,7 +50,9 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         .expect("No #[signed_events(...)] attribute found");
 
     let mut signatures_table: Option<String> = None;
-    let mut audit_table: Option<String> = None;
+    let mut recovery_table: Option<String> = None;
+    let mut archived_events_table: Option<String> = None;
+    let mut archived_signatures_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -53,11 +62,23 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     signatures_table = Some(s.value());
                 }
-            } else if meta.path.is_ident("audit_table") {
+            } else if meta.path.is_ident("recovery_table") {
                 meta.input.parse::<syn::Token![=]>()?;
                 let lit: Lit = meta.input.parse()?;
                 if let Lit::Str(s) = lit {
-                    audit_table = Some(s.value());
+                    recovery_table = Some(s.value());
+                }
+            } else if meta.path.is_ident("archived_events_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    archived_events_table = Some(s.value());
+                }
+            } else if meta.path.is_ident("archived_signatures_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    archived_signatures_table = Some(s.value());
                 }
             }
             Ok(())
@@ -66,11 +87,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let signatures_table =
         signatures_table.expect("Missing signatures_table in #[signed_events(...)]");
-
-    let audit_table_expr = match &audit_table {
-        Some(table) => quote! { Some(#table) },
-        None => quote! { None },
-    };
+    let recovery_table = recovery_table.expect("Missing recovery_table in #[signed_events(...)]");
+    let archived_events_table =
+        archived_events_table.expect("Missing archived_events_table in #[signed_events(...)]");
+    let archived_signatures_table = archived_signatures_table
+        .expect("Missing archived_signatures_table in #[signed_events(...)]");
 
     // Generate the methods
     let methods = quote! {
@@ -174,6 +195,29 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 Ok(result)
             }
 
+            /// Get the last `limit` signed events for a prefix, in serial-ascending order.
+            /// Single query with `ORDER BY serial DESC`, then reversed.
+            pub async fn get_signed_history_tail(
+                &self,
+                prefix: &str,
+                limit: u64,
+            ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
+                use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
+                let mut tx = self.pool.begin_transaction().await?;
+                let result = kels::load_signed_history_tail(
+                    &mut tx,
+                    Self::TABLE_NAME,
+                    Self::SIGNATURES_TABLE_NAME,
+                    prefix,
+                    limit,
+                )
+                .await
+                .map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
+                tx.commit().await?;
+                Ok(result)
+            }
+
             /// Get signed events after a given SAID (delta fetch — the since event itself is not returned).
             ///
             /// Uses a scalar subquery to find the serial of the since event, then fetches
@@ -261,12 +305,9 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
-                let query = verifiable_storage::ColumnQuery::new(Self::TABLE_NAME, "said")
-                    .filter(verifiable_storage::Filter::Eq(
-                        "prefix".to_string(),
-                        verifiable_storage::Value::String(prefix.to_string()),
-                    ))
-                    .filter(verifiable_storage::Filter::NotExists(verifiable_storage::CorrelatedSubquery::new(
+                let query = verifiable_storage::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .not_exists(verifiable_storage::CorrelatedSubquery::new(
                         Self::TABLE_NAME,
                         "_cs",
                         Self::TABLE_NAME,
@@ -275,17 +316,30 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                             "_cs.prefix".to_string(),
                             verifiable_storage::Value::String(prefix.to_string()),
                         )],
-                    )))
-                    .order(verifiable_storage_postgres::Order::Asc);
+                    ))
+                    .order_by("said", verifiable_storage_postgres::Order::Asc);
 
-                let tip_saids: Vec<String> = self.pool.fetch_column(query).await?;
+                let tips: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
 
-                match tip_saids.len() {
-                    0 => Ok(None),
-                    1 => Ok(Some((tip_saids.into_iter().next().unwrap_or_default(), false))),
+                match tips.as_slice() {
+                    [] => Ok(None),
+                    [tip] => Ok(Some((tip.said.clone(), false))),
                     _ => {
-                        let refs: Vec<&str> = tip_saids.iter().map(|s| s.as_str()).collect();
-                        Ok(Some((kels::hash_tip_saids(&refs), true)))
+                        // Contested KELs return a fixed effective SAID so all
+                        // nodes agree regardless of archival progress.
+                        if tips.iter().any(|e| e.is_contest()) {
+                            let contested_input = format!("contested:{}", prefix);
+                            return Ok(Some((kels::hash_effective_said(&contested_input), true)));
+                        }
+
+                        // Divergent KELs return a fixed effective SAID so all
+                        // nodes agree regardless of which fork events they have.
+                        // Different nodes may have different adversary events at
+                        // the divergence serial — syncing between them would just
+                        // return RecoverRequired. The deterministic hash avoids
+                        // wasted anti-entropy attempts.
+                        let divergent_input = format!("divergent:{}", prefix);
+                        Ok(Some((kels::hash_effective_said(&divergent_input), true)))
                     }
                 }
             }
@@ -352,7 +406,9 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     prefix.to_string(),
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
-                    #audit_table_expr,
+                    #recovery_table,
+                    #archived_events_table,
+                    #archived_signatures_table,
                 );
 
                 match merge_tx.merge_events(events).await {
@@ -379,6 +435,16 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 offset: u64,
             ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
                 #repo_name::get_signed_history(self, prefix, limit, offset)
+                    .await
+                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+            }
+
+            async fn get_signed_history_tail(
+                &self,
+                prefix: &str,
+                limit: u64,
+            ) -> Result<Vec<kels::SignedKeyEvent>, kels::KelsError> {
+                #repo_name::get_signed_history_tail(self, prefix, limit)
                     .await
                     .map_err(|e| kels::KelsError::StorageError(e.to_string()))
             }

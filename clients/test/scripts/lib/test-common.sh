@@ -134,7 +134,7 @@ fetch_all_events() {
             break
         fi
 
-        all_events=$(echo "$all_events" "$events" | jq -s '.[0] + .[1]')
+        all_events=$(printf '%s\n%s' "$all_events" "$events" | jq -s '[.[0][], .[1][] | .signatures |= sort_by(.label)]')
 
         if [ "$has_more" != "true" ]; then
             break

@@ -108,4 +108,21 @@ CREATE TABLE IF NOT EXISTS member_key_event_signatures (
 
 CREATE INDEX IF NOT EXISTS idx_member_key_event_sigs_event_said ON member_key_event_signatures(event_said);
 
+-- Recovery audit records for member KELs
+CREATE TABLE IF NOT EXISTS member_recovery (
+    said TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    kel_prefix TEXT NOT NULL,
+    recovery_serial BIGINT NOT NULL,
+    diverged_at BIGINT NOT NULL,
+    rec_previous TEXT NOT NULL,
+    owner_first_serial BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_recovery_kel_prefix ON member_recovery(kel_prefix);
+
+-- Archive tables for member KELs
+CREATE TABLE IF NOT EXISTS member_archived_events (LIKE member_key_events INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS member_archived_event_signatures (LIKE member_key_event_signatures INCLUDING ALL);
+
 COMMIT;
