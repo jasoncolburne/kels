@@ -299,7 +299,7 @@ test-shrink-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-shrink-federation.sh
 
 seed-kels:
-	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 600 5 ml-dsa-65 50 
+	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 587 5 ml-dsa-65 50 
 
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
