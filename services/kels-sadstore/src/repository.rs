@@ -1,6 +1,6 @@
 //! PostgreSQL Repository for KELS SADStore
 
-use kels::{SadRecord, SadRecordSignature};
+use kels::{SadChainRepair, SadChainRepairRecord, SadRecord, SadRecordSignature};
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor as _, StorageError, TransactionExecutor,
     UnchainedRepository, Value,
@@ -130,12 +130,18 @@ impl SadRecordRepository {
         Ok(true)
     }
 
+    const ARCHIVED_RECORDS_TABLE: &'static str = "sad_record_archives";
+    const ARCHIVED_SIGNATURES_TABLE: &'static str = "sad_record_archive_signatures";
+    const REPAIRS_TABLE: &'static str = "sad_chain_repairs";
+    const REPAIR_RECORDS_TABLE: &'static str = "sad_chain_repair_records";
+
     /// Truncate records at version >= `from_version` and insert replacements.
     ///
     /// Used to repair divergent chains. The owner submits a batch starting at the
-    /// divergent version. This method deletes all records (and their signatures)
-    /// at or after that version, then inserts the replacements with chain integrity
-    /// checks. Must be called within the context of a verified KEL signature.
+    /// divergent version. This method archives all records (and their signatures)
+    /// at or after that version, creates a `SadChainRepair` audit record, then
+    /// inserts the replacements with chain integrity checks. Must be called within
+    /// the context of a verified KEL signature.
     pub async fn truncate_and_replace(
         &self,
         from_version: u64,
@@ -148,6 +154,66 @@ impl SadRecordRepository {
         let prefix = &records[0].0.prefix;
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix).await?;
+
+        // Archive records and signatures page-at-a-time before deleting
+        let page_size = kels::page_size();
+        let mut repair_said: Option<String> = None;
+        let mut version_cursor = from_version;
+
+        loop {
+            let page_query =
+                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .gte("version", version_cursor)
+                    .order_by("version", verifiable_storage::Order::Asc)
+                    .limit(page_size as u64);
+            let page: Vec<SadRecord> = tx.fetch(page_query).await?;
+
+            if page.is_empty() {
+                break;
+            }
+
+            // Create the repair audit record on first page
+            let repair_said_ref = match &repair_said {
+                Some(said) => said,
+                None => {
+                    let repair = SadChainRepair::create(prefix.clone(), from_version)?;
+                    tx.insert_with_table(&repair, Self::REPAIRS_TABLE).await?;
+                    repair_said = Some(repair.said);
+                    repair_said.as_ref().ok_or_else(|| {
+                        StorageError::StorageError("repair SAID missing".to_string())
+                    })?
+                }
+            };
+
+            let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
+            let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+                Self::SIGNATURES_TABLE_NAME,
+            )
+            .r#in("record_said", page_saids);
+            let sigs: Vec<SadRecordSignature> = tx.fetch(sig_query).await?;
+
+            for record in &page {
+                tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
+                    .await?;
+                let repair_record =
+                    SadChainRepairRecord::create(repair_said_ref.clone(), record.said.clone())?;
+                tx.insert_with_table(&repair_record, Self::REPAIR_RECORDS_TABLE)
+                    .await?;
+            }
+            for sig in &sigs {
+                tx.insert_with_table(sig, Self::ARCHIVED_SIGNATURES_TABLE)
+                    .await?;
+            }
+
+            let page_len = page.len();
+            if let Some(last) = page.last() {
+                version_cursor = last.version + 1;
+            }
+            if page_len < page_size {
+                break;
+            }
+        }
 
         // Delete records at and after from_version — signatures cascade via FK ON DELETE CASCADE
         let delete_records = verifiable_storage::Delete::<SadRecord>::for_table(Self::TABLE_NAME)

@@ -10,7 +10,7 @@
 //! no non-deterministic fields) and reading its prefix.
 
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageError};
+use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
 
 /// A chained, self-addressed record in the SADStore.
 ///
@@ -204,6 +204,41 @@ pub struct SadRecordPage {
 pub struct SadObjectListResponse {
     pub saids: Vec<String>,
     pub next_cursor: Option<String>,
+}
+
+/// Audit record for a completed SAD chain repair.
+///
+/// Each repair gets its own SAID. Multiple repairs to the same chain are
+/// distinguished by their `repaired_at` timestamp and unique SAID.
+/// The displaced records are linked via `SadChainRepairRecord`.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "sad_chain_repairs")]
+#[serde(rename_all = "camelCase")]
+pub struct SadChainRepair {
+    #[said]
+    pub said: String,
+    /// The chain prefix that was repaired.
+    pub record_prefix: String,
+    /// The version at which divergence occurred.
+    pub diverged_at_version: u64,
+    /// When the repair was performed.
+    #[created_at]
+    pub repaired_at: StorageDatetime,
+}
+
+/// Links a repair to an archived record it displaced.
+///
+/// One entry per archived record, all sharing the same `repair_said`.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "sad_chain_repair_records")]
+#[serde(rename_all = "camelCase")]
+pub struct SadChainRepairRecord {
+    #[said]
+    pub said: String,
+    /// The repair this record belongs to.
+    pub repair_said: String,
+    /// The SAID of the archived record.
+    pub record_said: String,
 }
 
 #[cfg(test)]
