@@ -746,9 +746,15 @@ fn encode_stale_value(source: &str, retries: u32) -> String {
 /// Decode a stale entry value: `{source}:{retries}:{not_before_epoch}`.
 fn decode_stale_value(value: &str) -> (String, u32, u64) {
     let parts: Vec<&str> = value.rsplitn(3, ':').collect();
-    let not_before = parts[0].parse::<u64>().unwrap_or(0);
-    let retries = parts[1].parse::<u32>().unwrap_or(0);
-    (parts[2].to_string(), retries, not_before)
+    if parts.len() == 3 {
+        let not_before = parts[0].parse::<u64>().unwrap_or(0);
+        let retries = parts[1].parse::<u32>().unwrap_or(0);
+        (parts[2].to_string(), retries, not_before)
+    } else {
+        // Malformed entry — treat as first attempt due immediately
+        warn!("Malformed stale entry value: {}", value);
+        (value.to_string(), 0, 0)
+    }
 }
 
 /// Record a stale prefix for anti-entropy repair (first occurrence).

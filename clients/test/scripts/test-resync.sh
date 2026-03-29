@@ -62,8 +62,9 @@ stale_count() {
 }
 
 stale_add() {
-    # HSET key field value — field is the kel_prefix, value is the source_node_prefix
-    redis_cmd HSET "$STALE_PREFIX_KEY" "$1" "$2"
+    # HSET key field value — field is the kel_prefix, value is "{source}:{retries}:{not_before}"
+    # retries=0, not_before=0 (due immediately)
+    redis_cmd HSET "$STALE_PREFIX_KEY" "$1" "$2:0:0"
 }
 
 stale_clear() {
