@@ -15,10 +15,12 @@ The Garden configuration in this repository (`project.garden.yml` and per-servic
 
 ## Standalone Deployment
 
-A standalone KELS node requires only two components:
+A standalone KELS node requires:
 
 - `kels` — KEL storage and retrieval API
-- `postgres` — event and signature storage
+- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `postgres` — event, signature, and SAD record storage
+- `minio` — S3-compatible object storage for SAD content blobs
 
 This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, contest, and decommission. Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
 
@@ -40,10 +42,12 @@ Each **registry** runs:
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
-- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
+- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL and SAD replication
 - `identity` — the node's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
-- `postgres` — KEL storage and gossip peer cache
-- `redis` — KEL caching and pub/sub invalidation
+- `postgres` — KEL storage, SAD record storage, and gossip peer cache
+- `redis` — KEL caching, pub/sub invalidation, and SAD gossip announcements
+- `minio` — S3-compatible object storage for SAD content blobs
 
 The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 

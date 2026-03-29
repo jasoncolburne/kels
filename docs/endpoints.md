@@ -143,12 +143,16 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | POST | `/api/v1/sad/records` | **KEL signature** | Submit a signed chain record (`SadRecordSubmission`) |
 | GET | `/api/v1/sad/chain/:prefix` | None | Fetch chain (returns `SignedSadRecord`s with signatures) |
 | GET | `/api/v1/sad/chain/:prefix/effective-said` | None | Tip SAID for sync comparison |
+| GET | `/api/v1/sad/objects` | None | List SAD object SAIDs (paginated: `?cursor=&limit=`, max 100) |
+| GET | `/api/v1/sad/prefixes` | None | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`, max 100) |
 
 **Notes:**
-- `PUT sad/:said`: HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Publishes to Redis `sad_updates` for gossip.
-- `POST sad/records`: Verifies record SAID, checks content exists in MinIO, verifies signature against owner's KEL (must be current key), stores record + signature atomically. Unique constraint on `(prefix, version)` prevents divergence.
-- `GET sad/chain/:prefix`: Returns `SadRecordPage { records: Vec<SignedSadRecord>, has_more }` — records include signatures and establishment serials.
+- `PUT sad/:said`: HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Object size limited (default 1 MiB via `SADSTORE_MAX_OBJECT_SIZE`). Publishes to Redis `sad_updates` for gossip. Per-IP rate limited.
+- `POST sad/records`: Verifies record SAID, checks content exists in MinIO, verifies signature against owner's KEL (must be current key), stores record + signature atomically with advisory lock. Unique constraint on `(prefix, version)` prevents divergence; deterministic conflict resolution (smallest SAID wins). Per-chain-prefix daily rate limited (default 16/day). Per-IP rate limited.
+- `GET sad/chain/:prefix`: Returns `SadRecordPage { records: Vec<SignedSadRecord>, hasMore }` — records include signatures and establishment serials. Supports `?since=N` for delta fetch (records with version >= N).
+- `GET sad/objects`, `GET sad/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
 - Chain records reference content in MinIO via `content_said`. Client workflow: PUT content first, then POST chain record.
+- Bucket auto-created on startup if it doesn't exist.
 
 ## Authentication Methods Summary
 

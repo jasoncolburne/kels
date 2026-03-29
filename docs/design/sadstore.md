@@ -56,9 +56,11 @@ The submission type for creating/updating chains. Contains `record` + `signature
 
 The `establishment_serial` is server-derived and stored in a separate `sad_record_signatures` table (keeping the SAID-driven record table clean).
 
-## No Divergence
+## No Divergence — Deterministic Conflict Resolution
 
-A unique constraint on `(prefix, version)` prevents chain divergence at the database level. First write wins. After key compromise + KEL recovery, the owner appends the next version with their new key. This eliminates the divergence/recovery/contest complexity that KELs have.
+A unique constraint on `(prefix, version)` prevents chain divergence at the database level. When two nodes receive different records at the same version (e.g., from concurrent writes or key compromise), the record with the lexicographically smaller SAID wins. This ensures all nodes converge on the same record regardless of write order. Existing records are replaced if the incoming record has a smaller SAID.
+
+After key compromise + KEL recovery, the owner appends the next version with their new key. Old records remain but are superseded.
 
 ## Verification
 
@@ -84,9 +86,16 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/records` | Submit a signed chain record |
-| `GET` | `/api/v1/sad/chain/:prefix` | Fetch chain (returns `SignedSadRecord`s) |
+| `POST` | `/api/v1/sad/records` | Submit a signed chain record (`SadRecordSubmission`) |
+| `GET` | `/api/v1/sad/chain/:prefix` | Fetch chain (returns `SignedSadRecord`s with signatures); `?since=N` for delta |
 | `GET` | `/api/v1/sad/chain/:prefix/effective-said` | Tip SAID for sync comparison |
+
+### Listing (for bootstrap + anti-entropy)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/sad/objects` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
+| `GET` | `/api/v1/sad/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
 
 ### Client Workflow
 
@@ -131,7 +140,13 @@ Environment variables:
 | `MINIO_REGION` | `us-east-1` | S3 region |
 | `MINIO_ACCESS_KEY` | `minioadmin` | S3 access key |
 | `MINIO_SECRET_KEY` | `minioadmin` | S3 secret key |
-| `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name |
+| `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
+| `SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY` | `16` | Max chain records per prefix per day |
+| `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `100` | Per-IP write rate (token bucket refill) |
+| `SADSTORE_IP_RATE_LIMIT_BURST` | `500` | Per-IP token bucket burst size |
+| `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |
+
+On the gossip service, `BASE_DOMAIN` env var derives both KELS and SADStore URLs for local and peer service discovery.
 
 ## CLI
 
