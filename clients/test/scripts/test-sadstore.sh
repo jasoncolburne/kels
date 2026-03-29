@@ -177,7 +177,7 @@ run_test "List chain prefixes" \
     bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/prefixes' | jq -e '.prefixes != null'"
 
 run_test "List SAD objects" \
-    bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/objects' | jq -e '.prefixes != null'"
+    bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/objects' | jq -e '.saids != null'"
 
 run_test "List with pagination limit" \
     bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/prefixes?limit=5' | jq -e '.prefixes | length <= 5'"
