@@ -115,7 +115,7 @@ kel_summary() {
     local live archived audit
     live=$(curl -s "$url/api/v1/kels/kel/$prefix" | jq -c '[.events[].event | {s:.serial, k:(.kind|split("/")|last), id:.said[0:8]}]')
     archived=$(curl -s "$url/api/v1/kels/kel/$prefix/archived" | jq -c '[.events[].event | {s:.serial, k:(.kind|split("/")|last), id:.said[0:8]}]')
-    audit=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -c '[.[] | {id:.said[0:8], da:.divergedAt, rs:.recoverySerial}]')
+    audit=$(curl -s "$url/api/v1/kels/kel/$prefix/audit" | jq -c '[.records[] | {id:.said[0:8], da:.divergedAt, rs:.recoverySerial}]')
     echo "{live:$live,arch:$archived,aud:$audit}"
 }
 
@@ -419,5 +419,5 @@ echo ""
 # ========================================
 # Summary
 # ========================================
-print_summary
+print_summary "Reconciliation Test Summary"
 exit_with_result
