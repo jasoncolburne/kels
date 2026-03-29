@@ -37,6 +37,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     b3sum \
     bash \
+    xxd \
     curl \
     dnsutils \
     python3 \

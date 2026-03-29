@@ -396,9 +396,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     peer_prefix_str, peer_prefix_str, config.node_id
                 );
 
-                // Preload KELs and SAD records from Ready peers (read-only, no registration)
+                // Preload KELs, SAD objects, and SAD records from Ready peers
                 if let Err(e) = bootstrap.preload_kels().await {
                     warn!("KEL preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_objects().await {
+                    warn!("SAD object preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_records().await {
                     warn!("SAD record preload failed: {}", e);
@@ -628,9 +631,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Waiting for first peer connection...");
         match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
             Ok(Ok(())) => {
-                info!("First peer connected — preloading KELs and SAD records from ready peers...");
+                info!("First peer connected — preloading KELs, SAD objects, and SAD records...");
                 if let Err(e) = bootstrap.preload_kels().await {
                     error!("KEL preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_objects().await {
+                    error!("SAD object preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_records().await {
                     error!("SAD record preload failed: {}", e);

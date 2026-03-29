@@ -208,6 +208,35 @@ impl SadStoreClient {
         }
     }
 
+    /// List SAD object SAIDs (paginated, authenticated). Used for bootstrap and anti-entropy.
+    pub async fn fetch_sad_objects(
+        &self,
+        signer: &dyn crate::PeerSigner,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::SadObjectListResponse, KelsError> {
+        let request = crate::SadObjectsRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: crate::generate_nonce(),
+            cursor: cursor.map(|s| s.to_string()),
+            limit: Some(limit),
+        };
+        let signed = crate::sign_request(signer, &request).await?;
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/sad/objects", self.base_url))
+            .json(&signed)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
     /// List SAD chain prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
     pub async fn fetch_sad_prefixes(
         &self,

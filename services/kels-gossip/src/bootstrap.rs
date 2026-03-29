@@ -148,6 +148,78 @@ impl BootstrapSync {
         Ok(())
     }
 
+    /// Preload SAD objects from Ready peers.
+    ///
+    /// Paginates through the remote object listing, checks local existence, and
+    /// fetches any missing objects. Runs before chain record sync so that
+    /// content objects are available when chains reference them.
+    pub async fn preload_sad_objects(&self) -> Result<(), BootstrapError> {
+        let ready_peers = self.get_ready_peers().await;
+
+        if ready_peers.is_empty() {
+            info!("No Ready peers found for SAD object preload");
+            return Ok(());
+        }
+
+        info!(
+            "Preloading SAD objects from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url);
+        let mut total_synced = 0u64;
+
+        for peer in &ready_peers {
+            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = match remote_client
+                    .fetch_sad_objects(
+                        self.signer.as_ref(),
+                        cursor.as_deref(),
+                        self.config.page_size,
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to fetch SAD objects from {}: {}", peer.node_id, e);
+                        break;
+                    }
+                };
+
+                for said in &page.saids {
+                    // Check if we already have it locally
+                    match local_client.sad_object_exists(said).await {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(_) => continue,
+                    }
+
+                    // Fetch from remote and store locally
+                    if let Ok(object) = remote_client.get_sad_object(said).await
+                        && local_client.put_sad_object(&object).await.is_ok()
+                    {
+                        total_synced += 1;
+                    }
+                }
+
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        info!(
+            "SAD object preload complete: {} objects synced",
+            total_synced
+        );
+        Ok(())
+    }
+
     /// Preload SAD records from Ready peers.
     ///
     /// Lists chain prefixes from each Ready peer's SADStore, compares with local

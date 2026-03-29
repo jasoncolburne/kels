@@ -122,7 +122,44 @@ for i in "${!NODE_NAMES[@]}"; do
     fi
 done
 
-echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for chain comparison${NC}"
+echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for comparison${NC}"
+echo
+
+# --- Step 1b: Fetch all SAD object SAIDs from test-endpoint nodes ---
+echo -e "${YELLOW}Fetching SAD object SAIDs from test-endpoint nodes...${NC}"
+
+for i in "${!REACHABLE_NAMES[@]}"; do
+    name="${REACHABLE_NAMES[$i]}"
+    url="${REACHABLE_URLS[$i]}"
+    objects_file="$TEMP_DIR/sad_objects_${name}.txt"
+
+    cursor=""
+    > "$objects_file"
+
+    while true; do
+        if [ -n "$cursor" ]; then
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},peerPrefix:"test",signature:"test"}')
+        else
+            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},peerPrefix:"test",signature:"test"}')
+        fi
+
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/objects" 2>/dev/null)
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
+        echo "$response" | jq -r '.saids[]' >> "$objects_file" 2>/dev/null
+
+        cursor=$(echo "$response" | jq -r '.nextCursor // empty' 2>/dev/null)
+        if [ -z "$cursor" ]; then
+            break
+        fi
+    done
+
+    count=$(wc -l < "$objects_file" | tr -d ' ')
+    echo -e "  node-${name}: ${GREEN}${count} SAD objects${NC}"
+done
+
 echo
 
 # --- Step 2: Compare prefix sets ---
@@ -155,6 +192,75 @@ done
 if $all_match; then
     total=$(wc -l < "$reference_file" | tr -d ' ')
     echo -e "  ${GREEN}All ${#REACHABLE_NAMES[@]} nodes have the same ${total} chain prefixes${NC}"
+fi
+
+echo
+
+# --- Step 2b: Compare SAD object sets ---
+echo -e "${YELLOW}Comparing SAD object sets...${NC}"
+
+obj_reference_name="${REACHABLE_NAMES[0]}"
+obj_reference_file="$TEMP_DIR/sad_objects_${obj_reference_name}.txt"
+sort -o "$obj_reference_file" "$obj_reference_file"
+
+obj_all_match=true
+for i in "${!REACHABLE_NAMES[@]}"; do
+    [ "$i" -eq 0 ] && continue
+    name="${REACHABLE_NAMES[$i]}"
+    other_file="$TEMP_DIR/sad_objects_${name}.txt"
+    sort -o "$other_file" "$other_file"
+
+    if ! diff -q "$obj_reference_file" "$other_file" > /dev/null 2>&1; then
+        obj_all_match=false
+        echo -e "  ${RED}MISMATCH: node-${obj_reference_name} vs node-${name}${NC}"
+
+        only_ref=$(comm -23 "$obj_reference_file" "$other_file" | wc -l | tr -d ' ')
+        only_other=$(comm -13 "$obj_reference_file" "$other_file" | wc -l | tr -d ' ')
+
+        [ "$only_ref" -gt 0 ] && echo -e "    ${only_ref} objects only on node-${obj_reference_name}"
+        [ "$only_other" -gt 0 ] && echo -e "    ${only_other} objects only on node-${name}"
+        ((FAILURES++))
+    fi
+done
+
+if $obj_all_match; then
+    total=$(wc -l < "$obj_reference_file" | tr -d ' ')
+    echo -e "  ${GREEN}All ${#REACHABLE_NAMES[@]} nodes have the same ${total} SAD objects${NC}"
+fi
+
+echo
+
+# --- Step 2c: Verify SAD objects exist on all reachable nodes ---
+echo -e "${YELLOW}Verifying SAD objects across all nodes...${NC}"
+
+cat "$TEMP_DIR"/sad_objects_*.txt | sort -u > "$TEMP_DIR/all_sad_objects.txt"
+total_objects=$(wc -l < "$TEMP_DIR/all_sad_objects.txt" | tr -d ' ')
+obj_checked=0
+obj_missing=0
+
+while IFS= read -r said; do
+    ((obj_checked++))
+    printf "\r  Checking object %d/%d..." "$obj_checked" "$total_objects"
+
+    for i in "${!ALL_REACHABLE_NAMES[@]}"; do
+        name="${ALL_REACHABLE_NAMES[$i]}"
+        url="${ALL_REACHABLE_URLS[$i]}"
+
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/${said}/exists")
+        if [ "$http_code" != "200" ]; then
+            echo
+            echo -e "  ${RED}MISSING object ${said} on node-${name} (HTTP ${http_code})${NC}"
+            ((obj_missing++))
+            ((FAILURES++))
+        fi
+    done
+done < "$TEMP_DIR/all_sad_objects.txt"
+
+echo
+if [ "$obj_missing" -eq 0 ]; then
+    echo -e "  ${GREEN}All ${total_objects} SAD objects present on all ${#ALL_REACHABLE_NAMES[@]} nodes${NC}"
+else
+    echo -e "  ${RED}${obj_missing} missing object(s) across nodes${NC}"
 fi
 
 echo

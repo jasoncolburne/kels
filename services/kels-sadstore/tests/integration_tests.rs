@@ -464,10 +464,10 @@ async fn test_list_objects_empty() {
     };
 
     let body = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::SadObjectsRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: None,
         },
         peer_prefix: "test".to_string(),

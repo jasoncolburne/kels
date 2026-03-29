@@ -29,6 +29,16 @@ pub struct PrefixesRequest {
     pub limit: Option<usize>,
 }
 
+/// Request payload for authenticated SAD object listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SadObjectsRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
 /// Request payload for authenticated admin operations.
 ///
 /// Used with `SignedRequest<AdminRequest>` to authenticate admin CLI requests
