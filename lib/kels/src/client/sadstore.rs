@@ -46,6 +46,11 @@ impl SadStoreClient {
         crate::HttpSadSink::new(&self.base_url)
     }
 
+    /// Create an `HttpSadSink` that submits with `?repair=true`.
+    pub fn as_sad_repair_sink(&self) -> crate::HttpSadSink {
+        crate::HttpSadSink::new_repair(&self.base_url)
+    }
+
     pub async fn health(&self) -> Result<String, KelsError> {
         let resp = self
             .client

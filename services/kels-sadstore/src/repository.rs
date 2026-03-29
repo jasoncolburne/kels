@@ -180,6 +180,31 @@ impl SadRecordRepository {
             }
         }
 
+        // Verify internal chain linkage of replacement batch
+        for window in records.windows(2) {
+            let (prev, next) = (&window[0].0, &window[1].0);
+            if next.previous.as_deref() != Some(&prev.said) {
+                return Err(StorageError::StorageError(
+                    "Replacement batch has broken chain linkage".to_string(),
+                ));
+            }
+            if next.version != prev.version + 1 {
+                return Err(StorageError::StorageError(
+                    "Replacement batch has non-sequential versions".to_string(),
+                ));
+            }
+            if next.kel_prefix != prev.kel_prefix {
+                return Err(StorageError::StorageError(
+                    "Replacement batch has inconsistent kel_prefix".to_string(),
+                ));
+            }
+            if next.kind != prev.kind {
+                return Err(StorageError::StorageError(
+                    "Replacement batch has inconsistent kind".to_string(),
+                ));
+            }
+        }
+
         // Insert replacements
         for (record, signature) in records {
             self.insert_in(&mut tx, record.clone()).await?;

@@ -56,20 +56,36 @@ The submission type for creating/updating chains. Contains `record` + `signature
 
 The `establishment_serial` is server-derived and stored in a separate `sad_record_signatures` table (keeping the SAID-driven record table clean).
 
-## No Divergence — Deterministic Conflict Resolution
+## Divergence and Repair
 
-A unique constraint on `(prefix, version)` prevents chain divergence at the database level. When two nodes receive different records at the same version (e.g., from concurrent writes or key compromise), the record with the lexicographically smaller SAID wins. This ensures all nodes converge on the same record regardless of write order. Existing records are replaced if the incoming record has a smaller SAID.
+When two conflicting records exist at the same version (e.g., from key compromise or concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception records are fully deterministic).
 
-After key compromise + KEL recovery, the owner appends the next version with their new key. Old records remain but are superseded.
+The **effective SAID** for a chain represents its current state:
+- Non-divergent: the tip record's SAID
+- Divergent: `hash_effective_said("divergent:{prefix}")` — a synthetic deterministic SAID so all nodes agree on the frozen state
+
+### Repair
+
+The chain owner repairs divergence by submitting a replacement batch with `?repair=true`:
+
+1. The batch starts at the divergent version
+2. `truncate_and_replace` deletes all records at and after that version
+3. Replacement records are inserted with chain integrity checks (predecessor linkage, internal chain linkage, sequential versions, consistent kel_prefix/kind)
+4. Signatures on replacement records are verified against the owner's KEL
+
+### Repair Propagation
+
+When a repair succeeds, the SADStore publishes a gossip message with `repair: true`. Peer nodes that receive this announcement forward the repaired chain to their local SADStore with `?repair=true`, replacing their divergent state.
+
+If a node misses the gossip repair message (e.g., it was offline), the owner submits the repair directly to that node.
 
 ## Verification
 
-The `SadRecordVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which:
+The `SadRecordVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which performs two-pass O(page_size) verification:
 
-1. Fetches the full chain (records + signatures)
-2. Verifies structural integrity (SAID, chain linkage, version monotonicity, consistent kel_prefix/kind)
-3. Verifies the owner's KEL
-4. Verifies the tip record's signature against the current KEL public key
+1. **Pass 1 (structure):** Pages through the chain, verifying SAID integrity, chain linkage, version monotonicity, and consistent kel_prefix/kind. Collects establishment serials.
+2. **Between:** Verifies the owner's KEL, collecting establishment keys for the referenced serials.
+3. **Pass 2 (signatures):** Pages through the chain again, verifying each record's signature against its establishment key.
 
 Accessors: `current_record()`, `current_content_said()`, `establishment_serial()`.
 
@@ -86,7 +102,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/records` | Submit a signed chain record (`SadRecordSubmission`) |
+| `POST` | `/api/v1/sad/records` | Submit signed chain records; `?repair=true` to repair divergent chain |
 | `GET` | `/api/v1/sad/chain/:prefix` | Fetch chain (returns `SignedSadRecord`s with signatures); `?since=N` for delta |
 | `GET` | `/api/v1/sad/chain/:prefix/effective-said` | Tip SAID for sync comparison |
 
@@ -113,10 +129,12 @@ SAD data replicates via the existing gossip infrastructure on a separate topic (
 
 ```rust
 enum SadGossipMessage {
-    Object { said, origin },     // New SAD object stored
-    Chain { chain_prefix, said, origin },  // Chain updated
+    Object { said, origin },
+    Chain { chain_prefix, said, origin, repair },
 }
 ```
+
+The `repair` flag (default `false`) signals that a divergent chain was repaired. Receiving nodes use `?repair=true` to replace their local divergent state.
 
 ### Flow
 

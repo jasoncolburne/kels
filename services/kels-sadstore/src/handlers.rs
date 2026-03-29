@@ -617,6 +617,7 @@ pub async fn submit_sad_records(
     let is_repair = query.repair.unwrap_or(false);
 
     let new_record_count;
+    let gossip_said: Option<String>;
 
     if is_repair {
         // Repair mode: truncate from the first record's version and replace
@@ -631,9 +632,11 @@ pub async fn submit_sad_records(
             return (StatusCode::CONFLICT, format!("{}", e)).into_response();
         }
         new_record_count = pairs.len() as u32;
+        gossip_said = pairs.last().map(|(r, _)| r.said.clone());
     } else {
         // Normal mode: store records individually with chain integrity checks
         let mut count = 0u32;
+        let mut last_stored_said: Option<&str> = None;
         for (record, sig_record) in &pairs {
             match state
                 .repo
@@ -641,7 +644,10 @@ pub async fn submit_sad_records(
                 .save_with_verified_signature(record, sig_record)
                 .await
             {
-                Ok(true) => count += 1,
+                Ok(true) => {
+                    count += 1;
+                    last_stored_said = Some(&record.said);
+                }
                 Ok(false) => {} // deduplicated
                 Err(e) => {
                     warn!("Failed to store record {}: {}", record.said, e);
@@ -649,17 +655,24 @@ pub async fn submit_sad_records(
             }
         }
         new_record_count = count;
+        gossip_said = last_stored_said.map(|s| s.to_string());
     }
 
     // Accrue only actual new records to prefix rate limit
     accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
-    // Publish the chain tip to Redis for gossip
+    // Publish the chain tip to Redis for gossip.
+    // Repair updates include a ":repair" suffix so the gossip subscriber
+    // can propagate the repair flag to other nodes.
     if let Some(ref conn) = state.redis_conn
-        && let Some(last) = records.last()
+        && let Some(said) = &gossip_said
     {
         let mut conn = conn.clone();
-        let message = format!("{}:{}", last.record.prefix, last.record.said);
+        let message = if is_repair {
+            format!("{}:{}:repair", chain_prefix, said)
+        } else {
+            format!("{}:{}", chain_prefix, said)
+        };
         if let Err(e) = redis::cmd("PUBLISH")
             .arg("sad_chain_updates")
             .arg(&message)

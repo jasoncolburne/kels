@@ -10,9 +10,7 @@
 //! no non-deterministic fields) and reading its prefix.
 
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{Chained, SelfAddressed, StorageError};
-
-use crate::KelsError;
+use verifiable_storage::{SelfAddressed, StorageError};
 
 /// A chained, self-addressed record in the SADStore.
 ///
@@ -98,93 +96,6 @@ pub struct SignedSadRecord {
     pub establishment_serial: u64,
 }
 
-/// A chain of stored SAD records for verification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SadRecordChain {
-    pub prefix: String,
-    pub records: Vec<SignedSadRecord>,
-}
-
-impl SadRecordChain {
-    /// Verify structural integrity of the chain.
-    ///
-    /// Checks:
-    /// - SAID integrity per record
-    /// - Chain linkage (previous → said)
-    /// - Version monotonicity (version == index)
-    /// - Consistent `kel_prefix` and `kind` across all records
-    /// - First record has no previous, subsequent records do
-    /// - Prefix matches across all records
-    pub fn verify_records(&self) -> Result<(), KelsError> {
-        if self.records.is_empty() {
-            return Err(KelsError::VerificationFailed(
-                "Empty SAD record chain".into(),
-            ));
-        }
-
-        let expected_kel_prefix = &self.records[0].record.kel_prefix;
-        let expected_kind = &self.records[0].record.kind;
-        let mut last_said: Option<String> = None;
-
-        for (i, stored) in self.records.iter().enumerate() {
-            let record = &stored.record;
-            record.verify()?;
-
-            if record.prefix != self.prefix {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} prefix {} doesn't match chain prefix {}",
-                    record.said, record.prefix, self.prefix
-                )));
-            }
-
-            if record.kel_prefix != *expected_kel_prefix {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} kel_prefix {} doesn't match chain kel_prefix {}",
-                    record.said, record.kel_prefix, expected_kel_prefix
-                )));
-            }
-
-            if record.kind != *expected_kind {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} kind {} doesn't match chain kind {}",
-                    record.said, record.kind, expected_kind
-                )));
-            }
-
-            if let Some(said) = &last_said {
-                if record.previous.as_deref() != Some(said.as_str()) {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "SAD record {} previous doesn't match {}",
-                        record.said, said
-                    )));
-                }
-            } else if record.previous.is_some() {
-                return Err(KelsError::VerificationFailed(format!(
-                    "First SAD record {} has unexpected previous",
-                    record.said
-                )));
-            }
-
-            if i as u64 != record.version {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} has incorrect version {}",
-                    record.said, record.version
-                )));
-            }
-
-            last_said = Some(record.said.clone());
-        }
-
-        Ok(())
-    }
-
-    /// Get the latest (tip) stored record in the chain.
-    pub fn tip(&self) -> Option<&SignedSadRecord> {
-        self.records.last()
-    }
-}
-
 /// Proof-of-verification token for a SAD record chain.
 ///
 /// Cannot be constructed outside this crate — only via `SadRecordVerifier`.
@@ -258,6 +169,11 @@ pub enum SadGossipMessage {
         said: String,
         /// The peer prefix that stored it.
         origin: String,
+        /// Whether this update is a repair of a previously divergent chain.
+        /// When true, the receiving node should use `?repair=true` to replace
+        /// its local divergent chain.
+        #[serde(default)]
+        repair: bool,
     },
 }
 
@@ -296,15 +212,6 @@ mod tests {
     use verifiable_storage::{Chained, SelfAddressed};
 
     use super::*;
-
-    /// Wrap a SadRecord into a SignedSadRecord with dummy signature for tests.
-    fn stored(record: SadRecord) -> SignedSadRecord {
-        SignedSadRecord {
-            record,
-            signature: "test_sig".to_string(),
-            establishment_serial: 0,
-        }
-    }
 
     #[test]
     fn test_compute_sad_prefix_deterministic() {
@@ -360,121 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_record_chain_verify_valid() {
-        let v0 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
-        v1.increment().unwrap();
-
-        let chain = SadRecordChain {
-            prefix: v0.prefix.clone(),
-            records: vec![stored(v0), stored(v1)],
-        };
-        assert!(chain.verify_records().is_ok());
-    }
-
-    #[test]
-    fn test_sad_record_chain_verify_empty_fails() {
-        let chain = SadRecordChain {
-            prefix: "Etest".to_string(),
-            records: vec![],
-        };
-        assert!(chain.verify_records().is_err());
-    }
-
-    #[test]
-    fn test_sad_record_chain_verify_broken_linkage_fails() {
-        let v0 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-
-        // Create v1 without proper increment (broken linkage)
-        let mut v1 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-        // Manually set version to simulate broken chain
-        v1.version = 1;
-        v1.previous = Some("Ewrong_said".to_string());
-        v1.derive_said().unwrap();
-
-        let chain = SadRecordChain {
-            prefix: v0.prefix.clone(),
-            records: vec![stored(v0), stored(v1)],
-        };
-        let err = chain.verify_records().unwrap_err();
-        assert!(
-            err.to_string().contains("previous doesn't match"),
-            "Expected chain linkage error, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_sad_record_chain_verify_inconsistent_kind_fails() {
-        let v0 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.kind = "kels/v1/other-kind".to_string();
-        v1.increment().unwrap();
-
-        let chain = SadRecordChain {
-            prefix: v0.prefix.clone(),
-            records: vec![stored(v0), stored(v1)],
-        };
-        let err = chain.verify_records().unwrap_err();
-        assert!(
-            err.to_string().contains("kind"),
-            "Expected kind mismatch error, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_sad_record_chain_verify_wrong_version_fails() {
-        let v0 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
-        v1.increment().unwrap();
-        // Tamper with version
-        v1.version = 5;
-        v1.derive_said().unwrap();
-
-        let chain = SadRecordChain {
-            prefix: v0.prefix.clone(),
-            records: vec![stored(v0), stored(v1)],
-        };
-        let err = chain.verify_records().unwrap_err();
-        assert!(
-            err.to_string().contains("incorrect version"),
-            "Expected version error, got: {}",
-            err
-        );
-    }
-
-    #[test]
     fn test_sad_gossip_message_serialization() {
         let object_msg = SadGossipMessage::Object {
             said: "Esaid123".to_string(),
@@ -488,10 +280,45 @@ mod tests {
             chain_prefix: "Eprefix".to_string(),
             said: "Esaid456".to_string(),
             origin: "Eorigin".to_string(),
+            repair: false,
         };
         let json = serde_json::to_string(&chain_msg).unwrap();
         let parsed: SadGossipMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, SadGossipMessage::Chain { .. }));
+        assert!(matches!(
+            parsed,
+            SadGossipMessage::Chain { repair: false, .. }
+        ));
+
+        // Repair messages round-trip correctly
+        let repair_msg = SadGossipMessage::Chain {
+            chain_prefix: "Eprefix".to_string(),
+            said: "Esaid789".to_string(),
+            origin: "Eorigin".to_string(),
+            repair: true,
+        };
+        let json = serde_json::to_string(&repair_msg).unwrap();
+        let parsed: SadGossipMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed,
+            SadGossipMessage::Chain { repair: true, .. }
+        ));
+
+        // Backwards compatibility: messages without repair field default to false
+        // (serde(default) on the field handles this)
+        let without_repair = serde_json::to_string(&SadGossipMessage::Chain {
+            chain_prefix: "Ep".to_string(),
+            said: "Es".to_string(),
+            origin: "Eo".to_string(),
+            repair: false,
+        })
+        .unwrap();
+        // Remove the "repair":false field to simulate a legacy message
+        let legacy_json = without_repair.replace(",\"repair\":false", "");
+        let parsed: SadGossipMessage = serde_json::from_str(&legacy_json).unwrap();
+        assert!(matches!(
+            parsed,
+            SadGossipMessage::Chain { repair: false, .. }
+        ));
     }
 
     #[test]
@@ -561,25 +388,5 @@ mod tests {
         tampered.kel_prefix = "Etampered".to_string();
         tampered.derive_said().unwrap();
         assert!(tampered.verify_prefix().is_err());
-    }
-
-    #[test]
-    fn test_sad_record_chain_tip() {
-        let v0 = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
-        v1.increment().unwrap();
-
-        let chain = SadRecordChain {
-            prefix: v0.prefix.clone(),
-            records: vec![stored(v0), stored(v1.clone())],
-        };
-        assert_eq!(chain.tip().unwrap().record.said, v1.said);
     }
 }

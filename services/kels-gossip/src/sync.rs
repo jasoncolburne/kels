@@ -165,12 +165,19 @@ pub async fn run_sad_redis_subscriber(
                 origin: local_peer_prefix.clone(),
             }
         } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
-            // Chain update: payload is "{chain_prefix}:{said}"
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
+            // Chain update: payload is "{chain_prefix}:{said}" or "{chain_prefix}:{said}:repair"
+            let repair = payload.ends_with(":repair");
+            let core = if repair {
+                &payload[..payload.len() - ":repair".len()]
+            } else {
+                &payload
+            };
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
                 kels::SadGossipMessage::Chain {
                     chain_prefix: ann.prefix,
                     said: ann.said,
                     origin: local_peer_prefix.clone(),
+                    repair,
                 }
             } else {
                 continue;
@@ -293,8 +300,9 @@ impl SyncHandler {
                 chain_prefix,
                 said,
                 origin,
+                repair,
             } => {
-                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin)
+                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin, repair)
                     .await;
             }
         }
@@ -349,11 +357,16 @@ impl SyncHandler {
     }
 
     /// Handle a SAD chain announcement — fetch the chain if our tip differs.
+    ///
+    /// When `repair` is true, the origin node repaired a divergent chain. We use
+    /// `?repair=true` to replace our local divergent state. The full chain is
+    /// fetched (no delta) since repair truncates and replaces from the divergence point.
     async fn handle_sad_chain_announcement(
         &self,
         chain_prefix: &str,
         remote_said: &str,
         origin: &str,
+        repair: bool,
     ) {
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
             debug!("No SADStore URL for origin peer {}", origin);
@@ -381,7 +394,8 @@ impl SyncHandler {
 
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
         // The record submission will publish to Redis `sad_chain_updates` as
-        // "{chain_prefix}:{said}", which the subscriber checks against this cache key.
+        // "{chain_prefix}:{said}" (or with ":repair" suffix), which the subscriber
+        // checks against this cache key.
         {
             let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
             self.recently_stored
@@ -391,13 +405,23 @@ impl SyncHandler {
         }
 
         let remote_client = kels::SadStoreClient::new(&sadstore_url);
+
+        // For repair: fetch full chain and submit with ?repair=true.
+        // For normal: delta fetch from local tip.
+        let sink = if repair {
+            local_client.as_sad_repair_sink()
+        } else {
+            local_client.as_sad_sink()
+        };
+        let since = if repair { None } else { local_said.as_deref() };
+
         if let Err(e) = kels::forward_sad_records(
             chain_prefix,
             &remote_client.as_sad_source(),
-            &local_client.as_sad_sink(),
+            &sink,
             kels::page_size(),
             kels::max_pages(),
-            local_said.as_deref(),
+            since,
         )
         .await
         {
@@ -695,31 +719,91 @@ async fn forward_with_fallback(
     kels::forward_key_events(prefix, source, sink, kels::page_size(), max_pages, None).await
 }
 
-/// Record a stale prefix for anti-entropy repair.
-///
-/// Adds an entry to the Redis hash mapping `kel_prefix → source_node_prefix`.
-/// The source node is the peer that was expected to have the KEL.
+/// Maximum retry count before giving up on a stale prefix. Phase 2 random
+/// sampling will rediscover it if the inconsistency persists.
+const MAX_STALE_RETRIES: u32 = 10;
+
+/// Base backoff interval for stale prefix retries (seconds).
+const STALE_BACKOFF_BASE_SECS: u64 = 30;
+
+/// Parsed stale prefix entry from Redis.
+struct StaleEntry {
+    source: String,
+    retries: u32,
+}
+
+/// Encode a stale entry value for Redis: `{source}:{retries}:{not_before_epoch}`.
+fn encode_stale_value(source: &str, retries: u32) -> String {
+    let backoff_secs = STALE_BACKOFF_BASE_SECS * 2u64.saturating_pow(retries);
+    let not_before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + backoff_secs;
+    format!("{}:{}:{}", source, retries, not_before)
+}
+
+/// Decode a stale entry value: `{source}:{retries}:{not_before_epoch}`.
+fn decode_stale_value(value: &str) -> (String, u32, u64) {
+    let parts: Vec<&str> = value.rsplitn(3, ':').collect();
+    let not_before = parts[0].parse::<u64>().unwrap_or(0);
+    let retries = parts[1].parse::<u32>().unwrap_or(0);
+    (parts[2].to_string(), retries, not_before)
+}
+
+/// Record a stale prefix for anti-entropy repair (first occurrence).
 pub async fn record_stale_prefix(
     redis: &redis::aio::ConnectionManager,
     kel_prefix: &str,
     source_node_prefix: &str,
 ) {
+    record_stale_entry(redis, STALE_PREFIX_KEY, kel_prefix, source_node_prefix, 0).await;
+}
+
+/// Re-queue a stale prefix with incremented retry count and exponential backoff.
+async fn requeue_stale_entry(
+    redis: &redis::aio::ConnectionManager,
+    key: &str,
+    prefix: &str,
+    source: &str,
+    retries: u32,
+) {
+    let next_retries = retries + 1;
+    if next_retries > MAX_STALE_RETRIES {
+        warn!(
+            "Anti-entropy: giving up on stale prefix {} after {} retries",
+            prefix, retries
+        );
+        return;
+    }
+    record_stale_entry(redis, key, prefix, source, next_retries).await;
+}
+
+/// Write a stale entry to a Redis hash with backoff encoding.
+async fn record_stale_entry(
+    redis: &redis::aio::ConnectionManager,
+    hash_key: &str,
+    prefix: &str,
+    source: &str,
+    retries: u32,
+) {
     let mut conn = redis.clone();
+    let value = encode_stale_value(source, retries);
     if let Err(e) = redis::cmd("HSET")
-        .arg(STALE_PREFIX_KEY)
-        .arg(kel_prefix)
-        .arg(source_node_prefix)
+        .arg(hash_key)
+        .arg(prefix)
+        .arg(&value)
         .query_async::<()>(&mut conn)
         .await
     {
         warn!(
             "Failed to record stale prefix {} from {}: {}",
-            kel_prefix, source_node_prefix, e
+            prefix, source, e
         );
     } else {
         debug!(
-            "Recorded stale prefix {} (source: {})",
-            kel_prefix, source_node_prefix
+            "Recorded stale prefix {} (source: {}, retries: {})",
+            prefix, source, retries
         );
     }
 }
@@ -762,11 +846,14 @@ pub(crate) async fn sync_prefix(
     }
 }
 
-/// Drain a stale hash from Redis, returning entries and deleting the key atomically.
-async fn drain_stale_hash(
+/// Drain due stale entries from a Redis hash.
+///
+/// Reads all entries, returns those whose `not_before` has passed, and re-queues
+/// entries that aren't due yet (still backing off).
+async fn drain_due_stale_entries(
     redis: &redis::aio::ConnectionManager,
     key: &str,
-) -> Option<HashMap<String, String>> {
+) -> Option<HashMap<String, StaleEntry>> {
     let mut conn = redis.clone();
     let flat: Vec<String> = redis::cmd("HGETALL")
         .arg(key)
@@ -774,7 +861,7 @@ async fn drain_stale_hash(
         .await
         .ok()?;
 
-    let map: HashMap<String, String> = flat
+    let raw: Vec<(String, String)> = flat
         .chunks(2)
         .filter_map(|pair| {
             if pair.len() == 2 {
@@ -785,21 +872,45 @@ async fn drain_stale_hash(
         })
         .collect();
 
-    if !map.is_empty() {
-        let _ = redis::cmd("DEL")
-            .arg(key)
-            .query_async::<()>(&mut conn)
-            .await;
+    if raw.is_empty() {
+        return Some(HashMap::new());
     }
 
-    Some(map)
+    // Delete the whole hash — we'll re-queue entries that aren't due yet
+    let _ = redis::cmd("DEL")
+        .arg(key)
+        .query_async::<()>(&mut conn)
+        .await;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut due = HashMap::new();
+    for (prefix, value) in raw {
+        let (source, retries, not_before) = decode_stale_value(&value);
+        if now >= not_before {
+            due.insert(prefix, StaleEntry { source, retries });
+        } else {
+            // Not due yet — re-queue with same retries/not_before
+            let _ = redis::cmd("HSET")
+                .arg(key)
+                .arg(&prefix)
+                .arg(&value)
+                .query_async::<()>(&mut conn)
+                .await;
+        }
+    }
+
+    Some(due)
 }
 
-/// Drain the stale prefix hash from Redis.
+/// Drain due stale KEL prefixes from Redis.
 async fn drain_stale_prefixes(
     redis: &redis::aio::ConnectionManager,
-) -> Option<HashMap<String, String>> {
-    drain_stale_hash(redis, STALE_PREFIX_KEY).await
+) -> Option<HashMap<String, StaleEntry>> {
+    drain_due_stale_entries(redis, STALE_PREFIX_KEY).await
 }
 
 /// Periodically runs anti-entropy repair to detect and fix silent divergence.
@@ -857,14 +968,14 @@ pub async fn run_anti_entropy_loop(
             // who has a different (newer) state, then sync only from those peers.
             // Parallelized across prefixes.
             let mut tasks = Vec::new();
-            for (kel_prefix, source_node_prefix) in &stale_entries {
+            for (kel_prefix, entry) in &stale_entries {
                 // Build ordered peer list: source peer first, then others
                 let mut ordered_peers: Vec<(String, String)> = Vec::new();
-                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
                     ordered_peers.push(source.clone());
                 }
                 for peer in &peers {
-                    if peer.0 != *source_node_prefix {
+                    if peer.0 != entry.source {
                         ordered_peers.push(peer.clone());
                     }
                 }
@@ -874,7 +985,8 @@ pub async fn run_anti_entropy_loop(
 
                 let local = local_client.clone();
                 let prefix = kel_prefix.clone();
-                let source = source_node_prefix.clone();
+                let source = entry.source.clone();
+                let retries = entry.retries;
                 tasks.push(async move {
                     let local_said = local
                         .fetch_effective_said(&prefix)
@@ -909,7 +1021,7 @@ pub async fn run_anti_entropy_loop(
                         };
                         let result = sync_prefix(&remote, &local, &prefix, since_for_sync).await;
                         if matches!(result, RepairResult::Contested) {
-                            return (prefix, source, RepairResult::Contested);
+                            return (prefix, source, retries, RepairResult::Contested);
                         }
 
                         // Check if local state actually changed
@@ -920,21 +1032,19 @@ pub async fn run_anti_entropy_loop(
                             .flatten()
                             .map(|(s, _)| s);
                         if new_said != local_said {
-                            return (prefix, source, RepairResult::Repaired);
+                            return (prefix, source, retries, RepairResult::Repaired);
                         }
                     }
 
                     if any_peer_differs {
-                        // Peers had different state but sync didn't help — re-queue
-                        (prefix, source, RepairResult::Failed)
+                        (prefix, source, retries, RepairResult::Failed)
                     } else {
-                        // All peers agree on same state — nothing to repair
-                        (prefix, source, RepairResult::NoOp)
+                        (prefix, source, retries, RepairResult::NoOp)
                     }
                 });
             }
 
-            for (kel_prefix, source_node_prefix, result) in join_all(tasks).await {
+            for (kel_prefix, source_node_prefix, retries, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
                         info!("Anti-entropy: repaired {}", kel_prefix);
@@ -943,8 +1053,19 @@ pub async fn run_anti_entropy_loop(
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
                     }
                     RepairResult::Failed => {
-                        warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
-                        record_stale_prefix(redis.as_ref(), &kel_prefix, &source_node_prefix).await;
+                        warn!(
+                            "Anti-entropy: re-queuing stale prefix {} (retry {})",
+                            kel_prefix,
+                            retries + 1
+                        );
+                        requeue_stale_entry(
+                            redis.as_ref(),
+                            STALE_PREFIX_KEY,
+                            &kel_prefix,
+                            &source_node_prefix,
+                            retries,
+                        )
+                        .await;
                     }
                     RepairResult::NoOp => {
                         debug!("Anti-entropy: all peers agree on state for {}", kel_prefix);
@@ -1072,25 +1193,20 @@ pub async fn run_anti_entropy_loop(
 /// Redis hash key for SAD chain anti-entropy stale prefix tracking.
 const SAD_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sad_chain_stale";
 
-/// Record a SAD chain prefix as stale for anti-entropy repair.
+/// Record a SAD chain prefix as stale for anti-entropy repair (first occurrence).
 pub async fn record_sad_stale_prefix(
     redis: &redis::aio::ConnectionManager,
     chain_prefix: &str,
     source_node_prefix: &str,
 ) {
-    let mut conn = redis.clone();
-    if let Err(e) = redis::cmd("HSET")
-        .arg(SAD_STALE_PREFIX_KEY)
-        .arg(chain_prefix)
-        .arg(source_node_prefix)
-        .query_async::<()>(&mut conn)
-        .await
-    {
-        warn!(
-            "Failed to record SAD stale prefix {} from {}: {}",
-            chain_prefix, source_node_prefix, e
-        );
-    }
+    record_stale_entry(
+        redis,
+        SAD_STALE_PREFIX_KEY,
+        chain_prefix,
+        source_node_prefix,
+        0,
+    )
+    .await;
 }
 
 /// Periodically runs anti-entropy repair for SAD chain data.
@@ -1128,13 +1244,14 @@ pub async fn run_sad_anti_entropy_loop(
         let local_client = kels::SadStoreClient::new(&sadstore_url);
 
         // Phase 1: Process known-stale chain prefixes
-        let stale_entries = match drain_stale_hash(redis.as_ref(), SAD_STALE_PREFIX_KEY).await {
-            Some(map) => map,
-            None => {
-                warn!("SAD anti-entropy: failed to read stale prefixes");
-                continue;
-            }
-        };
+        let stale_entries =
+            match drain_due_stale_entries(redis.as_ref(), SAD_STALE_PREFIX_KEY).await {
+                Some(map) => map,
+                None => {
+                    warn!("SAD anti-entropy: failed to read stale prefixes");
+                    continue;
+                }
+            };
 
         if !stale_entries.is_empty() {
             info!(
@@ -1143,13 +1260,13 @@ pub async fn run_sad_anti_entropy_loop(
             );
 
             let mut tasks = Vec::new();
-            for (chain_prefix, source_node_prefix) in &stale_entries {
+            for (chain_prefix, entry) in &stale_entries {
                 let mut ordered_peers: Vec<(String, String)> = Vec::new();
-                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
                     ordered_peers.push(source.clone());
                 }
                 for peer in &peers {
-                    if peer.0 != *source_node_prefix {
+                    if peer.0 != entry.source {
                         ordered_peers.push(peer.clone());
                     }
                 }
@@ -1159,7 +1276,8 @@ pub async fn run_sad_anti_entropy_loop(
 
                 let local = local_client.clone();
                 let prefix = chain_prefix.clone();
-                let source = source_node_prefix.clone();
+                let source = entry.source.clone();
+                let retries = entry.retries;
                 tasks.push(async move {
                     let local_said = local.fetch_sad_effective_said(&prefix).await.ok().flatten();
 
@@ -1186,20 +1304,30 @@ pub async fn run_sad_anti_entropy_loop(
                         .await
                         .is_ok()
                         {
-                            return (prefix, source, true);
+                            return (prefix, source, retries, true);
                         }
                     }
-                    (prefix, source, false)
+                    (prefix, source, retries, false)
                 });
             }
 
-            for (chain_prefix, source_node_prefix, success) in join_all(tasks).await {
+            for (chain_prefix, source_node_prefix, retries, success) in join_all(tasks).await {
                 if success {
                     info!("SAD anti-entropy: repaired chain {}", chain_prefix);
                 } else {
-                    warn!("SAD anti-entropy: re-queuing stale chain {}", chain_prefix);
-                    record_sad_stale_prefix(redis.as_ref(), &chain_prefix, &source_node_prefix)
-                        .await;
+                    warn!(
+                        "SAD anti-entropy: re-queuing stale chain {} (retry {})",
+                        chain_prefix,
+                        retries + 1
+                    );
+                    requeue_stale_entry(
+                        redis.as_ref(),
+                        SAD_STALE_PREFIX_KEY,
+                        &chain_prefix,
+                        &source_node_prefix,
+                        retries,
+                    )
+                    .await;
                 }
             }
         }
