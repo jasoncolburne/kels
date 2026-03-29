@@ -14,7 +14,8 @@ use libkels_derive::SignedEvents;
     signatures_table = "kels_key_event_signatures",
     recovery_table = "kels_recovery",
     archived_events_table = "kels_archived_events",
-    archived_signatures_table = "kels_archived_event_signatures"
+    archived_signatures_table = "kels_archived_event_signatures",
+    recovery_events_table = "kels_recovery_events"
 )]
 pub struct KeyEventRepository {
     pub pool: PgPool,

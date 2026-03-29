@@ -42,7 +42,8 @@ pub struct RaftLogAuditRepository {
     signatures_table = "member_key_event_signatures",
     recovery_table = "member_recovery",
     archived_events_table = "member_archived_events",
-    archived_signatures_table = "member_archived_event_signatures"
+    archived_signatures_table = "member_archived_event_signatures",
+    recovery_events_table = "member_recovery_events"
 )]
 pub struct MemberKelRepository {
     pub pool: PgPool,

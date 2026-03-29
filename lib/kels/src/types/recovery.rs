@@ -31,6 +31,23 @@ pub struct RecoveryRecord {
     pub owner_first_serial: u64,
 }
 
+/// Links a recovery to an archived adversary event it displaced.
+///
+/// One entry per archived event, all sharing the same `recovery_said`.
+/// Enables tracing from a `RecoveryRecord` to the specific events that
+/// were archived during that recovery.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "kels_recovery_events")]
+#[serde(rename_all = "camelCase")]
+pub struct KelRecoveryEvent {
+    #[said]
+    pub said: String,
+    /// The recovery record this event belongs to.
+    pub recovery_said: String,
+    /// The SAID of the archived event.
+    pub event_said: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

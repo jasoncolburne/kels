@@ -53,4 +53,11 @@ ALTER TABLE kels_archived_event_signatures
     ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
     REFERENCES kels_archived_events(said) ON DELETE CASCADE;
 
+CREATE TABLE IF NOT EXISTS kels_recovery_events (
+    said TEXT PRIMARY KEY,
+    recovery_said TEXT NOT NULL REFERENCES kels_recovery(said) ON DELETE CASCADE,
+    event_said TEXT NOT NULL REFERENCES kels_archived_events(said) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS kels_recovery_events_recovery_idx ON kels_recovery_events(recovery_said);
+
 COMMIT;

@@ -13,7 +13,8 @@ use verifiable_storage_postgres::{PgPool, Stored};
     signatures_table = "registry_key_event_signatures",
     recovery_table = "registry_recovery",
     archived_events_table = "registry_archived_events",
-    archived_signatures_table = "registry_archived_event_signatures"
+    archived_signatures_table = "registry_archived_event_signatures",
+    recovery_events_table = "registry_recovery_events"
 )]
 pub struct RegistryKelRepository {
     pub pool: PgPool,

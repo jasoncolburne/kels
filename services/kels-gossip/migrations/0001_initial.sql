@@ -50,4 +50,11 @@ ALTER TABLE registry_archived_event_signatures
     ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
     REFERENCES registry_archived_events(said) ON DELETE CASCADE;
 
+CREATE TABLE IF NOT EXISTS registry_recovery_events (
+    said TEXT PRIMARY KEY,
+    recovery_said TEXT NOT NULL REFERENCES registry_recovery(said) ON DELETE CASCADE,
+    event_said TEXT NOT NULL REFERENCES registry_archived_events(said) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS registry_recovery_events_recovery_idx ON registry_recovery_events(recovery_said);
+
 COMMIT;
