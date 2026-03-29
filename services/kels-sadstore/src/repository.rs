@@ -2,9 +2,10 @@
 
 use kels::{SadRecord, SadRecordSignature};
 use verifiable_storage::{
-    ChainedRepository, QueryExecutor as _, StorageError, TransactionExecutor, UnchainedRepository,
+    ChainedRepository, ColumnQuery, QueryExecutor as _, StorageError, TransactionExecutor,
+    UnchainedRepository, Value,
 };
-use verifiable_storage_postgres::{PgPool, Stored};
+use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
 #[derive(Stored)]
 #[stored(item_type = SadRecord, table = "sad_records", chained = true)]
@@ -190,25 +191,20 @@ impl SadRecordRepository {
         Ok(())
     }
 
-    /// Check whether a chain is divergent (multiple records at the same version).
+    /// Quick check: does any version appear more than once for this prefix?
+    ///
+    /// Uses `GROUP BY version ORDER BY COUNT(*) DESC LIMIT 1` — returns true if
+    /// the highest count exceeds 1.
     pub async fn is_divergent(&self, prefix: &str) -> Result<bool, StorageError> {
-        use verifiable_storage_postgres::QueryExecutor;
-
-        let records: Vec<SadRecord> = {
-            let query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", prefix)
-                    .order_by("version", verifiable_storage_postgres::Order::Asc)
-                    .order_by("said", verifiable_storage_postgres::Order::Asc);
-            self.pool.fetch(query).await?
-        };
-
-        for window in records.windows(2) {
-            if window[0].version == window[1].version {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("version")
+            .limit(1);
+        let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
+        Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
     /// Check divergence within a transaction.
@@ -217,21 +213,15 @@ impl SadRecordRepository {
         tx: &mut Tx,
         prefix: &str,
     ) -> Result<bool, StorageError> {
-        let records: Vec<SadRecord> = {
-            let query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", prefix)
-                    .order_by("version", verifiable_storage_postgres::Order::Asc)
-                    .order_by("said", verifiable_storage_postgres::Order::Asc);
-            tx.fetch(query).await?
-        };
-
-        for window in records.windows(2) {
-            if window[0].version == window[1].version {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("version")
+            .limit(1);
+        let counts: Vec<i64> = tx.fetch_grouped_count(query).await?;
+        Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
     /// Get the chain with signatures as `SignedSadRecord`s.
@@ -432,9 +422,25 @@ impl SadRecordRepository {
             None
         };
 
+        // Batch divergence check: find all prefixes in this page that have
+        // duplicate versions, in a single query.
+        let page_prefixes: Vec<String> = prefix_states.iter().map(|s| s.prefix.clone()).collect();
+        let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
+            .distinct()
+            .r#in("prefix", page_prefixes)
+            .group_by("prefix")
+            .group_by("version")
+            .having_count_gt(1);
+        let divergent_prefixes: std::collections::HashSet<String> = self
+            .pool
+            .fetch_column(divergent_query)
+            .await?
+            .into_iter()
+            .collect();
+
         // Replace divergent chain SAIDs with synthetic effective SAIDs
         for state in &mut prefix_states {
-            if self.is_divergent(&state.prefix).await? {
+            if divergent_prefixes.contains(&state.prefix) {
                 state.said = kels::hash_effective_said(&format!("divergent:{}", state.prefix));
             }
         }

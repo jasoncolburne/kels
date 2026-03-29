@@ -272,24 +272,21 @@ impl BootstrapSync {
                         continue;
                     }
 
-                    // Fetch and sync the chain
-                    if let Ok(chain_page) = remote_client.fetch_sad_chain(&state.prefix, None).await
+                    // Forward the full chain (paginated) from remote to local
+                    if let Err(e) = kels::forward_sad_records(
+                        &state.prefix,
+                        &remote_client.as_sad_source(),
+                        &local_client.as_sad_sink(),
+                        kels::page_size(),
+                        kels::max_pages(),
+                        local_said.as_deref(),
+                    )
+                    .await
                     {
-                        // Fetch content objects first
-                        for stored in &chain_page.records {
-                            if let Some(ref content_said) = stored.record.content_said
-                                && let Ok(object) = remote_client.get_sad_object(content_said).await
-                            {
-                                let _ = local_client.put_sad_object(&object).await;
-                            }
-                        }
-                        // Batch submit (single KEL verification)
-                        if let Err(e) = local_client.submit_sad_records(&chain_page.records).await {
-                            warn!(
-                                "Failed to batch-submit SAD records for {} during bootstrap: {}",
-                                state.prefix, e
-                            );
-                        }
+                        warn!(
+                            "Failed to sync SAD chain {} from {} during bootstrap: {}",
+                            state.prefix, peer.node_id, e
+                        );
                     }
                 }
 

@@ -268,14 +268,6 @@ impl SadStoreClient {
 
     /// Verify a SAD record chain and return a verification token.
     ///
-    /// Fetches the full chain, verifies structural integrity (SAID, chain linkage,
-    /// version monotonicity, consistent kel_prefix/kind), then verifies every
-    /// record's signature against the owner's KEL at each record's establishment serial.
-    ///
-    /// The `kels_client` is used to fetch and verify the owner's KEL for
-    /// signature verification.
-    /// Verify a SAD record chain and return a verification token.
-    ///
     /// Pages through the full chain, verifies structural integrity (SAID, chain linkage,
     /// version monotonicity, consistent kel_prefix/kind), then verifies every
     /// record's signature against the owner's KEL at each record's establishment serial.

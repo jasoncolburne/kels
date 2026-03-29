@@ -142,11 +142,16 @@ pub async fn run_sad_redis_subscriber(
             }
         };
 
-        // Feedback loop prevention
+        // Feedback loop prevention — key format must match what the gossip
+        // handlers insert before storing locally.
         {
             let mut guard = recently_stored.write().await;
             guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
-            let cache_key = format!("sad:{}", payload);
+            let cache_key = if channel == SAD_PUBSUB_CHANNEL {
+                format!("sad-object:{}", payload)
+            } else {
+                format!("sad-record:{}", payload)
+            };
             if guard.contains_key(&cache_key) {
                 debug!("Skipping SAD Redis message (recently stored from gossip)");
                 continue;
@@ -319,6 +324,17 @@ impl SyncHandler {
             }
         }
 
+        // Mark as recently stored BEFORE storing to prevent Redis feedback loop.
+        // The PUT will publish to Redis `sad_updates`, which the subscriber checks
+        // against this cache key.
+        {
+            let cache_key = format!("sad-object:{}", said);
+            self.recently_stored
+                .write()
+                .await
+                .insert(cache_key, Instant::now());
+        }
+
         // Fetch from remote and store locally
         match remote_client.get_sad_object(said).await {
             Ok(object) => {
@@ -361,6 +377,17 @@ impl SyncHandler {
         if local_said.as_deref() == Some(remote_said) {
             debug!("SAD chain {} already in sync", chain_prefix);
             return;
+        }
+
+        // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+        // The record submission will publish to Redis `sad_chain_updates` as
+        // "{chain_prefix}:{said}", which the subscriber checks against this cache key.
+        {
+            let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
+            self.recently_stored
+                .write()
+                .await
+                .insert(cache_key, Instant::now());
         }
 
         let remote_client = kels::SadStoreClient::new(&sadstore_url);

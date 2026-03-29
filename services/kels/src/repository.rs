@@ -127,10 +127,26 @@ impl KeyEventRepository {
             None
         };
 
+        // Batch divergence check: find all prefixes in this page that have
+        // duplicate serials, in a single query.
+        let page_prefixes: Vec<String> = prefix_states.iter().map(|s| s.prefix.clone()).collect();
+        let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
+            .distinct()
+            .r#in("prefix", page_prefixes)
+            .group_by("prefix")
+            .group_by("serial")
+            .having_count_gt(1);
+        let divergent_prefixes: HashSet<String> = self
+            .pool
+            .fetch_column(divergent_query)
+            .await?
+            .into_iter()
+            .collect();
+
         // For divergent prefixes, replace the single tip SAID with a deterministic
         // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
-            if self.is_divergent(&state.prefix).await?
+            if divergent_prefixes.contains(&state.prefix)
                 && let Some((effective, _)) =
                     self.compute_prefix_effective_said(&state.prefix).await?
             {
