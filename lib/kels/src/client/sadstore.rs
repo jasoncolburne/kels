@@ -208,18 +208,26 @@ impl SadStoreClient {
         }
     }
 
-    /// List SAD chain prefixes (paginated). Used for bootstrap and anti-entropy.
+    /// List SAD chain prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
     pub async fn fetch_sad_prefixes(
         &self,
+        signer: &dyn crate::PeerSigner,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
-        let mut url = format!("{}/api/v1/sad/prefixes?limit={}", self.base_url, limit);
-        if let Some(cursor) = cursor {
-            url.push_str(&format!("&cursor={}", cursor));
-        }
-
-        let resp = self.client.get(&url).send().await?;
+        let request = crate::PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: crate::generate_nonce(),
+            since: cursor.map(|s| s.to_string()),
+            limit: Some(limit),
+        };
+        let signed = crate::sign_request(signer, &request).await?;
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/sad/prefixes", self.base_url))
+            .json(&signed)
+            .send()
+            .await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)

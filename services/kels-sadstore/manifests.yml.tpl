@@ -72,6 +72,10 @@ spec:
               value: "${var.sadstore.ipRateLimitBurst}"
             - name: SADSTORE_MAX_OBJECT_SIZE
               value: "${var.sadstore.maxObjectSize}"
+            - name: FEDERATION_REGISTRY_URLS
+              value: "${var.federationRegistryUrls}"
+            - name: KELS_TEST_ENDPOINTS
+              value: "${var.testEndpoints}"
           livenessProbe:
             httpGet:
               path: /health

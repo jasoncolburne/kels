@@ -15,6 +15,7 @@ use axum::{
 };
 use cesr::{Matter, Signature, VerificationKey};
 use dashmap::DashMap;
+use redis::AsyncCommands;
 use serde::Deserialize;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, SelfAddressed};
@@ -24,10 +25,15 @@ use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 const SECS_PER_DAY: u64 = 86_400;
 const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
 
+fn nonce_window_secs() -> u64 {
+    kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+}
+
 /// Spawn a background task that periodically removes expired entries from
-/// rate limit maps. Prevents unbounded growth from attacker-generated keys.
+/// rate limit and nonce maps. Prevents unbounded growth from attacker-generated keys.
 pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
     tokio::spawn(async move {
+        let nonce_window = Duration::from_secs(nonce_window_secs());
         loop {
             tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
             let now = Instant::now();
@@ -38,6 +44,9 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
             state
                 .ip_rate_limits
                 .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .nonce_cache
+                .retain(|_, t| now.duration_since(*t) < nonce_window);
         }
     });
 }
@@ -124,8 +133,161 @@ pub struct AppState {
     pub object_store: Arc<ObjectStore>,
     pub kels_client: kels::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    pub registry_urls: Vec<String>,
     pub prefix_rate_limits: DashMap<String, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
+    pub nonce_cache: DashMap<String, Instant>,
+}
+
+// ==================== Peer Authentication ====================
+
+/// Look up a verified peer from Redis cache, returning the full Peer data.
+async fn get_verified_peer(
+    redis_conn: &redis::aio::ConnectionManager,
+    peer_prefix: &str,
+) -> Result<Option<kels::Peer>, (StatusCode, String)> {
+    let mut conn = redis_conn.clone();
+    let json: Option<String> = conn
+        .get(format!("kels:verified-peer:{}", peer_prefix))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis error: {}", e),
+            )
+        })?;
+    match json {
+        Some(j) => {
+            let peer: kels::Peer = serde_json::from_str(&j).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Deserialization failed: {}", e),
+                )
+            })?;
+            Ok(Some(peer))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Fetch verified peers from the registry and store records in Redis.
+async fn refresh_verified_peers(
+    redis_conn: &redis::aio::ConnectionManager,
+    registry_urls: &[String],
+) -> Result<(), (StatusCode, String)> {
+    if registry_urls.is_empty() {
+        warn!("No registry URLs configured, skipping peer verification refresh");
+        return Ok(());
+    }
+
+    let (peers_response, _) = kels::with_failover(
+        registry_urls,
+        std::time::Duration::from_secs(10),
+        |c| async move { c.fetch_peers().await },
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to fetch peers: {}", e),
+        )
+    })?;
+
+    let mut conn = redis_conn.clone();
+    for history in &peers_response.peers {
+        if let Some(peer) = history.records.last()
+            && peer.active
+        {
+            let peer_json = serde_json::to_string(peer).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Serialization failed: {}", e),
+                )
+            })?;
+            conn.set_ex::<_, _, ()>(
+                format!("kels:verified-peer:{}", peer.peer_prefix),
+                peer_json,
+                3600,
+            )
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Redis error: {}", e),
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Authenticate a signed request from a federation peer.
+///
+/// Validates timestamp, deduplicates nonce, verifies peer is in the federation
+/// allowlist (via Redis cache), verifies peer's KEL via the KELS service,
+/// and verifies the request signature against the peer's current public key.
+async fn authenticate_peer_request<T: serde::Serialize>(
+    state: &AppState,
+    signed_request: &kels::SignedRequest<T>,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<(), (StatusCode, String)> {
+    if !kels::validate_timestamp(timestamp, 60) {
+        return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
+    }
+
+    // Nonce deduplication
+    let window = nonce_window_secs();
+    if window > 0 {
+        let now = Instant::now();
+        if state.nonce_cache.insert(nonce.to_string(), now).is_some() {
+            return Err((StatusCode::FORBIDDEN, "Duplicate nonce".into()));
+        }
+    }
+
+    // Peer allowlist verification (requires Redis)
+    let redis_conn = state.redis_conn.as_ref().ok_or_else(|| {
+        (
+            StatusCode::FORBIDDEN,
+            "Peer verification unavailable in standalone mode".into(),
+        )
+    })?;
+
+    let peer = get_verified_peer(redis_conn, &signed_request.peer_prefix).await?;
+    if peer.is_none() {
+        refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+        if get_verified_peer(redis_conn, &signed_request.peer_prefix)
+            .await?
+            .is_none()
+        {
+            return Err((StatusCode::FORBIDDEN, "Peer not authorized".into()));
+        }
+    }
+
+    // Verify peer's KEL via KELS service to extract trusted public key
+    let verifier = kels::KelVerifier::new(&signed_request.peer_prefix);
+    let kel_verification = kels::verify_key_events(
+        &signed_request.peer_prefix,
+        &state.kels_client.as_kel_source(),
+        verifier,
+        kels::page_size(),
+        kels::max_pages(),
+    )
+    .await
+    .map_err(|_| (StatusCode::FORBIDDEN, "Peer KEL verification failed".into()))?;
+
+    // Verify request signature
+    signed_request
+        .verify_signature(&kel_verification)
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "Signature verification failed".into(),
+            )
+        })?;
+
+    Ok(())
 }
 
 // === Health ===
@@ -566,31 +728,21 @@ pub async fn get_sad_effective_said(
     }
 }
 
-// === Prefix Listing (for bootstrap + anti-entropy) ===
+// === Prefix Listing (authenticated — federation peers only) ===
 
-const MAX_PREFIX_PAGE_SIZE: u64 = 100;
+const MAX_PREFIX_PAGE_SIZE: usize = 100;
 
-#[derive(Deserialize)]
-pub struct PrefixListQuery {
-    pub cursor: Option<String>,
-    pub limit: Option<u64>,
-}
-
-pub async fn list_sad_objects(
-    Query(query): Query<PrefixListQuery>,
-    State(state): State<Arc<AppState>>,
+/// Shared query logic for listing SAD objects.
+async fn query_sad_objects(
+    state: &AppState,
+    cursor: Option<&str>,
+    limit: Option<usize>,
 ) -> impl IntoResponse {
-    let limit = query
-        .limit
+    let limit = limit
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
-        .min(MAX_PREFIX_PAGE_SIZE);
+        .min(MAX_PREFIX_PAGE_SIZE) as u64;
 
-    match state
-        .repo
-        .sad_objects
-        .list(query.cursor.as_deref(), limit + 1)
-        .await
-    {
+    match state.repo.sad_objects.list(cursor, limit + 1).await {
         Ok(saids) => {
             let has_more = saids.len() as u64 > limit;
             let saids: Vec<_> = saids.into_iter().take(limit as usize).collect();
@@ -612,25 +764,121 @@ pub async fn list_sad_objects(
     }
 }
 
-pub async fn list_sad_prefixes(
-    Query(query): Query<PrefixListQuery>,
-    State(state): State<Arc<AppState>>,
+/// Shared query logic for listing SAD chain prefixes.
+async fn query_sad_prefixes(
+    state: &AppState,
+    cursor: Option<&str>,
+    limit: Option<usize>,
 ) -> impl IntoResponse {
-    let limit = query
-        .limit
+    let limit = limit
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
-        .min(MAX_PREFIX_PAGE_SIZE) as usize;
+        .min(MAX_PREFIX_PAGE_SIZE);
 
-    match state
-        .repo
-        .sad_records
-        .list_prefixes(query.cursor.as_deref(), limit)
-        .await
-    {
+    match state.repo.sad_records.list_prefixes(cursor, limit).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Failed to list prefixes: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }
+}
+
+/// Authenticated SAD object listing. Federation peers only.
+pub async fn list_sad_objects(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    if let Err((status, msg)) = authenticate_peer_request(
+        &state,
+        &signed_request,
+        signed_request.payload.timestamp,
+        &signed_request.payload.nonce,
+    )
+    .await
+    {
+        return (status, msg).into_response();
+    }
+
+    query_sad_objects(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
+}
+
+/// Authenticated SAD chain prefix listing. Federation peers only.
+pub async fn list_sad_prefixes(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    if let Err((status, msg)) = authenticate_peer_request(
+        &state,
+        &signed_request,
+        signed_request.payload.timestamp,
+        &signed_request.payload.nonce,
+    )
+    .await
+    {
+        return (status, msg).into_response();
+    }
+
+    query_sad_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
+}
+
+/// Unauthenticated test endpoint for listing SAD objects.
+/// Only available when `KELS_TEST_ENDPOINTS=true`.
+pub async fn test_list_sad_objects(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    query_sad_objects(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
+}
+
+/// Unauthenticated test endpoint for listing SAD chain prefixes.
+/// Only available when `KELS_TEST_ENDPOINTS=true`.
+pub async fn test_list_sad_prefixes(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    query_sad_prefixes(
+        &state,
+        signed_request.payload.since.as_deref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
 }

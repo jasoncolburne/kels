@@ -135,6 +135,7 @@ impl SharedHarness {
             std::env::set_var("MINIO_ACCESS_KEY", "minioadmin");
             std::env::set_var("MINIO_SECRET_KEY", "minioadmin");
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
+            std::env::set_var("KELS_TEST_ENDPOINTS", "true");
         }
 
         // Start the server
@@ -148,7 +149,8 @@ impl SharedHarness {
                 // chain submission tests will fail sig verification. That's expected.
                 // We test SAD object operations and structural validation.
                 if let Err(e) =
-                    kels_sadstore::run(listener, &db_url, None, "http://localhost:1").await
+                    kels_sadstore::run(listener, &db_url, None, "http://localhost:1", Vec::new())
+                        .await
                 {
                     panic!("Server error: {}", e);
                 }
@@ -430,9 +432,21 @@ async fn test_list_prefixes_empty() {
         return;
     };
 
+    let body = kels::SignedRequest {
+        payload: kels::PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
+            since: None,
+            limit: None,
+        },
+        peer_prefix: "test".to_string(),
+        signature: "test".to_string(),
+    };
+
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/prefixes"))
+        .post(harness.url("/api/test/sad/prefixes"))
+        .json(&body)
         .send()
         .await
         .unwrap();
@@ -449,9 +463,21 @@ async fn test_list_objects_empty() {
         return;
     };
 
+    let body = kels::SignedRequest {
+        payload: kels::PrefixesRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels::generate_nonce(),
+            since: None,
+            limit: None,
+        },
+        peer_prefix: "test".to_string(),
+        signature: "test".to_string(),
+    };
+
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/objects"))
+        .post(harness.url("/api/test/sad/objects"))
+        .json(&body)
         .send()
         .await
         .unwrap();

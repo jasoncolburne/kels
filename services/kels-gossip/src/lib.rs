@@ -683,12 +683,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
         let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_signer = registry_signer.clone();
         let sad_ae_sadstore_url = config.sadstore_url().clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_sad_anti_entropy_loop(
                 sad_ae_redis,
                 sad_ae_allowlist,
+                sad_ae_signer,
                 sad_ae_sadstore_url,
                 sad_ae_interval,
             )

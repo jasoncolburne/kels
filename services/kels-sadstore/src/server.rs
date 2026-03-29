@@ -1,6 +1,9 @@
 //! KELS SADStore HTTP Server
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, LazyLock},
+};
 
 use axum::{
     Router,
@@ -17,8 +20,14 @@ use crate::{
     repository::SadStoreRepository,
 };
 
+static TEST_ENDPOINTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("KELS_TEST_ENDPOINTS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+});
+
 pub(crate) fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
         // SAD object store (Layer 1 — MinIO)
@@ -32,9 +41,24 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/sad/chain/:prefix/effective-said",
             get(handlers::get_sad_effective_said),
         )
-        // Listing (for bootstrap + anti-entropy)
-        .route("/api/v1/sad/objects", get(handlers::list_sad_objects))
-        .route("/api/v1/sad/prefixes", get(handlers::list_sad_prefixes))
+        // Listing (authenticated — federation peers only)
+        .route("/api/v1/sad/objects", post(handlers::list_sad_objects))
+        .route("/api/v1/sad/prefixes", post(handlers::list_sad_prefixes));
+
+    if *TEST_ENDPOINTS_ENABLED {
+        tracing::warn!("KELS_TEST_ENDPOINTS enabled — unauthenticated test endpoints active");
+        router = router
+            .route(
+                "/api/test/sad/objects",
+                post(handlers::test_list_sad_objects),
+            )
+            .route(
+                "/api/test/sad/prefixes",
+                post(handlers::test_list_sad_prefixes),
+            );
+    }
+
+    router
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
         .with_state(state)
 }
@@ -44,6 +68,7 @@ pub async fn run(
     database_url: &str,
     redis_url: Option<&str>,
     kels_url: &str,
+    registry_urls: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to database");
     let repo = SadStoreRepository::connect(database_url)
@@ -99,8 +124,10 @@ pub async fn run(
         object_store: Arc::new(object_store),
         kels_client,
         redis_conn,
+        registry_urls,
         prefix_rate_limits: dashmap::DashMap::new(),
         ip_rate_limits: dashmap::DashMap::new(),
+        nonce_cache: dashmap::DashMap::new(),
     });
 
     handlers::spawn_rate_limit_reaper(Arc::clone(&state));

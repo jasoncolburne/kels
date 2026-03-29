@@ -173,14 +173,17 @@ echo ""
 echo -e "${CYAN}=== Scenario 4: Listing Endpoints ===${NC}"
 echo ""
 
+LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test","since":null,"limit":null},"peerPrefix":"test","signature":"test"}'
+LISTING_BODY_LIMIT='{"payload":{"timestamp":0,"nonce":"test2","since":null,"limit":5},"peerPrefix":"test","signature":"test"}'
+
 run_test "List chain prefixes" \
-    bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/prefixes' | jq -e '.prefixes != null'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/prefixes' -H 'Content-Type: application/json' -d '${LISTING_BODY}' | jq -e '.prefixes != null'"
 
 run_test "List SAD objects" \
-    bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/objects' | jq -e '.saids != null'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/objects' -H 'Content-Type: application/json' -d '${LISTING_BODY}' | jq -e '.saids != null'"
 
 run_test "List with pagination limit" \
-    bash -c "curl -sf '${NODE_A_SAD_URL}/api/v1/sad/prefixes?limit=5' | jq -e '.prefixes | length <= 5'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/prefixes' -H 'Content-Type: application/json' -d '${LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
 
 echo ""
 

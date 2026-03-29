@@ -1074,6 +1074,7 @@ pub async fn record_sad_stale_prefix(
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
+    signer: Arc<dyn kels::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
 ) {
@@ -1189,10 +1190,10 @@ pub async fn run_sad_anti_entropy_loop(
 
         let random_cursor = kels::generate_nonce();
         let local_page = local_client
-            .fetch_sad_prefixes(Some(&random_cursor), 100)
+            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
         let remote_page = remote_client
-            .fetch_sad_prefixes(Some(&random_cursor), 100)
+            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
 
         let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {

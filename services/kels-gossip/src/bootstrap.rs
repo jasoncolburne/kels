@@ -174,7 +174,11 @@ impl BootstrapSync {
             let mut cursor: Option<String> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_prefixes(cursor.as_deref(), self.config.page_size)
+                    .fetch_sad_prefixes(
+                        self.signer.as_ref(),
+                        cursor.as_deref(),
+                        self.config.page_size,
+                    )
                     .await
                 {
                     Ok(p) => p,
