@@ -1284,6 +1284,57 @@ pub async fn run_sad_anti_entropy_loop(
                 info!("SAD anti-entropy: pushed {} to remote", state.prefix);
             }
         }
+
+        // Phase 3: Object comparison — compare SAD object sets with the same random peer
+        let obj_cursor = kels::generate_nonce();
+        let local_objects = local_client
+            .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
+            .await;
+        let remote_objects = remote_client
+            .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
+            .await;
+
+        let (Ok(local_objects), Ok(remote_objects)) = (local_objects, remote_objects) else {
+            debug!("SAD anti-entropy: failed to fetch object pages for comparison");
+            continue;
+        };
+
+        let local_obj_set: std::collections::HashSet<&str> =
+            local_objects.saids.iter().map(|s| s.as_str()).collect();
+        let remote_obj_set: std::collections::HashSet<&str> =
+            remote_objects.saids.iter().map(|s| s.as_str()).collect();
+
+        if local_obj_set == remote_obj_set {
+            debug!("SAD anti-entropy: object sample matched");
+            continue;
+        }
+
+        // Pull: objects on remote but not local
+        let mut obj_pulled = 0u64;
+        for said in remote_obj_set.difference(&local_obj_set) {
+            if let Ok(object) = remote_client.get_sad_object(said).await
+                && local_client.put_sad_object(&object).await.is_ok()
+            {
+                obj_pulled += 1;
+            }
+        }
+
+        // Push: objects on local but not remote
+        let mut obj_pushed = 0u64;
+        for said in local_obj_set.difference(&remote_obj_set) {
+            if let Ok(object) = local_client.get_sad_object(said).await
+                && remote_client.put_sad_object(&object).await.is_ok()
+            {
+                obj_pushed += 1;
+            }
+        }
+
+        if obj_pulled > 0 || obj_pushed > 0 {
+            info!(
+                "SAD anti-entropy: objects — pulled {}, pushed {}",
+                obj_pulled, obj_pushed
+            );
+        }
     }
 }
 

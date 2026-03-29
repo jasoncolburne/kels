@@ -156,6 +156,8 @@ for i in "${!REACHABLE_NAMES[@]}"; do
         fi
     done
 
+    # Deduplicate (wrapping pagination may return objects from the beginning on the last page)
+    sort -u -o "$objects_file" "$objects_file"
     count=$(wc -l < "$objects_file" | tr -d ' ')
     echo -e "  node-${name}: ${GREEN}${count} SAD objects${NC}"
 done

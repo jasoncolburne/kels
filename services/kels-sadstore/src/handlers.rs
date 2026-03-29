@@ -740,23 +740,10 @@ async fn query_sad_objects(
 ) -> impl IntoResponse {
     let limit = limit
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
-        .min(MAX_PREFIX_PAGE_SIZE) as u64;
+        .min(MAX_PREFIX_PAGE_SIZE);
 
-    match state.repo.sad_objects.list(cursor, limit + 1).await {
-        Ok(saids) => {
-            let has_more = saids.len() as u64 > limit;
-            let saids: Vec<_> = saids.into_iter().take(limit as usize).collect();
-            let next_cursor = if has_more {
-                saids.last().cloned()
-            } else {
-                None
-            };
-            (
-                StatusCode::OK,
-                Json(kels::SadObjectListResponse { saids, next_cursor }),
-            )
-                .into_response()
-        }
+    match state.repo.sad_objects.list(cursor, limit).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Failed to list SAD objects: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()

@@ -500,27 +500,54 @@ impl SadObjectIndex {
         Ok(self.pool.fetch_optional(query).await?.is_some())
     }
 
-    /// List SAD object SAIDs (the MinIO keys), paginated by cursor.
+    /// List SAD object SAIDs (the MinIO keys), paginated by cursor with wrap-around.
+    ///
+    /// Wraps around: if `cursor` is provided and the query returns fewer than
+    /// `limit` results, fills remaining slots from the beginning of the SAID
+    /// space (SAIDs <= cursor). Ensures unbiased random sampling for anti-entropy.
     pub async fn list(
         &self,
         cursor: Option<&str>,
-        limit: u64,
-    ) -> Result<Vec<String>, StorageError> {
+        limit: usize,
+    ) -> Result<kels::SadObjectListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = if let Some(cursor) = cursor {
+        let mut query =
             verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
-                .gt("sad_said", cursor)
                 .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
-                .limit(limit)
+                .limit(limit as u64 + 1);
+
+        if let Some(cursor) = cursor {
+            query = query.gt("sad_said", cursor);
+        }
+
+        let entries: Vec<kels::SadObjectEntry> = self.pool.fetch(query).await?;
+
+        let mut saids: Vec<String> = entries.into_iter().map(|e| e.sad_said).collect();
+
+        let next_cursor = if saids.len() > limit {
+            saids.pop();
+            saids.last().cloned()
+        } else if let Some(cursor) = cursor {
+            // Wrap around: fill remaining slots from SAIDs <= cursor
+            let remaining = limit - saids.len();
+            if remaining > 0 {
+                let wrap_query =
+                    verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(
+                        Self::TABLE_NAME,
+                    )
+                    .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
+                    .lte("sad_said", cursor)
+                    .limit(remaining as u64);
+                let wrap_entries: Vec<kels::SadObjectEntry> = self.pool.fetch(wrap_query).await?;
+                saids.extend(wrap_entries.into_iter().map(|e| e.sad_said));
+            }
+            None
         } else {
-            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
-                .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
-                .limit(limit)
+            None
         };
 
-        let entries = self.pool.fetch(query).await?;
-        Ok(entries.into_iter().map(|e| e.sad_said).collect())
+        Ok(kels::SadObjectListResponse { saids, next_cursor })
     }
 }
 
