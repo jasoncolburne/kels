@@ -126,7 +126,7 @@ pub async fn run(
         .map_err(|e| format!("Failed to ensure bucket: {}", e))?;
     info!("Object store ready (bucket: {})", sad_bucket);
 
-    let kels_client = kels::KelsClient::new(kels_url);
+    let kels_client = kels::KelsClient::new(kels_url)?;
 
     let state = Arc::new(AppState {
         repo: Arc::new(repo),

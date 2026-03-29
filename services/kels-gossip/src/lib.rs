@@ -262,7 +262,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 1: Fetch identity prefix and KEL from the identity service
     info!("Fetching identity prefix...");
-    let identity_client = kels::IdentityClient::new(&config.identity_url);
+    let identity_client = kels::IdentityClient::new(&config.identity_url)
+        .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
     let peer_prefix_str = identity_client
         .get_prefix()
         .await
@@ -274,7 +275,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .get_key_events(None, kels::page_size())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
-    let local_kels_client = kels::KelsClient::new(&config.kels_url());
+    let local_kels_client = kels::KelsClient::new(&config.kels_url())
+        .map_err(|e| ServiceError::Config(format!("Failed to build KELS client: {}", e)))?;
     let events = identity_page.events;
     if !events.is_empty() {
         let _ = local_kels_client
@@ -291,7 +293,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone());
+    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone())
+        .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
     let registry_signer: Arc<dyn kels::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
@@ -373,7 +376,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         federation_registry_urls.clone(),
         allowlist.clone(),
         registry_signer.clone(),
-    );
+    )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
     }

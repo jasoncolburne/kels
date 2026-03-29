@@ -77,18 +77,20 @@ pub struct FederationNetwork {
 
 impl FederationNetwork {
     /// Create a new federation network layer.
-    pub fn new(config: FederationConfig, identity_client: Arc<IdentityClient>) -> Self {
+    pub fn new(
+        config: FederationConfig,
+        identity_client: Arc<IdentityClient>,
+    ) -> Result<Self, kels::KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
+            .build()?;
 
-        Self {
+        Ok(Self {
             config,
             client,
             identity_client,
-        }
+        })
     }
 
     /// Send an RPC request to a target node.

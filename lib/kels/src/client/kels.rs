@@ -23,36 +23,34 @@ pub struct KelsClient {
 }
 
 impl KelsClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
         Self::with_path_prefix(base_url, "/api/v1/kels")
     }
 
     /// Create a client with a custom path prefix (e.g., "/api/v1/member-kels").
-    pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Self {
+    pub fn with_path_prefix(base_url: &str, path_prefix: &str) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        KelsClient {
+            .build()?;
+        Ok(KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             path_prefix: path_prefix.to_string(),
             client,
-        }
+        })
     }
 
     /// Create a client with a custom timeout (useful for latency testing).
-    pub fn with_timeout(base_url: &str, timeout: Duration) -> Self {
+    pub fn with_timeout(base_url: &str, timeout: Duration) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
-            .build()
-            .unwrap_or_default();
-        KelsClient {
+            .build()?;
+        Ok(KelsClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             path_prefix: "/api/v1/kels".to_string(),
             client,
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -60,7 +58,7 @@ impl KelsClient {
     }
 
     /// Create an `HttpKelSource` for this client's KEL endpoint.
-    pub fn as_kel_source(&self) -> crate::HttpKelSource {
+    pub fn as_kel_source(&self) -> Result<crate::HttpKelSource, KelsError> {
         crate::HttpKelSource::new(
             &self.base_url,
             &format!("{}/kel/{{prefix}}", self.path_prefix),
@@ -68,7 +66,7 @@ impl KelsClient {
     }
 
     /// Create an `HttpKelSink` for this client's events endpoint.
-    pub fn as_kel_sink(&self) -> crate::HttpKelSink {
+    pub fn as_kel_sink(&self) -> Result<crate::HttpKelSink, KelsError> {
         crate::HttpKelSink::new(&self.base_url, &format!("{}/events", self.path_prefix))
     }
 
@@ -363,31 +361,33 @@ mod tests {
 
     #[test]
     fn test_kels_client_creation() {
-        let client = KelsClient::new("http://kels:8091");
+        let client = KelsClient::new("http://kels:8091").unwrap();
         assert_eq!(client.base_url(), "http://kels:8091");
     }
 
     #[test]
     fn test_kels_client_strips_trailing_slash() {
-        let client = KelsClient::new("http://kels:8091/");
+        let client = KelsClient::new("http://kels:8091/").unwrap();
         assert_eq!(client.base_url(), "http://kels:8091");
     }
 
     #[test]
     fn test_kels_client_strips_multiple_trailing_slashes() {
-        let client = KelsClient::new("http://kels:8091///");
+        let client = KelsClient::new("http://kels:8091///").unwrap();
         assert_eq!(client.base_url(), "http://kels:8091");
     }
 
     #[test]
     fn test_client_with_timeout() {
-        let client = KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60));
+        let client =
+            KelsClient::with_timeout("http://localhost:8080", Duration::from_secs(60)).unwrap();
         assert_eq!(client.base_url(), "http://localhost:8080");
     }
 
     #[test]
     fn test_client_with_path_prefix() {
-        let client = KelsClient::with_path_prefix("http://registry:8080", "/api/v1/member-kels");
+        let client =
+            KelsClient::with_path_prefix("http://registry:8080", "/api/v1/member-kels").unwrap();
         assert_eq!(client.base_url(), "http://registry:8080");
         assert_eq!(client.path_prefix, "/api/v1/member-kels");
     }
@@ -410,7 +410,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.health().await;
 
             assert!(result.is_ok());
@@ -427,7 +427,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.health().await;
 
             assert!(result.is_err());
@@ -444,7 +444,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.test_latency().await;
 
             assert!(result.is_ok());
@@ -476,7 +476,7 @@ mod tests {
             );
             let signed = builder.incept().await.unwrap();
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events_chunked(&[signed], 500).await;
 
             assert!(result.is_ok());
@@ -511,7 +511,7 @@ mod tests {
             let ixn1 = builder.interact("anchor1").await.unwrap();
             let ixn2 = builder.interact("anchor2").await.unwrap();
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events_chunked(&[icp, ixn1, ixn2], 1).await;
 
             assert!(result.is_ok());
@@ -543,7 +543,7 @@ mod tests {
             );
             let signed = builder.incept().await.unwrap();
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events(&[signed]).await;
 
             assert!(result.is_ok());
@@ -576,7 +576,7 @@ mod tests {
             );
             let signed = builder.incept().await.unwrap();
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events(&[signed]).await;
 
             assert!(matches!(result, Err(KelsError::ContestedKel(_))));
@@ -606,7 +606,7 @@ mod tests {
             );
             let signed = builder.incept().await.unwrap();
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events(&[signed]).await;
 
             assert!(matches!(result, Err(KelsError::ContestRequired)));
@@ -637,7 +637,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.fetch_key_events(&prefix, None, 32).await;
 
             assert!(result.is_ok());
@@ -656,7 +656,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.fetch_key_events("nonexistent", None, 32).await;
 
             assert!(matches!(result, Err(KelsError::EventNotFound(_))));
@@ -677,7 +677,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let client = KelsClient::new(&mock_server.uri());
+            let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.fetch_key_events("prefix", None, 32).await;
 
             assert!(matches!(result, Err(KelsError::ServerError(..))));

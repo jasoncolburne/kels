@@ -20,16 +20,15 @@ pub struct SadStoreClient {
 }
 
 impl SadStoreClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        SadStoreClient {
+            .build()?;
+        Ok(SadStoreClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -37,17 +36,17 @@ impl SadStoreClient {
     }
 
     /// Create an `HttpSadSource` for this client's chain endpoint.
-    pub fn as_sad_source(&self) -> crate::HttpSadSource {
+    pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
         crate::HttpSadSource::new(&self.base_url)
     }
 
     /// Create an `HttpSadSink` for this client's records endpoint.
-    pub fn as_sad_sink(&self) -> crate::HttpSadSink {
+    pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new(&self.base_url)
     }
 
     /// Create an `HttpSadSink` that submits with `?repair=true`.
-    pub fn as_sad_repair_sink(&self) -> crate::HttpSadSink {
+    pub fn as_sad_repair_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new_repair(&self.base_url)
     }
 
@@ -333,8 +332,8 @@ impl SadStoreClient {
     ) -> Result<SadRecordVerification, KelsError> {
         crate::verify_sad_records(
             prefix,
-            &self.as_sad_source(),
-            &kels_client.as_kel_source(),
+            &self.as_sad_source()?,
+            &kels_client.as_kel_source()?,
             crate::page_size(),
             crate::max_pages(),
         )

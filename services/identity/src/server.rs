@@ -57,8 +57,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_default();
+        .build()?;
 
     info!("Connecting to database");
     let repo = IdentityRepository::connect(&database_url)
@@ -411,7 +410,7 @@ pub(crate) async fn perform_kel_operation(
                 let source = kels::HttpKelSource::new(
                     forward_url,
                     &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
-                );
+                )?;
                 match kels::verify_key_events(
                     prefix,
                     &source,

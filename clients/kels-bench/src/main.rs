@@ -191,7 +191,7 @@ impl Stats {
 
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
-    let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}");
+    let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
     let events =
         kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
             .await?;
@@ -270,8 +270,20 @@ async fn run_worker(
     running: Arc<AtomicBool>,
     benchmark_type: BenchmarkType,
 ) {
-    let client = KelsClient::new(&url);
-    let source = HttpKelSource::new(&url, "/api/v1/kels/kel/{prefix}");
+    let client = match KelsClient::new(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to build HTTP client: {}", e);
+            return;
+        }
+    };
+    let source = match HttpKelSource::new(&url, "/api/v1/kels/kel/{prefix}") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to build HTTP source: {}", e);
+            return;
+        }
+    };
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
@@ -383,7 +395,7 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let client = KelsClient::new(&args.url);
+    let client = KelsClient::new(&args.url)?;
     println!("{}", "Checking KELS server health...".yellow());
     match client.health().await {
         Ok(_) => println!("{}", "KELS server is healthy!".green()),

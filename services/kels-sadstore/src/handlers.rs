@@ -269,7 +269,12 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     let verifier = kels::KelVerifier::new(&signed_request.peer_prefix);
     let kel_verification = kels::verify_key_events(
         &signed_request.peer_prefix,
-        &state.kels_client.as_kel_source(),
+        &state.kels_client.as_kel_source().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to build HTTP client: {}", e),
+            )
+        })?,
         verifier,
         kels::page_size(),
         kels::max_pages(),
@@ -512,9 +517,20 @@ pub async fn submit_sad_records(
         }
     };
 
+    let kel_source = match state.kels_client.as_kel_source() {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to build HTTP client: {}", e),
+            )
+                .into_response();
+        }
+    };
+
     let (verification, establishment_keys) = match kels::verify_key_events_with_establishment_keys(
         kel_prefix,
-        &state.kels_client.as_kel_source(),
+        &kel_source,
         verifier,
         kels::page_size(),
         kels::max_pages(),
@@ -661,11 +677,28 @@ pub async fn submit_sad_records(
     // Accrue only actual new records to prefix rate limit
     accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
-    // Publish the chain tip to Redis for gossip.
+    // Publish the effective SAID to Redis for gossip. Using the effective SAID
+    // (not the tip record SAID) ensures the gossip feedback loop cache key matches
+    // for both divergent and non-divergent chains.
     // Repair updates include a ":repair" suffix so the gossip subscriber
     // can propagate the repair flag to other nodes.
+    let effective_said = if gossip_said.is_some() {
+        match state.repo.sad_records.effective_said(chain_prefix).await {
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "Failed to compute effective SAID for {}: {}",
+                    chain_prefix, e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     if let Some(ref conn) = state.redis_conn
-        && let Some(said) = &gossip_said
+        && let Some(said) = &effective_said
     {
         let mut conn = conn.clone();
         let message = if is_repair {

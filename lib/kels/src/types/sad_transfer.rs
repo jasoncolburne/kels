@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
 use cesr::{Matter, Signature, VerificationKey};
-use verifiable_storage::SelfAddressed;
+use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{KelVerifier, KelsError, SadRecordVerification, SignedSadRecord};
 
@@ -69,15 +69,15 @@ pub struct HttpSadSource {
 }
 
 impl HttpSadSource {
-    pub fn new(base_url: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+            client,
+        })
     }
 }
 
@@ -122,29 +122,25 @@ pub struct HttpSadSink {
 }
 
 impl HttpSadSink {
-    pub fn new(base_url: &str) -> Self {
-        Self {
+    fn build(base_url: &str, repair: bool) -> Result<Self, KelsError> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            repair: false,
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+            repair,
+            client,
+        })
+    }
+
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
+        Self::build(base_url, false)
     }
 
     /// Create a repair sink that submits with `?repair=true`.
-    pub fn new_repair(base_url: &str) -> Self {
-        Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            repair: true,
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+    pub fn new_repair(base_url: &str) -> Result<Self, KelsError> {
+        Self::build(base_url, true)
     }
 }
 
@@ -217,6 +213,12 @@ impl SadChainVerifier {
             self.saw_any_records = true;
             let record = &stored.record;
             record.verify_said()?;
+
+            // Verify prefix derivation on v0 — ensures the prefix was correctly
+            // computed from the inception record content, not fabricated.
+            if self.expected_version == 0 {
+                record.verify_prefix()?;
+            }
 
             if record.prefix != self.prefix {
                 return Err(KelsError::VerificationFailed(format!(

@@ -143,9 +143,9 @@ impl AdminContext {
         let registry_url =
             std::env::var("REGISTRY_URL").unwrap_or_else(|_| "http://localhost".to_string());
 
-        let identity_client = IdentityClient::new(&identity_url);
+        let identity_client = IdentityClient::new(&identity_url)?;
         let self_prefix = identity_client.get_prefix().await?;
-        let registry_client = KelsRegistryClient::new(&registry_url);
+        let registry_client = KelsRegistryClient::new(&registry_url)?;
 
         Ok(Self {
             identity_client,
@@ -178,8 +178,8 @@ impl AdminContext {
     }
 
     /// Get a registry client pointed at the given URL.
-    fn client_for(&self, url: &str) -> KelsRegistryClient {
-        KelsRegistryClient::new(url)
+    fn client_for(&self, url: &str) -> anyhow::Result<KelsRegistryClient> {
+        Ok(KelsRegistryClient::new(url)?)
     }
 }
 
@@ -205,7 +205,7 @@ where
     let mut target_url = ctx.get_leader_url().await?;
 
     for attempt in 0..2 {
-        let client = ctx.client_for(&target_url);
+        let client = ctx.client_for(&target_url)?;
         match f(client).await {
             Ok(result) => return Ok(result),
             Err(KelsError::ServerError(ref msg, _))

@@ -157,7 +157,14 @@ pub async fn refresh_allowlist(
     // If any peer uses ML-DSA-87, all connections must use ML-KEM-1024.
     let mut any_dsa_87 = false;
     for peer_prefix in authorized_peers.keys() {
-        let source = kels::HttpKelSource::new(kels_url, "/api/v1/kels/kel/{prefix}");
+        let source = match kels::HttpKelSource::new(kels_url, "/api/v1/kels/kel/{prefix}") {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(peer_prefix, error = %e, "Failed to build HTTP client for algorithm check, assuming ML-DSA-87 (fail secure)");
+                any_dsa_87 = true;
+                break;
+            }
+        };
         match kels::verify_key_events(
             peer_prefix,
             &source,

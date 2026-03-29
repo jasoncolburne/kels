@@ -100,22 +100,21 @@ pub struct KelsRegistryClient {
 
 impl KelsRegistryClient {
     /// Create a new registry client with default timeout (no signing capability).
-    pub fn new(registry_url: &str) -> Self {
+    pub fn new(registry_url: &str) -> Result<Self, KelsError> {
         Self::with_timeout(registry_url, Duration::from_secs(10))
     }
 
     /// Create a new registry client with custom timeout (no signing capability).
-    pub fn with_timeout(registry_url: &str, timeout: Duration) -> Self {
+    pub fn with_timeout(registry_url: &str, timeout: Duration) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
-            .build()
-            .unwrap_or_default();
+            .build()?;
 
-        Self {
+        Ok(Self {
             client,
             base_url: registry_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// List all active peers as NodeInfo (for client discovery with latency testing).
@@ -499,7 +498,7 @@ where
 
     let mut last_err = None;
     for url in &shuffled {
-        let client = KelsRegistryClient::with_timeout(url, timeout);
+        let client = KelsRegistryClient::with_timeout(url, timeout)?;
         match f(client).await {
             Ok(result) => return Ok(result),
             Err(e) => {
@@ -520,7 +519,13 @@ pub async fn sync_member_kel(
     sink: &(dyn crate::PagedKelSink + Sync),
 ) {
     for url in registry_urls {
-        let source = crate::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}");
+        let source = match crate::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}") {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(url = %url, error = %e, "Failed to build HTTP client for member KEL sync");
+                continue;
+            }
+        };
         if crate::forward_key_events(
             prefix,
             &source,
@@ -981,7 +986,10 @@ pub async fn nodes_sorted_by_latency(
             let kels_url = format!("http://kels.{}", n.base_domain);
             let node_id = n.node_id.clone();
             async move {
-                let client = crate::KelsClient::with_timeout(&kels_url, timeout);
+                let client = match crate::KelsClient::with_timeout(&kels_url, timeout) {
+                    Ok(c) => c,
+                    Err(_) => return (i, None),
+                };
                 let latency = client.test_latency().await.ok();
                 if let Some(ref lat) = latency {
                     info!("Node {} latency: {}ms", node_id, lat.as_millis());
@@ -1026,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_url_trailing_slash_stripped() {
-        let client = KelsRegistryClient::new("http://registry:8080/");
+        let client = KelsRegistryClient::new("http://registry:8080/").unwrap();
         assert_eq!(client.base_url, "http://registry:8080");
     }
 
@@ -1061,7 +1069,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = KelsRegistryClient::new(&mock_server.uri());
+        let client = KelsRegistryClient::new(&mock_server.uri()).unwrap();
         let result = client.list_nodes_info().await;
 
         assert!(result.is_ok());
@@ -1107,7 +1115,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = KelsRegistryClient::new(&mock_server.uri());
+        let client = KelsRegistryClient::new(&mock_server.uri()).unwrap();
         let result = client.fetch_peers().await;
 
         assert!(result.is_ok());
@@ -1128,7 +1136,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = KelsRegistryClient::new(&mock_server.uri());
+        let client = KelsRegistryClient::new(&mock_server.uri()).unwrap();
         let result = client.fetch_peers().await;
 
         assert!(matches!(result, Err(KelsError::ServerError(..))));

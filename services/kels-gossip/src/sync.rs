@@ -76,12 +76,12 @@ pub async fn run_redis_subscriber(
 
         debug!("Received Redis pub/sub message: {}", payload);
 
-        // Check if this was recently stored via gossip (feedback loop prevention)
+        // Check if this was recently stored via gossip (feedback loop prevention).
+        // The KELS service publishes {prefix}:{effective_said}, which matches the
+        // cache key inserted by handle_announcement before forwarding.
         {
             let mut guard = recently_stored.write().await;
-            // Clean up expired entries
             guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
-            // Check if this payload is in the cache
             if guard.contains_key(&payload) {
                 debug!(
                     "Skipping Redis message {} (recently stored from gossip)",
@@ -150,7 +150,11 @@ pub async fn run_sad_redis_subscriber(
             let cache_key = if channel == SAD_PUBSUB_CHANNEL {
                 format!("sad-object:{}", payload)
             } else {
-                format!("sad-record:{}", payload)
+                // Chain updates: strip ":repair" suffix before checking, since
+                // the handler inserts without it. The SADStore publishes the
+                // effective SAID, which matches the handler's cache key.
+                let core = payload.strip_suffix(":repair").unwrap_or(&payload);
+                format!("sad-record:{}", core)
             };
             if guard.contains_key(&cache_key) {
                 debug!("Skipping SAD Redis message (recently stored from gossip)");
@@ -165,7 +169,7 @@ pub async fn run_sad_redis_subscriber(
                 origin: local_peer_prefix.clone(),
             }
         } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
-            // Chain update: payload is "{chain_prefix}:{said}" or "{chain_prefix}:{said}:repair"
+            // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
             let repair = payload.ends_with(":repair");
             let core = if repair {
                 &payload[..payload.len() - ":repair".len()]
@@ -231,16 +235,16 @@ impl SyncHandler {
         allowlist: SharedAllowlist,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
-    ) -> Self {
-        Self {
-            kels_client: KelsClient::new(kels_url),
-            sadstore_client: kels::SadStoreClient::new(sadstore_url),
+    ) -> Result<Self, kels::KelsError> {
+        Ok(Self {
+            kels_client: KelsClient::new(kels_url)?,
+            sadstore_client: kels::SadStoreClient::new(sadstore_url)?,
             local_saids: HashMap::new(),
             allowlist,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             redis,
-        }
+        })
     }
 
     /// Record a prefix as stale for anti-entropy repair.
@@ -317,7 +321,13 @@ impl SyncHandler {
         };
 
         let local_client = self.sadstore_client.clone();
-        let remote_client = kels::SadStoreClient::new(&sadstore_url);
+        let remote_client = match kels::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build HTTP client for SAD object sync: {}", e);
+                return;
+            }
+        };
 
         // Check if we already have it locally (HEAD check, no data transfer)
         match local_client.sad_object_exists(said).await {
@@ -393,9 +403,8 @@ impl SyncHandler {
         }
 
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
-        // The record submission will publish to Redis `sad_chain_updates` as
-        // "{chain_prefix}:{said}" (or with ":repair" suffix), which the subscriber
-        // checks against this cache key.
+        // The SADStore publishes {prefix}:{effective_said} (or with :repair suffix)
+        // to sad_chain_updates. The subscriber strips :repair before checking.
         {
             let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
             self.recently_stored
@@ -404,20 +413,40 @@ impl SyncHandler {
                 .insert(cache_key, Instant::now());
         }
 
-        let remote_client = kels::SadStoreClient::new(&sadstore_url);
+        let remote_client = match kels::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build HTTP client for SAD record sync: {}", e);
+                return;
+            }
+        };
 
         // For repair: fetch full chain and submit with ?repair=true.
         // For normal: delta fetch from local tip.
-        let sink = if repair {
+        let sink = match if repair {
             local_client.as_sad_repair_sink()
         } else {
             local_client.as_sad_sink()
+        } {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP SAD sink: {}", e);
+                return;
+            }
         };
         let since = if repair { None } else { local_said.as_deref() };
 
+        let source = match remote_client.as_sad_source() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP SAD source: {}", e);
+                return;
+            }
+        };
+
         if let Err(e) = kels::forward_sad_records(
             chain_prefix,
-            &remote_client.as_sad_source(),
+            &source,
             &sink,
             kels::page_size(),
             kels::max_pages(),
@@ -491,7 +520,7 @@ impl SyncHandler {
         }
 
         let max_pages = kels::max_pages();
-        let local_sink = self.kels_client.as_kel_sink();
+        let local_sink = self.kels_client.as_kel_sink()?;
 
         for (peer_prefix, kels_url) in &peers {
             // Per-peer rate limiting
@@ -517,9 +546,11 @@ impl SyncHandler {
                 }
             }
 
-            let remote_source = KelsClient::new(kels_url).as_kel_source();
+            let remote_source = KelsClient::new(kels_url)?.as_kel_source()?;
 
             // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+            // The KELS service publishes {prefix}:{effective_said} to kel_updates,
+            // which matches this key for both divergent and non-divergent KELs.
             let key = format!("{}:{}", prefix, remote_effective_said);
             self.recently_stored
                 .write()
@@ -649,7 +680,8 @@ pub async fn run_sync_handler(
     redis: OptionalRedis,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis);
+    let mut handler =
+        SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis)?;
     let mut reap_interval = tokio::time::interval(Duration::from_secs(300));
     reap_interval.tick().await; // consume initial tick
 
@@ -674,6 +706,9 @@ pub async fn run_sync_handler(
             _ = reap_interval.tick() => {
                 let now = Instant::now();
                 handler.peer_fetch_counts.retain(|_, (_, t)| now.duration_since(*t) < Duration::from_secs(60));
+                // Clear cached effective SAIDs — they'll be re-fetched on next
+                // access. Prevents unbounded growth from accumulated prefixes.
+                handler.local_saids.clear();
             }
         }
     }
@@ -833,8 +868,20 @@ pub(crate) async fn sync_prefix(
     prefix: &str,
     since: Option<&str>,
 ) -> RepairResult {
-    let remote_source = source.as_kel_source();
-    let local_sink = dest.as_kel_sink();
+    let remote_source = match source.as_kel_source() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(prefix = %prefix, error = %e, "Failed to build HTTP KEL source");
+            return RepairResult::Failed;
+        }
+    };
+    let local_sink = match dest.as_kel_sink() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(prefix = %prefix, error = %e, "Failed to build HTTP KEL sink");
+            return RepairResult::Failed;
+        }
+    };
 
     match forward_with_fallback(
         prefix,
@@ -933,7 +980,13 @@ pub async fn run_anti_entropy_loop(
     signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
-    let local_client = KelsClient::new(&local_kels_url);
+    let local_client = match KelsClient::new(&local_kels_url) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to build HTTP client for anti-entropy loop: {}", e);
+            return;
+        }
+    };
 
     loop {
         tokio::time::sleep(interval).await;
@@ -1005,7 +1058,16 @@ pub async fn run_anti_entropy_loop(
                     // that have a different state than local.
                     let mut any_peer_differs = false;
                     for (_, kels_url) in &ordered_peers {
-                        let remote = KelsClient::new(kels_url);
+                        let remote = match KelsClient::new(kels_url) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(
+                                    "Anti-entropy: failed to build client for {}: {}",
+                                    kels_url, e
+                                );
+                                continue;
+                            }
+                        };
                         let remote_effective =
                             remote.fetch_effective_said(&prefix).await.ok().flatten();
                         let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_str());
@@ -1089,7 +1151,16 @@ pub async fn run_anti_entropy_loop(
             }
         };
 
-        let remote_client = KelsClient::new(&peer_kels_url);
+        let remote_client = match KelsClient::new(&peer_kels_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "Anti-entropy: failed to build client for {}: {}",
+                    peer_kels_url, e
+                );
+                continue;
+            }
+        };
 
         let random_cursor = kels::generate_nonce();
         let local_page = local_client
@@ -1247,7 +1318,13 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         }
 
-        let local_client = kels::SadStoreClient::new(&sadstore_url);
+        let local_client = match kels::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("SAD anti-entropy: failed to build local client: {}", e);
+                continue;
+            }
+        };
 
         // Phase 1: Process known-stale chain prefixes
         let stale_entries =
@@ -1288,7 +1365,10 @@ pub async fn run_sad_anti_entropy_loop(
                     let local_said = local.fetch_sad_effective_said(&prefix).await.ok().flatten();
 
                     for (_, sadstore_url) in &ordered_peers {
-                        let remote = kels::SadStoreClient::new(sadstore_url);
+                        let remote = match kels::SadStoreClient::new(sadstore_url) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
                         let remote_said = remote
                             .fetch_sad_effective_said(&prefix)
                             .await
@@ -1299,10 +1379,15 @@ pub async fn run_sad_anti_entropy_loop(
                             continue;
                         }
 
+                        let (Ok(remote_source), Ok(local_sink)) =
+                            (remote.as_sad_source(), local.as_sad_sink())
+                        else {
+                            continue;
+                        };
                         if kels::forward_sad_records(
                             &prefix,
-                            &remote.as_sad_source(),
-                            &local.as_sad_sink(),
+                            &remote_source,
+                            &local_sink,
                             kels::page_size(),
                             kels::max_pages(),
                             local_said.as_deref(),
@@ -1347,7 +1432,16 @@ pub async fn run_sad_anti_entropy_loop(
             }
         };
 
-        let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+        let remote_client = match kels::SadStoreClient::new(&peer_sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "SAD anti-entropy: failed to build remote client for {}: {}",
+                    peer_sadstore_url, e
+                );
+                continue;
+            }
+        };
 
         let random_cursor = kels::generate_nonce();
         let local_page = local_client
@@ -1392,8 +1486,11 @@ pub async fn run_sad_anti_entropy_loop(
                 .ok()
                 .flatten();
 
-            let remote = remote_client.as_sad_source();
-            let local = local_client.as_sad_sink();
+            let (remote, local) = match (remote_client.as_sad_source(), local_client.as_sad_sink())
+            {
+                (Ok(r), Ok(l)) => (r, l),
+                _ => continue,
+            };
             let prefix = state.prefix.clone();
             let peer = peer_prefix.clone();
             pull_tasks.push(async move {
@@ -1432,10 +1529,15 @@ pub async fn run_sad_anti_entropy_loop(
                 .ok()
                 .flatten();
 
+            let (Ok(local_source), Ok(remote_sink)) =
+                (local_client.as_sad_source(), remote_client.as_sad_sink())
+            else {
+                continue;
+            };
             if let Ok(()) = kels::forward_sad_records(
                 &state.prefix,
-                &local_client.as_sad_source(),
-                &remote_client.as_sad_sink(),
+                &local_source,
+                &remote_sink,
                 kels::page_size(),
                 kels::max_pages(),
                 remote_said.as_deref(),
@@ -1515,6 +1617,7 @@ mod tests {
             recently_stored,
             None,
         )
+        .unwrap()
     }
 
     // ==================== Constants Tests ====================

@@ -180,8 +180,20 @@ pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
 
     let kel_store = RepositoryKelStore::new(state.kel_repo.clone());
     let source = kels::StoreKelSource::new(&kel_store);
-    let client = KelsClient::with_path_prefix(forward_url, &state.forward_path_prefix);
-    let sink = client.as_kel_sink();
+    let client = match KelsClient::with_path_prefix(forward_url, &state.forward_path_prefix) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to build KELS client for forwarding");
+            return;
+        }
+    };
+    let sink = match client.as_kel_sink() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to build HTTP sink for forwarding");
+            return;
+        }
+    };
 
     match kels::forward_key_events(
         prefix,

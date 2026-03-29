@@ -929,16 +929,15 @@ pub struct HttpKelSource {
 }
 
 impl HttpKelSource {
-    pub fn new(base_url: &str, path: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str, path: &str) -> Result<Self, KelsError> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+                .build()?,
+        })
     }
 }
 
@@ -1035,16 +1034,15 @@ pub struct HttpKelSink {
 }
 
 impl HttpKelSink {
-    pub fn new(base_url: &str, path: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str, path: &str) -> Result<Self, KelsError> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+                .build()?,
+        })
     }
 }
 

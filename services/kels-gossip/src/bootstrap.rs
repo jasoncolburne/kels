@@ -89,21 +89,21 @@ impl BootstrapSync {
         urls: Vec<String>,
         allowlist: crate::allowlist::SharedAllowlist,
         signer: Arc<dyn PeerSigner>,
-    ) -> Self {
+    ) -> Result<Self, BootstrapError> {
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .map_err(|e| BootstrapError::Failed(format!("Failed to build HTTP client: {}", e)))?;
 
-        Self {
+        Ok(Self {
             config,
             urls,
             allowlist,
             signer,
             http_client,
             redis: None,
-        }
+        })
     }
 
     /// Set the Redis connection for stale prefix tracking.
@@ -166,12 +166,12 @@ impl BootstrapSync {
             ready_peers.len()
         );
 
-        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url);
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
         let mut total_synced = 0u64;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
-            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;
             loop {
@@ -237,11 +237,11 @@ impl BootstrapSync {
             ready_peers.len()
         );
 
-        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url);
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
-            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;
             loop {
@@ -275,8 +275,8 @@ impl BootstrapSync {
                     // Forward the full chain (paginated) from remote to local
                     if let Err(e) = kels::forward_sad_records(
                         &state.prefix,
-                        &remote_client.as_sad_source(),
-                        &local_client.as_sad_sink(),
+                        &remote_client.as_sad_source()?,
+                        &local_client.as_sad_sink()?,
                         kels::page_size(),
                         kels::max_pages(),
                         local_said.as_deref(),
@@ -317,7 +317,7 @@ impl BootstrapSync {
     pub async fn is_peer_authorized(&self, peer_prefix: &str) -> Result<bool, BootstrapError> {
         // Try each registry URL until one succeeds
         for url in &self.urls {
-            let client = KelsRegistryClient::new(url);
+            let client = KelsRegistryClient::new(url)?;
             match client.fetch_peers().await {
                 Ok((peers_response, _)) => {
                     return Ok(peers_response.peers.iter().any(|history| {
@@ -384,7 +384,7 @@ impl BootstrapSync {
             return Ok(());
         }
 
-        let local_client = KelsClient::new(&self.config.kels_url);
+        let local_client = KelsClient::new(&self.config.kels_url)?;
 
         // Step 1: Collect all unique prefixes from all peers that need syncing.
         // Track (since_said, source_kels_url, source_peer_prefix) per kel prefix.
@@ -393,7 +393,7 @@ impl BootstrapSync {
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
-            let peer_client = KelsClient::new(&peer_url);
+            let peer_client = KelsClient::new(&peer_url)?;
             let mut cursor: Option<String> = None;
 
             loop {
@@ -442,7 +442,13 @@ impl BootstrapSync {
             .map(|(prefix, (since, source_url, source_peer_prefix))| {
                 let local = local_client.clone();
                 async move {
-                    let remote = KelsClient::new(&source_url);
+                    let remote = match KelsClient::new(&source_url) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(prefix = %prefix, error = %e, "Failed to build HTTP client for KEL sync");
+                            return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed);
+                        }
+                    };
                     let result =
                         crate::sync::sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
                     (prefix, source_peer_prefix, result)

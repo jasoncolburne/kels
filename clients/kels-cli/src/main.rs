@@ -342,9 +342,9 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
             Some(n) => format!("http://kels.{}", n.base_domain),
             None => return Err(anyhow!("Failed to find kels url of fastest node")),
         };
-        Ok(KelsClient::new(&url))
+        Ok(KelsClient::new(&url)?)
     } else {
-        Ok(KelsClient::new(&cli.kels_url()))
+        Ok(KelsClient::new(&cli.kels_url())?)
     }
 }
 
@@ -611,7 +611,7 @@ async fn cmd_recover(
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
+    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
     let server_verification = kels::verify_key_events(
         prefix,
         &source,
@@ -727,7 +727,7 @@ fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
 
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
-    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
+    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
 
     let msg = if audit {
         format!("Fetching KEL {} with audit records...", prefix)
@@ -1113,7 +1113,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
     let value: serde_json::Value =
         serde_json::from_str(&data).context("Failed to parse JSON file")?;
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url());
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     let said = client
         .put_sad_object(&value)
         .await
@@ -1124,7 +1124,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url());
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     let value = client
         .get_sad_object(said)
         .await
@@ -1140,7 +1140,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
     let records: Vec<kels::SignedSadRecord> =
         serde_json::from_str(&data).context("Failed to parse SignedSadRecord JSON")?;
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url());
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     client
         .submit_sad_records(&records)
         .await
@@ -1154,7 +1154,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url());
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     let page = client
         .fetch_sad_chain(prefix, None)
         .await

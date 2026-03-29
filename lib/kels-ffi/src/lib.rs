@@ -415,7 +415,13 @@ pub extern "C" fn kels_init(
     };
 
     // Create KELS client
-    let client = KelsClient::new(&url);
+    let client = match KelsClient::new(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(&format!("Failed to build HTTP client: {}", e));
+            return std::ptr::null_mut();
+        }
+    };
 
     // Create builder
     let builder = runtime.block_on(async {
@@ -494,7 +500,13 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     }
 
     // Create new client and update builder
-    let client = KelsClient::new(&url);
+    let client = match KelsClient::new(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(&format!("Failed to build HTTP client: {}", e));
+            return -1;
+        }
+    };
 
     let Ok(mut builder_guard) = ctx.builder.lock() else {
         set_last_error("Failed to acquire builder lock");
@@ -915,7 +927,7 @@ pub unsafe extern "C" fn kels_recover(
                     ));
                 }
             };
-            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}");
+            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
             match kels::verify_key_events(
                 prefix,
                 &source,
@@ -1612,7 +1624,13 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
 
         // Create adversary builder WITH KELS client but NO kel_store
         // Events submit to KELS but don't save locally (simulating adversary)
-        let client = KelsClient::new(&kels_url);
+        let client = match KelsClient::new(&kels_url) {
+            Ok(c) => c,
+            Err(e) => {
+                set_last_error(&format!("Failed to build HTTP client: {}", e));
+                return -1;
+            }
+        };
         let mut adversary_builder =
             KeyEventBuilder::with_events(adversary_keys, Some(client), None, events);
 
@@ -2148,7 +2166,7 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     };
 
     let fetch_result = runtime.block_on(async {
-        let client = kels::KelsRegistryClient::new(&url);
+        let client = kels::KelsRegistryClient::new(&url)?;
         client.fetch_registry_prefix().await
     });
 

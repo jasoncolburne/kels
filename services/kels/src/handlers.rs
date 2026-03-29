@@ -478,21 +478,17 @@ pub(crate) async fn submit_events(
             }
         }
 
-        let effective_said = if let Some(said) = outcome.tip_said {
-            Some(said)
-        } else {
-            match state
-                .repo
-                .key_events
-                .compute_prefix_effective_said(&prefix)
-                .await
-            {
-                Ok(Some((said, _))) => Some(said),
-                Ok(None) => None,
-                Err(e) => {
-                    warn!("Failed to compute effective SAID for {}: {}", prefix, e);
-                    None
-                }
+        let effective_said = match state
+            .repo
+            .key_events
+            .compute_prefix_effective_said(&prefix)
+            .await
+        {
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Failed to compute effective SAID for {}: {}", prefix, e);
+                None
             }
         };
         if let Some(ref said) = effective_said

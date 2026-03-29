@@ -100,15 +100,14 @@ pub struct IdentityClient {
 }
 
 impl IdentityClient {
-    pub fn new(base_url: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
+        Ok(Self {
             client: Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+                .build()?,
             base_url: base_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// The base URL of the identity service.
