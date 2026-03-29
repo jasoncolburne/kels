@@ -108,6 +108,11 @@ pub struct KelVerifier {
     events_since_last_revealing: usize,
     /// Whether the proactive ror interval has been violated.
     proactive_ror_compliant: bool,
+    /// Optional: collect establishment keys at specific serials during verification.
+    /// Bounded by caller — at most `page_size()` entries.
+    requested_establishment_serials: BTreeSet<u64>,
+    /// Collected establishment keys (serial → public_key qb64).
+    collected_establishment_keys: HashMap<u64, String>,
 }
 
 impl KelVerifier {
@@ -126,7 +131,30 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing: 0,
             proactive_ror_compliant: true,
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         }
+    }
+
+    /// Request that establishment keys at the given serials be collected during
+    /// verification. The keys are available after verification via
+    /// `KelVerification::establishment_key_at()`.
+    ///
+    /// Bounded: rejects if more than `max` serials are requested.
+    pub fn with_establishment_key_collection(
+        mut self,
+        serials: BTreeSet<u64>,
+        max: usize,
+    ) -> Result<Self, KelsError> {
+        if serials.len() > max {
+            return Err(KelsError::InvalidKel(format!(
+                "Too many establishment serials requested: {} (max {})",
+                serials.len(),
+                max
+            )));
+        }
+        self.requested_establishment_serials = serials;
+        Ok(self)
     }
 
     /// Start verification from a single verified branch tip.
@@ -164,6 +192,8 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing,
             proactive_ror_compliant: true,
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         })
     }
 
@@ -200,6 +230,8 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing: kel_verification.events_since_last_revealing(),
             proactive_ror_compliant: kel_verification.is_proactive_ror_compliant(),
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         })
     }
 
@@ -255,6 +287,17 @@ impl KelVerifier {
         self.event_count += events.len();
 
         Ok(())
+    }
+
+    /// Consume the verifier and produce a `KelVerification` plus any collected
+    /// establishment keys (serial → public_key qb64). Keys are only populated if
+    /// `with_establishment_key_collection` was called before verification.
+    pub fn into_verification_with_keys(
+        self,
+    ) -> Result<(KelVerification, HashMap<u64, String>), KelsError> {
+        let keys = self.collected_establishment_keys.clone();
+        let verification = self.into_verification()?;
+        Ok((verification, keys))
     }
 
     /// Consume the verifier and produce a `KelVerification` (proof-of-verification token).
@@ -324,6 +367,12 @@ impl KelVerifier {
             }
             let event = events[0];
             self.verify_inception(event)?;
+            // Collect establishment key at serial 0 if requested
+            if self.requested_establishment_serials.contains(&0)
+                && let Some(ref pk) = event.event.public_key
+            {
+                self.collected_establishment_keys.insert(0, pk.clone());
+            }
             return Ok(());
         }
 
@@ -392,6 +441,14 @@ impl KelVerifier {
 
             // Verify the event against this branch's crypto state
             let new_state = self.verify_chain_event(event, branch)?;
+
+            // Collect establishment key at this serial if requested
+            if event.event.is_establishment()
+                && self.requested_establishment_serials.contains(&serial)
+                && let Some(ref pk) = event.event.public_key
+            {
+                self.collected_establishment_keys.insert(serial, pk.clone());
+            }
 
             // Track anchor checking — exclude events in the divergent region.
             // Divergent events are untrusted (adversary may have forged anchors),
@@ -1343,6 +1400,32 @@ pub async fn verify_key_events(
     )
     .await?;
     verifier.into_verification()
+}
+
+/// Verify-only with establishment key collection: pages through source, verifies,
+/// returns `KelVerification` plus collected establishment keys.
+///
+/// The verifier must have been constructed with `with_establishment_key_collection`.
+pub async fn verify_key_events_with_establishment_keys(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    verifier: KelVerifier,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(KelVerification, HashMap<u64, String>), KelsError> {
+    let sink = NoOpSink;
+    let mut verifier = verifier;
+    transfer_key_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+        None,
+    )
+    .await?;
+    verifier.into_verification_with_keys()
 }
 
 /// Verify with callback: pages through source, verifies, calls `on_page` with each

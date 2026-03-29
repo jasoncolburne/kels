@@ -168,7 +168,7 @@ impl BootstrapSync {
         let local_client = kels::SadStoreClient::new(&self.config.sadstore_url);
 
         for peer in &ready_peers {
-            let peer_sadstore_url = peer.kels_url.replace("kels.", "kels-sadstore.");
+            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
             let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
 
             let mut cursor: Option<String> = None;
@@ -199,26 +199,23 @@ impl BootstrapSync {
                     // Fetch and sync the chain
                     if let Ok(chain_page) = remote_client.fetch_sad_chain(&state.prefix, None).await
                     {
+                        // Fetch content objects first
                         for stored in &chain_page.records {
-                            // Fetch content objects
                             if let Some(ref content_said) = stored.record.content_said
                                 && let Ok(object) = remote_client.get_sad_object(content_said).await
                             {
                                 let _ = local_client.put_sad_object(&object).await;
                             }
-
-                            // Submit chain record
-                            let submission = kels::SadRecordSubmission {
-                                record: stored.record.clone(),
-                                signature: stored.signature.clone(),
-                            };
-                            if let Err(e) = local_client.submit_sad_record(&submission).await {
-                                warn!(
-                                    "Failed to submit SAD record {} during bootstrap: {}",
-                                    stored.record.said, e
-                                );
-                                break;
-                            }
+                        }
+                        // Batch submit (single KEL verification)
+                        if let Err(e) = local_client
+                            .submit_sad_records_batch(&chain_page.records)
+                            .await
+                        {
+                            warn!(
+                                "Failed to batch-submit SAD records for {} during bootstrap: {}",
+                                state.prefix, e
+                            );
                         }
                     }
                 }
@@ -303,8 +300,8 @@ impl BootstrapSync {
     }
 
     /// Get the URL to use for node-to-node sync.
-    fn get_sync_url(peer: &kels::Peer) -> &str {
-        &peer.kels_url
+    fn get_sync_url(peer: &kels::Peer) -> String {
+        format!("http://kels.{}", peer.base_domain)
     }
 
     /// Sync KELs from bootstrap peers.
@@ -326,7 +323,7 @@ impl BootstrapSync {
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
-            let peer_client = KelsClient::new(peer_url);
+            let peer_client = KelsClient::new(&peer_url);
             let mut cursor: Option<String> = None;
 
             loop {
@@ -520,9 +517,12 @@ mod tests {
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            kels_url: "http://kels:8080".to_string(),
+            base_domain: "node-1.kels".to_string(),
             gossip_addr: "/ip4/127.0.0.1/tcp/4001".to_string(),
         };
-        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://kels:8080");
+        assert_eq!(
+            BootstrapSync::get_sync_url(&peer),
+            "http://kels.node-1.kels"
+        );
     }
 }

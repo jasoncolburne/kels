@@ -328,7 +328,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         println!();
 
         let url = match nodes.first() {
-            Some(n) => n.kels_url.clone(),
+            Some(n) => format!("http://kels.{}", n.base_domain),
             None => return Err(anyhow!("Failed to find kels url of fastest node")),
         };
         Ok(KelsClient::new(&url))
@@ -396,7 +396,7 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
 
         println!(
             "  {} [{}] - {} (latency: {})",
-            node.node_id, status_str, node.kels_url, latency_str
+            node.node_id, status_str, node.base_domain, latency_str
         );
     }
 

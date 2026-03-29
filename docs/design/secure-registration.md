@@ -98,7 +98,7 @@ struct Peer {
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
-    kels_url: String,         // HTTP URL for KELS service
+    base_domain: String,      // Base domain for service discovery (e.g., "kels-node-a.kels")
     gossip_addr: String,     // Gossip address (host:port)
 }
 ```

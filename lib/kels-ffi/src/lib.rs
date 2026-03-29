@@ -1941,7 +1941,7 @@ impl Default for KelsNodesResult {
 #[serde(rename_all = "camelCase")]
 struct NodeInfoJson {
     node_id: String,
-    kels_url: String,
+    base_domain: String,
     status: String,
     latency_ms: Option<u64>,
 }
@@ -2025,7 +2025,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
             .into_iter()
             .map(|node| NodeInfoJson {
                 node_id: node.node_id,
-                kels_url: node.kels_url,
+                base_domain: node.base_domain,
                 status: match node.status {
                     NodeStatus::Bootstrapping => "bootstrapping".to_string(),
                     NodeStatus::Ready => "ready".to_string(),

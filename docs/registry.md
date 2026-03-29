@@ -66,7 +66,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 ### Client Node Discovery
 
 1. Client queries registry for peers: `GET /api/v1/peers`
-2. Client extracts active peers with their `kels_url` endpoints
+2. Client extracts active peers with their `base_domain` for service URL derivation
 3. Client tests readiness of each node via `/ready` endpoint
 4. Client tests latency to each Ready node via `/health` endpoint
 5. Client selects node with lowest latency

@@ -80,12 +80,6 @@ pub struct Config {
     /// Base domain for service discovery (e.g., "kels-node-a.kels").
     /// KELS URL = http://kels.{base_domain}, SADStore URL = http://kels-sadstore.{base_domain}
     pub base_domain: String,
-    /// Local KELS HTTP endpoint (derived from base_domain)
-    pub kels_url: String,
-    /// Local SADStore HTTP endpoint (derived from base_domain)
-    pub sadstore_url: String,
-    /// Advertised KELS HTTP endpoint for clients and node-to-node sync
-    pub kels_advertise_url: String,
     /// PostgreSQL database URL for local registry KEL store
     pub database_url: String,
     /// Redis URL for pub/sub
@@ -112,13 +106,23 @@ pub struct Config {
     pub anti_entropy_interval_secs: u64,
 }
 
+impl Config {
+    /// Local KELS URL derived from base_domain.
+    pub fn kels_url(&self) -> String {
+        format!("http://kels.{}", self.base_domain)
+    }
+
+    /// Local SADStore URL derived from base_domain.
+    pub fn sadstore_url(&self) -> String {
+        format!("http://kels-sadstore.{}", self.base_domain)
+    }
+}
+
 /// Raw environment values before validation
 #[derive(Default)]
 pub struct EnvValues {
     pub node_id: Option<String>,
     pub base_domain: Option<String>,
-    pub kels_url: Option<String>,
-    pub kels_advertise_url: Option<String>,
     pub database_url: Option<String>,
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
@@ -136,9 +140,9 @@ pub struct EnvValues {
 impl Config {
     /// Create config from explicit values (for testing and direct construction)
     pub fn from_values(env: EnvValues) -> Result<Self, ServiceError> {
-        let kels_advertise_url = env
-            .kels_advertise_url
-            .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
+        let base_domain = env
+            .base_domain
+            .ok_or_else(|| ServiceError::Config("BASE_DOMAIN is required".to_string()))?;
 
         let listen_addr_str = env
             .listen_addr
@@ -158,19 +162,7 @@ impl Config {
 
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
-            base_domain: env.base_domain.clone().unwrap_or_default(),
-            kels_url: env.kels_url.unwrap_or_else(|| {
-                env.base_domain
-                    .as_ref()
-                    .map(|d| format!("http://kels.{}", d))
-                    .unwrap_or_else(|| "http://kels".to_string())
-            }),
-            sadstore_url: env
-                .base_domain
-                .as_ref()
-                .map(|d| format!("http://kels-sadstore.{}", d))
-                .unwrap_or_else(|| "http://kels-sadstore".to_string()),
-            kels_advertise_url,
+            base_domain,
             database_url: env.database_url.unwrap_or_else(|| {
                 "postgres://kels_admin:password@postgres:5432/kels_gossip".to_string()
             }),
@@ -201,8 +193,6 @@ impl Config {
         let env = EnvValues {
             node_id: env::var("NODE_ID").ok(),
             base_domain: env::var("BASE_DOMAIN").ok(),
-            kels_url: env::var("KELS_URL").ok(),
-            kels_advertise_url: env::var("KELS_ADVERTISE_URL").ok(),
             database_url: env::var("DATABASE_URL").ok(),
             redis_url: env::var("REDIS_URL").ok(),
             hsm_url: env::var("HSM_URL").ok(),
@@ -234,8 +224,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     info!("Starting KELS gossip service");
     info!("Node ID: {}", config.node_id);
-    info!("KELS URL (local): {}", config.kels_url);
-    info!("KELS URL (advertised): {}", config.kels_advertise_url);
+    info!("Base domain: {}", config.base_domain);
+    info!("KELS URL: {}", config.kels_url());
+    info!("SADStore URL: {}", config.sadstore_url());
     info!("Connecting to Redis");
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
@@ -283,7 +274,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .get_key_events(None, kels::page_size())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
-    let local_kels_client = kels::KelsClient::new(&config.kels_url);
+    let local_kels_client = kels::KelsClient::new(&config.kels_url());
     let events = identity_page.events;
     if !events.is_empty() {
         let _ = local_kels_client
@@ -371,8 +362,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
-        kels_url: config.kels_url.clone(),
-        sadstore_url: config.sadstore_url.clone(),
+        kels_url: config.kels_url(),
+        sadstore_url: config.sadstore_url(),
         http_port: config.http_listen_port,
         page_size: 100,
     };
@@ -454,7 +445,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         &allowlist,
         Some(&config.node_id),
         &requires_kem_1024,
-        &config.kels_url,
+        &config.kels_url(),
     )
     .await
     {
@@ -540,7 +531,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
         allowlist.clone(),
-        &config.kels_url,
+        &config.kels_url(),
         federation_registry_urls.clone(),
         config.node_id.clone(),
         verifier_store,
@@ -594,8 +585,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // The sync handler processes all events (announcements, peer connects/disconnects) as
     // they arrive. A oneshot channel signals back when the first peer connects.
     let (peer_connected_tx, peer_connected_rx) = tokio::sync::oneshot::channel::<()>();
-    let kels_url = config.kels_url.clone();
-    let sadstore_url = config.sadstore_url.clone();
+    let kels_url = config.kels_url().clone();
+    let sadstore_url = config.sadstore_url().clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
@@ -663,7 +654,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
-        let ae_kels_url = config.kels_url.clone();
+        let ae_kels_url = config.kels_url().clone();
         let ae_signer = registry_signer.clone();
         let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
@@ -680,7 +671,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
         let sad_ae_allowlist = allowlist.clone();
-        let sad_ae_sadstore_url = config.sadstore_url.clone();
+        let sad_ae_sadstore_url = config.sadstore_url().clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_sad_anti_entropy_loop(
@@ -699,7 +690,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
     let refresh_kem_flag = requires_kem_1024.clone();
-    let refresh_kels_url = config.kels_url.clone();
+    let refresh_kels_url = config.kels_url().clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &refresh_urls,
@@ -780,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_config_missing_required() {
-        // Missing kels_advertise_url
+        // Missing base_domain
         let env = EnvValues {
             ..Default::default()
         };
@@ -791,28 +782,30 @@ mod tests {
     #[test]
     fn test_config_with_required_vars() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             ..Default::default()
         };
 
         let result = Config::from_values(env);
         if let Ok(config) = result {
-            assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+            assert_eq!(config.base_domain, "example.com");
+            assert_eq!(config.kels_url(), "http://kels.example.com");
+            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
         }
     }
 
     #[test]
     fn test_config_defaults() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             ..Default::default()
         };
 
         let result = Config::from_values(env);
         if let Ok(config) = result {
-            // Check defaults
             assert_eq!(config.node_id, "node-unknown");
-            assert_eq!(config.kels_url, "http://kels");
+            assert_eq!(config.kels_url(), "http://kels.example.com");
+            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
             assert_eq!(config.redis_url, "redis://redis:6379");
             assert_eq!(config.hsm_url, "http://hsm");
             assert_eq!(config.allowlist_refresh_interval_secs, 60);
@@ -824,7 +817,7 @@ mod tests {
     #[test]
     fn test_config_invalid_listen_addr() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             listen_addr: Some("not-a-valid-address".to_string()),
             ..Default::default()
         };

@@ -133,7 +133,7 @@ impl KelsRegistryClient {
                     if peer.active {
                         Some(NodeInfo {
                             node_id: peer.node_id,
-                            kels_url: peer.kels_url,
+                            base_domain: peer.base_domain,
                             gossip_addr: peer.gossip_addr,
                             status: *status,
                             latency_ms: None,
@@ -240,7 +240,8 @@ impl KelsRegistryClient {
         Ok(false)
     }
 
-    async fn check_node_ready_status(&self, kels_url: &str) -> NodeStatus {
+    async fn check_node_ready_status(&self, base_domain: &str) -> NodeStatus {
+        let kels_url = format!("http://kels.{}", base_domain);
         let ready_url = format!("{}/ready", kels_url.trim_end_matches('/'));
 
         let quick_client = reqwest::Client::builder()
@@ -277,7 +278,7 @@ impl KelsRegistryClient {
 
         let futures = peers
             .iter()
-            .map(|peer| self.check_node_ready_status(&peer.kels_url));
+            .map(|peer| self.check_node_ready_status(&peer.base_domain));
         let statuses = join_all(futures).await;
 
         for (peer, status) in peers.iter().zip(statuses.into_iter()) {
@@ -964,7 +965,7 @@ pub async fn nodes_sorted_by_latency(
             .unwrap_or(&NodeStatus::Bootstrapping);
         nodes.push(NodeInfo {
             node_id: peer.node_id.clone(),
-            kels_url: peer.kels_url.clone(),
+            base_domain: peer.base_domain.clone(),
             gossip_addr: peer.gossip_addr.clone(),
             status: *status,
             latency_ms: None,
@@ -977,10 +978,10 @@ pub async fn nodes_sorted_by_latency(
         .enumerate()
         .filter(|(_, n)| n.status == NodeStatus::Ready)
         .map(|(i, n)| {
-            let url = n.kels_url.clone();
+            let kels_url = format!("http://kels.{}", n.base_domain);
             let node_id = n.node_id.clone();
             async move {
-                let client = crate::KelsClient::with_timeout(&url, timeout);
+                let client = crate::KelsClient::with_timeout(&kels_url, timeout);
                 let latency = client.test_latency().await.ok();
                 if let Some(ref lat) = latency {
                     info!("Node {} latency: {}ms", node_id, lat.as_millis());
@@ -1043,7 +1044,7 @@ mod tests {
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            kels_url: "http://node-1:8091".to_string(),
+            base_domain: "node-1.kels".to_string(),
             gossip_addr: "10.0.0.1:9000".to_string(),
         };
 
@@ -1067,7 +1068,7 @@ mod tests {
         let nodes = result.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node_id, "node-1");
-        assert_eq!(nodes[0].kels_url, "http://node-1:8091");
+        assert_eq!(nodes[0].base_domain, "node-1.kels");
     }
 
     // ==================== Peers Tests ====================

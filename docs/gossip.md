@@ -129,7 +129,8 @@ enum SadGossipMessage {
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NODE_ID` | Unique node identifier | `node-unknown` |
-| `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
+| `BASE_DOMAIN` | Base domain for service URL derivation | (derives KELS + SADStore URLs) |
+| `KELS_URL` | Local KELS HTTP endpoint (override) | `http://kels` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
 | `PKCS11_LIBRARY_PATH` | Path to PKCS#11 .so (mock HSM or real HSM) | (required) |

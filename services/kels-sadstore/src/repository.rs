@@ -18,6 +18,9 @@ impl SadRecordRepository {
 
     /// Store a record with its signature, with advisory lock and chain integrity checks.
     ///
+    /// **Precondition:** the caller must have already verified the record's signature
+    /// against the KEL. This method does not verify signatures — it trusts the caller.
+    ///
     /// Acquires an advisory lock on the chain prefix, validates the chain, and handles
     /// conflicts deterministically: if a record already exists at the same version,
     /// the record with the lexicographically smaller SAID wins. This ensures all nodes
@@ -25,7 +28,7 @@ impl SadRecordRepository {
     /// concurrent writes to different nodes).
     ///
     /// Returns `Ok(())` on success, or an error describing the chain integrity violation.
-    pub async fn save_with_chain_check(
+    pub async fn save_with_verified_signature(
         &self,
         record: &SadRecord,
         signature: &SadRecordSignature,
@@ -126,28 +129,57 @@ impl SadRecordRepository {
 
     /// Get the chain with signatures as `SignedSadRecord`s.
     /// If `since_version` is provided, returns only records with version >= that value.
+    /// If `limit` is provided, returns at most that many records.
+    /// Fetches records and signatures in two queries (not N+1).
     pub async fn get_stored_chain(
         &self,
         prefix: &str,
         since_version: Option<u64>,
+        limit: Option<u64>,
     ) -> Result<Vec<kels::SignedSadRecord>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
         let records = if let Some(since) = since_version {
-            self.get_history_since(prefix, since).await?
+            let mut records = self.get_history_since(prefix, since).await?;
+            if let Some(limit) = limit {
+                records.truncate(limit as usize);
+            }
+            records
         } else {
-            self.get_history(prefix).await?
+            let mut records = self.get_history(prefix).await?;
+            if let Some(limit) = limit {
+                records.truncate(limit as usize);
+            }
+            records
         };
+
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Batch-fetch all signatures in one query
+        let saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
+        let query = verifiable_storage_postgres::Query::<kels::SadRecordSignature>::for_table(
+            Self::SIGNATURES_TABLE_NAME,
+        )
+        .r#in("record_said", saids);
+        let sigs: Vec<kels::SadRecordSignature> = self.pool.fetch(query).await?;
+
+        // Index signatures by record_said for O(1) lookup
+        let sig_map: std::collections::HashMap<&str, &kels::SadRecordSignature> =
+            sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
+
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
-            let sig = self.get_signature(&record.said).await?;
-            let Some(sig) = sig else {
-                return Err(StorageError::StorageError(format!(
+            let sig = sig_map.get(record.said.as_str()).ok_or_else(|| {
+                StorageError::StorageError(format!(
                     "Missing signature for SAD record {}",
                     record.said
-                )));
-            };
+                ))
+            })?;
             stored.push(kels::SignedSadRecord {
                 record,
-                signature: sig.signature,
+                signature: sig.signature.clone(),
                 establishment_serial: sig.establishment_serial,
             });
         }

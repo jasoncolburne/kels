@@ -243,7 +243,12 @@ impl SyncHandler {
         let guard = self.allowlist.read().await;
         guard
             .values()
-            .map(|peer| (peer.peer_prefix.clone(), peer.kels_url.clone()))
+            .map(|peer| {
+                (
+                    peer.peer_prefix.clone(),
+                    format!("http://kels.{}", peer.base_domain),
+                )
+            })
             .collect()
     }
 
@@ -301,13 +306,13 @@ impl SyncHandler {
         let local_client = self.sadstore_client.clone();
         let remote_client = kels::SadStoreClient::new(&sadstore_url);
 
-        // Check if we already have it locally
-        match local_client.get_sad_object(said).await {
-            Ok(_) => {
+        // Check if we already have it locally (HEAD check, no data transfer)
+        match local_client.sad_object_exists(said).await {
+            Ok(true) => {
                 debug!("SAD object {} already exists locally", said);
                 return;
             }
-            Err(kels::KelsError::EventNotFound(_)) => {} // need to fetch
+            Ok(false) => {} // need to fetch
             Err(e) => {
                 warn!("Failed to check local SAD object {}: {}", said, e);
                 return;
@@ -362,42 +367,22 @@ impl SyncHandler {
         let remote_client = kels::SadStoreClient::new(&sadstore_url);
         match remote_client.fetch_sad_chain(chain_prefix, None).await {
             Ok(page) => {
-                // Submit each record to our local SADStore
-                // The local service will verify and store
+                // Fetch content objects for all records first
                 for stored in &page.records {
-                    // For records with content, fetch the content object too
-                    if let Some(ref content_said) = stored.record.content_said {
-                        match remote_client.get_sad_object(content_said).await {
-                            Ok(object) => {
-                                if let Err(e) = local_client.put_sad_object(&object).await {
-                                    warn!(
-                                        "Failed to store content {} locally: {}",
-                                        content_said, e
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to fetch content {} from {}: {}",
-                                    content_said, origin, e
-                                );
-                                return;
-                            }
-                        }
+                    if let Some(ref content_said) = stored.record.content_said
+                        && let Ok(object) = remote_client.get_sad_object(content_said).await
+                    {
+                        let _ = local_client.put_sad_object(&object).await;
                     }
+                }
 
-                    // Submit the chain record with its signature to the local SADStore
-                    let signed = kels::SadRecordSubmission {
-                        record: stored.record.clone(),
-                        signature: stored.signature.clone(),
-                    };
-                    if let Err(e) = local_client.submit_sad_record(&signed).await {
-                        warn!(
-                            "Failed to submit SAD record {} locally: {}",
-                            stored.record.said, e
-                        );
-                        return;
-                    }
+                // Submit all chain records in one batch (single KEL verification)
+                if let Err(e) = local_client.submit_sad_records_batch(&page.records).await {
+                    warn!(
+                        "Failed to batch-submit SAD records for chain {}: {}",
+                        chain_prefix, e
+                    );
+                    return;
                 }
                 debug!(
                     "Replicated {} SAD records for chain {}",
@@ -414,14 +399,11 @@ impl SyncHandler {
         }
     }
 
-    /// Derive a peer's SADStore URL from their KELS URL.
-    ///
-    /// Extracts the base domain from the KELS URL (strips `http://kels.` prefix)
-    /// and prepends `http://kels-sadstore.`.
+    /// Derive a peer's SADStore URL from their base domain.
     async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
         let guard = self.allowlist.read().await;
         let peer = guard.get(peer_prefix)?;
-        Some(sadstore_url_from_kels_url(&peer.kels_url))
+        Some(format!("http://kels-sadstore.{}", peer.base_domain))
     }
 
     /// Handle an announcement from a peer.
@@ -820,7 +802,12 @@ pub async fn run_anti_entropy_loop(
             let guard = allowlist.read().await;
             guard
                 .values()
-                .map(|p| (p.peer_prefix.clone(), p.kels_url.clone()))
+                .map(|p| {
+                    (
+                        p.peer_prefix.clone(),
+                        format!("http://kels.{}", p.base_domain),
+                    )
+                })
                 .collect()
         };
 
@@ -1057,22 +1044,6 @@ pub async fn run_anti_entropy_loop(
     }
 }
 
-/// Derive a SADStore URL from a KELS URL by swapping the service name.
-///
-/// `http://kels.node-a.kels` → `http://kels-sadstore.node-a.kels`
-/// `http://kels.node-a.kels:80` → `http://kels-sadstore.node-a.kels:80`
-fn sadstore_url_from_kels_url(kels_url: &str) -> String {
-    // Strip scheme, swap service prefix, reconstruct
-    if let Some(rest) = kels_url.strip_prefix("http://kels.") {
-        format!("http://kels-sadstore.{}", rest)
-    } else if let Some(rest) = kels_url.strip_prefix("https://kels.") {
-        format!("https://kels-sadstore.{}", rest)
-    } else {
-        // Fallback: just append -sadstore after kels
-        kels_url.replacen("kels", "kels-sadstore", 1)
-    }
-}
-
 // ==================== SAD Anti-Entropy ====================
 
 /// Redis hash key for SAD chain anti-entropy stale prefix tracking.
@@ -1118,8 +1089,10 @@ pub async fn run_sad_anti_entropy_loop(
             guard
                 .values()
                 .map(|p| {
-                    let sadstore_url = p.kels_url.replace("kels.", "kels-sadstore.");
-                    (p.peer_prefix.clone(), sadstore_url)
+                    (
+                        p.peer_prefix.clone(),
+                        format!("http://kels-sadstore.{}", p.base_domain),
+                    )
                 })
                 .collect()
         };
@@ -1180,25 +1153,16 @@ pub async fn run_sad_anti_entropy_loop(
 
                         // Fetch the full chain from remote and submit locally
                         if let Ok(page) = remote.fetch_sad_chain(&prefix, None).await {
-                            let mut success = true;
+                            // Fetch content objects first
                             for stored in &page.records {
-                                // Fetch content objects
                                 if let Some(ref content_said) = stored.record.content_said
                                     && let Ok(object) = remote.get_sad_object(content_said).await
                                 {
                                     let _ = local.put_sad_object(&object).await;
                                 }
-                                // Submit chain record
-                                let submission = kels::SadRecordSubmission {
-                                    record: stored.record.clone(),
-                                    signature: stored.signature.clone(),
-                                };
-                                if local.submit_sad_record(&submission).await.is_err() {
-                                    success = false;
-                                    break;
-                                }
                             }
-                            if success {
+                            // Batch submit (single KEL verification)
+                            if local.submit_sad_records_batch(&page.records).await.is_ok() {
                                 return (prefix, source, true);
                             }
                         }

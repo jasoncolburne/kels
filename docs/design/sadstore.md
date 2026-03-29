@@ -138,8 +138,8 @@ Environment variables:
 | `KELS_URL` | `http://kels:80` | KELS service for KEL verification |
 | `MINIO_ENDPOINT` | `http://minio:9000` | MinIO endpoint |
 | `MINIO_REGION` | `us-east-1` | S3 region |
-| `MINIO_ACCESS_KEY` | `minioadmin` | S3 access key |
-| `MINIO_SECRET_KEY` | `minioadmin` | S3 secret key |
+| `MINIO_ACCESS_KEY` | (required) | S3 access key |
+| `MINIO_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
 | `SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY` | `16` | Max chain records per prefix per day |
 | `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `100` | Per-IP write rate (token bucket refill) |

@@ -87,13 +87,14 @@ pub use types::{
     PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
     ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
-    RemovalHistory, RemovalWithVotes, SadGossipMessage, SadObjectEntry, SadRecord, SadRecordChain,
-    SadRecordPage, SadRecordSignature, SadRecordSubmission, SadRecordVerification, SignedKeyEvent,
-    SignedKeyEventPage, SignedRequest, SignedSadRecord, StoreKelSource, StorePageLoader,
-    SubmitEventsResponse, Vote, benchmark_key_events, completed_verification,
-    compute_approval_threshold, compute_rotation_hash, compute_sad_prefix, forward_key_events,
-    generate_nonce, hash_effective_said, truncate_incomplete_generation, validate_timestamp,
-    verify_key_events, verify_key_events_with,
+    RemovalHistory, RemovalWithVotes, SadGossipMessage, SadObjectEntry, SadObjectListResponse,
+    SadRecord, SadRecordChain, SadRecordPage, SadRecordSignature, SadRecordSubmission,
+    SadRecordVerification, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadRecord,
+    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
+    completed_verification, compute_approval_threshold, compute_rotation_hash, compute_sad_prefix,
+    forward_key_events, generate_nonce, hash_effective_said, truncate_incomplete_generation,
+    validate_timestamp, verify_key_events, verify_key_events_with,
+    verify_key_events_with_establishment_keys,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

@@ -282,6 +282,14 @@ pub struct SadRecordPage {
     pub has_more: bool,
 }
 
+/// Response for listing SAD object SAIDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SadObjectListResponse {
+    pub saids: Vec<String>,
+    pub next_cursor: Option<String>,
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {

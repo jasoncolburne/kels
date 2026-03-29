@@ -459,7 +459,7 @@ pub async fn list_completed_proposals(
 pub struct AddPeerRequest {
     pub peer_prefix: String,
     pub node_id: String,
-    pub kels_url: String,
+    pub base_domain: String,
     pub gossip_addr: String,
 }
 
@@ -869,7 +869,7 @@ pub async fn admin_vote_proposal(
                             v0.node_id.clone(),
                             self_prefix.clone(),
                             true,
-                            v0.kels_url.clone(),
+                            v0.base_domain.clone(),
                             v0.gossip_addr.clone(),
                         )
                         .map_err(|e| {

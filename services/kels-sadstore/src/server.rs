@@ -24,8 +24,13 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         // SAD object store (Layer 1 — MinIO)
         .route("/api/v1/sad/:said", put(handlers::put_sad_object))
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
+        .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
         // Chain records (Layer 2 — Postgres)
         .route("/api/v1/sad/records", post(handlers::submit_sad_record))
+        .route(
+            "/api/v1/sad/records/batch",
+            post(handlers::submit_sad_records_batch),
+        )
         .route("/api/v1/sad/chain/:prefix", get(handlers::get_sad_chain))
         .route(
             "/api/v1/sad/chain/:prefix/effective-said",
@@ -71,10 +76,10 @@ pub async fn run(
     let minio_endpoint =
         std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://minio:9000".to_string());
     let minio_region = std::env::var("MINIO_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-    let minio_access_key =
-        std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-    let minio_secret_key =
-        std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+    let minio_access_key = std::env::var("MINIO_ACCESS_KEY")
+        .map_err(|_| "MINIO_ACCESS_KEY must be set".to_string())?;
+    let minio_secret_key = std::env::var("MINIO_SECRET_KEY")
+        .map_err(|_| "MINIO_SECRET_KEY must be set".to_string())?;
     let sad_bucket = std::env::var("KELS_SAD_BUCKET").unwrap_or_else(|_| "kels-sad".to_string());
 
     info!("Connecting to MinIO at {}", minio_endpoint);

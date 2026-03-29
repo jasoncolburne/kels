@@ -287,7 +287,7 @@ mod tests {
             node_id: "test-node".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            kels_url: "http://test:8080".to_string(),
+            base_domain: "test.kels".to_string(),
             gossip_addr: "127.0.0.1:4001".to_string(),
         }
     }

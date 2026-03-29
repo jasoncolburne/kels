@@ -59,9 +59,9 @@ enum PeerAction {
         /// Human-readable node name
         #[arg(long)]
         node_id: String,
-        /// HTTP URL for the KELS service
+        /// Base domain for service discovery (e.g., "kels-node-a.kels")
         #[arg(long)]
-        kels_url: String,
+        base_domain: String,
         /// Gossip address (host:port)
         #[arg(long)]
         gossip_addr: String,
@@ -229,7 +229,7 @@ async fn propose_peer(
     ctx: &AdminContext,
     peer_prefix: &str,
     node_id: &str,
-    kels_url: &str,
+    base_domain: &str,
     gossip_addr: &str,
 ) -> anyhow::Result<()> {
     // Get this registry's prefix as proposer
@@ -249,7 +249,7 @@ async fn propose_peer(
     let peer_proposal = PeerAdditionProposal::empty(
         peer_prefix,
         node_id,
-        kels_url,
+        base_domain,
         gossip_addr,
         &proposer,
         threshold,
@@ -777,10 +777,10 @@ async fn main() -> anyhow::Result<()> {
             PeerAction::Propose {
                 peer_prefix,
                 node_id,
-                kels_url,
+                base_domain,
                 gossip_addr,
             } => {
-                propose_peer(&ctx, &peer_prefix, &node_id, &kels_url, &gossip_addr).await?;
+                propose_peer(&ctx, &peer_prefix, &node_id, &base_domain, &gossip_addr).await?;
             }
             PeerAction::ProposeRemoval { peer_prefix } => {
                 propose_removal(&ctx, &peer_prefix).await?;

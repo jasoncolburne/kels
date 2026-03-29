@@ -23,7 +23,7 @@ pub enum NodeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
     pub node_id: String,
-    pub kels_url: String,
+    pub base_domain: String,
     pub gossip_addr: String,
     pub status: NodeStatus,
     /// Measured latency in milliseconds (populated by discovery)

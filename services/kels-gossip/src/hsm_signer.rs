@@ -240,7 +240,7 @@ impl KelsPeerVerifier {
             let guard = self.allowlist.read().await;
             guard
                 .get(prefix)
-                .map(|p| p.kels_url.clone())
+                .map(|p| format!("http://kels.{}", p.base_domain))
                 .ok_or_else(|| {
                     GossipError::VerificationFailed(format!("Peer {} not in allowlist", prefix))
                 })?
