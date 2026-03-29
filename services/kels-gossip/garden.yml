@@ -49,7 +49,6 @@ variables:
   gossipAdvertiseAddress: "kels-gossip.kels-${environment.name}.kels:${var.gossip.port}"
   gossipAntiEntropyIntervalSecs: "${var.gossip.antiEntropyIntervalSecs}"
   identityUrl: ${var.identity.url}
-  kelsAdvertiseUrl: "http://kels.kels-${environment.name}.kels"
 
 spec:
   manifestTemplates:

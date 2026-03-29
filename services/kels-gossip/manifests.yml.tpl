@@ -81,7 +81,7 @@ spec:
             - name: NODE_ID
               value: "${environment.name}"
             - name: BASE_DOMAIN
-              value: "${environment.name}.kels"
+              value: "${environment.namespace}.kels"
             - name: REDIS_URL
               value: "${var.redisUrl}"
             - name: IDENTITY_URL
