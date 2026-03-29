@@ -16,8 +16,8 @@
 #   RESYNC_WAIT       - seconds to wait for anti-entropy loop (default: 30)
 
 MODE="${1:-}"
-if [ "$MODE" != "setup" ] && [ "$MODE" != "verify" ]; then
-    echo "Usage: $0 <setup|verify>"
+if [ "$MODE" != "seed" ] && [ "$MODE" != "setup" ] && [ "$MODE" != "verify" ]; then
+    echo "Usage: $0 <seed|setup|verify>"
     exit 1
 fi
 
@@ -30,8 +30,20 @@ REDIS_HOST="${NODE_A_REDIS_HOST:-redis}"
 RESYNC_WAIT="${RESYNC_WAIT:-90}"
 STALE_PREFIX_KEY="kels:anti_entropy:stale"
 STATE_FILE="/tmp/resync-test-state"
+CLI_HOME_FILE="/tmp/resync-cli-home-path"
 
-init_temp_dir
+# Persistent CLI home across seed/setup/verify (keys must survive between phases)
+if [ "$MODE" = "seed" ]; then
+    PERSISTENT_CLI_HOME=$(mktemp -d)
+    echo "$PERSISTENT_CLI_HOME" > "$CLI_HOME_FILE"
+else
+    if [ ! -f "$CLI_HOME_FILE" ]; then
+        echo "CLI home file not found — run seed first" >&2
+        exit 1
+    fi
+    PERSISTENT_CLI_HOME=$(cat "$CLI_HOME_FILE")
+fi
+export KELS_CLI_HOME="$PERSISTENT_CLI_HOME"
 
 # Redis helpers (authenticate as gossip user — accesses kels:anti_entropy:* keys)
 redis_cmd() {
@@ -63,6 +75,50 @@ stale_entries() {
 }
 
 # =====================================================================
+# SEED MODE — Create KEL and wait for propagation BEFORE DNS is broken
+# =====================================================================
+if [ "$MODE" = "seed" ]; then
+    echo "========================================="
+    echo "KELS Anti-Entropy Stale Repair — Seed Phase"
+    echo "========================================="
+    echo "Node-A URL:       $NODE_A_URL"
+    echo "Node-B FQDN URL:  $NODE_B_FQDN_URL"
+    echo "========================================="
+    echo ""
+
+    echo "Waiting for KELS servers..."
+    wait_for_health "$NODE_A_URL" "$NODE_A_URL" || exit 1
+    wait_for_health "$NODE_B_FQDN_URL" "$NODE_B_FQDN_URL" || exit 1
+    echo ""
+
+    # Create KEL on node-a
+    PREFIX=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+    echo "Created KEL on node-a: $PREFIX"
+
+    # Wait for gossip to propagate the icp to node-b
+    echo "Waiting for icp to propagate to node-b..."
+    NODE_B_COUNT=0
+    for i in {1..30}; do
+        NODE_B_COUNT=$(get_event_count "$NODE_B_FQDN_URL" "$PREFIX")
+        if [ "$NODE_B_COUNT" = "1" ]; then
+            echo "  Propagated after ${i}s"
+            break
+        fi
+        sleep 1
+    done
+
+    echo "Node-B event count: $NODE_B_COUNT"
+    run_test "KEL propagated to node-b" [ "$NODE_B_COUNT" = "1" ]
+
+    # Save prefix for setup and verify phases
+    echo "$PREFIX" > "$STATE_FILE"
+
+    echo ""
+    print_summary "Anti-Entropy Seed Summary"
+    exit_with_result
+fi
+
+# =====================================================================
 # SETUP MODE — DNS for node-b is broken
 # =====================================================================
 if [ "$MODE" = "setup" ]; then
@@ -75,10 +131,13 @@ if [ "$MODE" = "setup" ]; then
     echo "========================================="
     echo ""
 
-    # Wait for node-a KELS to be ready
-    echo "Waiting for KELS servers..."
-    wait_for_health "$NODE_A_URL" "$NODE_A_URL" || exit 1
-    wait_for_health "$NODE_B_FQDN_URL" "$NODE_B_FQDN_URL" || exit 1
+    # Load prefix from seed phase
+    if [ ! -f "$STATE_FILE" ]; then
+        echo -e "${RED}State file not found — run seed first${NC}"
+        exit 1
+    fi
+    PREFIX=$(cat "$STATE_FILE")
+    echo "Prefix from seed: $PREFIX"
     echo ""
 
     # ========================================
@@ -99,16 +158,13 @@ if [ "$MODE" = "setup" ]; then
     echo ""
 
     # ========================================
-    # Scenario 2: Create real fetch failure
+    # Scenario 2: Trigger fetch failure
     # ========================================
     echo -e "${CYAN}=== Scenario 2: Trigger Real Fetch Failure ===${NC}"
-    echo "Create KEL on node-a, submit two ixns to node-b via FQDN."
-    echo "Use the first ixn as a sync point, then verify the second fails to fetch."
+    echo "Submit ixns to node-b via FQDN while gossip DNS is broken."
     echo ""
 
     # Wait for DNS caches to expire so .kels lookups for node-b actually fail.
-    # When run via test-federation, DNS_CACHE_TTL=2 is set on CoreDNS before
-    # tests start, so node-level caches expire within seconds of CoreDNS restart.
     echo "Waiting for DNS caches to expire (kels.kels-node-b.kels must fail)..."
     for i in {1..60}; do
         if ! nslookup kels.kels-node-b.kels > /dev/null 2>&1; then
@@ -122,30 +178,9 @@ if [ "$MODE" = "setup" ]; then
         sleep 1
     done
 
-    # Brief additional wait for node-level DNS caches (NodeLocal DNSCache, etc.)
-    # on other K8s nodes where gossip pods may run. With DNS_CACHE_TTL=2 set at
-    # the start of test-federation, stale entries expire within 2s.
+    # Brief additional wait for node-level DNS caches
     sleep 5
     echo ""
-
-    # Create KEL on node-a
-    PREFIX=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
-    echo "Created KEL on node-a: $PREFIX"
-
-    # Wait for gossip to propagate the icp to node-b (poll instead of fixed sleep)
-    echo "Waiting for icp to propagate to node-b..."
-    NODE_B_COUNT=0
-    for i in {1..30}; do
-        NODE_B_COUNT=$(get_event_count "$NODE_B_FQDN_URL" "$PREFIX")
-        if [ "$NODE_B_COUNT" = "1" ]; then
-            echo "  Propagated after ${i}s"
-            break
-        fi
-        sleep 1
-    done
-
-    echo "Node-B event count: $NODE_B_COUNT"
-    run_test "KEL propagated to node-b" [ "$NODE_B_COUNT" = "1" ]
 
     # Submit first ixn (sync event) to node-b via FQDN
     echo "Submitting sync anchor (ixn #1) to node-b via FQDN..."
@@ -293,8 +328,10 @@ if [ "$MODE" = "verify" ]; then
     echo ""
     print_summary "Anti-Entropy Stale Repair Verify Summary"
 
-    # Clean up state file
+    # Clean up
     rm -f "$STATE_FILE"
+    rm -f "$CLI_HOME_FILE"
+    rm -rf "$PERSISTENT_CLI_HOME"
 
     exit_with_result
 fi

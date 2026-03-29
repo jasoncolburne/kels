@@ -259,6 +259,8 @@ restart-gossip-services:
 	kubectl rollout status deployment/kels-gossip -n kels-node-f
 
 test-resync:
+	scripts/coredns.sh apply
+	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh seed
 	scripts/coredns.sh break-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
 	scripts/coredns.sh apply
@@ -297,7 +299,7 @@ test-shrink-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-shrink-federation.sh
 
 seed-kels:
-	kubectl exec -n kels-node-a -it test-client -- bash -c 'TEST_KELS_HOST=kels.kels-node-a.kels ./test-kels.sh'
+	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 600 5 ml-dsa-65 50 
 
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
