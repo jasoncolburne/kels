@@ -299,7 +299,10 @@ test-shrink-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-shrink-federation.sh
 
 seed-kels:
-	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 587 5 ml-dsa-65 50 
+	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 500 5 ml-dsa-65 50 
+
+seed-sads:
+	kubectl exec -n kels-node-a -it test-client -- ./load-sads.sh 783 50
 
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
@@ -369,8 +372,11 @@ test-grow-shrink:
 	$(MAKE) test-grow-federation
 	$(MAKE) test-shrink-federation
 
-test-consistency:
-	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
+test-kel-consistency:
+	kubectl exec -n kels-node-a -it test-client -- ./test-kel-consistency.sh
+
+test-sad-consistency:
+	kubectl exec -n kels-node-a -it test-client -- ./test-sad-consistency.sh
 
 test-kem-upgrade:
 	# Upgrade node-a identity to ML-DSA-87: first rotation commits the new algorithm,
@@ -399,4 +405,4 @@ test-node: clean-standalone
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-kels-suite test-sad-suite test-grow-shrink test-consistency
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services test-kels-suite test-sad-suite test-grow-shrink test-sad-consistency test-kel-consistency

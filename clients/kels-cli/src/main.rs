@@ -5,6 +5,7 @@ use std::{iter, path::PathBuf};
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
+use cesr::Matter;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
@@ -163,6 +164,16 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+
+    /// Sign arbitrary data with the current signing key and print the CESR signature
+    Sign {
+        /// KEL prefix whose signing key to use
+        #[arg(long)]
+        prefix: String,
+
+        /// Data to sign (raw string)
+        data: String,
     },
 
     /// SAD store commands (self-addressed data)
@@ -531,6 +542,16 @@ async fn cmd_rotate_recovery(
     println!("{}", "Recovery rotation successful!".green().bold());
     println!("  Event SAID: {}", ror.event.said);
 
+    Ok(())
+}
+
+async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> {
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
+    let sig = key_provider
+        .sign(data.as_bytes())
+        .await
+        .context("Signing failed")?;
+    println!("{}", sig.qb64());
     Ok(())
 }
 
@@ -1178,6 +1199,7 @@ async fn main() -> Result<()> {
                 .transpose()?;
             cmd_rotate_recovery(&cli, prefix, signing, recovery).await
         }
+        Commands::Sign { prefix, data } => cmd_sign(&cli, prefix, data).await,
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
         Commands::Recover {
             prefix,
