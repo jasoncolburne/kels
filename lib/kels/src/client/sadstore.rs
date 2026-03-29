@@ -8,7 +8,7 @@ use std::time::Duration;
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadRecordPage, SadRecordVerification,
+    KelsError, SadChainRepairPage, SadRecordPage, SadRecordVerification,
     types::{EffectiveSaidResponse, ErrorCode},
 };
 
@@ -265,6 +265,53 @@ impl SadStoreClient {
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch repairs for a chain prefix, paginated.
+    pub async fn fetch_repairs(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<SadChainRepairPage, KelsError> {
+        let url = format!(
+            "{}/api/v1/sad/chain/{}/repairs?limit={}&offset={}",
+            self.base_url, prefix, limit, offset
+        );
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::EventNotFound(prefix.to_string()))
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch archived records for a specific repair, paginated.
+    pub async fn fetch_repair_records(
+        &self,
+        prefix: &str,
+        repair_said: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<SadRecordPage, KelsError> {
+        let url = format!(
+            "{}/api/v1/sad/chain/{}/repairs/{}/records?limit={}&offset={}",
+            self.base_url, prefix, repair_said, limit, offset
+        );
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::EventNotFound(repair_said.to_string()))
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))

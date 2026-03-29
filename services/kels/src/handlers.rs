@@ -18,7 +18,7 @@ use tracing::warn;
 
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
-    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    PrefixListResponse, RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
     SubmitEventsResponse,
 };
 
@@ -565,17 +565,51 @@ pub(crate) async fn get_kel(
     Ok(Json(page).into_response())
 }
 
-/// Dedicated audit endpoint — returns recovery history for a prefix.
+/// Dedicated audit endpoint — returns paginated recovery history for a prefix.
+///
+/// `?limit=N` controls page size (1-page_size, default page_size).
+/// `?offset=N` skips the first N records.
 pub(crate) async fn get_kel_audit(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-) -> Result<Json<Vec<RecoveryRecord>>, ApiError> {
-    let records = state
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<RecoveryRecordPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (records, has_more) = state
         .repo
         .recovery_records
-        .get_by_kel_prefix(&prefix)
+        .get_by_kel_prefix(&prefix, limit, offset)
         .await?;
-    Ok(Json(records))
+    Ok(Json(RecoveryRecordPage { records, has_more }))
+}
+
+/// Archived adversary events for a specific recovery — paginated.
+///
+/// `?limit=N` controls page size (1-page_size, default page_size).
+/// `?offset=N` skips the first N events.
+pub(crate) async fn get_recovery_events(
+    State(state): State<Arc<AppState>>,
+    Path((_prefix, recovery_said)): Path<(String, String)>,
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (events, has_more) = state
+        .repo
+        .key_events
+        .get_recovery_archived_events(&recovery_said, limit, offset)
+        .await?;
+
+    Ok(Json(SignedKeyEventPage { events, has_more }))
 }
 
 /// Query parameters for the archived events endpoint.

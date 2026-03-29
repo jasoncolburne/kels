@@ -38,6 +38,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             get(handlers::get_kel_audit),
         )
         .route(
+            "/api/v1/kels/kel/:prefix/audit/:said/events",
+            get(handlers::get_recovery_events),
+        )
+        .route(
             "/api/v1/kels/kel/:prefix/archived",
             get(handlers::get_kel_archived),
         )

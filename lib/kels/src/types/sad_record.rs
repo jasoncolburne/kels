@@ -226,6 +226,14 @@ pub struct SadChainRepair {
     pub repaired_at: StorageDatetime,
 }
 
+/// A page of chain repairs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SadChainRepairPage {
+    pub repairs: Vec<SadChainRepair>,
+    pub has_more: bool,
+}
+
 /// Links a repair to an archived record it displaced.
 ///
 /// One entry per archived record, all sharing the same `repair_said`.

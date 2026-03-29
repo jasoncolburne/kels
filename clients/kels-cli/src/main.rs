@@ -762,11 +762,22 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     print_kel_status(&kel_verification, !audit);
 
     if audit {
-        let recovery_records = client.fetch_kel_audit(prefix).await?;
-        if !recovery_records.is_empty() {
+        let mut all_records = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let page = client
+                .fetch_kel_audit(prefix, kels::page_size(), offset)
+                .await?;
+            all_records.extend(page.records);
+            if !page.has_more {
+                break;
+            }
+            offset += kels::page_size() as u64;
+        }
+        if !all_records.is_empty() {
             println!();
             println!("{}", "Recovery History:".yellow().bold());
-            for (i, record) in recovery_records.iter().enumerate() {
+            for (i, record) in all_records.iter().enumerate() {
                 println!("  [{}] {} ({})", i, &record.said[..16], record.created_at);
                 println!(
                     "      diverged_at={} recovery_serial={}",

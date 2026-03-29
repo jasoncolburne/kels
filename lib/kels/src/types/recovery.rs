@@ -48,6 +48,14 @@ pub struct KelRecoveryEvent {
     pub event_said: String,
 }
 
+/// A page of recovery records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryRecordPage {
+    pub records: Vec<RecoveryRecord>,
+    pub has_more: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

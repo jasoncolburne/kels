@@ -843,6 +843,69 @@ pub async fn list_sad_prefixes(
     .into_response()
 }
 
+// === Layer 2: Chain Repair History ===
+
+#[derive(Deserialize)]
+pub struct PaginationQuery {
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
+pub(crate) async fn get_sad_repairs(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    Query(params): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let page_size = kels::page_size() as u64;
+    let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
+    let offset = params.offset.unwrap_or(0);
+
+    match state
+        .repo
+        .sad_records
+        .get_repairs(&prefix, limit, offset)
+        .await
+    {
+        Ok((repairs, has_more)) => (
+            StatusCode::OK,
+            Json(kels::SadChainRepairPage { repairs, has_more }),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!("Failed to get repairs for {}: {}", prefix, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+pub(crate) async fn get_repair_records(
+    State(state): State<Arc<AppState>>,
+    Path((prefix, repair_said)): Path<(String, String)>,
+    Query(params): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let _ = prefix; // prefix is in the URL for routing clarity but not needed for the query
+    let page_size = kels::page_size() as u64;
+    let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
+    let offset = params.offset.unwrap_or(0);
+
+    match state
+        .repo
+        .sad_records
+        .get_repair_records(&repair_said, limit, offset)
+        .await
+    {
+        Ok((records, has_more)) => (
+            StatusCode::OK,
+            Json(kels::SadRecordPage { records, has_more }),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!("Failed to get repair records for {}: {}", repair_said, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
 /// Unauthenticated test endpoint for listing SAD objects.
 /// Only available when `KELS_TEST_ENDPOINTS=true`.
 pub async fn test_list_sad_objects(

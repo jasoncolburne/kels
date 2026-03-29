@@ -1,11 +1,13 @@
 //! PostgreSQL Repository for KELS
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
-use kels::{KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord, SignedKeyEvent};
+use kels::{
+    KelRecoveryEvent, KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord, SignedKeyEvent,
+};
 use libkels_derive::SignedEvents;
 
 #[derive(Stored, SignedEvents)]
@@ -56,6 +58,75 @@ impl KeyEventRepository {
         .await?;
         tx.commit().await?;
         Ok(result)
+    }
+
+    /// Paginated query of archived events linked to a specific recovery SAID.
+    pub async fn get_recovery_archived_events(
+        &self,
+        recovery_said: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+        use verifiable_storage::TransactionExecutor;
+
+        let clamped_limit = limit.min(kels::page_size() as u64);
+
+        let mut tx = self.pool.begin_transaction().await?;
+
+        // Fetch recovery_event join records for this recovery_said, paginated.
+        let join_query = Query::<KelRecoveryEvent>::new()
+            .eq("recovery_said", recovery_said)
+            .order_by("event_said", Order::Asc)
+            .limit(clamped_limit + 1)
+            .offset(offset);
+        let mut join_records: Vec<KelRecoveryEvent> = tx.fetch(join_query).await?;
+
+        let has_more = join_records.len() > clamped_limit as usize;
+        if has_more {
+            join_records.pop();
+        }
+
+        if join_records.is_empty() {
+            tx.commit().await?;
+            return Ok((vec![], false));
+        }
+
+        let event_saids: Vec<String> = join_records.iter().map(|r| r.event_said.clone()).collect();
+
+        // Fetch the archived events by their SAIDs.
+        let events_query = Query::<KeyEvent>::for_table("kels_archived_events")
+            .r#in("said", event_saids.clone())
+            .order_by("serial", Order::Asc)
+            .order_by("said", Order::Asc);
+        let events: Vec<KeyEvent> = tx.fetch(events_query).await?;
+
+        // Fetch signatures for those events.
+        let sig_query = Query::<kels::EventSignature>::for_table("kels_archived_event_signatures")
+            .r#in("event_said", event_saids);
+        let signatures: Vec<kels::EventSignature> = tx.fetch(sig_query).await?;
+
+        let mut sig_map: HashMap<String, Vec<kels::EventSignature>> = HashMap::new();
+        for sig in signatures {
+            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        }
+
+        tx.commit().await?;
+
+        let mut result = Vec::with_capacity(events.len());
+        for event in events {
+            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+                kels::KelsError::StorageError(format!(
+                    "No signatures found for event {}",
+                    event.said
+                ))
+            })?;
+            let sig_pairs: Vec<(String, String)> = sigs
+                .iter()
+                .map(|s| (s.label.clone(), s.signature.clone()))
+                .collect();
+            result.push(SignedKeyEvent::from_signatures(event, sig_pairs));
+        }
+        Ok((result, has_more))
     }
 
     /// Check if an event with the given SAID exists (efficient SELECT EXISTS query).
@@ -202,10 +273,22 @@ impl RecoveryRecordRepository {
     pub async fn get_by_kel_prefix(
         &self,
         kel_prefix: &str,
-    ) -> Result<Vec<RecoveryRecord>, StorageError> {
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<RecoveryRecord>, bool), StorageError> {
+        let clamped_limit = limit.min(kels::page_size() as u64);
         let query = Query::<RecoveryRecord>::new()
             .eq("kel_prefix", kel_prefix)
-            .order_by("created_at", Order::Asc);
-        self.pool.fetch(query).await
+            .order_by("created_at", Order::Asc)
+            .limit(clamped_limit + 1)
+            .offset(offset);
+        let mut records: Vec<RecoveryRecord> = self.pool.fetch(query).await?;
+
+        let has_more = records.len() > clamped_limit as usize;
+        if has_more {
+            records.pop();
+        }
+
+        Ok((records, has_more))
     }
 }

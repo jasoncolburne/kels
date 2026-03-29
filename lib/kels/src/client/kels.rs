@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::{
     error::KelsError,
     types::{
-        ErrorCode, ErrorResponse, RecoveryRecord, SignedKeyEvent, SignedKeyEventPage,
+        ErrorCode, ErrorResponse, RecoveryRecordPage, SignedKeyEvent, SignedKeyEventPage,
         SubmitEventsResponse,
     },
 };
@@ -256,13 +256,45 @@ impl KelsClient {
         }
     }
 
-    /// Fetch recovery records for a prefix (recovery history and audit trail).
-    pub async fn fetch_kel_audit(&self, prefix: &str) -> Result<Vec<RecoveryRecord>, KelsError> {
+    /// Fetch paginated recovery records for a prefix (recovery history and audit trail).
+    pub async fn fetch_kel_audit(
+        &self,
+        prefix: &str,
+        limit: usize,
+        offset: u64,
+    ) -> Result<RecoveryRecordPage, KelsError> {
         let resp = self
             .client
             .get(format!(
-                "{}{}/kel/{}/audit",
-                self.base_url, self.path_prefix, prefix
+                "{}{}/kel/{}/audit?limit={}&offset={}",
+                self.base_url, self.path_prefix, prefix, limit, offset
+            ))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::EventNotFound(prefix.to_string()))
+        } else {
+            let err: ErrorResponse = resp.json().await?;
+            Err(KelsError::ServerError(err.error, err.code))
+        }
+    }
+
+    /// Fetch paginated archived events for a specific recovery.
+    pub async fn fetch_recovery_events(
+        &self,
+        prefix: &str,
+        recovery_said: &str,
+        limit: usize,
+        offset: u64,
+    ) -> Result<SignedKeyEventPage, KelsError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}{}/kel/{}/audit/{}/events?limit={}&offset={}",
+                self.base_url, self.path_prefix, prefix, recovery_said, limit, offset
             ))
             .send()
             .await?;

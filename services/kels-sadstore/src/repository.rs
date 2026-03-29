@@ -453,6 +453,100 @@ impl SadRecordRepository {
         Ok(Some((latest.said, false)))
     }
 
+    /// Get repairs for a chain prefix, paginated.
+    ///
+    /// Returns repairs ordered by `repaired_at ASC`. Uses limit+1 overflow
+    /// to determine `has_more`.
+    pub async fn get_repairs(
+        &self,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SadChainRepair>, bool), StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<kels::SadChainRepair>::for_table(
+            Self::REPAIRS_TABLE,
+        )
+        .eq("record_prefix", prefix)
+        .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
+        .offset(offset)
+        .limit(limit + 1);
+        let mut repairs: Vec<kels::SadChainRepair> = self.pool.fetch(query).await?;
+
+        let has_more = repairs.len() as u64 > limit;
+        repairs.truncate(limit as usize);
+        Ok((repairs, has_more))
+    }
+
+    /// Get archived records for a specific repair, paginated.
+    ///
+    /// Fetches `SadChainRepairRecord` links for the repair SAID, then batch-fetches
+    /// the archived records and their signatures. Returns `SignedSadRecord`s.
+    pub async fn get_repair_records(
+        &self,
+        repair_said: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<kels::SignedSadRecord>, bool), StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        // Fetch repair-record links with limit+1 for has_more
+        let link_query = verifiable_storage_postgres::Query::<SadChainRepairRecord>::for_table(
+            Self::REPAIR_RECORDS_TABLE,
+        )
+        .eq("repair_said", repair_said)
+        .offset(offset)
+        .limit(limit + 1);
+        let mut links: Vec<SadChainRepairRecord> = self.pool.fetch(link_query).await?;
+
+        let has_more = links.len() as u64 > limit;
+        links.truncate(limit as usize);
+
+        if links.is_empty() {
+            return Ok((Vec::new(), false));
+        }
+
+        // Collect record SAIDs
+        let record_saids: Vec<String> = links.iter().map(|l| l.record_said.clone()).collect();
+
+        // Batch-fetch archived records
+        let records_query = verifiable_storage_postgres::Query::<SadRecord>::for_table(
+            Self::ARCHIVED_RECORDS_TABLE,
+        )
+        .r#in("said", record_saids.clone());
+        let records: Vec<SadRecord> = self.pool.fetch(records_query).await?;
+
+        // Batch-fetch archived signatures
+        let sigs_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+            Self::ARCHIVED_SIGNATURES_TABLE,
+        )
+        .r#in("record_said", record_saids);
+        let sigs: Vec<SadRecordSignature> = self.pool.fetch(sigs_query).await?;
+
+        // Index signatures by record_said
+        let sig_map: std::collections::HashMap<&str, &SadRecordSignature> =
+            sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
+
+        // Zip into SignedSadRecord
+        let mut signed = Vec::with_capacity(records.len());
+        for record in records {
+            let sig = sig_map.get(record.said.as_str()).ok_or_else(|| {
+                StorageError::StorageError(format!(
+                    "Missing signature for archived record {}",
+                    record.said
+                ))
+            })?;
+            signed.push(kels::SignedSadRecord {
+                record,
+                signature: sig.signature.clone(),
+                establishment_serial: sig.establishment_serial,
+            });
+        }
+
+        Ok((signed, has_more))
+    }
+
     /// List chain prefixes with their effective SAIDs, paginated by cursor.
     ///
     /// Wraps around: if `cursor` is provided and the query returns fewer than

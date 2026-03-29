@@ -501,9 +501,10 @@ async fn test_get_kel_with_audit() {
         .expect("Failed to get audit records");
 
     assert_eq!(response.status(), 200);
-    let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
+    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
     // No recovery records for a simple KEL
-    assert!(recovery_records.is_empty());
+    assert!(page.records.is_empty());
+    assert!(!page.has_more);
 }
 
 #[tokio::test]
@@ -1004,9 +1005,9 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
-    assert_eq!(recovery_records.len(), 1);
-    let record = &recovery_records[0];
+    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
     assert_eq!(record.diverged_at, 3);
     assert_eq!(record.recovery_serial, 4);
     assert_eq!(record.owner_first_serial, 4);

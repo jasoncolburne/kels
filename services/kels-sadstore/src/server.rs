@@ -41,6 +41,15 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/sad/chain/:prefix/effective-said",
             get(handlers::get_sad_effective_said),
         )
+        // Chain repair history
+        .route(
+            "/api/v1/sad/chain/:prefix/repairs",
+            get(handlers::get_sad_repairs),
+        )
+        .route(
+            "/api/v1/sad/chain/:prefix/repairs/:said/records",
+            get(handlers::get_repair_records),
+        )
         // Listing (authenticated — federation peers only)
         .route("/api/v1/sad/objects", post(handlers::list_sad_objects))
         .route("/api/v1/sad/prefixes", post(handlers::list_sad_prefixes));
