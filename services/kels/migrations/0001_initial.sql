@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS kels_key_events_prefix_previous_idx ON kels_key_event
 -- Signatures table
 CREATE TABLE IF NOT EXISTS kels_key_event_signatures (
     said TEXT PRIMARY KEY,
-    event_said TEXT NOT NULL,
+    event_said TEXT NOT NULL REFERENCES kels_key_events(said) ON DELETE CASCADE,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
@@ -49,5 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_kels_recovery_kel_prefix ON kels_recovery(kel_pre
 -- with kels_recovery providing provenance.
 CREATE TABLE IF NOT EXISTS kels_archived_events (LIKE kels_key_events INCLUDING ALL);
 CREATE TABLE IF NOT EXISTS kels_archived_event_signatures (LIKE kels_key_event_signatures INCLUDING ALL);
+ALTER TABLE kels_archived_event_signatures
+    ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
+    REFERENCES kels_archived_events(said) ON DELETE CASCADE;
 
 COMMIT;

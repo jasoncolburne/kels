@@ -22,6 +22,25 @@ use verifiable_storage::{Chained, SelfAddressed};
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
 const SECS_PER_DAY: u64 = 86_400;
+const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Spawn a background task that periodically removes expired entries from
+/// rate limit maps. Prevents unbounded growth from attacker-generated keys.
+pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
+            let now = Instant::now();
+            let day = Duration::from_secs(SECS_PER_DAY);
+            state
+                .prefix_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .ip_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+        }
+    });
+}
 
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
@@ -43,12 +62,16 @@ fn max_sad_object_size() -> usize {
     kels::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-chain-prefix daily rate limit. Returns error string on rejection.
+/// Per-chain-prefix daily rate limit. Checks whether adding `record_count` new
+/// records would exceed the daily limit. Does NOT update the counter — call
+/// `accrue_prefix_rate_limit` after storage with the actual new record count.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
+    record_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
+    let max_records = max_records_per_prefix_per_day();
     let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
@@ -56,22 +79,26 @@ fn check_prefix_rate_limit(
         entry.1 = now;
     }
 
-    if entry.0 >= max_records_per_prefix_per_day() {
+    if entry.0 + record_count > max_records {
         return Err("Too many records for this chain prefix".to_string());
     }
 
     Ok(())
 }
 
-/// Accrue one record to the prefix rate limit after successful store.
-fn accrue_prefix_rate_limit(limits: &DashMap<String, (u32, Instant)>, prefix: &str) {
+/// Accrue the actual number of new records after storage completes.
+fn accrue_prefix_rate_limit(
+    limits: &DashMap<String, (u32, Instant)>,
+    prefix: &str,
+    new_record_count: u32,
+) {
     let now = Instant::now();
     let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
         entry.1 = now;
     }
-    entry.0 += 1;
+    entry.0 += new_record_count;
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -231,167 +258,25 @@ pub async fn sad_object_exists(
 
 // === Layer 2: Chain Records (Postgres) ===
 
-pub async fn submit_sad_record(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<kels::SadRecordSubmission>,
-) -> impl IntoResponse {
-    let record = &body.record;
-    let signature_str = &body.signature;
-
-    // Per-IP rate limit
-    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
-        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-    }
-
-    // Per-chain-prefix daily rate limit
-    if let Err(msg) = check_prefix_rate_limit(&state.prefix_rate_limits, &record.prefix) {
-        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-    }
-
-    // 1. Verify record SAID integrity
-    if record.verify_said().is_err() {
-        return (StatusCode::BAD_REQUEST, "Record SAID verification failed").into_response();
-    }
-
-    // 2. If content_said present, verify content exists in MinIO
-    if let Some(ref content_said) = record.content_said {
-        match state.object_store.exists(content_said).await {
-            Ok(true) => {}
-            Ok(false) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Content SAID not found in object store — PUT content first",
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                warn!("Failed to check content existence: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
-            }
-        }
-    }
-
-    // 3. Verify signature against KEL — find the most recent establishment event
-    let kel_prefix = &record.kel_prefix;
-    let verifier = kels::KelVerifier::new(kel_prefix);
-    let verification = match kels::verify_key_events(
-        kel_prefix,
-        &state.kels_client.as_kel_source(),
-        verifier,
-        kels::page_size(),
-        kels::max_pages(),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("KEL verification failed: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    if verification.is_divergent() {
-        return (StatusCode::CONFLICT, "KEL is divergent").into_response();
-    }
-
-    let Some(public_key_qb64) = verification.current_public_key() else {
-        return (StatusCode::BAD_REQUEST, "No public key in verified KEL").into_response();
-    };
-
-    // Verify signature over the record's SAID
-    let public_key = match VerificationKey::from_qb64(public_key_qb64) {
-        Ok(k) => k,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid public key: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    let sig = match Signature::from_qb64(signature_str) {
-        Ok(s) => s,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("Invalid signature: {}", e)).into_response();
-        }
-    };
-
-    if public_key.verify(record.said.as_bytes(), &sig).is_err() {
-        return (StatusCode::FORBIDDEN, "Signature verification failed").into_response();
-    }
-
-    // Get establishment serial from the verification
-    let establishment_serial = verification
-        .last_establishment_event()
-        .map(|e| e.event.serial)
-        .unwrap_or(0);
-
-    // 4. Verify prefix derivation for v0
-    if record.version == 0 && record.verify_prefix().is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Prefix derivation verification failed",
-        )
-            .into_response();
-    }
-
-    // 5. Store record + signature atomically (with advisory lock + chain integrity check)
-    let sig_record = kels::SadRecordSignature::create(
-        record.said.clone(),
-        signature_str.clone(),
-        establishment_serial,
-    );
-    let sig_record = match sig_record {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Failed to create signature record: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    };
-
-    if let Err(e) = state
-        .repo
-        .sad_records
-        .save_with_verified_signature(record, &sig_record)
-        .await
-    {
-        warn!("Failed to store record: {}", e);
-        return (StatusCode::CONFLICT, format!("{}", e)).into_response();
-    }
-
-    // Accrue to prefix rate limit after successful store
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, &record.prefix);
-
-    // 6. Publish to Redis for gossip
-    if let Some(ref conn) = state.redis_conn {
-        let mut conn = conn.clone();
-        let message = format!("{}:{}", record.prefix, record.said);
-        if let Err(e) = redis::cmd("PUBLISH")
-            .arg("sad_chain_updates")
-            .arg(&message)
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to publish chain update: {}", e);
-        }
-    }
-
-    (StatusCode::CREATED, "stored").into_response()
+/// Query parameters for record submission.
+#[derive(Deserialize)]
+pub struct RecordSubmitQuery {
+    /// If true, truncate records at and after the first record's version before
+    /// inserting. Used to repair divergent chains.
+    pub repair: Option<bool>,
 }
 
-/// Batch submission of signed SAD records — used by gossip sync.
+/// Submit signed SAD records — unified endpoint for clients, gossip sync, and repair.
 ///
 /// Accepts `Vec<SignedSadRecord>` (with establishment serials from the source node).
 /// Verifies the KEL once, collecting establishment keys for all referenced serials,
-/// then verifies each record's signature and stores all records atomically.
-pub async fn submit_sad_records_batch(
+/// then verifies each record's signature and stores all records.
+///
+/// With `?repair=true`, truncates all records at version >= the first record's version
+/// before inserting. This is the repair mechanism for divergent chains.
+pub async fn submit_sad_records(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
     Json(records): Json<Vec<kels::SignedSadRecord>>,
 ) -> impl IntoResponse {
@@ -401,6 +286,25 @@ pub async fn submit_sad_records_batch(
 
     // Per-IP rate limit
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    // All records must be for the same chain prefix
+    let chain_prefix = &records[0].record.prefix;
+    if records.iter().any(|r| r.record.prefix != *chain_prefix) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "All records must have the same prefix",
+        )
+            .into_response();
+    }
+
+    // Per-chain-prefix daily rate limit (check before, accrue after)
+    if let Err(msg) = check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        chain_prefix,
+        records.len() as u32,
+    ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
@@ -531,7 +435,8 @@ pub async fn submit_sad_records_batch(
             .into_response();
     }
 
-    // Store all records with chain integrity checks
+    // Build (record, signature) pairs for storage
+    let mut pairs = Vec::with_capacity(records.len());
     for r in &records {
         let sig_record = match kels::SadRecordSignature::create(
             r.record.said.clone(),
@@ -544,17 +449,48 @@ pub async fn submit_sad_records_batch(
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
+        pairs.push((r.record.clone(), sig_record));
+    }
 
+    let is_repair = query.repair.unwrap_or(false);
+
+    let new_record_count;
+
+    if is_repair {
+        // Repair mode: truncate from the first record's version and replace
+        let from_version = records[0].record.version;
         if let Err(e) = state
             .repo
             .sad_records
-            .save_with_verified_signature(&r.record, &sig_record)
+            .truncate_and_replace(from_version, &pairs)
             .await
         {
-            warn!("Failed to store record {}: {}", r.record.said, e);
-            // Continue — conflict resolution may have rejected it silently
+            warn!("Failed to repair chain: {}", e);
+            return (StatusCode::CONFLICT, format!("{}", e)).into_response();
         }
+        new_record_count = pairs.len() as u32;
+    } else {
+        // Normal mode: store records individually with chain integrity checks
+        let mut count = 0u32;
+        for (record, sig_record) in &pairs {
+            match state
+                .repo
+                .sad_records
+                .save_with_verified_signature(record, sig_record)
+                .await
+            {
+                Ok(true) => count += 1,
+                Ok(false) => {} // deduplicated
+                Err(e) => {
+                    warn!("Failed to store record {}: {}", record.said, e);
+                }
+            }
+        }
+        new_record_count = count;
     }
+
+    // Accrue only actual new records to prefix rate limit
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
     // Publish the chain tip to Redis for gossip
     if let Some(ref conn) = state.redis_conn
@@ -577,7 +513,9 @@ pub async fn submit_sad_records_batch(
 
 #[derive(Deserialize)]
 pub struct ChainQuery {
-    pub since: Option<u64>,
+    /// Effective SAID cursor — return records after this SAID's position.
+    /// If the SAID is not found (e.g. synthetic divergent SAID), returns the full chain.
+    pub since: Option<String>,
     pub limit: Option<u64>,
 }
 
@@ -591,7 +529,7 @@ pub async fn get_sad_chain(
     match state
         .repo
         .sad_records
-        .get_stored_chain(&prefix, query.since, Some(limit + 1))
+        .get_stored_chain(&prefix, query.since.as_deref(), Some(limit + 1))
         .await
     {
         Ok(records) if records.is_empty() => {
@@ -615,12 +553,9 @@ pub async fn get_sad_effective_said(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.repo.sad_records.effective_said(&prefix).await {
-        Ok(Some(said)) => (
+        Ok(Some((said, divergent))) => (
             StatusCode::OK,
-            Json(kels::EffectiveSaidResponse {
-                said,
-                divergent: false,
-            }),
+            Json(kels::EffectiveSaidResponse { said, divergent }),
         )
             .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
@@ -684,31 +619,15 @@ pub async fn list_sad_prefixes(
     let limit = query
         .limit
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
-        .min(MAX_PREFIX_PAGE_SIZE);
+        .min(MAX_PREFIX_PAGE_SIZE) as usize;
 
     match state
         .repo
         .sad_records
-        .list_prefixes(query.cursor.as_deref(), limit + 1)
+        .list_prefixes(query.cursor.as_deref(), limit)
         .await
     {
-        Ok(prefixes) => {
-            let has_more = prefixes.len() as u64 > limit;
-            let prefixes: Vec<_> = prefixes.into_iter().take(limit as usize).collect();
-            let next_cursor = if has_more {
-                prefixes.last().map(|p| p.prefix.clone())
-            } else {
-                None
-            };
-            (
-                StatusCode::OK,
-                Json(kels::PrefixListResponse {
-                    prefixes,
-                    next_cursor,
-                }),
-            )
-                .into_response()
-        }
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Failed to list prefixes: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()

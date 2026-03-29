@@ -35,7 +35,7 @@ pub type RedisConnection = Arc<redis::aio::ConnectionManager>;
 /// Optional Redis connection — None in tests where Redis is unavailable.
 pub type OptionalRedis = Option<RedisConnection>;
 
-const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
+pub const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
 
 /// Redis pub/sub channel name (same as libkels uses)
 const PUBSUB_CHANNEL: &str = "kel_updates";
@@ -363,39 +363,21 @@ impl SyncHandler {
             return;
         }
 
-        // Fetch the full chain from the remote peer
         let remote_client = kels::SadStoreClient::new(&sadstore_url);
-        match remote_client.fetch_sad_chain(chain_prefix, None).await {
-            Ok(page) => {
-                // Fetch content objects for all records first
-                for stored in &page.records {
-                    if let Some(ref content_said) = stored.record.content_said
-                        && let Ok(object) = remote_client.get_sad_object(content_said).await
-                    {
-                        let _ = local_client.put_sad_object(&object).await;
-                    }
-                }
-
-                // Submit all chain records in one batch (single KEL verification)
-                if let Err(e) = local_client.submit_sad_records_batch(&page.records).await {
-                    warn!(
-                        "Failed to batch-submit SAD records for chain {}: {}",
-                        chain_prefix, e
-                    );
-                    return;
-                }
-                debug!(
-                    "Replicated {} SAD records for chain {}",
-                    page.records.len(),
-                    chain_prefix
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to fetch SAD chain {} from {}: {}",
-                    chain_prefix, origin, e
-                );
-            }
+        if let Err(e) = kels::forward_sad_records(
+            chain_prefix,
+            &remote_client.as_sad_source(),
+            &local_client.as_sad_sink(),
+            kels::page_size(),
+            kels::max_pages(),
+            local_said.as_deref(),
+        )
+        .await
+        {
+            warn!(
+                "Failed to replicate SAD chain {} from {}: {}",
+                chain_prefix, origin, e
+            );
         }
     }
 
@@ -617,17 +599,31 @@ pub async fn run_sync_handler(
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
     let mut handler = SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis);
+    let mut reap_interval = tokio::time::interval(Duration::from_secs(300));
+    reap_interval.tick().await; // consume initial tick
 
-    while let Some(event) = event_rx.recv().await {
-        // Signal first PeerConnected to the bootstrap flow
-        if matches!(&event, GossipEvent::PeerConnected(_))
-            && let Some(tx) = peer_connected_tx.take()
-        {
-            let _ = tx.send(());
-        }
+    loop {
+        tokio::select! {
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
 
-        if let Err(e) = handler.handle_event(event, &command_tx).await {
-            error!("Error handling gossip event: {}", e);
+                // Signal first PeerConnected to the bootstrap flow
+                if matches!(&event, GossipEvent::PeerConnected(_))
+                    && let Some(tx) = peer_connected_tx.take()
+                {
+                    let _ = tx.send(());
+                }
+
+                if let Err(e) = handler.handle_event(event, &command_tx).await {
+                    error!("Error handling gossip event: {}", e);
+                }
+            }
+            _ = reap_interval.tick() => {
+                let now = Instant::now();
+                handler.peer_fetch_counts.retain(|_, (_, t)| now.duration_since(*t) < Duration::from_secs(60));
+            }
         }
     }
 
@@ -1151,20 +1147,18 @@ pub async fn run_sad_anti_entropy_loop(
                             continue;
                         }
 
-                        // Fetch the full chain from remote and submit locally
-                        if let Ok(page) = remote.fetch_sad_chain(&prefix, None).await {
-                            // Fetch content objects first
-                            for stored in &page.records {
-                                if let Some(ref content_said) = stored.record.content_said
-                                    && let Ok(object) = remote.get_sad_object(content_said).await
-                                {
-                                    let _ = local.put_sad_object(&object).await;
-                                }
-                            }
-                            // Batch submit (single KEL verification)
-                            if local.submit_sad_records_batch(&page.records).await.is_ok() {
-                                return (prefix, source, true);
-                            }
+                        if kels::forward_sad_records(
+                            &prefix,
+                            &remote.as_sad_source(),
+                            &local.as_sad_sink(),
+                            kels::page_size(),
+                            kels::max_pages(),
+                            local_said.as_deref(),
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            return (prefix, source, true);
                         }
                     }
                     (prefix, source, false)
@@ -1183,7 +1177,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         // Phase 2: Random sampling — compare chain effective SAIDs with a random peer
-        let (_, peer_sadstore_url) = {
+        let (peer_prefix, peer_sadstore_url) = {
             let mut rng = rand::thread_rng();
             match peers.choose(&mut rng) {
                 Some(p) => p.clone(),
@@ -1193,13 +1187,102 @@ pub async fn run_sad_anti_entropy_loop(
 
         let remote_client = kels::SadStoreClient::new(&peer_sadstore_url);
 
-        // Fetch a chain from the remote to see if we're missing anything.
-        // SAD chains don't have a prefix listing endpoint yet, so we rely on
-        // stale prefix tracking from gossip failures for now.
-        // Full random sampling requires a list_prefixes endpoint on the SADStore
-        // service, which can be added in a follow-up.
-        debug!("SAD anti-entropy: random sampling phase (stale-only for now)");
-        let _ = remote_client;
+        let random_cursor = kels::generate_nonce();
+        let local_page = local_client
+            .fetch_sad_prefixes(Some(&random_cursor), 100)
+            .await;
+        let remote_page = remote_client
+            .fetch_sad_prefixes(Some(&random_cursor), 100)
+            .await;
+
+        let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
+            debug!("SAD anti-entropy: failed to fetch prefix pages for comparison");
+            continue;
+        };
+
+        let local_map: HashMap<&str, &str> = local_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+        let remote_map: HashMap<&str, &str> = remote_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+
+        if local_map == remote_map {
+            debug!("SAD anti-entropy: random sample matched");
+            continue;
+        }
+
+        info!("SAD anti-entropy: random sample mismatch detected, reconciling");
+
+        // Pull: remote prefixes that are missing or different locally
+        let mut pull_tasks = Vec::new();
+        for state in &remote_page.prefixes {
+            if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            let local_said = local_client
+                .fetch_sad_effective_said(&state.prefix)
+                .await
+                .ok()
+                .flatten();
+
+            let remote = remote_client.as_sad_source();
+            let local = local_client.as_sad_sink();
+            let prefix = state.prefix.clone();
+            let peer = peer_prefix.clone();
+            pull_tasks.push(async move {
+                let result = kels::forward_sad_records(
+                    &prefix,
+                    &remote,
+                    &local,
+                    kels::page_size(),
+                    kels::max_pages(),
+                    local_said.as_deref(),
+                )
+                .await;
+                (prefix, peer, result)
+            });
+        }
+
+        for (prefix, peer, result) in join_all(pull_tasks).await {
+            match result {
+                Ok(()) => {
+                    info!("SAD anti-entropy: pulled {} from remote", prefix);
+                }
+                Err(_) => {
+                    record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                }
+            }
+        }
+
+        // Push: local prefixes that are missing or different on remote
+        for state in &local_page.prefixes {
+            if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            let remote_said = remote_client
+                .fetch_sad_effective_said(&state.prefix)
+                .await
+                .ok()
+                .flatten();
+
+            if let Ok(()) = kels::forward_sad_records(
+                &state.prefix,
+                &local_client.as_sad_source(),
+                &remote_client.as_sad_sink(),
+                kels::page_size(),
+                kels::max_pages(),
+                remote_said.as_deref(),
+            )
+            .await
+            {
+                info!("SAD anti-entropy: pushed {} to remote", state.prefix);
+            }
+        }
     }
 }
 

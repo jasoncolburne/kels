@@ -311,13 +311,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .await?;
         }
 
-        // Delete from live tables
-        let sig_saids: Vec<String> = signatures.iter().map(|s| s.said.clone()).collect();
-        if !sig_saids.is_empty() {
-            let sig_delete =
-                Delete::<EventSignature>::for_table(self.signatures_table).r#in("said", sig_saids);
-            self.tx.delete(sig_delete).await?;
-        }
+        // Delete from live tables — signatures cascade via FK ON DELETE CASCADE
         let event_delete =
             Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
         self.tx.delete(event_delete).await?;

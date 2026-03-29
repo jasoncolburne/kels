@@ -8,8 +8,7 @@ use std::time::Duration;
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelVerifier, KelsError, SadRecordChain, SadRecordPage, SadRecordSubmission,
-    SadRecordVerification,
+    KelsError, SadRecordPage, SadRecordVerification,
     types::{EffectiveSaidResponse, ErrorCode},
 };
 
@@ -35,6 +34,16 @@ impl SadStoreClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Create an `HttpSadSource` for this client's chain endpoint.
+    pub fn as_sad_source(&self) -> crate::HttpSadSource {
+        crate::HttpSadSource::new(&self.base_url)
+    }
+
+    /// Create an `HttpSadSink` for this client's records endpoint.
+    pub fn as_sad_sink(&self) -> crate::HttpSadSink {
+        crate::HttpSadSink::new(&self.base_url)
     }
 
     pub async fn health(&self) -> Result<String, KelsError> {
@@ -115,10 +124,13 @@ impl SadStoreClient {
 
     // === Layer 2: Chain Records ===
 
-    /// Submit a signed SAD record to the chain.
-    pub async fn submit_sad_record(&self, record: &SadRecordSubmission) -> Result<(), KelsError> {
+    /// Submit signed SAD records.
+    pub async fn submit_sad_records(
+        &self,
+        records: &[crate::SignedSadRecord],
+    ) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/records", self.base_url);
-        let resp = self.client.post(&url).json(record).send().await?;
+        let resp = self.client.post(&url).json(records).send().await?;
 
         if resp.status().is_success() {
             Ok(())
@@ -128,13 +140,15 @@ impl SadStoreClient {
         }
     }
 
-    /// Submit a batch of signed SAD records (with establishment serials).
-    /// Used by gossip sync — verifies the KEL once for all records.
-    pub async fn submit_sad_records_batch(
+    /// Submit signed SAD records as a repair operation.
+    ///
+    /// Truncates all records at version >= the first record's version, then inserts
+    /// the batch. Used to resolve divergent chains.
+    pub async fn repair_sad_chain(
         &self,
         records: &[crate::SignedSadRecord],
     ) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/records/batch", self.base_url);
+        let url = format!("{}/api/v1/sad/records?repair=true", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
         if resp.status().is_success() {
@@ -146,14 +160,18 @@ impl SadStoreClient {
     }
 
     /// Fetch a page of chain records by prefix.
+    ///
+    /// `since` is an effective SAID cursor — returns records after this SAID's
+    /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
+    /// server returns the full chain.
     pub async fn fetch_sad_chain(
         &self,
         prefix: &str,
-        since: Option<u64>,
+        since: Option<&str>,
     ) -> Result<SadRecordPage, KelsError> {
         let mut url = format!("{}/api/v1/sad/chain/{}", self.base_url, prefix);
-        if let Some(since_version) = since {
-            url.push_str(&format!("?since={}", since_version));
+        if let Some(since_said) = since {
+            url.push_str(&format!("?since={}", since_said));
         }
 
         let resp = self.client.get(&url).send().await?;
@@ -219,83 +237,26 @@ impl SadStoreClient {
     ///
     /// The `kels_client` is used to fetch and verify the owner's KEL for
     /// signature verification.
+    /// Verify a SAD record chain and return a verification token.
+    ///
+    /// Pages through the full chain, verifies structural integrity (SAID, chain linkage,
+    /// version monotonicity, consistent kel_prefix/kind), then verifies every
+    /// record's signature against the owner's KEL at each record's establishment serial.
+    ///
+    /// The `kels_client` is used to fetch and verify the owner's KEL for
+    /// signature verification.
     pub async fn verify_sad_records(
         &self,
         prefix: &str,
         kels_client: &crate::KelsClient,
     ) -> Result<SadRecordVerification, KelsError> {
-        use std::collections::BTreeSet;
-
-        use cesr::{Matter, Signature, VerificationKey};
-
-        // Fetch the full chain (records + signatures)
-        let page = self.fetch_sad_chain(prefix, None).await?;
-        if page.records.is_empty() {
-            return Err(KelsError::EventNotFound(prefix.to_string()));
-        }
-
-        // Verify structural integrity
-        let chain = SadRecordChain {
-            prefix: prefix.to_string(),
-            records: page.records,
-        };
-        chain.verify_records()?;
-
-        let tip = chain
-            .tip()
-            .ok_or_else(|| KelsError::VerificationFailed("Empty chain after verify".to_string()))?;
-
-        // Collect unique establishment serials from all records
-        let establishment_serials: BTreeSet<u64> = chain
-            .records
-            .iter()
-            .map(|r| r.establishment_serial)
-            .collect();
-
-        // Verify the owner's KEL, collecting establishment keys
-        let kel_prefix = &tip.record.kel_prefix;
-        let verifier = KelVerifier::new(kel_prefix)
-            .with_establishment_key_collection(establishment_serials, crate::page_size())?;
-
-        let (kel_verification, establishment_keys) =
-            crate::verify_key_events_with_establishment_keys(
-                kel_prefix,
-                &kels_client.as_kel_source(),
-                verifier,
-                crate::page_size(),
-                crate::max_pages(),
-            )
-            .await?;
-
-        if kel_verification.is_divergent() {
-            return Err(KelsError::Divergent);
-        }
-
-        // Verify every record's signature against its establishment key
-        for stored in &chain.records {
-            let public_key_qb64 = establishment_keys
-                .get(&stored.establishment_serial)
-                .ok_or_else(|| {
-                    KelsError::VerificationFailed(format!(
-                        "No establishment key for serial {} (record {})",
-                        stored.establishment_serial, stored.record.said
-                    ))
-                })?;
-
-            let public_key = VerificationKey::from_qb64(public_key_qb64)
-                .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
-
-            let sig = Signature::from_qb64(&stored.signature)
-                .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
-
-            public_key
-                .verify(stored.record.said.as_bytes(), &sig)
-                .map_err(|_| KelsError::SignatureVerificationFailed)?;
-        }
-
-        Ok(SadRecordVerification::new(
-            tip.record.clone(),
-            tip.establishment_serial,
-        ))
+        crate::verify_sad_records(
+            prefix,
+            &self.as_sad_source(),
+            &kels_client.as_kel_source(),
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await
     }
 }

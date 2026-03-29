@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ctor::dtor;
-use kels::{SadRecord, SadRecordSubmission, compute_sad_prefix};
+use kels::{SadRecord, compute_sad_prefix};
 use reqwest::Client;
 use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use testcontainers::{
@@ -406,15 +406,16 @@ async fn test_submit_record_invalid_said_rejected() {
     .unwrap();
     record.kind = "tampered".to_string(); // Tamper after SAID computation
 
-    let submission = SadRecordSubmission {
+    let records = vec![kels::SignedSadRecord {
         record,
         signature: "fake_sig".to_string(),
-    };
+        establishment_serial: 0,
+    }];
 
     let resp = harness
         .client()
         .post(harness.url("/api/v1/sad/records"))
-        .json(&submission)
+        .json(&records)
         .send()
         .await
         .unwrap();

@@ -189,13 +189,15 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         });
                     }
 
-                    Some(Arc::new(FederationState {
+                    let fed_state = Arc::new(FederationState {
                         node,
                         identity_client: identity_client.clone(),
                         member_kel_repo: repo.member_kels.clone(),
                         member_kel_ip_rate_limits: dashmap::DashMap::new(),
                         member_kel_prefix_rate_limits: dashmap::DashMap::new(),
-                    }))
+                    });
+                    handlers::spawn_rate_limit_reaper(Arc::clone(&fed_state));
+                    Some(fed_state)
                 }
                 Err(e) => {
                     error!("Failed to initialize federation node: {}", e);

@@ -486,6 +486,18 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Shared state to prevent Redis feedback loop when gossip stores events
     let recently_stored: sync::RecentlyStoredFromGossip = Arc::new(RwLock::new(HashMap::new()));
 
+    // Periodic reaper for recently_stored — prevents unbounded growth
+    {
+        let map = recently_stored.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(sync::RECENTLY_STORED_TTL).await;
+                let mut guard = map.write().await;
+                guard.retain(|_, instant| instant.elapsed() < sync::RECENTLY_STORED_TTL);
+            }
+        });
+    }
+
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();

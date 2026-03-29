@@ -13,12 +13,12 @@ CREATE TABLE IF NOT EXISTS sad_records (
 );
 
 CREATE INDEX IF NOT EXISTS sad_records_prefix_idx ON sad_records(prefix);
-CREATE UNIQUE INDEX IF NOT EXISTS sad_records_prefix_version_idx ON sad_records(prefix, version);
+CREATE INDEX IF NOT EXISTS sad_records_prefix_version_idx ON sad_records(prefix, version);
 
 -- SAD record signatures (1:1 with sad_records, separate to keep SAID table clean)
 CREATE TABLE IF NOT EXISTS sad_record_signatures (
     said TEXT PRIMARY KEY,
-    record_said TEXT NOT NULL,
+    record_said TEXT NOT NULL REFERENCES sad_records(said) ON DELETE CASCADE,
     signature TEXT NOT NULL,
     establishment_serial BIGINT NOT NULL
 );

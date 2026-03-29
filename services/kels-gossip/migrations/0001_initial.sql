@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_registry_key_events_prefix_previous ON registry_k
 
 CREATE TABLE IF NOT EXISTS registry_key_event_signatures (
     said TEXT PRIMARY KEY,
-    event_said TEXT NOT NULL,
+    event_said TEXT NOT NULL REFERENCES registry_key_events(said) ON DELETE CASCADE,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
@@ -46,5 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_registry_recovery_kel_prefix ON registry_recovery
 -- Archive tables for registry KELs
 CREATE TABLE IF NOT EXISTS registry_archived_events (LIKE registry_key_events INCLUDING ALL);
 CREATE TABLE IF NOT EXISTS registry_archived_event_signatures (LIKE registry_key_event_signatures INCLUDING ALL);
+ALTER TABLE registry_archived_event_signatures
+    ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
+    REFERENCES registry_archived_events(said) ON DELETE CASCADE;
 
 COMMIT;

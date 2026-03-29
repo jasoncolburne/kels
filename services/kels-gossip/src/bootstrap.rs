@@ -208,10 +208,7 @@ impl BootstrapSync {
                             }
                         }
                         // Batch submit (single KEL verification)
-                        if let Err(e) = local_client
-                            .submit_sad_records_batch(&chain_page.records)
-                            .await
-                        {
+                        if let Err(e) = local_client.submit_sad_records(&chain_page.records).await {
                             warn!(
                                 "Failed to batch-submit SAD records for {} during bootstrap: {}",
                                 state.prefix, e

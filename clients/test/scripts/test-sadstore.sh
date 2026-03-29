@@ -145,7 +145,7 @@ run_test "Effective SAID non-existent returns 404" \
 
 # Submit record with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/records' -H 'Content-Type: application/json' -d '{\"record\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\"}') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/records' -H 'Content-Type: application/json' -d '[{\"record\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
 
 echo ""
 
@@ -251,26 +251,26 @@ fi
 echo ""
 
 # ========================================
-# Scenario 7: Conflict Resolution
+# Scenario 7: Divergence Detection
 # ========================================
-echo -e "${CYAN}=== Scenario 7: Deterministic Conflict Resolution ===${NC}"
+echo -e "${CYAN}=== Scenario 7: Divergence Detection ===${NC}"
 echo "When two nodes receive different records at the same version,"
-echo "the record with the lexicographically smaller SAID wins."
+echo "both records are stored and the chain is frozen until repaired."
 echo ""
 
 # This scenario requires submitting conflicting records to different nodes.
 # Since we need KEL signatures for chain records, and we can't easily forge
 # two different valid records for the same version in a test script,
 # we verify the mechanism exists by checking:
-# 1. The unique constraint prevents duplicate versions
-# 2. The effective-said endpoint returns consistent results
+# 1. The effective-said endpoint returns consistent results
+# 2. Divergent chains would return a synthetic effective SAID
 
 run_test "Effective SAID endpoint consistent" \
     bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/Eany_prefix_____________________________________/effective-said') = '404' ]"
 
 echo ""
-echo "Note: Full conflict resolution testing requires programmatic chain"
-echo "record submission with valid KEL signatures. This is covered by the"
+echo "Note: Full divergence detection and repair testing requires programmatic"
+echo "chain record submission with valid KEL signatures. This is covered by the"
 echo "Rust integration tests in services/kels-sadstore/tests/."
 echo ""
 

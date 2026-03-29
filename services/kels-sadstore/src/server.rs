@@ -26,11 +26,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
         .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
         // Chain records (Layer 2 — Postgres)
-        .route("/api/v1/sad/records", post(handlers::submit_sad_record))
-        .route(
-            "/api/v1/sad/records/batch",
-            post(handlers::submit_sad_records_batch),
-        )
+        .route("/api/v1/sad/records", post(handlers::submit_sad_records))
         .route("/api/v1/sad/chain/:prefix", get(handlers::get_sad_chain))
         .route(
             "/api/v1/sad/chain/:prefix/effective-said",
@@ -106,6 +102,8 @@ pub async fn run(
         prefix_rate_limits: dashmap::DashMap::new(),
         ip_rate_limits: dashmap::DashMap::new(),
     });
+
+    handlers::spawn_rate_limit_reaper(Arc::clone(&state));
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 

@@ -111,6 +111,8 @@ pub async fn run(
         tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
     }
 
+    handlers::spawn_rate_limit_reaper(Arc::clone(&state));
+
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 
     info!(

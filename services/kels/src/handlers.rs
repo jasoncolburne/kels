@@ -51,6 +51,29 @@ fn nonce_window_secs() -> u64 {
 }
 
 const SECS_PER_DAY: u64 = 86_400;
+const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Spawn a background task that periodically removes expired entries from
+/// rate limit and nonce maps. Prevents unbounded growth from attacker-generated keys.
+pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let nonce_window = Duration::from_secs(nonce_window_secs());
+        loop {
+            tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
+            let now = Instant::now();
+            let day = Duration::from_secs(SECS_PER_DAY);
+            state
+                .prefix_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .ip_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .nonce_cache
+                .retain(|_, t| now.duration_since(*t) < nonce_window);
+        }
+    });
+}
 
 /// Per-prefix rate limit: counts events (not submissions) in a daily window.
 /// Slows adversary event accumulation. The hard resilience guarantee comes

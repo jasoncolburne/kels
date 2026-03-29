@@ -233,7 +233,7 @@ enum SadCommands {
 
     /// Submit a signed SAD record to a chain
     Submit {
-        /// Path to JSON file containing the SadRecordSubmission
+        /// Path to JSON file containing SignedSadRecord(s)
         file: PathBuf,
     },
 
@@ -1105,16 +1105,19 @@ async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
 async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let submission: kels::SadRecordSubmission =
-        serde_json::from_str(&data).context("Failed to parse SadRecordSubmission JSON")?;
+    let records: Vec<kels::SignedSadRecord> =
+        serde_json::from_str(&data).context("Failed to parse SignedSadRecord JSON")?;
 
     let client = kels::SadStoreClient::new(&cli.sadstore_url());
     client
-        .submit_sad_record(&submission)
+        .submit_sad_records(&records)
         .await
-        .context("Failed to submit SAD record")?;
+        .context("Failed to submit SAD records")?;
 
-    println!("{}", "SAD record submitted".green());
+    println!(
+        "{}",
+        format!("{} SAD record(s) submitted", records.len()).green()
+    );
     Ok(())
 }
 

@@ -44,6 +44,25 @@ fn max_member_events_per_prefix_per_day() -> u32 {
 }
 
 const SECS_PER_DAY: u64 = 86_400;
+const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Spawn a background task that periodically removes expired entries from
+/// rate limit maps. Prevents unbounded growth from attacker-generated keys.
+pub fn spawn_rate_limit_reaper(state: Arc<FederationState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
+            let now = Instant::now();
+            let day = Duration::from_secs(SECS_PER_DAY);
+            state
+                .member_kel_prefix_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .member_kel_ip_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+        }
+    });
+}
 
 /// Check whether adding `event_count` new events would exceed the daily limit.
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge.
