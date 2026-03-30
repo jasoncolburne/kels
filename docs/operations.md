@@ -26,8 +26,9 @@ The standard recovery flow works for identity:
 
 Adversary events are archived synchronously during the merge transaction. Recovery completes atomically — no window where the KEL appears divergent after a successful recovery submission.
 
-- A `RecoveryRecord` audit trail is written for each recovery. Query via `GET /api/v1/kels/kel/:prefix/audit`.
-- Archived adversary events are available via `GET /api/v1/kels/kel/:prefix/archived` for forensics.
+- A `RecoveryRecord` audit trail is written for each recovery. Query via `GET /api/v1/kels/kel/:prefix/audit?limit=N&offset=N` (paginated, returns `RecoveryRecordPage`).
+- Archived adversary events for a specific recovery are available via `GET /api/v1/kels/kel/:prefix/audit/:said/events?limit=N&offset=N` (paginated, returns `SignedKeyEventPage`).
+- All archived adversary events are available via `GET /api/v1/kels/kel/:prefix/archived` for forensics.
 
 ### Post-recovery checklist
 

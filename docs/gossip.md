@@ -44,7 +44,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 ### Outbound (local event → gossip network)
 
 1. Client submits events to KELS via HTTP
-2. KELS writes to DB, then explicitly publishes `{prefix}:{said}` to Redis `kel_updates` channel, where `said` is the last **submitted** event's SAID (not the sorted KEL's last event — this distinction matters for same-kind forks where the sorted tail may be an event other nodes already have)
+2. KELS writes to DB, then publishes `{prefix}:{effective_said}` to Redis `kel_updates` channel, where `effective_said` is the prefix's effective SAID (tip event SAID for non-divergent KELs, synthetic hash for divergent/contested KELs). This ensures the gossip feedback loop cache key matches regardless of KEL state.
 3. `kels-gossip` receives notification via Redis SUBSCRIBE
 4. Broadcasts `KelAnnouncement { prefix, said }` via PlumTree to all peers
 
@@ -106,7 +106,7 @@ The gossip service also replicates SAD store data on a separate topic (`kels/sad
 
 Two Redis channels drive announcements:
 - `sad_updates` — new SAD objects (payload: `{said}`)
-- `sad_chain_updates` — chain updates (payload: `{chain_prefix}:{said}`)
+- `sad_chain_updates` — chain updates (payload: `{chain_prefix}:{effective_said}` or `{chain_prefix}:{effective_said}:repair`)
 
 Message type:
 ```rust

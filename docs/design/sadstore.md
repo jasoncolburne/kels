@@ -73,6 +73,8 @@ The chain owner repairs divergence by submitting a replacement batch with `?repa
 3. Replacement records are inserted with chain integrity checks (predecessor linkage, internal chain linkage, sequential versions, consistent kel_prefix/kind)
 4. Signatures on replacement records are verified against the owner's KEL
 
+Displaced records are archived to `sad_record_archives` and `sad_record_archive_signatures` (mirror tables). A `sad_chain_repairs` entry is created as an audit record, and `sad_chain_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
+
 ### Repair Propagation
 
 When a repair succeeds, the SADStore publishes a gossip message with `repair: true`. Peer nodes that receive this announcement forward the repaired chain to their local SADStore with `?repair=true`, replacing their divergent state.
@@ -105,6 +107,8 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 | `POST` | `/api/v1/sad/records` | Submit signed chain records; `?repair=true` to repair divergent chain |
 | `GET` | `/api/v1/sad/chain/:prefix` | Fetch chain (returns `SignedSadRecord`s with signatures); `?since=N` for delta |
 | `GET` | `/api/v1/sad/chain/:prefix/effective-said` | Tip SAID for sync comparison |
+| `GET` | `/api/v1/sad/chain/:prefix/repairs` | Paginated repair history (`?limit=N&offset=N`); returns `SadChainRepairPage` |
+| `GET` | `/api/v1/sad/chain/:prefix/repairs/:said/records` | Archived records displaced by a specific repair (`?limit=N&offset=N`); returns `SadRecordPage` |
 
 ### Listing (for bootstrap + anti-entropy)
 

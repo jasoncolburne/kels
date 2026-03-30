@@ -184,9 +184,8 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NODE_ID` | Unique node identifier | `node-unknown` |
-| `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
+| `BASE_DOMAIN` | Base domain for local service URL derivation (KELS, SADStore) | (required) |
 | `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for peer discovery and HA | (required) |
-| `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections | listen address |
 

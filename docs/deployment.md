@@ -206,16 +206,35 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | Variable | Description |
 |----------|-------------|
 | `NODE_ID` | Unique node identifier |
-| `KELS_URL` | Local KELS service URL |
-| `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
+| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `kels-node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://kels-sadstore.{BASE_DOMAIN}` |
+| `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |
 | `GOSSIP_TOPIC` | Gossip topic name |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
+| `HSM_URL` | HSM service URL for identity keys |
+| `IDENTITY_URL` | Identity service URL for KELS prefix |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
+| `RUST_LOG` | Logging level |
+
+### SADStore Service (`kels-sadstore`)
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection URL |
+| `PORT` | HTTP server port (default: `80`) |
+| `KELS_URL` | KELS service URL for KEL verification (default: `http://kels:80`) |
+| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated, for peer verification) |
+| `REDIS_URL` | Redis for caching (optional) |
+| `MINIO_ENDPOINT` | MinIO/S3 endpoint URL (default: `http://minio:9000`) |
+| `MINIO_REGION` | MinIO/S3 region (default: `us-east-1`) |
+| `MINIO_ACCESS_KEY` | MinIO/S3 access key (required) |
+| `MINIO_SECRET_KEY` | MinIO/S3 secret key (required) |
+| `KELS_SAD_BUCKET` | S3 bucket for SAD objects (default: `kels-sad`) |
+| `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
 ## Peer Lifecycle
@@ -226,14 +245,14 @@ Peers require multi-party approval (minimum 3 votes from federation members):
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-add-peer \
-  --peer-id <peer_prefix> \
+kels-registry-admin peer propose \
+  --peer-prefix <peer_prefix> \
   --node-id <node_id> \
-  --kels-url <kels_url> \
+  --base-domain <base_domain> \
   --gossip-addr <host:port>
 
 # Produces a proposal ID. Vote from each registry:
-kels-registry-admin peer vote --proposal <proposal_id> --approve
+kels-registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is added to the allowlist.
 # Restart the node's kels-gossip to pick up authorization.
@@ -245,10 +264,10 @@ Peer removal also requires multi-party approval:
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-removal --peer-id <peer_prefix>
+kels-registry-admin peer propose-removal --peer-prefix <peer_prefix>
 
 # Vote from each registry:
-kels-registry-admin peer vote --proposal <proposal_id> --approve
+kels-registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```
