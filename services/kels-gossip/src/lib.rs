@@ -39,8 +39,11 @@ mod repository;
 mod server;
 mod sync;
 
-use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::sync::{RwLock, mpsc};
+use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
+use tokio::{
+    sync::{RwLock, mpsc},
+    time::Duration,
+};
 use tracing::{error, info};
 
 use redis::AsyncCommands;
@@ -219,7 +222,6 @@ impl Config {
 
 /// Run the gossip service
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use tokio::time::Duration;
     use tracing::warn;
 
     info!("Starting KELS gossip service");
@@ -718,7 +720,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     // Start allowlist refresh loop
-    let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
+    let refresh_interval = Duration::from_secs(config.allowlist_refresh_interval_secs);
     let refresh_urls = federation_registry_urls.clone();
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
