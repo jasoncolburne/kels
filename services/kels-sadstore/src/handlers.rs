@@ -528,25 +528,26 @@ pub async fn submit_sad_records(
         }
     };
 
-    let (verification, establishment_keys) = match kels::verify_key_events_collecting_establishment_keys(
-        kel_prefix,
-        &kel_source,
-        verifier,
-        kels::page_size(),
-        kels::max_pages(),
-    )
-    .await
-    {
-        Ok(pair) => pair,
-        Err(e) => {
-            warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("KEL verification failed: {}", e),
-            )
-                .into_response();
-        }
-    };
+    let (verification, establishment_keys) =
+        match kels::verify_key_events_collecting_establishment_keys(
+            kel_prefix,
+            &kel_source,
+            verifier,
+            kels::page_size(),
+            kels::max_pages(),
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("KEL verification failed: {}", e),
+                )
+                    .into_response();
+            }
+        };
 
     if verification.is_divergent() {
         return (StatusCode::CONFLICT, "KEL is divergent").into_response();

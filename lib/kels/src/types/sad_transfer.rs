@@ -419,14 +419,15 @@ pub async fn verify_sad_records(
     let kel_verifier = KelVerifier::new(&kel_prefix)
         .with_establishment_key_collection(establishment_serials, crate::page_size())?;
 
-    let (kel_verification, establishment_keys) = crate::verify_key_events_collecting_establishment_keys(
-        &kel_prefix,
-        kels_source,
-        kel_verifier,
-        crate::page_size(),
-        crate::max_pages(),
-    )
-    .await?;
+    let (kel_verification, establishment_keys) =
+        crate::verify_key_events_collecting_establishment_keys(
+            &kel_prefix,
+            kels_source,
+            kel_verifier,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await?;
 
     if kel_verification.is_divergent() {
         return Err(KelsError::Divergent);
