@@ -1108,10 +1108,20 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
 // ==================== SAD Commands ====================
 
 async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
+    use verifiable_storage::SelfAddressed;
+
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let value: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_json::from_str(&data).context("Failed to parse JSON file")?;
+
+    // Compute the SAID if missing or placeholder
+    let current_said = value.get_said();
+    if current_said.is_empty() || current_said.chars().all(|c| c == '#') {
+        value
+            .derive_said()
+            .context("Failed to compute SAID for object")?;
+    }
 
     let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     let said = client

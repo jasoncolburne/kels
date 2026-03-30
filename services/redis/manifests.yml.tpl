@@ -19,8 +19,11 @@ data:
     # ACL: KELS service
     user kels on #${var.redis.kelsPasswordHash} ~kels:kel:* ~kels:verified-peer:* %R~kels:gossip:ready &kel_updates +get +set +setex +del +publish +subscribe +ping
 
+    # ACL: SADStore service
+    user sadstore on #${var.redis.sadstorePasswordHash} ~kels:sad:* ~kels:verified-peer:* &sad_updates &sad_chain_updates +get +set +setex +del +publish +subscribe +ping
+
     # ACL: Gossip service
-    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates +get +set +del +subscribe +hset +hgetall +ping
+    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates &sad_updates &sad_chain_updates +get +set +del +subscribe +hset +hgetall +ping
 
     # Disable default user
     user default off

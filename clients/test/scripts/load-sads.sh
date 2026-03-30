@@ -136,7 +136,7 @@ create_group() {
     # Sign v0
     local v0_sig
     v0_sig=$(kels-cli --config-dir "$tmpdir" sign --prefix "$prefix" "$v0_said" 2>&1)
-    if [ -z "$v0_sig" ] || echo "$v0_sig" | grep -qi "error"; then
+    if [ -z "$v0_sig" ] || echo "$v0_sig" | grep -qi "^error"; then
         echo "ERROR [group $group]: v0 signing failed: $v0_sig" >&2
         rm -rf "$tmpdir"
         return 1
@@ -160,7 +160,7 @@ create_group() {
 
         local vi_sig
         vi_sig=$(kels-cli --config-dir "$tmpdir" sign --prefix "$prefix" "$vi_said" 2>&1)
-        if [ -z "$vi_sig" ] || echo "$vi_sig" | grep -qi "error"; then
+        if [ -z "$vi_sig" ] || echo "$vi_sig" | grep -qi "^error"; then
             echo "ERROR [group $group]: v$i signing failed: $vi_sig" >&2
             break
         fi

@@ -39,7 +39,7 @@ mod repository;
 mod server;
 mod sync;
 
-use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info};
 
@@ -509,15 +509,20 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_recently_stored = recently_stored.clone();
     let redis_peer_prefix = peer_prefix_str.clone();
     let redis_handle = tokio::spawn(async move {
-        if let Err(e) = sync::run_redis_subscriber(
-            &redis_url,
-            redis_peer_prefix,
-            redis_command_tx,
-            redis_recently_stored,
-        )
-        .await
-        {
-            error!("Redis subscriber error: {}", e);
+        loop {
+            if let Err(e) = sync::run_redis_subscriber(
+                &redis_url,
+                redis_peer_prefix.clone(),
+                redis_command_tx.clone(),
+                redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
 
@@ -527,15 +532,20 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_recently_stored = recently_stored.clone();
     let sad_redis_peer_prefix = peer_prefix_str.clone();
     tokio::spawn(async move {
-        if let Err(e) = sync::run_sad_redis_subscriber(
-            &sad_redis_url,
-            sad_redis_peer_prefix,
-            sad_redis_command_tx,
-            sad_redis_recently_stored,
-        )
-        .await
-        {
-            error!("SAD Redis subscriber error: {}", e);
+        loop {
+            if let Err(e) = sync::run_sad_redis_subscriber(
+                &sad_redis_url,
+                sad_redis_peer_prefix.clone(),
+                sad_redis_command_tx.clone(),
+                sad_redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("SAD Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("SAD Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
 

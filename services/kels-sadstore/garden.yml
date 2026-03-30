@@ -33,7 +33,7 @@ dependencies:
 
 variables:
   sadstoreDatabaseUrl: ${var.postgres.url}/sadstore
-  redisUrl: "${var.envType != 'standalone' ? var.redis.kelsUrl : ''}"
+  redisUrl: "${var.envType != 'standalone' ? var.redis.sadstoreUrl : ''}"
   kelsUrl: ${var.kels.url}
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
   testEndpoints: "${var.kels.testEndpoints}"

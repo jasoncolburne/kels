@@ -44,7 +44,35 @@ wait_for_health "$NODE_B_SAD_URL" "Node-B SADStore" || exit 1
 wait_for_health "$NODE_A_KELS_URL" "Node-A KELS" || exit 1
 echo ""
 
+# === Constants ===
+
+PLACEHOLDER="############################################"
+
 # === Helper functions ===
+
+# Compute a CESR Blake3 SAID from a string argument.
+cesr_blake3() {
+    local data="$1"
+    local padded
+    padded=$(echo "00$(printf '%s' "$data" | b3sum --no-names)" | xxd -r -p | base64 | tr '/' '_' | tr '+' '-')
+    echo "K${padded:(-43)}"
+}
+
+# Compute a SAID for a JSON object (blanks "said" field, hashes).
+compute_said() {
+    local json="$1"
+    local with_placeholder
+    with_placeholder=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p')
+    cesr_blake3 "$with_placeholder"
+}
+
+# Compute prefix for a v0 inception record (blanks both said AND prefix).
+compute_prefix() {
+    local json="$1"
+    local with_placeholders
+    with_placeholders=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p | .prefix = $p')
+    cesr_blake3 "$with_placeholders"
+}
 
 sad_object_exists() {
     local url="$1"
@@ -189,11 +217,13 @@ run_test "List with pagination limit" \
 echo ""
 
 # ========================================
-# Scenario 5: Chain Record via KEL + Signature
+# Scenario 5: Chain Record Submission via CLI
 # ========================================
-echo -e "${CYAN}=== Scenario 5: Chain Record Submission ===${NC}"
-echo "Create a KEL, then submit a SAD chain record signed by that KEL"
+echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
+echo "Create a KEL, build chain records, sign + submit via CLI, fetch via CLI"
 echo ""
+
+SAD_KIND="kels/v1/test-data"
 
 # Create a KEL on node-a to use as the chain owner
 KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
@@ -203,53 +233,110 @@ if [ -z "$KEL_PREFIX" ]; then
 else
     echo "Created KEL: $KEL_PREFIX"
 
-    # Compute the chain prefix
-    CHAIN_PREFIX=$(kels-cli sad prefix "$KEL_PREFIX" "kels/v1/test-data" 2>/dev/null)
+    # Compute the chain prefix via CLI
+    CHAIN_PREFIX=$(kels-cli sad prefix "$KEL_PREFIX" "$SAD_KIND" 2>/dev/null)
     echo "Chain prefix: $CHAIN_PREFIX"
     run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
 
-    # Submit a v0 inception record via the CLI
-    # Create a JSON file for the submission
-    # Note: this will fail if the CLI can't sign (needs the KEL's signing key)
-    # The kels-cli sad submit command expects a pre-signed SadRecordSubmission
-    # For now, verify the prefix computation and chain absence
     run_test "Chain does not exist yet" \
         bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/${CHAIN_PREFIX}') = '404' ]"
+
+    # --- Build v0 inception record ---
+    V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
+        '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
+    V0_PREFIX=$(compute_prefix "$V0_JSON")
+    V0_JSON=$(echo "$V0_JSON" | jq -c --arg pfx "$V0_PREFIX" '.prefix = $pfx')
+    V0_SAID=$(compute_said "$V0_JSON")
+    V0_JSON=$(echo "$V0_JSON" | jq -c --arg s "$V0_SAID" '.said = $s')
+
+    # Verify our prefix matches the CLI's
+    run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
+
+    # Sign v0 with the KEL's signing key via CLI
+    V0_SIG=$(kels-cli sign --prefix "$KEL_PREFIX" "$V0_SAID" 2>/dev/null)
+    run_test "v0 signed via CLI" [ -n "$V0_SIG" ]
+
+    # Build the submission JSON and write to file
+    echo "[$(jq -nc --argjson r "$V0_JSON" --arg sig "$V0_SIG" \
+        '{record: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v0-submit.json"
+
+    # Submit via kels-cli sad submit
+    run_test "v0 submitted via CLI (sad submit)" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v0-submit.json"
+
+    # Fetch the chain via kels-cli sad chain
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad chain "$CHAIN_PREFIX" 2>/dev/null)
+    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
+    run_test "Chain fetched via CLI (sad chain) with 1 record" [ "$CHAIN_LEN" = "1" ]
+
+    # Verify the fetched record's SAID matches
+    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.records[0].record.said' 2>/dev/null)
+    run_test "Fetched record SAID matches v0" [ "$FETCHED_SAID" = "$V0_SAID" ]
+
+    # --- Build v1 record ---
+    V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
+        --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k}')
+    V1_SAID=$(compute_said "$V1_JSON")
+    V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
+
+    V1_SIG=$(kels-cli sign --prefix "$KEL_PREFIX" "$V1_SAID" 2>/dev/null)
+    run_test "v1 signed via CLI" [ -n "$V1_SIG" ]
+
+    echo "[$(jq -nc --argjson r "$V1_JSON" --arg sig "$V1_SIG" \
+        '{record: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v1-submit.json"
+
+    run_test "v1 submitted via CLI (sad submit)" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v1-submit.json"
+
+    # Verify chain now has 2 records
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad chain "$CHAIN_PREFIX" 2>/dev/null)
+    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
+    run_test "Chain has 2 records after v1 submit" [ "$CHAIN_LEN" = "2" ]
+
+    # Wait for gossip propagation and verify chain on node-b
+    sleep "$PROPAGATION_DELAY"
+    run_test "Chain propagated to node-b" \
+        wait_for_chain_propagation "$CHAIN_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 fi
 
 echo ""
 
 # ========================================
-# Scenario 6: Gossip SAD Object Propagation
+# Scenario 6: SAD Object Put/Get via CLI + Gossip Propagation
 # ========================================
-echo -e "${CYAN}=== Scenario 6: SAD Object Gossip Propagation ===${NC}"
-echo "Store a SAD object on node-a, verify it propagates to node-b"
+echo -e "${CYAN}=== Scenario 6: SAD Object Put/Get via CLI + Gossip ===${NC}"
+echo "Store a SAD object via CLI, retrieve it via CLI, verify gossip propagation"
 echo ""
 
-# We need a properly SAID'd object. Use the kels-cli sad put command.
-# Create a test file
-cat > "$TEMP_DIR/test-object.json" << 'TESTOBJ'
-{"said":"","testField":"gossip-propagation-test","timestamp":"2024-01-01T00:00:00Z"}
-TESTOBJ
+# Create a unique test object file (unique per run to avoid false pass from prior ae sync)
+UNIQUE_VALUE="gossip-test-$(date +%s%N)-$$"
+echo "{\"said\":\"\",\"testField\":\"${UNIQUE_VALUE}\"}" > "$TEMP_DIR/test-object.json"
 
-# Try to PUT via CLI (will compute SAID)
-if SAD_SAID=$(kels-cli -d "$(echo $NODE_A_SADSTORE_HOST | sed 's/kels-sadstore//' | sed 's/^\.//')" sad put "$TEMP_DIR/test-object.json" 2>/dev/null); then
+# PUT via CLI using --sadstore-url
+SAD_SAID=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad put "$TEMP_DIR/test-object.json" 2>/dev/null)
+run_test "SAD object stored via CLI (sad put)" [ -n "$SAD_SAID" ]
+
+if [ -n "$SAD_SAID" ]; then
     echo "Stored SAD object: $SAD_SAID"
+
     run_test "Object exists on node-a" sad_object_exists "$NODE_A_SAD_URL" "$SAD_SAID"
 
-    # Wait for propagation
+    # GET via CLI and verify the content
+    GET_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad get "$SAD_SAID" 2>/dev/null)
+    GET_SAID=$(echo "$GET_OUTPUT" | jq -r '.said // empty' 2>/dev/null)
+    run_test "SAD object retrieved via CLI (sad get)" [ "$GET_SAID" = "$SAD_SAID" ]
+
+    GET_FIELD=$(echo "$GET_OUTPUT" | jq -r '.testField // empty' 2>/dev/null)
+    run_test "Retrieved object content matches" [ "$GET_FIELD" = "$UNIQUE_VALUE" ]
+
+    # Wait for gossip propagation to node-b
     run_test "Object propagated to node-b" \
         wait_for_sad_object_propagation "$SAD_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
-else
-    echo -e "${YELLOW}SAD PUT via CLI failed (expected if base domain not derivable) — testing via curl${NC}"
 
-    # Fallback: use curl directly. We can't easily compute a SAID in bash,
-    # so test that the endpoint is reachable and returns expected codes.
-    run_test "Node-A SADStore PUT endpoint reachable" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X PUT '${NODE_A_SAD_URL}/api/v1/sad/Etest' -H 'Content-Type: application/json' -d '{}') != '000' ]"
-
-    run_test "Node-B SADStore health reachable" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_B_SAD_URL}/health') = '200' ]"
+    # GET from node-b via CLI
+    GET_B_SAID=$(kels-cli --sadstore-url "$NODE_B_SAD_URL" sad get "$SAD_SAID" 2>/dev/null | jq -r '.said // empty' 2>/dev/null)
+    run_test "Object retrievable from node-b via CLI (sad get)" [ "$GET_B_SAID" = "$SAD_SAID" ]
 fi
 
 echo ""

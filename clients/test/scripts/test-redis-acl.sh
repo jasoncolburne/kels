@@ -6,6 +6,7 @@
 #   REDIS_HOST          - Redis hostname (default: redis)
 #   KELS_PASSWORD       - kels user password (default: kels-redis-pass)
 #   GOSSIP_PASSWORD     - gossip user password (default: gossip-redis-pass)
+#   SADSTORE_PASSWORD   - sadstore user password (default: sadstore-redis-pass)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
@@ -13,6 +14,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 REDIS_HOST="${REDIS_HOST:-redis}"
 KELS_PASSWORD="${KELS_PASSWORD:-kels-redis-pass}"
 GOSSIP_PASSWORD="${GOSSIP_PASSWORD:-gossip-redis-pass}"
+SADSTORE_PASSWORD="${SADSTORE_PASSWORD:-sadstore-redis-pass}"
 
 # Redis command helpers for each user
 redis_kels() {
@@ -21,6 +23,10 @@ redis_kels() {
 
 redis_gossip() {
     redis-cli -h "$REDIS_HOST" --user gossip -a "$GOSSIP_PASSWORD" --no-auth-warning "$@"
+}
+
+redis_sadstore() {
+    redis-cli -h "$REDIS_HOST" --user sadstore -a "$SADSTORE_PASSWORD" --no-auth-warning "$@"
 }
 
 redis_noauth() {
@@ -60,6 +66,12 @@ run_test "kels user can PING" bash -c '
 
 run_test "gossip user can PING" bash -c '
     result=$(redis-cli -h "'$REDIS_HOST'" --user gossip -a "'$GOSSIP_PASSWORD'" --no-auth-warning PING)
+    echo "  Result: $result"
+    [ "$result" = "PONG" ]
+'
+
+run_test "sadstore user can PING" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PING)
     echo "  Result: $result"
     [ "$result" = "PONG" ]
 '
@@ -162,6 +174,75 @@ run_test "Anti-entropy key persists (no TTL)" bash -c '
     # Clean up
     redis-cli -h "'$REDIS_HOST'" --user gossip -a "'$GOSSIP_PASSWORD'" --no-auth-warning DEL kels:anti_entropy:acl_test > /dev/null
     echo "$result" | grep -q "ttl-test-prefix"
+'
+
+echo ""
+
+# ==========================================
+# 7. Pub/Sub channel isolation
+# ==========================================
+echo "=== 7. Pub/Sub Channel Isolation ==="
+
+run_test "kels can PUBLISH to kel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user kels -a "'$KELS_PASSWORD'" --no-auth-warning PUBLISH kel_updates test_message)
+    echo "  Result: $result"
+    [ "$result" -ge 0 ]
+'
+
+run_test "sadstore can PUBLISH to sad_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH sad_updates test_message)
+    echo "  Result: $result"
+    [ "$result" -ge 0 ]
+'
+
+run_test "sadstore can PUBLISH to sad_chain_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH sad_chain_updates test_message)
+    echo "  Result: $result"
+    [ "$result" -ge 0 ]
+'
+
+run_test "gossip cannot PUBLISH to kel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user gossip -a "'$GOSSIP_PASSWORD'" --no-auth-warning PUBLISH kel_updates test_message 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
+'
+
+run_test "kels cannot PUBLISH to sad_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user kels -a "'$KELS_PASSWORD'" --no-auth-warning PUBLISH sad_updates test_message 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
+'
+
+run_test "sadstore cannot PUBLISH to kel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH kel_updates test_message 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
+'
+
+echo ""
+
+# ==========================================
+# 8. Key pattern isolation (sadstore)
+# ==========================================
+echo "=== 8. SADStore Key Isolation ==="
+
+run_test "sadstore can SET kels:sad:test" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning SETEX kels:sad:test 60 testdata)
+    echo "  Result: $result"
+    redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning DEL kels:sad:test > /dev/null
+    [ "$result" = "OK" ]
+'
+
+run_test "sadstore cannot SET kels:kel:test" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning SET kels:kel:test forbidden 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
+'
+
+run_test "sadstore cannot HSET kels:anti_entropy:stale" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning HSET kels:anti_entropy:stale test forbidden 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
 '
 
 echo ""
