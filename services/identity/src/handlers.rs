@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_api_error_from_kels_key_not_found() {
-        let kels_err = KelsError::EventNotFound("test-key".to_string());
+        let kels_err = KelsError::NotFound("test-key".to_string());
         let api_err: ApiError = kels_err.into();
         assert_eq!(api_err.0, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(api_err.1.error.contains("test-key"));

@@ -261,7 +261,7 @@ fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
 
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
-        KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
+        KelsError::NotFound(_) => KelsStatus::KelNotFound,
         KelsError::HsmKeyNotFound(_) => KelsStatus::Error,
         KelsError::NotIncepted => KelsStatus::NotIncepted,
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
@@ -2378,7 +2378,7 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_key_not_found() {
-        let err = KelsError::EventNotFound("test".to_string());
+        let err = KelsError::NotFound("test".to_string());
         assert_eq!(map_error_to_status(&err), KelsStatus::KelNotFound);
     }
 

@@ -119,7 +119,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(said.to_string()))
+            Err(KelsError::NotFound(said.to_string()))
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -183,7 +183,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(prefix.to_string()))
+            Err(KelsError::NotFound(prefix.to_string()))
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -286,7 +286,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(prefix.to_string()))
+            Err(KelsError::NotFound(prefix.to_string()))
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -310,7 +310,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(repair_said.to_string()))
+            Err(KelsError::NotFound(repair_said.to_string()))
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))

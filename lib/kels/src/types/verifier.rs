@@ -813,7 +813,7 @@ impl PagedKelSource for StoreKelSource<'_> {
             let offset = all
                 .iter()
                 .position(|e| e.event.said == said)
-                .ok_or_else(|| KelsError::EventNotFound(prefix.to_string()))?;
+                .ok_or_else(|| KelsError::NotFound(prefix.to_string()))?;
             let start = offset + 1;
             let end = (start + limit).min(all.len());
             let has_more = end < all.len();
@@ -966,7 +966,7 @@ impl PagedKelSource for HttpKelSource {
             })?;
             Ok((page.events, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(prefix.to_string()))
+            Err(KelsError::NotFound(prefix.to_string()))
         } else {
             let err: super::ErrorResponse = resp.json().await.map_err(|e| {
                 KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
@@ -3605,7 +3605,7 @@ mod tests {
                         // Composite SAID matches effective — caller is in sync
                         return Ok((vec![], false));
                     } else {
-                        return Err(crate::error::KelsError::EventNotFound(said.to_string()));
+                        return Err(crate::error::KelsError::NotFound(said.to_string()));
                     }
                 }
                 None => 0,

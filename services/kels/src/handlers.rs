@@ -243,7 +243,7 @@ impl From<KelsError> for ApiError {
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
             KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
-            KelsError::EventNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
+            KelsError::NotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
             | KelsError::InvalidKel(_)

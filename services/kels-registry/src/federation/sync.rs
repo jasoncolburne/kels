@@ -220,7 +220,7 @@ async fn push_to_stale_members(
             .await
             {
                 Ok(()) => Ok(()),
-                Err(kels::KelsError::EventNotFound(_)) => {
+                Err(kels::KelsError::NotFound(_)) => {
                     // Member SAID not found locally (e.g., composite divergent SAID)
                     kels::forward_key_events(
                         &own_prefix,

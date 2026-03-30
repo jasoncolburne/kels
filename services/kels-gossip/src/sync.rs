@@ -592,7 +592,7 @@ impl SyncHandler {
                     self.record_stale(prefix, &announcement.origin).await;
                     return Ok(());
                 }
-                Err(KelsError::EventNotFound(_)) => {
+                Err(KelsError::NotFound(_)) => {
                     warn!("KEL not found on remote {} for {}", kels_url, prefix);
                     continue;
                 }
@@ -719,7 +719,7 @@ pub async fn run_sync_handler(
 /// Forward events from a remote source to a local sink with delta-with-fallback.
 ///
 /// Tries delta fetch first (using `since`), falls back to full fetch on
-/// `EventNotFound` (remote may have recovered, removing the since SAID).
+/// `NotFound` (remote may have recovered, removing the since SAID).
 async fn forward_with_fallback(
     prefix: &str,
     source: &kels::HttpKelSource,
@@ -739,7 +739,7 @@ async fn forward_with_fallback(
         .await
         {
             Ok(()) => return Ok(()),
-            Err(KelsError::EventNotFound(_)) => {
+            Err(KelsError::NotFound(_)) => {
                 info!(
                     "Since SAID not found on remote for {} (likely recovery). Falling back to full fetch.",
                     prefix
@@ -892,7 +892,7 @@ pub(crate) async fn sync_prefix(
     .await
     {
         Ok(()) => RepairResult::Repaired,
-        Err(KelsError::EventNotFound(_)) => RepairResult::NoOp,
+        Err(KelsError::NotFound(_)) => RepairResult::NoOp,
         Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
         Err(_) => RepairResult::Failed,
     }
