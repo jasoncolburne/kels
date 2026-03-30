@@ -131,13 +131,13 @@ For development, a single KELS node can run without gossip or registries — jus
 garden deploy --env=standalone
 ```
 
-`make test-node` deploys the standalone node and runs some tests against it, leaving it running to inspect.
+`make deploy-fresh-node` deploys the standalone node in ~2.5 minutes. `make test-node` deploys and runs tests against it, leaving it running to inspect.
 
 Notably, with caching turned off, the Federation benchmarks run considerably faster.
 
 ### Full Federation
 
-`make test-federation` deploys the entire federation (3+1 registries, 6 gossip nodes, integration tests) in ~25 minutes and leaves a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
+`make deploy-fresh-federation` deploys the entire federation (3+1 registries, 6 gossip nodes) in ~10 minutes. `make test-federation` deploys and runs the full test suite in ~35 minutes, leaving a working stack running in Kubernetes. See [Deploying with Garden](#deploying-with-garden) below.
 
 ### Building
 
@@ -157,7 +157,10 @@ make deny         # Check dependencies (requires cargo-deny)
 make clean        # Clean build artifacts
 
 # Comprehensive integration tests (requires Garden + Kubernetes)
-make test-federation   # Deploy all services and run full test suite
+make deploy-fresh-node       # Deploy standalone node (~2.5 min)
+make deploy-fresh-federation # Deploy full federation (~10 min)
+make test-node               # Deploy standalone node and run tests (~5 min)
+make test-federation         # Deploy all services and run full test suite (~35 min)
 ```
 
 `make test-federation` leaves a working stack running in Kubernetes. You can play with it, or

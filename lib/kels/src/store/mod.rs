@@ -77,7 +77,11 @@ pub struct KelStoreSink<'a>(pub &'a (dyn KelStore + Sync));
 
 #[async_trait]
 impl crate::types::PagedKelSink for KelStoreSink<'_> {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let prefix = &events[0].event.prefix;
         self.0.append(prefix, events).await
     }
 }

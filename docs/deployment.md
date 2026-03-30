@@ -10,8 +10,10 @@ KELS supports two deployment modes:
 
 The Garden configuration in this repository (`project.garden.yml` and per-service `garden.yml` files) is an example used for local testing. It can be used as a guide for understanding the deployment flow, but is not a reference for production deployments.
 
-- `make test-node` deploys and tests a standalone node (~2 minutes)
-- `make test-federation` deploys and tests a full federation (~22 minutes)
+- `make deploy-fresh-node` deploys a standalone node (~2.5 minutes)
+- `make deploy-fresh-federation` deploys a full federation (~10 minutes)
+- `make test-node` deploys and tests a standalone node (~5 minutes)
+- `make test-federation` deploys and tests a full federation (~35 minutes)
 
 ## Standalone Deployment
 

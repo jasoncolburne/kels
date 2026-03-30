@@ -41,7 +41,7 @@ pub trait PagedSadSource: Send + Sync {
 /// Destination for signed SAD records (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
-    async fn store_page(&self, prefix: &str, records: &[SignedSadRecord]) -> Result<(), KelsError>;
+    async fn store_page(&self, records: &[SignedSadRecord]) -> Result<(), KelsError>;
 }
 
 // ==================== Sink Implementations ====================
@@ -51,11 +51,7 @@ struct NoOpSadSink;
 
 #[async_trait]
 impl PagedSadSink for NoOpSadSink {
-    async fn store_page(
-        &self,
-        _prefix: &str,
-        _records: &[SignedSadRecord],
-    ) -> Result<(), KelsError> {
+    async fn store_page(&self, _records: &[SignedSadRecord]) -> Result<(), KelsError> {
         Ok(())
     }
 }
@@ -146,11 +142,7 @@ impl HttpSadSink {
 
 #[async_trait]
 impl PagedSadSink for HttpSadSink {
-    async fn store_page(
-        &self,
-        _prefix: &str,
-        records: &[SignedSadRecord],
-    ) -> Result<(), KelsError> {
+    async fn store_page(&self, records: &[SignedSadRecord]) -> Result<(), KelsError> {
         if records.is_empty() {
             return Ok(());
         }
@@ -343,7 +335,7 @@ async fn transfer_sad_records(
             v.verify_page(&records)?;
         }
 
-        sink.store_page(prefix, &records).await?;
+        sink.store_page(&records).await?;
 
         if !has_more {
             return Ok(());

@@ -399,8 +399,12 @@ test-kem-upgrade:
 	$(MAKE) restart-gossip-services
 	$(MAKE) wait-for-gossip
 
-test-node: clean-standalone
+deploy-fresh-node:
 	garden deploy --env=standalone
+
+deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes vote-nodes restart-gossip-services
+
+test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh

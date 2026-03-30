@@ -909,7 +909,7 @@ pub trait PagedKelSource: Send + Sync {
 /// Destination for signed key events (e.g., local DB).
 #[async_trait]
 pub trait PagedKelSink: Send + Sync {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
 }
 
 // ==================== HTTP Source/Sink Implementations ====================
@@ -981,7 +981,7 @@ pub(crate) struct NoOpSink;
 
 #[async_trait]
 impl PagedKelSink for NoOpSink {
-    async fn store_page(&self, _prefix: &str, _events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, _events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         Ok(())
     }
 }
@@ -1017,15 +1017,13 @@ impl CollectSink {
 #[cfg(any(test, feature = "dev-tools"))]
 #[async_trait]
 impl PagedKelSink for CollectSink {
-    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         self.events.lock().await.extend_from_slice(events);
         Ok(())
     }
 }
 
 /// HTTP-based sink that submits events to a KELS service.
-///
-/// The path template may contain `{prefix}` which is replaced with the actual prefix.
 pub struct HttpKelSink {
     base_url: String,
     /// Path, e.g. "/api/v1/kels/events"
@@ -1048,9 +1046,8 @@ impl HttpKelSink {
 
 #[async_trait]
 impl PagedKelSink for HttpKelSink {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        let path = self.path.replace("{prefix}", prefix);
-        let url = format!("{}{}", self.base_url, path);
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let url = format!("{}{}", self.base_url, self.path);
 
         let resp = self
             .client
@@ -1200,7 +1197,7 @@ async fn transfer_key_events(
                 }
             } else {
                 // No divergence on this page
-                sink.store_page(prefix, &events).await?;
+                sink.store_page(&events).await?;
                 since = events.last().map(|e| e.event.said.clone());
             }
         }
@@ -1222,7 +1219,7 @@ async fn transfer_key_events(
             if let Some(ref mut v) = verifier {
                 v.verify_page(slice::from_ref(&held))?;
             }
-            sink.store_page(prefix, slice::from_ref(&held)).await?;
+            sink.store_page(slice::from_ref(&held)).await?;
         }
     }
 
@@ -1231,7 +1228,7 @@ async fn transfer_key_events(
     }
 
     // Submit divergent events in the correct order
-    send_divergent_events(prefix, sink, &pre_divergence, post_divergence, page_size).await
+    send_divergent_events(sink, &pre_divergence, post_divergence, page_size).await
 }
 
 /// Separate post-divergence events into owner and adversary chains, then send
@@ -1246,7 +1243,6 @@ async fn transfer_key_events(
 ///   1. Pre-divergence + non-revealing chain (paged, non-divergent appends)
 ///   2. Revealing chain (creates divergence; warn on failure)
 async fn send_divergent_events(
-    prefix: &str,
     sink: &(dyn PagedKelSink + Sync),
     pre_divergence: &[SignedKeyEvent],
     post_divergence: Vec<SignedKeyEvent>,
@@ -1318,7 +1314,7 @@ async fn send_divergent_events(
         let mut non_divergent = pre_divergence.to_vec();
         non_divergent.extend(non_cnt_chain);
         for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
+            sink.store_page(chunk).await?;
         }
 
         // Step 2: cnt chain as atomic batch (creates divergence + contest).
@@ -1331,7 +1327,7 @@ async fn send_divergent_events(
                 crate::MINIMUM_PAGE_SIZE,
             )));
         }
-        match sink.store_page(prefix, &cnt_chain).await {
+        match sink.store_page(&cnt_chain).await {
             Ok(()) => {}
             Err(e) => {
                 warn!(
@@ -1357,12 +1353,12 @@ async fn send_divergent_events(
         let mut non_divergent = pre_divergence.to_vec();
         non_divergent.extend(longer);
         for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
+            sink.store_page(chunk).await?;
         }
 
         // Fork event from shorter chain (creates divergence)
         if let Some(fork) = shorter.first() {
-            match sink.store_page(prefix, slice::from_ref(fork)).await {
+            match sink.store_page(slice::from_ref(fork)).await {
                 Ok(()) => {}
                 Err(e) => {
                     warn!(
@@ -1463,7 +1459,7 @@ struct CallbackSink<F: FnMut(&[SignedKeyEvent]) + Send>(std::sync::Mutex<F>);
 
 #[async_trait]
 impl<F: FnMut(&[SignedKeyEvent]) + Send> PagedKelSink for CallbackSink<F> {
-    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         if let Ok(mut f) = self.0.lock() {
             (f)(events);
         }
