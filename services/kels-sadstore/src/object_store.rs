@@ -58,7 +58,7 @@ impl ObjectStore {
                 debug!("Bucket {} exists", self.bucket);
                 Ok(())
             }
-            Err(_) => {
+            Err(err) if is_not_found(&err) => {
                 info!("Bucket {} not found, creating...", self.bucket);
                 self.client
                     .create_bucket()
@@ -69,6 +69,10 @@ impl ObjectStore {
                 info!("Created bucket {}", self.bucket);
                 Ok(())
             }
+            Err(err) => Err(ObjectStoreError::S3(format!(
+                "Failed to check bucket {}: {}",
+                self.bucket, err
+            ))),
         }
     }
 

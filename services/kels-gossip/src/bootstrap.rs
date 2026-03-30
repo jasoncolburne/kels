@@ -195,14 +195,24 @@ impl BootstrapSync {
                     match local_client.sad_object_exists(said).await {
                         Ok(true) => continue,
                         Ok(false) => {}
-                        Err(_) => continue,
+                        Err(e) => {
+                            debug!("Failed to check SAD object {} existence: {}", said, e);
+                            continue;
+                        }
                     }
 
                     // Fetch from remote and store locally
-                    if let Ok(object) = remote_client.get_sad_object(said).await
-                        && local_client.put_sad_object(&object).await.is_ok()
-                    {
-                        total_synced += 1;
+                    match remote_client.get_sad_object(said).await {
+                        Ok(object) => {
+                            if let Err(e) = local_client.put_sad_object(&object).await {
+                                debug!("Failed to store SAD object {}: {}", said, e);
+                            } else {
+                                total_synced += 1;
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to fetch SAD object {} from peer: {}", said, e);
+                        }
                     }
                 }
 

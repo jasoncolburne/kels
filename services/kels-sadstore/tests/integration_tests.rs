@@ -6,17 +6,18 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::{net::TcpListener, sync::OnceLock, time::Duration};
+use tokio::{sync::OnceCell, time::sleep};
+
 use ctor::dtor;
 use kels::{SadRecord, compute_sad_prefix};
 use reqwest::Client;
-use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use testcontainers::{
     ContainerAsync, GenericImage, Image,
     core::{ImageExt, WaitFor},
     runners::AsyncRunner,
 };
 use testcontainers_modules::postgres::Postgres;
-use tokio::{sync::OnceCell, time::sleep};
 use verifiable_storage::SelfAddressed;
 
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
