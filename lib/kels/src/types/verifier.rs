@@ -1404,7 +1404,7 @@ pub async fn verify_key_events(
 /// returns `KelVerification` plus collected establishment keys.
 ///
 /// The verifier must have been constructed with `with_establishment_key_collection`.
-pub async fn verify_key_events_with_establishment_keys(
+pub async fn verify_key_events_collecting_establishment_keys(
     prefix: &str,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,

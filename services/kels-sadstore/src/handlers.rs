@@ -528,7 +528,7 @@ pub async fn submit_sad_records(
         }
     };
 
-    let (verification, establishment_keys) = match kels::verify_key_events_with_establishment_keys(
+    let (verification, establishment_keys) = match kels::verify_key_events_collecting_establishment_keys(
         kel_prefix,
         &kel_source,
         verifier,
