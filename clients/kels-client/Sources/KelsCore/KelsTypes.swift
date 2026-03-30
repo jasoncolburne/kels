@@ -106,14 +106,17 @@ public enum RegistryNodeStatus: String, Codable, Sendable {
 /// Information about a registered KELS node
 public struct RegistryNode: Codable, Identifiable, Sendable {
     public let nodeId: String
-    public let kelsUrl: String
-    public let gossipMultiaddr: String
+    public let baseDomain: String
     public let status: RegistryNodeStatus
     public var latencyMs: UInt64?
 
     public var id: String { nodeId }
 
     public var displayName: String { nodeId }
+
+    public var kelsUrl: String { "http://kels.\(baseDomain)" }
+
+    public var sadstoreUrl: String { "http://kels-sadstore.\(baseDomain)" }
 
     public var statusColor: String {
         switch status {
@@ -127,7 +130,7 @@ public struct RegistryNode: Codable, Identifiable, Sendable {
 /// FFI response node (matches FFI's NodeInfoJson with camelCase)
 private struct FFINode: Codable {
     let nodeId: String
-    let kelsUrl: String
+    let baseDomain: String
     let status: String
     let latencyMs: UInt64?
 }
@@ -188,8 +191,7 @@ public struct NodeDiscovery {
             return ffiNodes.map { ffi in
                 var node = RegistryNode(
                     nodeId: ffi.nodeId,
-                    kelsUrl: ffi.kelsUrl,
-                    gossipMultiaddr: "",  // Not provided by FFI, not needed for UI
+                    baseDomain: ffi.baseDomain,
                     status: RegistryNodeStatus(rawValue: ffi.status) ?? .unhealthy
                 )
                 node.latencyMs = ffi.latencyMs
