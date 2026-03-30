@@ -365,9 +365,12 @@ impl SadRecordRepository {
         }
 
         if let Some(limit) = limit {
-            // Fetch extra to account for records we'll skip at the cursor position
+            // Fetch extra to account for records at the cursor version that will
+            // be skipped: the cursor record itself (1) plus at most one divergent
+            // fork record with a lower SAID (1). The chain is frozen after a single
+            // divergence, so +2 is the legitimate maximum.
             let fetch_limit = if since_position.is_some() {
-                limit + kels::page_size() as u64
+                limit + 2
             } else {
                 limit
             };
@@ -378,7 +381,20 @@ impl SadRecordRepository {
 
         // Skip records at or before the cursor position
         if let Some((version, said)) = &since_position {
+            let skipped = records.len();
             records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
+            let skipped = skipped - records.len();
+
+            // The cursor record itself is always skipped (1). Legitimate divergence
+            // adds at most 1 fork record at the cursor version with a lower SAID (2).
+            // More than that means the DB was tampered with — fail secure.
+            if skipped > 2 {
+                return Err(StorageError::StorageError(format!(
+                    "Chain integrity violation: {} records skipped at version {} for prefix {} — possible DB tampering",
+                    skipped, version, prefix
+                )));
+            }
+
             if let Some(limit) = limit {
                 records.truncate(limit as usize);
             }

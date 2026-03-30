@@ -405,13 +405,11 @@ impl SyncHandler {
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
         // The SADStore publishes {prefix}:{effective_said} (or with :repair suffix)
         // to sad_chain_updates. The subscriber strips :repair before checking.
-        {
-            let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
-            self.recently_stored
-                .write()
-                .await
-                .insert(cache_key, Instant::now());
-        }
+        let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
 
         let remote_client = match kels::SadStoreClient::new(&sadstore_url) {
             Ok(c) => c,
@@ -454,6 +452,7 @@ impl SyncHandler {
         )
         .await
         {
+            self.recently_stored.write().await.remove(&cache_key);
             warn!(
                 "Failed to replicate SAD chain {} from {}: {}",
                 chain_prefix, origin, e
@@ -1298,6 +1297,14 @@ pub async fn run_sad_anti_entropy_loop(
     sadstore_url: String,
     interval: Duration,
 ) {
+    let local_client = match kels::SadStoreClient::new(&sadstore_url) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("SAD anti-entropy: failed to build local client: {}", e);
+            return;
+        }
+    };
+
     loop {
         tokio::time::sleep(interval).await;
 
@@ -1317,14 +1324,6 @@ pub async fn run_sad_anti_entropy_loop(
         if peers.is_empty() {
             continue;
         }
-
-        let local_client = match kels::SadStoreClient::new(&sadstore_url) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("SAD anti-entropy: failed to build local client: {}", e);
-                continue;
-            }
-        };
 
         // Phase 1: Process known-stale chain prefixes
         let stale_entries =

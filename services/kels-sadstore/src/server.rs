@@ -68,7 +68,9 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     }
 
     router
-        .layer(DefaultBodyLimit::max(5 * 1024 * 1024)) // 5 MiB
+        .layer(DefaultBodyLimit::max(
+            handlers::max_sad_object_size() + 4096,
+        ))
         .with_state(state)
 }
 

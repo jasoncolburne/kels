@@ -67,7 +67,7 @@ fn ip_rate_limit_burst() -> u32 {
 }
 
 /// Max SAD object size in bytes (default 1 MiB).
-fn max_sad_object_size() -> usize {
+pub fn max_sad_object_size() -> usize {
     kels::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
