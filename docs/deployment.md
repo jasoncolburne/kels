@@ -28,6 +28,10 @@ A standalone KELS node requires:
 
 This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, contest, and decommission. Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
 
+It also provides the full SAD store API: object write, object read, record submission, record repair, paginated record retrieval.
+
+Both APIs support recovery/repair.
+
 Standalone mode does not include:
 - Gossip replication (no `kels-gossip`)
 - Federation consensus (no `kels-registry`)
