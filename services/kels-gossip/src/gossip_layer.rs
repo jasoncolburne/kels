@@ -37,9 +37,9 @@ pub enum GossipError {
 #[derive(Debug)]
 pub enum GossipEvent {
     /// Received a KEL announcement from a peer
-    AnnouncementReceived { announcement: KelAnnouncement },
+    KelAnnouncementReceived { announcement: KelAnnouncement },
     /// Received a SAD announcement from a peer
-    SadAnnouncementReceived { message: kels::SadGossipMessage },
+    SadAnnouncementReceived { announcement: kels::SadAnnouncement },
     /// New peer connected
     PeerConnected(String),
     /// Peer disconnected
@@ -50,9 +50,9 @@ pub enum GossipEvent {
 #[derive(Debug)]
 pub enum GossipCommand {
     /// Broadcast a KEL announcement to the network
-    Announce(KelAnnouncement),
+    AnnounceKel(KelAnnouncement),
     /// Broadcast a SAD announcement to the network
-    AnnounceSad(kels::SadGossipMessage),
+    AnnounceSad(kels::SadAnnouncement),
 }
 
 /// Derive a TopicId from a topic name string (Blake3 hash → first 32 bytes).
@@ -81,7 +81,7 @@ pub async fn run_gossip(
             // Handle incoming commands from sync layer
             Some(cmd) = command_rx.recv() => {
                 match cmd {
-                    GossipCommand::Announce(announcement) => {
+                    GossipCommand::AnnounceKel(announcement) => {
                         let data = serde_json::to_vec(&announcement)?;
                         if let Err(e) = gossip_handle.broadcast(kel_topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
                             warn!("Failed to broadcast KEL announcement: {}", e);
@@ -120,7 +120,7 @@ pub async fn run_gossip(
                                         delivered_from_str, announcement.prefix, announcement.said
                                     );
                                     event_tx
-                                        .send(GossipEvent::AnnouncementReceived { announcement })
+                                        .send(GossipEvent::KelAnnouncementReceived { announcement })
                                         .await
                                         .map_err(|_| GossipError::ChannelClosed)?;
                                 }
@@ -129,11 +129,11 @@ pub async fn run_gossip(
                                 }
                             }
                         } else if msg.topic == sad_topic {
-                            match serde_json::from_slice::<kels::SadGossipMessage>(&msg.content) {
-                                Ok(message) => {
+                            match serde_json::from_slice::<kels::SadAnnouncement>(&msg.content) {
+                                Ok(announcement) => {
                                     debug!("Received SAD announcement");
                                     event_tx
-                                        .send(GossipEvent::SadAnnouncementReceived { message })
+                                        .send(GossipEvent::SadAnnouncementReceived { announcement })
                                         .await
                                         .map_err(|_| GossipError::ChannelClosed)?;
                                 }

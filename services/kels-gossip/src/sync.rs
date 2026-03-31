@@ -93,7 +93,11 @@ pub async fn run_redis_subscriber(
 
         if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
             debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
-            if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
+            if command_tx
+                .send(GossipCommand::AnnounceKel(ann))
+                .await
+                .is_err()
+            {
                 error!("Failed to send announce command - channel closed");
                 return Err(SyncError::ChannelClosed);
             }
@@ -164,7 +168,7 @@ pub async fn run_sad_redis_subscriber(
 
         let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
             // Object update: payload is just the SAID
-            kels::SadGossipMessage::Object {
+            kels::SadAnnouncement::Object {
                 said: payload,
                 origin: local_peer_prefix.clone(),
             }
@@ -177,7 +181,7 @@ pub async fn run_sad_redis_subscriber(
                 &payload
             };
             if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
-                kels::SadGossipMessage::Chain {
+                kels::SadAnnouncement::Chain {
                     chain_prefix: ann.prefix,
                     said: ann.said,
                     origin: local_peer_prefix.clone(),
@@ -275,10 +279,12 @@ impl SyncHandler {
         _command_tx: &mpsc::Sender<GossipCommand>,
     ) -> Result<(), SyncError> {
         match event {
-            GossipEvent::AnnouncementReceived { announcement } => {
+            GossipEvent::KelAnnouncementReceived { announcement } => {
                 self.handle_announcement(announcement).await?;
             }
-            GossipEvent::SadAnnouncementReceived { message } => {
+            GossipEvent::SadAnnouncementReceived {
+                announcement: message,
+            } => {
                 self.handle_sad_announcement(message).await;
             }
             GossipEvent::PeerConnected(peer_prefix) => {
@@ -295,12 +301,12 @@ impl SyncHandler {
     ///
     /// For chain announcements: compare tip SAIDs and fetch chain if different.
     /// For object announcements: check existence and fetch if missing.
-    async fn handle_sad_announcement(&self, message: kels::SadGossipMessage) {
+    async fn handle_sad_announcement(&self, message: kels::SadAnnouncement) {
         match message {
-            kels::SadGossipMessage::Object { said, origin } => {
+            kels::SadAnnouncement::Object { said, origin } => {
                 self.handle_sad_object_announcement(&said, &origin).await;
             }
-            kels::SadGossipMessage::Chain {
+            kels::SadAnnouncement::Chain {
                 chain_prefix,
                 said,
                 origin,
