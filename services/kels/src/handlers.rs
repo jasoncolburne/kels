@@ -698,7 +698,7 @@ async fn query_prefixes(
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
@@ -756,7 +756,7 @@ pub(crate) async fn list_prefixes(
 
     query_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await
@@ -767,12 +767,12 @@ pub(crate) async fn list_prefixes(
 pub(crate) async fn test_list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     query_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await

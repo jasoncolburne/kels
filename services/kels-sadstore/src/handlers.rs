@@ -821,7 +821,7 @@ async fn query_sad_prefixes(
 pub async fn list_sad_objects(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::SadObjectsRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -851,7 +851,7 @@ pub async fn list_sad_objects(
 pub async fn list_sad_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -870,7 +870,7 @@ pub async fn list_sad_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await
@@ -945,7 +945,7 @@ pub(crate) async fn get_repair_records(
 pub async fn test_list_sad_objects(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::SadObjectsRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -965,7 +965,7 @@ pub async fn test_list_sad_objects(
 pub async fn test_list_sad_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -973,7 +973,7 @@ pub async fn test_list_sad_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await

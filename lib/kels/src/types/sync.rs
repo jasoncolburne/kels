@@ -22,17 +22,7 @@ pub fn hash_effective_said(input: &str) -> String {
 /// Request payload for authenticated prefix listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrefixesRequest {
-    pub timestamp: i64,
-    pub nonce: String,
-    pub since: Option<String>,
-    pub limit: Option<usize>,
-}
-
-/// Request payload for authenticated SAD object listing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SadObjectsRequest {
+pub struct PaginatedSelfAddressedRequest {
     pub timestamp: i64,
     pub nonce: String,
     pub cursor: Option<String>,

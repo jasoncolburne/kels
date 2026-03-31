@@ -55,7 +55,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
 4. If SAID is new:
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
-   - **Audit fetch** (on `EventNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
+   - **Audit fetch** (on `NotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
@@ -180,7 +180,7 @@ Gossip nodes use persistent HSM-backed identities:
 - **Delta fetch** (`?since=<said>`) is the primary sync mechanism — only fetches events newer than local state
 - Uses the `serial` field on `KeyEvent` for efficient DB-ordered queries (`ORDER BY serial ASC`)
 - Falls back to **full KEL fetch** when delta is unavailable (e.g., new prefix, network error)
-- **Recovery-aware audit fetch**: when a delta fetch fails with `EventNotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/v1/kels/kel/:prefix` + `/api/v1/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
+- **Recovery-aware audit fetch**: when a delta fetch fails with `NotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/v1/kels/kel/:prefix` + `/api/v1/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
 - Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split before the event preceding the first recovery-revealing event and submitted in stages so merge() processes recovery correctly. The owner's event at the divergence serial is bundled with the recovery event — this ensures nodes that have only adversary events at that serial (no owner event) can insert the owner event as part of recovery processing (the submit handler's divergent recovery branch handles this via look-ahead for `rec` in the batch)
 - KELS handles duplicate events idempotently
 

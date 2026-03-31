@@ -146,12 +146,12 @@ Added to the KELS service for bootstrap sync:
 
 `POST /api/v1/kels/prefixes`
 
-Accepts a `SignedRequest<PrefixesRequest>` body. Signature and peer verification is enforced unless the `dev-tools` feature is enabled.
+Accepts a `SignedRequest<PaginatedSelfAddressedRequest>` body. Signature and peer verification is enforced. An unauthenticated test endpoint (`POST /api/test/prefixes`) is available when `KELS_TEST_ENDPOINTS=true`.
 
 | Payload Field | Description | Default |
 |---------------|-------------|---------|
 | `timestamp` | Unix timestamp (replay protection, 60s window) | (required) |
-| `since` | Cursor (prefix) to start after | `null` (beginning) |
+| `cursor` | Cursor (prefix) to start after | `null` (beginning) |
 | `limit` | Max prefixes to return | 100 (max: 1000) |
 
 Response includes prefix:SAID pairs for efficient sync comparison:

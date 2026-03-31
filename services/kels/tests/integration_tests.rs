@@ -383,10 +383,10 @@ async fn test_list_prefixes() {
 
     // List prefixes via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: None,
         },
         peer_prefix: "mock".to_string(),
@@ -527,10 +527,10 @@ async fn test_list_prefixes_with_limit() {
 
     // List with limit=2 via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: Some(2),
         },
         peer_prefix: "mock".to_string(),
@@ -663,10 +663,10 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
     // Get first page with limit=1 via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: Some(1),
         },
         peer_prefix: "mock".to_string(),
@@ -688,10 +688,10 @@ async fn test_list_prefixes_pagination_with_cursor() {
     // Use cursor to get next page if available
     if let Some(cursor) = &result.next_cursor {
         let request = kels::SignedRequest {
-            payload: kels::PrefixesRequest {
+            payload: kels::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
                 nonce: kels::generate_nonce(),
-                since: Some(cursor.clone()),
+                cursor: Some(cursor.clone()),
                 limit: Some(1),
             },
             peer_prefix: "mock".to_string(),

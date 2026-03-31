@@ -677,7 +677,7 @@ compute_rotation_hash(), compute_approval_threshold()
 **Error variants:** Descriptive English:
 
 ```
-EventNotFound, InvalidKeyEvent, SignatureVerificationFailed,
+NotFound, InvalidKeyEvent, SignatureVerificationFailed,
 KelDecommissioned, ContestRequired, DivergenceDetected
 ```
 

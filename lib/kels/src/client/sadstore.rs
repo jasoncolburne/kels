@@ -219,7 +219,7 @@ impl SadStoreClient {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<crate::SadObjectListResponse, KelsError> {
-        let request = crate::SadObjectsRequest {
+        let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: crate::generate_nonce(),
             cursor: cursor.map(|s| s.to_string()),
@@ -248,10 +248,10 @@ impl SadStoreClient {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
-        let request = crate::PrefixesRequest {
+        let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: crate::generate_nonce(),
-            since: cursor.map(|s| s.to_string()),
+            cursor: cursor.map(|s| s.to_string()),
             limit: Some(limit),
         };
         let signed = crate::sign_request(signer, &request).await?;
