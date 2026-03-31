@@ -15,6 +15,8 @@ The Garden configuration in this repository (`project.garden.yml` and per-servic
 - `make test-node` deploys and tests a standalone node (~5 minutes)
 - `make test-federation` deploys and tests a full federation (~35 minutes)
 
+Notably, the benchmarks run without caching in standlone mode, and with caching in federated mode.
+
 ## Standalone Deployment
 
 A standalone KELS node requires:
