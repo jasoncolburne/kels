@@ -30,7 +30,7 @@ This provides the full KEL API: event submission, paginated retrieval, divergenc
 
 It also provides the full SAD store API: object write, object read, record submission, record repair, paginated record retrieval.
 
-Both APIs support recovery/repair.
+Both APIs support recovery/repair, and subsequent audit.
 
 Standalone mode does not include:
 - Gossip replication (no `kels-gossip`)
