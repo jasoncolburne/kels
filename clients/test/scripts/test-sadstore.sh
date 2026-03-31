@@ -144,12 +144,12 @@ echo -e "${CYAN}=== Scenario 1: SAD Object CRUD ===${NC}"
 echo ""
 
 # PUT with invalid JSON
-run_test "PUT invalid JSON rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X PUT '${NODE_A_SAD_URL}/api/v1/sad/Eanything' -H 'Content-Type: application/json' -d 'not json') = '400' ]"
+run_test "POST invalid JSON rejected" \
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad' -H 'Content-Type: application/json' -d 'not json') = '400' ]"
 
-# PUT with mismatched SAID
-run_test "PUT mismatched SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X PUT '${NODE_A_SAD_URL}/api/v1/sad/Ewrong' -H 'Content-Type: application/json' -d '{\"said\":\"Ewrong\",\"data\":\"test\"}') = '400' ]"
+# POST with mismatched SAID
+run_test "POST mismatched SAID rejected" \
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad' -H 'Content-Type: application/json' -d '{\"said\":\"Ewrong\",\"data\":\"test\"}') = '400' ]"
 
 # GET non-existent object
 run_test "GET non-existent object returns 404" \
@@ -313,7 +313,7 @@ echo ""
 UNIQUE_VALUE="gossip-test-$(date +%s%N)-$$"
 echo "{\"said\":\"\",\"testField\":\"${UNIQUE_VALUE}\"}" > "$TEMP_DIR/test-object.json"
 
-# PUT via CLI using --sadstore-url
+# POST via CLI using --sadstore-url
 SAD_SAID=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad put "$TEMP_DIR/test-object.json" 2>/dev/null)
 run_test "SAD object stored via CLI (sad put)" [ -n "$SAD_SAID" ]
 

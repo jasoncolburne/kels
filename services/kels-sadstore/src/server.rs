@@ -8,7 +8,7 @@ use std::{
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use kels::shutdown_signal;
 use tracing::info;
@@ -31,7 +31,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
         // SAD object store (Layer 1 — MinIO)
-        .route("/api/v1/sad/:said", put(handlers::put_sad_object))
+        .route("/api/v1/sad", post(handlers::post_sad_object))
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
         .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
         // Chain records (Layer 2 — Postgres)

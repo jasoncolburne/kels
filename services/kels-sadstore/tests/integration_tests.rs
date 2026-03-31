@@ -224,10 +224,10 @@ async fn test_put_and_get_sad_object() {
     object.derive_said().unwrap();
     let said = object.get_said();
 
-    // PUT the object
+    // POST the object
     let resp = harness
         .client()
-        .put(harness.url(&format!("/api/v1/sad/{}", said)))
+        .post(harness.url("/api/v1/sad"))
         .header("content-type", "application/json")
         .body(serde_json::to_vec(&object).unwrap())
         .send()
@@ -258,14 +258,13 @@ async fn test_put_sad_object_idempotent() {
         "data": "idempotent-test"
     });
     object.derive_said().unwrap();
-    let said = object.get_said();
 
     let body = serde_json::to_vec(&object).unwrap();
 
-    // First PUT
+    // First POST
     let resp = harness
         .client()
-        .put(harness.url(&format!("/api/v1/sad/{}", said)))
+        .post(harness.url("/api/v1/sad"))
         .header("content-type", "application/json")
         .body(body.clone())
         .send()
@@ -273,10 +272,10 @@ async fn test_put_sad_object_idempotent() {
         .unwrap();
     assert_eq!(resp.status(), 201);
 
-    // Second PUT — should return 200 (exists)
+    // Second POST — should return 200 (exists)
     let resp = harness
         .client()
-        .put(harness.url(&format!("/api/v1/sad/{}", said)))
+        .post(harness.url("/api/v1/sad"))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -286,21 +285,20 @@ async fn test_put_sad_object_idempotent() {
 }
 
 #[tokio::test]
-async fn test_put_sad_object_wrong_said_rejected() {
+async fn test_post_sad_object_wrong_said_rejected() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
-    let mut object = serde_json::json!({
-        "said": "",
+    // Object with a tampered SAID that won't verify
+    let object = serde_json::json!({
+        "said": "Ewrong_said_that_does_not_match_content_",
         "data": "wrong-said-test"
     });
-    object.derive_said().unwrap();
 
-    // PUT with a wrong SAID in the URL
     let resp = harness
         .client()
-        .put(harness.url("/api/v1/sad/Ewrong_said_that_does_not_match_content_"))
+        .post(harness.url("/api/v1/sad"))
         .header("content-type", "application/json")
         .body(serde_json::to_vec(&object).unwrap())
         .send()
@@ -325,14 +323,14 @@ async fn test_get_sad_object_not_found() {
 }
 
 #[tokio::test]
-async fn test_put_sad_object_invalid_json_rejected() {
+async fn test_post_sad_object_invalid_json_rejected() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
     let resp = harness
         .client()
-        .put(harness.url("/api/v1/sad/Eanything"))
+        .post(harness.url("/api/v1/sad"))
         .header("content-type", "application/json")
         .body("not json")
         .send()

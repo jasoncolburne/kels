@@ -73,7 +73,7 @@ impl SadStoreClient {
     ///
     /// The object must have a valid `said` field. The SAID is verified by
     /// both the client (before sending) and the server (on receipt).
-    pub async fn put_sad_object(&self, object: &serde_json::Value) -> Result<String, KelsError> {
+    pub async fn post_sad_object(&self, object: &serde_json::Value) -> Result<String, KelsError> {
         let said = object.get_said();
         if said.is_empty() {
             return Err(KelsError::VerificationFailed(
@@ -85,12 +85,12 @@ impl SadStoreClient {
             KelsError::VerificationFailed(format!("Object SAID verification failed: {}", e))
         })?;
 
-        let url = format!("{}/api/v1/sad/{}", self.base_url, said);
+        let url = format!("{}/api/v1/sad", self.base_url);
         let body = serde_json::to_vec(object)?;
 
         let resp = self
             .client
-            .put(&url)
+            .post(&url)
             .header("content-type", "application/json")
             .body(body)
             .send()

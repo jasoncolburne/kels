@@ -1125,7 +1125,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 
     let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
     let said = client
-        .put_sad_object(&value)
+        .post_sad_object(&value)
         .await
         .context("Failed to store SAD object")?;
 

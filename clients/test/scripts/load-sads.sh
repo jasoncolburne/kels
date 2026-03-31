@@ -97,7 +97,7 @@ create_group() {
         json=$(echo "$json" | jq -c --arg s "$said" '.said = $s')
 
         local put_resp
-        put_resp=$(curl -s -w "\n%{http_code}" -X PUT "${SADSTORE_URL}/api/v1/sad/${said}" \
+        put_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad" \
             -H 'Content-Type: application/json' \
             -d "$json")
         local put_code

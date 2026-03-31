@@ -307,9 +307,8 @@ pub async fn ready() -> impl IntoResponse {
 
 // === Layer 1: SAD Object Store (MinIO) ===
 
-pub async fn put_sad_object(
+pub async fn post_sad_object(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Path(said): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -327,6 +326,23 @@ pub async fn put_sad_object(
             .into_response();
     }
 
+    // Parse and verify SAID
+    let value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response();
+        }
+    };
+
+    let said = value.get_said();
+    if said.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Missing said field").into_response();
+    }
+
+    if value.verify_said().is_err() {
+        return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
+    }
+
     // HEAD check — short-circuit if already exists
     match state.object_store.exists(&said).await {
         Ok(true) => {
@@ -338,27 +354,6 @@ pub async fn put_sad_object(
             warn!("Failed to check SAD object existence: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
         }
-    }
-
-    // Parse and verify SAID
-    let value: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response();
-        }
-    };
-
-    if value.verify_said().is_err() {
-        return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
-    }
-
-    // Confirm URL SAID matches content SAID
-    if value.get_said() != said {
-        return (
-            StatusCode::BAD_REQUEST,
-            "URL SAID does not match content SAID",
-        )
-            .into_response();
     }
 
     // Store in MinIO + track in DB index atomically

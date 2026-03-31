@@ -349,7 +349,7 @@ impl SyncHandler {
         }
 
         // Mark as recently stored BEFORE storing to prevent Redis feedback loop.
-        // The PUT will publish to Redis `sad_updates`, which the subscriber checks
+        // The POST will publish to Redis `sad_updates`, which the subscriber checks
         // against this cache key.
         {
             let cache_key = format!("sad-object:{}", said);
@@ -362,7 +362,7 @@ impl SyncHandler {
         // Fetch from remote and store locally
         match remote_client.get_sad_object(said).await {
             Ok(object) => {
-                if let Err(e) = local_client.put_sad_object(&object).await {
+                if let Err(e) = local_client.post_sad_object(&object).await {
                     warn!("Failed to store SAD object {} locally: {}", said, e);
                 }
             }
@@ -1581,7 +1581,7 @@ pub async fn run_sad_anti_entropy_loop(
         let mut obj_pulled = 0u64;
         for said in remote_obj_set.difference(&local_obj_set) {
             if let Ok(object) = remote_client.get_sad_object(said).await
-                && local_client.put_sad_object(&object).await.is_ok()
+                && local_client.post_sad_object(&object).await.is_ok()
             {
                 obj_pulled += 1;
             }
@@ -1591,7 +1591,7 @@ pub async fn run_sad_anti_entropy_loop(
         let mut obj_pushed = 0u64;
         for said in local_obj_set.difference(&remote_obj_set) {
             if let Ok(object) = local_client.get_sad_object(said).await
-                && remote_client.put_sad_object(&object).await.is_ok()
+                && remote_client.post_sad_object(&object).await.is_ok()
             {
                 obj_pushed += 1;
             }

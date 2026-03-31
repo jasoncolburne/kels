@@ -204,7 +204,7 @@ impl BootstrapSync {
                     // Fetch from remote and store locally
                     match remote_client.get_sad_object(said).await {
                         Ok(object) => {
-                            if let Err(e) = local_client.put_sad_object(&object).await {
+                            if let Err(e) = local_client.post_sad_object(&object).await {
                                 debug!("Failed to store SAD object {}: {}", said, e);
                             } else {
                                 total_synced += 1;

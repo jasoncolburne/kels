@@ -97,7 +97,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/api/v1/sad/:said` | Store a self-addressed object |
+| `POST` | `/api/v1/sad` | Store a self-addressed object (SAID derived from body) |
 | `GET` | `/api/v1/sad/:said` | Retrieve by SAID |
 
 ### Chain Records (Layer 2)
@@ -120,7 +120,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 ### Client Workflow
 
 1. Create content object, derive its SAID
-2. `PUT /api/v1/sad/{said}` — store content in SAD store
+2. `POST /api/v1/sad` — store content in SAD store
 3. Create chain record with `content_said` pointing to that SAID
 4. Sign the record's SAID with current KEL key
 5. `POST /api/v1/sad/records` — submit the signed chain record
