@@ -646,28 +646,26 @@ pub async fn submit_sad_records(
         new_record_count = pairs.len() as u32;
         gossip_said = pairs.last().map(|(r, _)| r.said.clone());
     } else {
-        // Normal mode: store records individually with chain integrity checks
-        let mut count = 0u32;
-        let mut last_stored_said: Option<&str> = None;
-        for (record, sig_record) in &pairs {
-            match state
-                .repo
-                .sad_records
-                .save_with_verified_signature(record, sig_record)
-                .await
-            {
-                Ok(true) => {
-                    count += 1;
-                    last_stored_said = Some(&record.said);
-                }
-                Ok(false) => {} // deduplicated
-                Err(e) => {
-                    warn!("Failed to store record {}: {}", record.said, e);
+        // Normal mode: store batch with full chain verification and advisory lock
+        match state
+            .repo
+            .sad_records
+            .save_batch_with_verified_signatures(&pairs)
+            .await
+        {
+            Ok(count) => {
+                new_record_count = count;
+                if count > 0 {
+                    gossip_said = pairs.last().map(|(r, _)| r.said.clone());
+                } else {
+                    gossip_said = None;
                 }
             }
+            Err(e) => {
+                warn!("Failed to store records: {}", e);
+                return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+            }
         }
-        new_record_count = count;
-        gossip_said = last_stored_said.map(|s| s.to_string());
     }
 
     // Accrue only actual new records to prefix rate limit

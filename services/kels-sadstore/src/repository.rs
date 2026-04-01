@@ -2,8 +2,8 @@
 
 use kels::{SadChainRepair, SadChainRepairRecord, SadRecord, SadRecordSignature};
 use verifiable_storage::{
-    ChainedRepository, ColumnQuery, QueryExecutor as _, StorageError, TransactionExecutor,
-    UnchainedRepository, Value,
+    Chained, ChainedRepository, ColumnQuery, QueryExecutor, SelfAddressed, StorageError,
+    TransactionExecutor, UnchainedRepository, Value,
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
@@ -17,117 +17,211 @@ impl SadRecordRepository {
     /// The signatures table name.
     pub const SIGNATURES_TABLE_NAME: &'static str = "sad_record_signatures";
 
-    /// Store a record with its signature, with advisory lock and chain integrity checks.
+    /// Store a batch of records with their signatures, with advisory lock and full
+    /// chain verification.
     ///
-    /// **Precondition:** the caller must have already verified the record's signature
+    /// **Precondition:** the caller must have already verified each record's signature
     /// against the KEL. This method does not verify signatures — it trusts the caller.
     ///
-    /// Acquires an advisory lock on the chain prefix, validates the chain, and detects
-    /// divergence. If a record already exists at the same version with a different SAID,
-    /// both records are stored and the chain is considered divergent. Divergent chains
-    /// are frozen — no further appends are accepted until repaired via `truncate_and_replace`.
+    /// Acquires an advisory lock on the chain prefix, walks the entire existing chain
+    /// to verify integrity (DB cannot be trusted), then appends the batch. If a record
+    /// already exists at the same version with a different SAID, both are stored and
+    /// the chain is considered divergent. Divergent chains are frozen until repaired.
     ///
-    /// v0 divergence is rejected as an error (inception records are fully deterministic).
-    pub async fn save_with_verified_signature(
+    /// Returns the number of new records actually inserted (excludes deduplicates).
+    pub async fn save_batch_with_verified_signatures(
         &self,
-        record: &SadRecord,
-        signature: &SadRecordSignature,
-    ) -> Result<bool, StorageError> {
+        records: &[(SadRecord, SadRecordSignature)],
+    ) -> Result<u32, StorageError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let prefix = &records[0].0.prefix;
         let mut tx = self.pool.begin_transaction().await?;
+        tx.acquire_advisory_lock(prefix).await?;
 
-        tx.acquire_advisory_lock(&record.prefix).await?;
+        // Walk the full chain to verify integrity — DB cannot be trusted.
+        let page_size = kels::page_size() as u64;
+        let mut expected_version: u64 = 0;
+        let mut last_said: Option<String> = None;
+        let mut chain_kel_prefix: Option<String> = None;
+        let mut chain_kind: Option<String> = None;
+        let mut is_divergent = false;
+        let mut tip_said: Option<String> = None;
 
-        // Check if chain is already divergent — reject appends if so
-        if self.is_divergent_in(&mut tx, &record.prefix).await? {
+        let mut offset: u64 = 0;
+        loop {
+            let query =
+                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", prefix)
+                    .order_by("version", verifiable_storage_postgres::Order::Asc)
+                    .limit(page_size)
+                    .offset(offset);
+            let page: Vec<SadRecord> = tx.fetch(query).await?;
+
+            if page.is_empty() {
+                break;
+            }
+
+            for existing in &page {
+                // Divergence: duplicate version (same version as previous record)
+                if existing.version + 1 == expected_version {
+                    is_divergent = true;
+                    continue;
+                }
+
+                if existing.version == 0 {
+                    // v0: verify prefix derivation
+                    if existing.verify_prefix().is_err() {
+                        return Err(StorageError::StorageError(
+                            "Existing v0 record has invalid prefix derivation — DB tampered"
+                                .to_string(),
+                        ));
+                    }
+                    chain_kel_prefix = Some(existing.kel_prefix.clone());
+                    chain_kind = Some(existing.kind.clone());
+                } else {
+                    // Verify chain linkage
+                    if existing.previous.as_deref() != last_said.as_deref() {
+                        return Err(StorageError::StorageError(
+                            "Existing chain has broken linkage — DB tampered".to_string(),
+                        ));
+                    }
+                    if existing.version != expected_version {
+                        return Err(StorageError::StorageError(
+                            "Existing chain has non-sequential versions — DB tampered".to_string(),
+                        ));
+                    }
+                    if chain_kel_prefix.as_deref() != Some(&existing.kel_prefix) {
+                        return Err(StorageError::StorageError(
+                            "Existing chain has inconsistent kel_prefix — DB tampered".to_string(),
+                        ));
+                    }
+                    if chain_kind.as_deref() != Some(&existing.kind) {
+                        return Err(StorageError::StorageError(
+                            "Existing chain has inconsistent kind — DB tampered".to_string(),
+                        ));
+                    }
+                }
+
+                // Verify SAID integrity
+                if existing.verify_said().is_err() {
+                    return Err(StorageError::StorageError(
+                        "Existing record has invalid SAID — DB tampered".to_string(),
+                    ));
+                }
+
+                last_said = Some(existing.said.clone());
+                tip_said = Some(existing.said.clone());
+                expected_version = existing.version + 1;
+            }
+
+            let page_len = page.len() as u64;
+            offset += page_len;
+            if page_len < page_size {
+                break;
+            }
+        }
+
+        // Reject appends to divergent chains
+        if is_divergent {
             tx.commit().await?;
             return Err(StorageError::StorageError(
                 "Chain is divergent — repair required".to_string(),
             ));
         }
 
-        // Check for existing record at this version
-        let existing_at_version: Option<SadRecord> = {
-            let query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", &record.prefix)
-                    .eq("version", record.version)
-                    .limit(1);
-            tx.fetch(query).await?.into_iter().next()
-        };
+        // Append new records
+        let mut count = 0u32;
+        for (record, signature) in records {
+            // Check for existing record at this version (dedup or divergence)
+            let existing_at_version: Option<SadRecord> = {
+                let query =
+                    verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                        .eq("prefix", prefix)
+                        .eq("version", record.version)
+                        .limit(1);
+                tx.fetch(query).await?.into_iter().next()
+            };
 
-        if let Some(existing) = existing_at_version {
-            if existing.said == record.said {
-                // Identical record already stored — deduplicated
+            if let Some(existing) = existing_at_version {
+                if existing.said == record.said {
+                    // Deduplicated — skip
+                    continue;
+                }
+
+                // v0 divergence is impossible (deterministic)
+                if record.version == 0 {
+                    return Err(StorageError::StorageError(
+                        "v0 inception record conflict — content must be deterministic".to_string(),
+                    ));
+                }
+
+                // Divergence: store both, chain is now frozen
+                self.insert_in(&mut tx, record.clone()).await?;
+                tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
+                    .await?;
+                count += 1;
                 tx.commit().await?;
-                return Ok(false);
+                return Ok(count);
             }
 
-            // v0 divergence is impossible (deterministic content) — reject
+            // Validate chaining against the current tip
             if record.version == 0 {
-                return Err(StorageError::StorageError(
-                    "v0 inception record conflict — content must be deterministic".to_string(),
-                ));
+                if tip_said.is_some() {
+                    return Err(StorageError::StorageError(
+                        "Chain already exists".to_string(),
+                    ));
+                }
+                if record.verify_prefix().is_err() {
+                    return Err(StorageError::StorageError(
+                        "v0 prefix derivation verification failed".to_string(),
+                    ));
+                }
+            } else {
+                if record.previous.as_deref() != tip_said.as_deref() {
+                    return Err(StorageError::StorageError(
+                        "Previous SAID does not match chain tip".to_string(),
+                    ));
+                }
+                if let Some(ref kp) = chain_kel_prefix
+                    && record.kel_prefix != *kp
+                {
+                    return Err(StorageError::StorageError(
+                        "kel_prefix mismatch".to_string(),
+                    ));
+                }
+                if let Some(ref k) = chain_kind
+                    && record.kind != *k
+                {
+                    return Err(StorageError::StorageError("kind mismatch".to_string()));
+                }
+                if record.version != expected_version {
+                    return Err(StorageError::StorageError(
+                        "Version is not sequential".to_string(),
+                    ));
+                }
             }
 
-            // Divergence detected: store both records. Chain is now frozen.
             self.insert_in(&mut tx, record.clone()).await?;
             tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
                 .await?;
-            tx.commit().await?;
-            return Ok(true);
-        }
+            count += 1;
 
-        // No existing record at this version — validate chain integrity
-        let tip: Option<SadRecord> = {
-            let query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", &record.prefix)
-                    .order_by("version", verifiable_storage_postgres::Order::Desc)
-                    .limit(1);
-            tx.fetch(query).await?.into_iter().next()
-        };
-
-        if record.version == 0 {
-            if tip.is_some() {
-                return Err(StorageError::StorageError(
-                    "Chain already exists".to_string(),
-                ));
+            // Update tracking for next record in batch
+            tip_said = Some(record.said.clone());
+            expected_version = record.version + 1;
+            if chain_kel_prefix.is_none() {
+                chain_kel_prefix = Some(record.kel_prefix.clone());
             }
-        } else {
-            let Some(tip) = tip else {
-                return Err(StorageError::StorageError("Chain not found".to_string()));
-            };
-
-            if record.previous.as_deref() != Some(&tip.said) {
-                return Err(StorageError::StorageError(
-                    "Previous SAID does not match chain tip".to_string(),
-                ));
-            }
-
-            if record.kel_prefix != tip.kel_prefix {
-                return Err(StorageError::StorageError(
-                    "kel_prefix mismatch".to_string(),
-                ));
-            }
-
-            if record.kind != tip.kind {
-                return Err(StorageError::StorageError("kind mismatch".to_string()));
-            }
-
-            if record.version != tip.version + 1 {
-                return Err(StorageError::StorageError(
-                    "Version is not sequential".to_string(),
-                ));
+            if chain_kind.is_none() {
+                chain_kind = Some(record.kind.clone());
             }
         }
-
-        self.insert_in(&mut tx, record.clone()).await?;
-        tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
-            .await?;
 
         tx.commit().await?;
-
-        Ok(true)
+        Ok(count)
     }
 
     const ARCHIVED_RECORDS_TABLE: &'static str = "sad_record_archives";
@@ -295,23 +389,6 @@ impl SadRecordRepository {
             .group_by("version")
             .limit(1);
         let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
-        Ok(counts.first().is_some_and(|&c| c > 1))
-    }
-
-    /// Check divergence within a transaction.
-    async fn is_divergent_in<Tx: TransactionExecutor>(
-        &self,
-        tx: &mut Tx,
-        prefix: &str,
-    ) -> Result<bool, StorageError> {
-        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
-            .filter(Filter::Eq(
-                "prefix".to_string(),
-                Value::String(prefix.to_string()),
-            ))
-            .group_by("version")
-            .limit(1);
-        let counts: Vec<i64> = tx.fetch_grouped_count(query).await?;
         Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
