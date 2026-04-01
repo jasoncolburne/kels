@@ -57,10 +57,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     if *TEST_ENDPOINTS_ENABLED {
         tracing::warn!("KELS_TEST_ENDPOINTS enabled — unauthenticated test endpoints active");
         router = router
-            .route(
-                "/api/test/sad/saids",
-                post(handlers::test_list_sad_objects),
-            )
+            .route("/api/test/sad/saids", post(handlers::test_list_sad_objects))
             .route(
                 "/api/test/sad/prefixes",
                 post(handlers::test_list_sad_prefixes),
