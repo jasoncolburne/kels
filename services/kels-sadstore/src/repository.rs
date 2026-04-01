@@ -35,7 +35,7 @@ impl SadRecordRepository {
     pub async fn save_batch_with_verified_signatures(
         &self,
         records: &[(SadRecord, SadRecordSignature)],
-        establishment_keys: &std::collections::HashMap<u64, String>,
+        establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<u32, StorageError> {
         if records.is_empty() {
             return Ok(0);
@@ -133,7 +133,7 @@ impl SadRecordRepository {
                         existing.said
                     ))
                 })?;
-                let public_key_qb64 = establishment_keys
+                let public_key = establishment_keys
                     .get(&sig_record.establishment_serial)
                     .ok_or_else(|| {
                         StorageError::StorageError(format!(
@@ -141,9 +141,6 @@ impl SadRecordRepository {
                             sig_record.establishment_serial
                         ))
                     })?;
-                let public_key = VerificationKey::from_qb64(public_key_qb64).map_err(|e| {
-                    StorageError::StorageError(format!("Invalid public key: {}", e))
-                })?;
                 let sig = Signature::from_qb64(&sig_record.signature).map_err(|e| {
                     StorageError::StorageError(format!("Invalid signature format: {}", e))
                 })?;

@@ -351,10 +351,10 @@ async fn transfer_sad_records(
 /// Verify signatures for a page of SAD records against pre-collected establishment keys.
 fn verify_page_signatures(
     records: &[SignedSadRecord],
-    establishment_keys: &HashMap<u64, String>,
+    establishment_keys: &HashMap<u64, VerificationKey>,
 ) -> Result<(), KelsError> {
     for stored in records {
-        let public_key_qb64 = establishment_keys
+        let public_key = establishment_keys
             .get(&stored.establishment_serial)
             .ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
@@ -362,9 +362,6 @@ fn verify_page_signatures(
                     stored.establishment_serial, stored.record.said
                 ))
             })?;
-
-        let public_key = VerificationKey::from_qb64(public_key_qb64)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
 
         let sig = Signature::from_qb64(&stored.signature)
             .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;

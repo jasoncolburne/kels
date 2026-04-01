@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use cesr::{Matter, Signature, VerificationKey};
+use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -554,9 +554,9 @@ pub async fn submit_sad_records(
         return (StatusCode::CONFLICT, "KEL is divergent").into_response();
     }
 
-    // Verify each record's signature against its establishment key
+    // Verify each incoming record's signature against its establishment key
     for r in &records {
-        let Some(public_key_qb64) = establishment_keys.get(&r.establishment_serial) else {
+        let Some(public_key) = establishment_keys.get(&r.establishment_serial) else {
             return (
                 StatusCode::BAD_REQUEST,
                 format!(
@@ -565,20 +565,6 @@ pub async fn submit_sad_records(
                 ),
             )
                 .into_response();
-        };
-
-        let public_key = match VerificationKey::from_qb64(public_key_qb64) {
-            Ok(k) => k,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
-                        "Invalid public key at serial {}: {}",
-                        r.establishment_serial, e
-                    ),
-                )
-                    .into_response();
-            }
         };
 
         let sig = match Signature::from_qb64(&r.signature) {

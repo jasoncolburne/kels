@@ -112,7 +112,7 @@ pub struct KelVerifier {
     /// Bounded by caller — at most `page_size()` entries.
     requested_establishment_serials: BTreeSet<u64>,
     /// Collected establishment keys (serial → public_key qb64).
-    collected_establishment_keys: HashMap<u64, String>,
+    collected_establishment_keys: HashMap<u64, VerificationKey>,
 }
 
 impl KelVerifier {
@@ -294,7 +294,7 @@ impl KelVerifier {
     /// `with_establishment_key_collection` was called before verification.
     pub fn into_verification_with_keys(
         self,
-    ) -> Result<(KelVerification, HashMap<u64, String>), KelsError> {
+    ) -> Result<(KelVerification, HashMap<u64, VerificationKey>), KelsError> {
         let keys = self.collected_establishment_keys.clone();
         let verification = self.into_verification()?;
         Ok((verification, keys))
@@ -371,7 +371,10 @@ impl KelVerifier {
             if self.requested_establishment_serials.contains(&0)
                 && let Some(ref pk) = event.event.public_key
             {
-                self.collected_establishment_keys.insert(0, pk.clone());
+                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
+                    KelsError::InvalidSignature(format!("Invalid public key at serial 0: {}", e))
+                })?;
+                self.collected_establishment_keys.insert(0, vk);
             }
             return Ok(());
         }
@@ -447,7 +450,13 @@ impl KelVerifier {
                 && self.requested_establishment_serials.contains(&serial)
                 && let Some(ref pk) = event.event.public_key
             {
-                self.collected_establishment_keys.insert(serial, pk.clone());
+                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
+                    KelsError::InvalidSignature(format!(
+                        "Invalid public key at serial {}: {}",
+                        serial, e
+                    ))
+                })?;
+                self.collected_establishment_keys.insert(serial, vk);
             }
 
             // Track anchor checking — exclude events in the divergent region.
@@ -1406,7 +1415,7 @@ pub async fn verify_key_events_collecting_establishment_keys(
     verifier: KelVerifier,
     page_size: usize,
     max_pages: usize,
-) -> Result<(KelVerification, HashMap<u64, String>), KelsError> {
+) -> Result<(KelVerification, HashMap<u64, VerificationKey>), KelsError> {
     let sink = NoOpSink;
     let mut verifier = verifier;
     transfer_key_events(
