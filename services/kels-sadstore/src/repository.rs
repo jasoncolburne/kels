@@ -51,105 +51,22 @@ impl SadRecordRepository {
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix).await?;
 
-        let chain_state = Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
-
-        // Reject appends to divergent chains
-        if chain_state.is_divergent {
-            tx.commit().await?;
-            return Err(StorageError::StorageError(
-                "Chain is divergent — repair required".to_string(),
-            ));
-        }
-
-        // Append new records
-        let mut tip_said = chain_state.tip_said;
-        let mut expected_version = chain_state.next_version;
-        let mut chain_kel_prefix = chain_state.kel_prefix;
-        let mut chain_kind = chain_state.kind;
+        // Insert records, skipping duplicates via unique constraint
         let mut count = 0u32;
-
         for (record, signature) in records {
-            // Check for existing record at this version (dedup or divergence)
-            let existing_at_version: Option<SadRecord> = {
-                let query =
-                    verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                        .eq("prefix", prefix)
-                        .eq("version", record.version)
-                        .limit(1);
-                tx.fetch(query).await?.into_iter().next()
-            };
-
-            if let Some(existing) = existing_at_version {
-                if existing.said == record.said {
-                    continue; // deduplicated
-                }
-
-                if record.version == 0 {
-                    return Err(StorageError::StorageError(
-                        "v0 inception record conflict — content must be deterministic".to_string(),
-                    ));
-                }
-
-                // Divergence: store both, chain is now frozen
-                self.insert_in(&mut tx, record.clone()).await?;
-                tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
-                    .await?;
-                count += 1;
-                tx.commit().await?;
-                return Ok(count);
+            match self.insert_in(&mut tx, record.clone()).await {
+                Ok(_) => {}
+                Err(StorageError::DuplicateRecord(_)) => continue,
+                Err(e) => return Err(e),
             }
-
-            // Validate chaining against the current tip
-            if record.version == 0 {
-                if tip_said.is_some() {
-                    return Err(StorageError::StorageError(
-                        "Chain already exists".to_string(),
-                    ));
-                }
-                if record.verify_prefix().is_err() {
-                    return Err(StorageError::StorageError(
-                        "v0 prefix derivation verification failed".to_string(),
-                    ));
-                }
-            } else {
-                if record.previous.as_deref() != tip_said.as_deref() {
-                    return Err(StorageError::StorageError(
-                        "Previous SAID does not match chain tip".to_string(),
-                    ));
-                }
-                if let Some(ref kp) = chain_kel_prefix
-                    && record.kel_prefix != *kp
-                {
-                    return Err(StorageError::StorageError(
-                        "kel_prefix mismatch".to_string(),
-                    ));
-                }
-                if let Some(ref k) = chain_kind
-                    && record.kind != *k
-                {
-                    return Err(StorageError::StorageError("kind mismatch".to_string()));
-                }
-                if record.version != expected_version {
-                    return Err(StorageError::StorageError(
-                        "Version is not sequential".to_string(),
-                    ));
-                }
-            }
-
-            self.insert_in(&mut tx, record.clone()).await?;
             tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
                 .await?;
             count += 1;
-
-            tip_said = Some(record.said.clone());
-            expected_version = record.version + 1;
-            if chain_kel_prefix.is_none() {
-                chain_kel_prefix = Some(record.kel_prefix.clone());
-            }
-            if chain_kind.is_none() {
-                chain_kind = Some(record.kind.clone());
-            }
         }
+
+        // Verify the full chain (including new records) — catches structural
+        // issues, signature failures, and DB tampering. Rolls back on failure.
+        Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
 
         tx.commit().await?;
         Ok(count)
@@ -369,62 +286,16 @@ impl SadRecordRepository {
             .gte("version", from_version);
         tx.delete(delete_records).await?;
 
-        // Validate chain integrity from the predecessor
-        if from_version > 0 {
-            let predecessor: Option<SadRecord> = {
-                let query =
-                    verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                        .eq("prefix", prefix)
-                        .eq("version", from_version - 1)
-                        .limit(1);
-                tx.fetch(query).await?.into_iter().next()
-            };
-
-            let Some(pred) = predecessor else {
-                return Err(StorageError::StorageError(
-                    "Predecessor record not found".to_string(),
-                ));
-            };
-
-            let first = &records[0].0;
-            if first.previous.as_deref() != Some(&pred.said) {
-                return Err(StorageError::StorageError(
-                    "First replacement record doesn't chain from predecessor".to_string(),
-                ));
-            }
-        }
-
-        // Verify internal chain linkage of replacement batch
-        for window in records.windows(2) {
-            let (prev, next) = (&window[0].0, &window[1].0);
-            if next.previous.as_deref() != Some(&prev.said) {
-                return Err(StorageError::StorageError(
-                    "Replacement batch has broken chain linkage".to_string(),
-                ));
-            }
-            if next.version != prev.version + 1 {
-                return Err(StorageError::StorageError(
-                    "Replacement batch has non-sequential versions".to_string(),
-                ));
-            }
-            if next.kel_prefix != prev.kel_prefix {
-                return Err(StorageError::StorageError(
-                    "Replacement batch has inconsistent kel_prefix".to_string(),
-                ));
-            }
-            if next.kind != prev.kind {
-                return Err(StorageError::StorageError(
-                    "Replacement batch has inconsistent kind".to_string(),
-                ));
-            }
-        }
-
         // Insert replacements
         for (record, signature) in records {
             self.insert_in(&mut tx, record.clone()).await?;
             tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
                 .await?;
         }
+
+        // Verify the full chain (pre-existing + replacements) — catches structural
+        // issues, signature failures, and DB tampering. Rolls back on failure.
+        Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
 
         tx.commit().await?;
         Ok(())
