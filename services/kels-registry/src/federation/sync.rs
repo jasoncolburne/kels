@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
-use kels::{IdentityClient, KelServer};
+use kels_core::{IdentityClient, KelServer};
 
 use super::{FederationConfig, FederationNode};
 use crate::raft_store::MemberKelRepository;
@@ -24,25 +24,28 @@ pub async fn sync_all_member_kels(
     member_kel_repo: &MemberKelRepository,
 ) {
     let urls: Vec<String> = config.members.iter().map(|m| m.url.clone()).collect();
-    let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+    let sink = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
     )));
 
     for prefix in &config.trusted_prefixes {
         for url in &urls {
-            let source = match kels::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}") {
+            let source = match kels_core::HttpKelSource::new(
+                url,
+                "/api/v1/member-kels/kel/{prefix}",
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(url = %url, error = %e, "Failed to build HTTP source for member KEL sync");
                     continue;
                 }
             };
-            if kels::forward_key_events(
+            if kels_core::forward_key_events(
                 prefix,
                 &source,
                 &sink,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 None,
             )
             .await
@@ -128,17 +131,17 @@ async fn sync_own_kel(
         .ok()
         .flatten();
 
-    let source = kels::HttpKelSource::new(identity_client.base_url(), "/api/v1/identity/kel")?;
-    let sink = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+    let source = kels_core::HttpKelSource::new(identity_client.base_url(), "/api/v1/identity/kel")?;
+    let sink = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
     )));
 
-    kels::forward_key_events(
+    kels_core::forward_key_events(
         &own_prefix,
         &source,
         &sink,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         since.as_deref(),
     )
     .await?;
@@ -167,23 +170,24 @@ async fn push_to_stale_members(
         None => return Ok(()), // Nothing to push
     };
 
-    let repo_store = kels::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
+    let repo_store = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
     )));
-    let repo_source = kels::StoreKelSource::new(&repo_store);
+    let repo_source = kels_core::StoreKelSource::new(&repo_store);
 
     for member in &config.members {
         if member.prefix == config.self_prefix {
             continue;
         }
 
-        let client = match kels::KelsClient::with_path_prefix(&member.url, "/api/v1/member-kels") {
-            Ok(c) => c,
-            Err(e) => {
-                debug!(member = %member.prefix, error = %e, "Failed to build HTTP client");
-                continue;
-            }
-        };
+        let client =
+            match kels_core::KelsClient::with_path_prefix(&member.url, "/api/v1/member-kels") {
+                Ok(c) => c,
+                Err(e) => {
+                    debug!(member = %member.prefix, error = %e, "Failed to build HTTP client");
+                    continue;
+                }
+            };
 
         // Check member's view of our effective SAID
         let member_said = match client.fetch_effective_said(&own_prefix).await {
@@ -198,36 +202,37 @@ async fn push_to_stale_members(
             continue; // Member is up to date
         }
 
-        let member_sink = match kels::HttpKelSink::new(&member.url, "/api/v1/member-kels/events") {
-            Ok(s) => s,
-            Err(e) => {
-                debug!(member = %member.prefix, error = %e, "Failed to build HTTP sink");
-                continue;
-            }
-        };
+        let member_sink =
+            match kels_core::HttpKelSink::new(&member.url, "/api/v1/member-kels/events") {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(member = %member.prefix, error = %e, "Failed to build HTTP sink");
+                    continue;
+                }
+            };
 
         // Delta fetch with fallback: try since=member_said, fall back to full
         let since = member_said.as_deref();
         let result = if since.is_some() {
-            match kels::forward_key_events(
+            match kels_core::forward_key_events(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 since,
             )
             .await
             {
                 Ok(()) => Ok(()),
-                Err(kels::KelsError::NotFound(_)) => {
+                Err(kels_core::KelsError::NotFound(_)) => {
                     // Member SAID not found locally (e.g., composite divergent SAID)
-                    kels::forward_key_events(
+                    kels_core::forward_key_events(
                         &own_prefix,
                         &repo_source,
                         &member_sink,
-                        kels::page_size(),
-                        kels::max_pages(),
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
                         None,
                     )
                     .await
@@ -235,12 +240,12 @@ async fn push_to_stale_members(
                 Err(e) => Err(e),
             }
         } else {
-            kels::forward_key_events(
+            kels_core::forward_key_events(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 None,
             )
             .await

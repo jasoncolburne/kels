@@ -22,7 +22,7 @@ pub mod sync;
 mod types;
 
 pub use config::{FederationConfig, FederationMember};
-use kels::{
+use kels_core::{
     AdditionHistory, AdditionWithVotes, PeerAdditionProposal, PeerRemovalProposal, RemovalHistory,
     RemovalWithVotes, Vote,
 };
@@ -41,7 +41,7 @@ use std::{
 };
 use tracing::info;
 
-use kels::Peer;
+use kels_core::Peer;
 use openraft::Raft;
 
 use crate::repository::RegistryRepository;
@@ -70,7 +70,7 @@ impl FederationNode {
     /// * `repository` - Registry repository with Raft storage components
     pub async fn new(
         config: FederationConfig,
-        identity_client: Arc<kels::IdentityClient>,
+        identity_client: Arc<kels_core::IdentityClient>,
         repository: &RegistryRepository,
     ) -> Result<Self, FederationError> {
         let node_id = config.self_node_id()?;
@@ -609,4 +609,4 @@ impl FederationNode {
     }
 }
 
-pub use kels::FederationStatus;
+pub use kels_core::FederationStatus;

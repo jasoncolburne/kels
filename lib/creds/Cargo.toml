@@ -1,24 +1,27 @@
 [package]
-name = "kels-policy"
+name = "kels-creds"
 version = "0.1.0"
 edition = "2024"
 authors = ["Jason Colburne"]
 license = "MIT"
-description = "KELS policy framework - composable trust policies for credential endorsement"
+description = "KELS credential framework - issuance, compaction, disclosure, and verification"
 
 [lib]
-name = "kels_policy"
+name = "kels_creds"
 path = "src/lib.rs"
 
 [dependencies]
 # Core KELS library for KEL verification
-kels = { path = "../kels", package = "libkels" }
+kels_core = { package = "kels-core", path = "../kels" }
 
-# Verifiable storage traits and derive macros
-verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+# Policy framework for credential endorsement
+kels-policy = { path = "../policy" }
 
 # Local CESR library for cryptographic operations
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# Verifiable storage traits and derive macros
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +29,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 
 # Error handling
 thiserror = "1"
+
+# Async runtime (sync primitives for async-safe locks)
+tokio = { version = "1", features = ["sync"] }
 
 # Async traits
 async-trait = "0.1"

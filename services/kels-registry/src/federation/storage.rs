@@ -8,7 +8,7 @@ use std::{fmt::Debug, io, ops::RangeBounds, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use kels::{RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
+use kels_core::{RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
 use openraft::{
     Entry, LogId, LogState, OptionalSend, Vote,
     storage::IOFlushed,
@@ -769,7 +769,7 @@ mod impl_log_store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kels::{Peer, RaftLogEntry};
+    use kels_core::{Peer, RaftLogEntry};
     use openraft::EntryPayload;
 
     #[test]

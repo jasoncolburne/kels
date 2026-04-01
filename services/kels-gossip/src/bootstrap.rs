@@ -29,7 +29,7 @@ use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use futures::future::join_all;
-use kels::{KelsClient, KelsError, KelsRegistryClient, PeerSigner, PrefixState};
+use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner, PrefixState};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -69,7 +69,7 @@ impl Default for BootstrapConfig {
 
 /// Result of peer discovery phase.
 pub struct DiscoveryResult {
-    pub peers: Vec<kels::Peer>,
+    pub peers: Vec<kels_core::Peer>,
 }
 
 /// Handles bootstrap synchronization from existing peers.
@@ -118,7 +118,7 @@ impl BootstrapSync {
         info!("Discovering peers for node {}", self.config.node_id);
 
         let allowlist = self.allowlist.read().await;
-        let peers: Vec<kels::Peer> = allowlist.values().cloned().collect();
+        let peers: Vec<kels_core::Peer> = allowlist.values().cloned().collect();
         info!("Found {} peer(s) in allowlist", peers.len());
 
         Ok(DiscoveryResult { peers })
@@ -166,12 +166,12 @@ impl BootstrapSync {
             ready_peers.len()
         );
 
-        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
+        let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
         let mut total_synced = 0u64;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
-            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
+            let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;
             loop {
@@ -247,11 +247,11 @@ impl BootstrapSync {
             ready_peers.len()
         );
 
-        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
+        let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
-            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
+            let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;
             loop {
@@ -283,12 +283,12 @@ impl BootstrapSync {
                     }
 
                     // Forward the full chain (paginated) from remote to local
-                    if let Err(e) = kels::forward_sad_records(
+                    if let Err(e) = kels_core::forward_sad_records(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,
-                        kels::page_size(),
-                        kels::max_pages(),
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
                         local_said.as_deref(),
                     )
                     .await
@@ -312,7 +312,7 @@ impl BootstrapSync {
     }
 
     /// Get peers from allowlist that are ready (respond to /ready with success).
-    async fn get_ready_peers(&self) -> Vec<kels::Peer> {
+    async fn get_ready_peers(&self) -> Vec<kels_core::Peer> {
         let allowlist = self.allowlist.read().await;
         let mut ready_peers = Vec::new();
         for peer in allowlist.values() {
@@ -364,7 +364,7 @@ impl BootstrapSync {
     ///
     /// Constructs the URL from the peer's gossip address hostname and the
     /// configured HTTP port (all gossip services share the same HTTP port).
-    async fn is_peer_ready(&self, peer: &kels::Peer) -> bool {
+    async fn is_peer_ready(&self, peer: &kels_core::Peer) -> bool {
         let host = peer
             .gossip_addr
             .rsplit_once(':')
@@ -380,7 +380,7 @@ impl BootstrapSync {
     }
 
     /// Get the URL to use for node-to-node sync.
-    fn get_sync_url(peer: &kels::Peer) -> String {
+    fn get_sync_url(peer: &kels_core::Peer) -> String {
         format!("http://kels.{}", peer.base_domain)
     }
 
@@ -389,7 +389,7 @@ impl BootstrapSync {
     /// This collects all unique prefixes from all peers, assigns each prefix to
     /// its source peer (the peer that reported it), then batch-fetches KELs
     /// (50 at a time) from each peer.
-    async fn sync_from_peers(&self, peers: &[kels::Peer]) -> Result<(), BootstrapError> {
+    async fn sync_from_peers(&self, peers: &[kels_core::Peer]) -> Result<(), BootstrapError> {
         if peers.is_empty() {
             return Ok(());
         }
@@ -566,7 +566,7 @@ mod tests {
     fn test_bootstrap_error_display() {
         let kels_error = BootstrapError::Kels(KelsError::ServerError(
             "test".to_string(),
-            kels::ErrorCode::InternalError,
+            kels_core::ErrorCode::InternalError,
         ));
         assert!(kels_error.to_string().contains("KELS/Registry error"));
 
@@ -579,8 +579,10 @@ mod tests {
 
     #[test]
     fn test_bootstrap_error_from_kels_error() {
-        let kels_error =
-            KelsError::ServerError("server error".to_string(), kels::ErrorCode::InternalError);
+        let kels_error = KelsError::ServerError(
+            "server error".to_string(),
+            kels_core::ErrorCode::InternalError,
+        );
         let bootstrap_error: BootstrapError = kels_error.into();
         assert!(matches!(bootstrap_error, BootstrapError::Kels(_)));
     }
@@ -593,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_get_sync_url() {
-        let peer = kels::Peer {
+        let peer = kels_core::Peer {
             said: "test-said".to_string(),
             prefix: "test-prefix".to_string(),
             previous: None,

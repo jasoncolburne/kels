@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cesr::{Digest, Matter};
-use kels::{KelVerifier, PagedKelSource, verify_key_events};
+use kels_core::{KelVerifier, PagedKelSource, verify_key_events};
 
 use crate::{
     Policy, PolicyNode,
@@ -280,8 +280,8 @@ async fn evaluate_endorser(
         prefix,
         source,
         verifier,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
     )
     .await
     {
@@ -316,8 +316,8 @@ async fn verify_delegation(
         delegate,
         source,
         delegate_verifier,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
     )
     .await
     {
@@ -338,8 +338,8 @@ async fn verify_delegation(
         delegator,
         source,
         delegator_verifier,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
     )
     .await
     {
@@ -352,7 +352,7 @@ async fn verify_delegation(
 mod tests {
     use std::sync::Arc;
 
-    use kels::{
+    use kels_core::{
         FileKelStore, KelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource,
         VerificationKeyCode, forward_key_events,
     };
@@ -388,7 +388,7 @@ mod tests {
     async fn test_single_endorser_satisfied() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Anchor the credential SAID
         builder.interact(&credential_said).await.unwrap();
@@ -410,7 +410,7 @@ mod tests {
     async fn test_single_endorser_not_satisfied() {
         let (_builder, prefix, kel_store, _dir) = setup_kel().await;
         let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
@@ -439,7 +439,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Only A and B anchor
         builder_a.interact(&credential_said).await.unwrap();
@@ -486,7 +486,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Only A anchors
         builder_a.interact(&credential_said).await.unwrap();
@@ -504,7 +504,7 @@ mod tests {
     async fn test_poisoned_endorser() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Anchor the credential SAID then poison it
         builder.interact(&credential_said).await.unwrap();
@@ -528,7 +528,7 @@ mod tests {
     async fn test_proactive_poisoning() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Poison without ever endorsing
         let ph = poison_hash(&credential_said);
@@ -551,7 +551,7 @@ mod tests {
     async fn test_immune_ignores_poison() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let policy = Policy::build(&format!("endorse({prefix})"), None, true).unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Anchor then poison — immune policy should ignore the poison
         builder.interact(&credential_said).await.unwrap();
@@ -584,7 +584,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // A endorses, B poisons
         builder_a.interact(&credential_said).await.unwrap();
@@ -609,7 +609,7 @@ mod tests {
     #[tokio::test]
     async fn test_nested_policy() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
         builder.interact(&credential_said).await.unwrap();
 
         let inner_policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
@@ -668,7 +668,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // Only A endorses (weight 3 >= threshold 3)
         builder_a.interact(&credential_said).await.unwrap();
@@ -694,7 +694,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // A endorses
         builder_a.interact(&credential_said).await.unwrap();
@@ -736,7 +736,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // A endorses
         builder_a.interact(&credential_said).await.unwrap();
@@ -775,7 +775,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let credential_said = kels::generate_nonce();
+        let credential_said = kels_core::generate_nonce();
 
         // A endorses
         builder_a.interact(&credential_said).await.unwrap();
@@ -807,13 +807,13 @@ mod tests {
     /// Helper to copy KEL events from one FileKelStore to another.
     async fn copy_kel_events(from: &FileKelStore, prefix: &str, to: &FileKelStore) {
         let source = StoreKelSource::new(from);
-        let sink = kels::KelStoreSink(to);
+        let sink = kels_core::KelStoreSink(to);
         forward_key_events(
             prefix,
             &source,
             &sink,
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
             None,
         )
         .await

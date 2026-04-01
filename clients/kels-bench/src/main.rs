@@ -14,7 +14,9 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
-use kels::{HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode};
+use kels_core::{
+    HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode,
+};
 use verifiable_storage::compute_said;
 
 fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
@@ -192,9 +194,14 @@ impl Stats {
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
     let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
-    let events =
-        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
-            .await?;
+    let events = kels_core::resolve_key_events(
+        prefix,
+        &source,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        None,
+    )
+    .await?;
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
         .unwrap_or(0);
@@ -289,11 +296,11 @@ async fn run_worker(
         let start = Instant::now();
         let result: Result<u64, _> = match &benchmark_type {
             BenchmarkType::Health => client.health().await.map(|_| 0),
-            BenchmarkType::GetKel { prefix, kel_bytes } => kels::benchmark_key_events(
+            BenchmarkType::GetKel { prefix, kel_bytes } => kels_core::benchmark_key_events(
                 prefix,
                 &source,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 None,
             )
             .await

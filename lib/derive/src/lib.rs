@@ -113,9 +113,9 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Store an item with its signatures in a transaction.
             pub async fn create_with_signatures(
                 &self,
-                item: kels::KeyEvent,
-                signatures: Vec<kels::EventSignature>,
-            ) -> Result<kels::KeyEvent, verifiable_storage::StorageError> {
+                item: kels_core::KeyEvent,
+                signatures: Vec<kels_core::EventSignature>,
+            ) -> Result<kels_core::KeyEvent, verifiable_storage::StorageError> {
                 use verifiable_storage::SelfAddressed;
 
                 let mut tx = self
@@ -130,7 +130,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 // Store the signatures
                 for signature in &signatures {
-                    let sig = kels::EventSignature::create(
+                    let sig = kels_core::EventSignature::create(
                         item.said.clone(),
                         signature.label.clone(),
                         signature.signature.clone(),
@@ -149,14 +149,14 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             pub async fn get_signatures_by_saids(
                 &self,
                 saids: &[String],
-            ) -> Result<std::collections::HashMap<String, Vec<kels::EventSignature>>, verifiable_storage::StorageError> {
+            ) -> Result<std::collections::HashMap<String, Vec<kels_core::EventSignature>>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
-                let query = verifiable_storage_postgres::Query::<kels::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
+                let query = verifiable_storage_postgres::Query::<kels_core::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
                     .r#in("event_said", saids.to_vec());
                 let sigs = self.pool.fetch(query).await?;
 
-                let mut map: std::collections::HashMap<String, Vec<kels::EventSignature>> =
+                let mut map: std::collections::HashMap<String, Vec<kels_core::EventSignature>> =
                     std::collections::HashMap::new();
                 for sig in sigs {
                     map.entry(sig.event_said.clone()).or_default().push(sig);
@@ -169,10 +169,10 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             pub async fn get_signature_by_said(
                 &self,
                 said: &str,
-            ) -> Result<Option<kels::EventSignature>, verifiable_storage::StorageError> {
+            ) -> Result<Option<kels_core::EventSignature>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
-                let query = verifiable_storage_postgres::Query::<kels::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
+                let query = verifiable_storage_postgres::Query::<kels_core::EventSignature>::for_table(Self::SIGNATURES_TABLE_NAME)
                     .eq("event_said", said)
                     .limit(1);
                 self.pool.fetch_optional(query).await
@@ -188,11 +188,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 prefix: &str,
                 limit: u64,
                 offset: u64,
-            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+            ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
                 let mut tx = self.pool.begin_transaction().await?;
-                let result = kels::load_signed_history(
+                let result = kels_core::load_signed_history(
                     &mut tx,
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
@@ -212,11 +212,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 &self,
                 prefix: &str,
                 limit: u64,
-            ) -> Result<Vec<kels::SignedKeyEvent>, verifiable_storage::StorageError> {
+            ) -> Result<Vec<kels_core::SignedKeyEvent>, verifiable_storage::StorageError> {
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
                 let mut tx = self.pool.begin_transaction().await?;
-                let result = kels::load_signed_history_tail(
+                let result = kels_core::load_signed_history_tail(
                     &mut tx,
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
@@ -240,7 +240,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 prefix: &str,
                 since_said: &str,
                 limit: u64,
-            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
+            ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
                 let subquery = verifiable_storage::ScalarSubquery::new(
@@ -261,15 +261,15 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 // After `retain()` removes at most 1 event (the since event), we check
                 // `events.len() > limit` to detect has_more, then truncate to `limit`.
                 // Clamp to prevent i64 overflow when cast for PostgreSQL LIMIT
-                let clamped_limit = limit.min(kels::page_size() as u64);
-                let query = verifiable_storage_postgres::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                let clamped_limit = limit.min(kels_core::page_size() as u64);
+                let query = verifiable_storage_postgres::Query::<kels_core::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .gte_scalar_subquery("serial", subquery)
                     .order_by("serial", verifiable_storage_postgres::Order::Asc)
-                    .order_by_case("kind", &kels::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
+                    .order_by_case("kind", &kels_core::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
                     .order_by("said", verifiable_storage_postgres::Order::Asc)
                     .limit(clamped_limit + 2);
-                let mut events: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+                let mut events: Vec<kels_core::KeyEvent> = self.pool.fetch(query).await?;
 
                 // Filter out the since event itself (we want events *after* it,
                 // but we need >= its serial to include divergent events at the same serial)
@@ -299,7 +299,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         .iter()
                         .map(|s| (s.label.clone(), s.signature.clone()))
                         .collect();
-                    signed_events.push(kels::SignedKeyEvent::from_signatures(event, sig_pairs));
+                    signed_events.push(kels_core::SignedKeyEvent::from_signatures(event, sig_pairs));
                 }
 
                 Ok((signed_events, has_more))
@@ -316,7 +316,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
-                let query = verifiable_storage::Query::<kels::KeyEvent>::for_table(Self::TABLE_NAME)
+                let query = verifiable_storage::Query::<kels_core::KeyEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .not_exists(verifiable_storage::CorrelatedSubquery::new(
                         Self::TABLE_NAME,
@@ -330,7 +330,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     ))
                     .order_by("said", verifiable_storage_postgres::Order::Asc);
 
-                let tips: Vec<kels::KeyEvent> = self.pool.fetch(query).await?;
+                let tips: Vec<kels_core::KeyEvent> = self.pool.fetch(query).await?;
 
                 match tips.as_slice() {
                     [] => Ok(None),
@@ -340,7 +340,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // nodes agree regardless of archival progress.
                         if tips.iter().any(|e| e.is_contest()) {
                             let contested_input = format!("contested:{}", prefix);
-                            return Ok(Some((kels::hash_effective_said(&contested_input), true)));
+                            return Ok(Some((kels_core::hash_effective_said(&contested_input), true)));
                         }
 
                         // Divergent KELs return a fixed effective SAID so all
@@ -350,7 +350,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                         // return RecoverRequired. The deterministic hash avoids
                         // wasted anti-entropy attempts.
                         let divergent_input = format!("divergent:{}", prefix);
-                        Ok(Some((kels::hash_effective_said(&divergent_input), true)))
+                        Ok(Some((kels_core::hash_effective_said(&divergent_input), true)))
                     }
                 }
             }
@@ -359,7 +359,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Ensures atomicity when saving multiple events (e.g., recovery + rotation).
             pub async fn create_batch_with_signatures(
                 &self,
-                events: Vec<(kels::KeyEvent, Vec<kels::EventSignature>)>,
+                events: Vec<(kels_core::KeyEvent, Vec<kels_core::EventSignature>)>,
             ) -> Result<(), verifiable_storage::StorageError> {
                 use verifiable_storage::SelfAddressed;
 
@@ -380,7 +380,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                     // Store the signatures
                     for signature in &signatures {
-                        let sig = kels::EventSignature::create(
+                        let sig = kels_core::EventSignature::create(
                             item.said.clone(),
                             signature.label.clone(),
                             signature.signature.clone(),
@@ -401,18 +401,18 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             pub async fn save_with_merge(
                 &self,
                 prefix: &str,
-                events: &[kels::SignedKeyEvent],
-            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                events: &[kels_core::SignedKeyEvent],
+            ) -> Result<kels_core::MergeOutcome, kels_core::KelsError> {
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
                 if events.is_empty() {
-                    return Ok(kels::MergeOutcome::empty());
+                    return Ok(kels_core::MergeOutcome::empty());
                 }
 
                 let mut tx = self.pool.begin_transaction().await?;
                 tx.acquire_advisory_lock(prefix).await?;
 
-                let mut merge_tx = kels::MergeTransaction::new(
+                let mut merge_tx = kels_core::MergeTransaction::new(
                     tx,
                     prefix.to_string(),
                     Self::TABLE_NAME,
@@ -439,61 +439,61 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let trait_impl = quote! {
         #[async_trait::async_trait]
-        impl kels::SignedEventRepository for #repo_name {
+        impl kels_core::SignedEventRepository for #repo_name {
             async fn get_signed_history(
                 &self,
                 prefix: &str,
                 limit: u64,
                 offset: u64,
-            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+            ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
                 #repo_name::get_signed_history(self, prefix, limit, offset)
                     .await
-                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+                    .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             }
 
             async fn get_signed_history_tail(
                 &self,
                 prefix: &str,
                 limit: u64,
-            ) -> Result<Vec<kels::SignedKeyEvent>, kels::KelsError> {
+            ) -> Result<Vec<kels_core::SignedKeyEvent>, kels_core::KelsError> {
                 #repo_name::get_signed_history_tail(self, prefix, limit)
                     .await
-                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+                    .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             }
 
             async fn get_signature_by_said(
                 &self,
                 said: &str,
-            ) -> Result<Option<kels::EventSignature>, kels::KelsError> {
+            ) -> Result<Option<kels_core::EventSignature>, kels_core::KelsError> {
                 #repo_name::get_signature_by_said(self, said)
                     .await
-                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+                    .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             }
 
             async fn create_with_signatures(
                 &self,
-                event: kels::KeyEvent,
-                signatures: Vec<kels::EventSignature>,
-            ) -> Result<kels::KeyEvent, kels::KelsError> {
+                event: kels_core::KeyEvent,
+                signatures: Vec<kels_core::EventSignature>,
+            ) -> Result<kels_core::KeyEvent, kels_core::KelsError> {
                 #repo_name::create_with_signatures(self, event, signatures)
                     .await
-                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+                    .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             }
 
             async fn create_batch_with_signatures(
                 &self,
-                events: Vec<(kels::KeyEvent, Vec<kels::EventSignature>)>,
-            ) -> Result<(), kels::KelsError> {
+                events: Vec<(kels_core::KeyEvent, Vec<kels_core::EventSignature>)>,
+            ) -> Result<(), kels_core::KelsError> {
                 #repo_name::create_batch_with_signatures(self, events)
                     .await
-                    .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+                    .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             }
 
             async fn save_with_merge(
                 &self,
                 prefix: &str,
-                events: &[kels::SignedKeyEvent],
-            ) -> Result<kels::MergeOutcome, kels::KelsError> {
+                events: &[kels_core::SignedKeyEvent],
+            ) -> Result<kels_core::MergeOutcome, kels_core::KelsError> {
                 #repo_name::save_with_merge(self, prefix, events).await
             }
         }
@@ -501,16 +501,16 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
     let kel_server_impl = quote! {
         #[async_trait::async_trait]
-        impl kels::KelServer for #repo_name {
+        impl kels_core::KelServer for #repo_name {
             async fn load_page(
                 &self,
                 prefix: &str,
                 limit: u64,
                 offset: u64,
-            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+            ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
                 self.get_signed_history(prefix, limit, offset)
                     .await
-                    .map_err(kels::KelsError::from)
+                    .map_err(kels_core::KelsError::from)
             }
 
             async fn load_page_since(
@@ -518,22 +518,22 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 prefix: &str,
                 since_said: &str,
                 limit: u64,
-            ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+            ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
                 self.get_signed_history_since(prefix, since_said, limit)
                     .await
-                    .map_err(kels::KelsError::from)
+                    .map_err(kels_core::KelsError::from)
             }
 
-            async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels::KelsError> {
+            async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels_core::KelsError> {
                 self.compute_prefix_effective_said(prefix)
                     .await
                     .map(|opt| opt.map(|(said, _)| said))
-                    .map_err(kels::KelsError::from)
+                    .map_err(kels_core::KelsError::from)
             }
 
-            async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels::KelsError> {
+            async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels_core::KelsError> {
                 use verifiable_storage::ChainedRepository;
-                let event: Option<kels::KeyEvent> = self.get_by_said(said).await.map_err(kels::KelsError::from)?;
+                let event: Option<kels_core::KeyEvent> = self.get_by_said(said).await.map_err(kels_core::KelsError::from)?;
                 Ok(event.map(|e| e.prefix))
             }
         }

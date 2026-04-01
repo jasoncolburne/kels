@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use kels::{PagedKelSource, generate_nonce};
+use kels_core::{PagedKelSource, generate_nonce};
 use kels_policy::{Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -546,7 +546,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use kels::{
+    use kels_core::{
         FileKelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource, VerificationKeyCode,
     };
     use kels_policy::InMemoryPolicyResolver;
@@ -565,7 +565,7 @@ mod tests {
                 VerificationKeyCode::Secp256r1,
             ),
             None,
-            Some(kel_store.clone() as Arc<dyn kels::KelStore>),
+            Some(kel_store.clone() as Arc<dyn kels_core::KelStore>),
             None,
         )
         .await
@@ -855,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_chained_credentials() {
-        use kels::forward_key_events;
+        use kels_core::forward_key_events;
 
         use crate::edge::{Edge, Edges};
 
@@ -983,13 +983,13 @@ mod tests {
 
         // Merge KEL stores so B's store has A's KEL too
         let source_a = StoreKelSource::new(kel_store_a.as_ref());
-        let sink_b = kels::KelStoreSink(kel_store_b.as_ref());
+        let sink_b = kels_core::KelStoreSink(kel_store_b.as_ref());
         forward_key_events(
             &prefix_a,
             &source_a,
             &sink_b,
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
             None,
         )
         .await
@@ -1032,7 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_three_level_chain() {
-        use kels::forward_key_events;
+        use kels_core::forward_key_events;
 
         use crate::edge::{Edge, Edges};
 
@@ -1175,13 +1175,13 @@ mod tests {
         // Merge all KEL stores into the leaf store
         {
             let source = StoreKelSource::new(kel_store_root.as_ref());
-            let sink = kels::KelStoreSink(kel_store_leaf.as_ref());
+            let sink = kels_core::KelStoreSink(kel_store_leaf.as_ref());
             forward_key_events(
                 &prefix_root,
                 &source,
                 &sink,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 None,
             )
             .await
@@ -1189,13 +1189,13 @@ mod tests {
         }
         {
             let source = StoreKelSource::new(kel_store_mid.as_ref());
-            let sink = kels::KelStoreSink(kel_store_leaf.as_ref());
+            let sink = kels_core::KelStoreSink(kel_store_leaf.as_ref());
             forward_key_events(
                 &prefix_mid,
                 &source,
                 &sink,
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::page_size(),
+                kels_core::max_pages(),
                 None,
             )
             .await

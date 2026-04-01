@@ -14,7 +14,7 @@ use axum::{
 };
 use cesr::Matter;
 use dashmap::DashMap;
-use kels::{
+use kels_core::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
     IdentityClient, KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
     PeersResponse, Proposal, ProposalHistory, ProposalResponse, ProposalStatus,
@@ -30,15 +30,15 @@ use crate::federation::{
 };
 
 fn max_writes_per_ip_per_second() -> u32 {
-    kels::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
 }
 
 fn ip_rate_limit_burst() -> u32 {
-    kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
 }
 
 fn max_member_events_per_prefix_per_day() -> u32 {
-    kels::env_usize("KELS_MAX_MEMBER_EVENTS_PER_PREFIX_PER_DAY", 64) as u32
+    kels_core::env_usize("KELS_MAX_MEMBER_EVENTS_PER_PREFIX_PER_DAY", 64) as u32
 }
 
 const SECS_PER_DAY: u64 = 86_400;
@@ -218,25 +218,27 @@ async fn push_own_kel_to_members(state: &FederationState) {
     let self_prefix = state.node.config().self_prefix.clone();
 
     // Fetch own events from identity service (source of truth)
-    let identity_source =
-        match kels::HttpKelSource::new(state.identity_client.base_url(), "/api/v1/identity/kel") {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "Failed to build HTTP source for identity KEL");
-                return;
-            }
-        };
-    let local_sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
+    let identity_source = match kels_core::HttpKelSource::new(
+        state.identity_client.base_url(),
+        "/api/v1/identity/kel",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "Failed to build HTTP source for identity KEL");
+            return;
+        }
+    };
+    let local_sink = kels_core::RepositoryKelStore::new(std::sync::Arc::new(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
 
     // First, sync own KEL from identity to local MemberKelRepository
-    if let Err(e) = kels::forward_key_events(
+    if let Err(e) = kels_core::forward_key_events(
         &self_prefix,
         &identity_source,
         &local_sink,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         None,
     )
     .await
@@ -259,12 +261,12 @@ async fn push_own_kel_to_members(state: &FederationState) {
             let pool = state.member_kel_repo.pool.clone();
             let member_url = member.url.clone();
             async move {
-                let repo_store = kels::RepositoryKelStore::new(std::sync::Arc::new(
+                let repo_store = kels_core::RepositoryKelStore::new(std::sync::Arc::new(
                     crate::raft_store::MemberKelRepository::new(pool),
                 ));
-                let repo_source = kels::StoreKelSource::new(&repo_store);
+                let repo_source = kels_core::StoreKelSource::new(&repo_store);
                 let member_sink =
-                    match kels::HttpKelSink::new(&member_url, "/api/v1/member-kels/events") {
+                    match kels_core::HttpKelSink::new(&member_url, "/api/v1/member-kels/events") {
                         Ok(s) => s,
                         Err(e) => {
                             warn!(member = %member_prefix, error = %e, "Failed to build HTTP sink");
@@ -273,12 +275,12 @@ async fn push_own_kel_to_members(state: &FederationState) {
                     };
                 match tokio::time::timeout(
                     Duration::from_secs(5),
-                    kels::forward_key_events(
+                    kels_core::forward_key_events(
                         &self_prefix,
                         &repo_source,
                         &member_sink,
-                        kels::page_size(),
-                        kels::max_pages(),
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
                         None,
                     ),
                 )
@@ -319,14 +321,14 @@ pub async fn federation_rpc(
 
     // Consuming: verify sender's KEL to extract trusted public key for RPC auth.
     // Try local MemberKelRepository first, fall back to HTTP during bootstrap.
-    let store = kels::RepositoryKelStore::new(std::sync::Arc::new(
+    let store = kels_core::RepositoryKelStore::new(std::sync::Arc::new(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
-    let local_result = kels::completed_verification(
-        &mut kels::StorePageLoader::new(&store),
+    let local_result = kels_core::completed_verification(
+        &mut kels_core::StorePageLoader::new(&store),
         &signed_rpc.sender_prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         std::iter::empty::<String>(),
     )
     .await;
@@ -342,17 +344,17 @@ pub async fn federation_rpc(
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
-            let source = kels::HttpKelSource::new(
+            let source = kels_core::HttpKelSource::new(
                 &member.url,
                 &format!("/api/v1/member-kels/kel/{}", signed_rpc.sender_prefix),
             )
             .map_err(|e| ApiError::internal_error(format!("Failed to build HTTP client: {}", e)))?;
-            kels::verify_key_events(
+            kels_core::verify_key_events(
                 &signed_rpc.sender_prefix,
                 &source,
-                kels::KelVerifier::new(&signed_rpc.sender_prefix),
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::KelVerifier::new(&signed_rpc.sender_prefix),
+                kels_core::page_size(),
+                kels_core::max_pages(),
             )
             .await
             .map_err(|e| ApiError::unauthorized(format!("Sender KEL invalid: {}", e)))?
@@ -498,19 +500,19 @@ pub struct AddPeerRequest {
 pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
-) -> Result<Json<kels::ProposalWithVotes>, ApiError> {
+) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
     if let Some(addition) = state
         .node
         .get_addition_proposal_with_votes(&proposal_id)
         .await
     {
-        Ok(Json(kels::ProposalWithVotes::Addition(addition)))
+        Ok(Json(kels_core::ProposalWithVotes::Addition(addition)))
     } else if let Some(removal) = state
         .node
         .get_removal_proposal_with_votes(&proposal_id)
         .await
     {
-        Ok(Json(kels::ProposalWithVotes::Removal(removal)))
+        Ok(Json(kels_core::ProposalWithVotes::Removal(removal)))
     } else {
         Err(ApiError::not_found(format!(
             "Proposal not found: {}",
@@ -1096,9 +1098,9 @@ pub async fn submit_member_key_events(
     State(state): State<Arc<FederationState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
-) -> Result<Json<kels::SubmitEventsResponse>, ApiError> {
+) -> Result<Json<kels_core::SubmitEventsResponse>, ApiError> {
     if events.is_empty() {
-        return Ok(Json(kels::SubmitEventsResponse {
+        return Ok(Json(kels_core::SubmitEventsResponse {
             diverged_at: None,
             applied: true,
         }));
@@ -1155,13 +1157,13 @@ pub async fn submit_member_key_events(
         .save_with_merge(&prefix, &events)
         .await
         .map_err(|e| match e {
-            kels::KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
-            kels::KelsError::InvalidKeyEvent(msg) => ApiError::bad_request(msg),
-            kels::KelsError::InvalidSignature(msg) => ApiError::bad_request(msg),
-            kels::KelsError::KelDecommissioned => {
+            kels_core::KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
+            kels_core::KelsError::InvalidKeyEvent(msg) => ApiError::bad_request(msg),
+            kels_core::KelsError::InvalidSignature(msg) => ApiError::bad_request(msg),
+            kels_core::KelsError::KelDecommissioned => {
                 ApiError::unauthorized("KEL is decommissioned".to_string())
             }
-            kels::KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
+            kels_core::KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
             _ => ApiError::internal_error(e.to_string()),
         })?;
 
@@ -1174,10 +1176,10 @@ pub async fn submit_member_key_events(
 
     let applied = matches!(
         outcome.result,
-        kels::KelMergeResult::Accepted
-            | kels::KelMergeResult::Recovered
-            | kels::KelMergeResult::Contested
-            | kels::KelMergeResult::Diverged
+        kels_core::KelMergeResult::Accepted
+            | kels_core::KelMergeResult::Recovered
+            | kels_core::KelMergeResult::Contested
+            | kels_core::KelMergeResult::Diverged
     );
 
     // Fan out to members if this is our own prefix and events were applied
@@ -1194,7 +1196,7 @@ pub async fn submit_member_key_events(
                 let url = member.url.clone();
                 let member_prefix = member.prefix.clone();
                 async move {
-                    let client = match kels::KelsClient::with_path_prefix(
+                    let client = match kels_core::KelsClient::with_path_prefix(
                         &url,
                         "/api/v1/member-kels",
                     ) {
@@ -1225,7 +1227,7 @@ pub async fn submit_member_key_events(
         futures::future::join_all(futures).await;
     }
 
-    Ok(Json(kels::SubmitEventsResponse {
+    Ok(Json(kels_core::SubmitEventsResponse {
         diverged_at: outcome.diverged_at,
         applied,
     }))
@@ -1264,10 +1266,10 @@ pub async fn get_member_key_events(
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = query
         .limit
-        .unwrap_or(kels::page_size())
-        .min(kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size()) as u64;
 
-    let page = kels::serve_kel_page(
+    let page = kels_core::serve_kel_page(
         &state.member_kel_repo,
         &prefix,
         query.since.as_deref(),

@@ -26,7 +26,7 @@ const SECS_PER_DAY: u64 = 86_400;
 const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
 
 fn nonce_window_secs() -> u64 {
-    kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+    kels_core::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
 }
 
 /// Spawn a background task that periodically removes expired entries from
@@ -53,22 +53,22 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
-    kels::env_usize("SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY", 16) as u32
+    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY", 16) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
 fn max_writes_per_ip_per_second() -> u32 {
-    kels::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 100) as u32
+    kels_core::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 100) as u32
 }
 
 /// Token bucket burst size per IP.
 fn ip_rate_limit_burst() -> u32 {
-    kels::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 500) as u32
+    kels_core::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 500) as u32
 }
 
 /// Max SAD object size in bytes (default 1 MiB).
 pub fn max_sad_object_size() -> usize {
-    kels::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
+    kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
 /// Per-chain-prefix daily rate limit. Checks whether adding `record_count` new
@@ -131,7 +131,7 @@ fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> 
 pub struct AppState {
     pub repo: Arc<SadStoreRepository>,
     pub object_store: Arc<ObjectStore>,
-    pub kels_client: kels::KelsClient,
+    pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub registry_urls: Vec<String>,
     pub prefix_rate_limits: DashMap<String, (u32, Instant)>,
@@ -145,7 +145,7 @@ pub struct AppState {
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
-) -> Result<Option<kels::Peer>, (StatusCode, String)> {
+) -> Result<Option<kels_core::Peer>, (StatusCode, String)> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
         .get(format!("kels:verified-peer:{}", peer_prefix))
@@ -158,7 +158,7 @@ async fn get_verified_peer(
         })?;
     match json {
         Some(j) => {
-            let peer: kels::Peer = serde_json::from_str(&j).map_err(|e| {
+            let peer: kels_core::Peer = serde_json::from_str(&j).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Deserialization failed: {}", e),
@@ -180,7 +180,7 @@ async fn refresh_verified_peers(
         return Ok(());
     }
 
-    let peers_response = kels::with_failover(
+    let peers_response = kels_core::with_failover(
         registry_urls,
         std::time::Duration::from_secs(10),
         |c| async move { c.fetch_peers().await },
@@ -229,11 +229,11 @@ async fn refresh_verified_peers(
 /// and verifies the request signature against the peer's current verification key.
 async fn authenticate_peer_request<T: serde::Serialize>(
     state: &AppState,
-    signed_request: &kels::SignedRequest<T>,
+    signed_request: &kels_core::SignedRequest<T>,
     timestamp: i64,
     nonce: &str,
 ) -> Result<(), (StatusCode, String)> {
-    if !kels::validate_timestamp(timestamp, 60) {
+    if !kels_core::validate_timestamp(timestamp, 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
     }
 
@@ -266,8 +266,8 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     }
 
     // Verify peer's KEL via KELS service to extract trusted public key
-    let verifier = kels::KelVerifier::new(&signed_request.peer_prefix);
-    let kel_verification = kels::verify_key_events(
+    let verifier = kels_core::KelVerifier::new(&signed_request.peer_prefix);
+    let kel_verification = kels_core::verify_key_events(
         &signed_request.peer_prefix,
         &state.kels_client.as_kel_source().map_err(|e| {
             (
@@ -276,8 +276,8 @@ async fn authenticate_peer_request<T: serde::Serialize>(
             )
         })?,
         verifier,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
     )
     .await
     .map_err(|_| (StatusCode::FORBIDDEN, "Peer KEL verification failed".into()))?;
@@ -440,7 +440,7 @@ pub async fn submit_sad_records(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels::SignedSadPointer>>,
+    Json(records): Json<Vec<kels_core::SignedSadPointer>>,
 ) -> impl IntoResponse {
     if records.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
@@ -498,7 +498,7 @@ pub async fn submit_sad_records(
     match state
         .repo
         .sad_records
-        .existing_establishment_serials(chain_prefix, kels::max_collected_keys())
+        .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
         .await
     {
         Ok(existing) => establishment_serials.extend(existing),
@@ -509,8 +509,8 @@ pub async fn submit_sad_records(
     }
 
     // Verify KEL once, collecting establishment keys for all serials
-    let verifier = match kels::KelVerifier::new(kel_prefix)
-        .with_establishment_key_collection(establishment_serials, kels::max_collected_keys())
+    let verifier = match kels_core::KelVerifier::new(kel_prefix)
+        .with_establishment_key_collection(establishment_serials, kels_core::max_collected_keys())
     {
         Ok(v) => v,
         Err(e) => {
@@ -530,12 +530,12 @@ pub async fn submit_sad_records(
     };
 
     let (verification, establishment_keys) =
-        match kels::verify_key_events_collecting_establishment_keys(
+        match kels_core::verify_key_events_collecting_establishment_keys(
             kel_prefix,
             &kel_source,
             verifier,
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
         )
         .await
         {
@@ -607,7 +607,7 @@ pub async fn submit_sad_records(
     // Build (record, signature) pairs for storage
     let mut pairs = Vec::with_capacity(records.len());
     for r in &records {
-        let sig_record = match kels::SadPointerSignature::create(
+        let sig_record = match kels_core::SadPointerSignature::create(
             r.pointer.said.clone(),
             r.signature.clone(),
             r.establishment_serial,
@@ -720,7 +720,7 @@ pub async fn get_sad_chain(
     Query(query): Query<ChainQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let limit = query.limit.unwrap_or(kels::page_size() as u64);
+    let limit = query.limit.unwrap_or(kels_core::page_size() as u64);
 
     match state
         .repo
@@ -734,7 +734,7 @@ pub async fn get_sad_chain(
         Ok(pointers) => {
             let has_more = pointers.len() as u64 > limit;
             let records: Vec<_> = pointers.into_iter().take(limit as usize).collect();
-            let page = kels::SadPointerPage {
+            let page = kels_core::SadPointerPage {
                 has_more,
                 pointers: records,
             };
@@ -754,7 +754,7 @@ pub async fn get_sad_effective_said(
     match state.repo.sad_records.effective_said(&prefix).await {
         Ok(Some((said, divergent))) => (
             StatusCode::OK,
-            Json(kels::EffectiveSaidResponse { said, divergent }),
+            Json(kels_core::EffectiveSaidResponse { said, divergent }),
         )
             .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
@@ -811,7 +811,7 @@ async fn query_sad_prefixes(
 pub async fn list_sad_objects(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -841,7 +841,7 @@ pub async fn list_sad_objects(
 pub async fn list_sad_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -880,7 +880,7 @@ pub(crate) async fn get_sad_repairs(
     Path(prefix): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> impl IntoResponse {
-    let page_size = kels::page_size() as u64;
+    let page_size = kels_core::page_size() as u64;
     let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
     let offset = params.offset.unwrap_or(0);
 
@@ -892,7 +892,7 @@ pub(crate) async fn get_sad_repairs(
     {
         Ok((repairs, has_more)) => (
             StatusCode::OK,
-            Json(kels::SadPointerRepairPage { repairs, has_more }),
+            Json(kels_core::SadPointerRepairPage { repairs, has_more }),
         )
             .into_response(),
         Err(e) => {
@@ -908,7 +908,7 @@ pub(crate) async fn get_repair_records(
     Query(params): Query<PaginationQuery>,
 ) -> impl IntoResponse {
     let _ = prefix; // prefix is in the URL for routing clarity but not needed for the query
-    let page_size = kels::page_size() as u64;
+    let page_size = kels_core::page_size() as u64;
     let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
     let offset = params.offset.unwrap_or(0);
 
@@ -920,7 +920,7 @@ pub(crate) async fn get_repair_records(
     {
         Ok((records, has_more)) => (
             StatusCode::OK,
-            Json(kels::SadPointerPage {
+            Json(kels_core::SadPointerPage {
                 pointers: records,
                 has_more,
             }),
@@ -938,7 +938,7 @@ pub(crate) async fn get_repair_records(
 pub async fn test_list_sad_objects(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -958,7 +958,7 @@ pub async fn test_list_sad_objects(
 pub async fn test_list_sad_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();

@@ -1,9 +1,9 @@
 //! Identity-backed signers for gossip and registry operations.
 //!
 //! Provides:
-//! - `IdentityGossipSigner`: implements `gossip::net::Signer` for gossip protocol handshakes
-//! - `KelsPeerVerifier`: implements `gossip::net::PeerVerifier` for peer authentication
-//! - `IdentitySigner`: implements `kels::PeerSigner` for signed API requests
+//! - `IdentityGossipSigner`: implements `kels_gossip_core::net::Signer` for gossip protocol handshakes
+//! - `KelsPeerVerifier`: implements `kels_gossip_core::net::PeerVerifier` for peer authentication
+//! - `IdentitySigner`: implements `kels_core::PeerSigner` for signed API requests
 //!
 //! All signing goes through the identity service, which holds the node's single
 //! cryptographic identity (HSM-backed key pair + KEL).
@@ -12,7 +12,7 @@ use cesr::{Matter, Signature as CesrSignature, VerificationKey};
 use thiserror::Error;
 use tracing::warn;
 
-use gossip::{
+use kels_gossip_core::{
     identity::NodePrefix,
     net::{Error as GossipError, PeerVerifier, Signer},
 };
@@ -30,7 +30,7 @@ pub enum SignerError {
 }
 
 // ============================================================================
-// IdentityGossipSigner — implements gossip::net::Signer
+// IdentityGossipSigner — implements kels_gossip_core::net::Signer
 // ============================================================================
 
 /// Identity service-backed signer for the gossip protocol handshake.
@@ -39,7 +39,7 @@ pub enum SignerError {
 /// that backs the node's identity KEL. This ensures the handshake public key
 /// matches the KEL public key that peers verify against.
 pub struct IdentityGossipSigner {
-    identity_client: kels::IdentityClient,
+    identity_client: kels_core::IdentityClient,
     node_prefix: NodePrefix,
     requires_kem_1024: crate::allowlist::RequiresKem1024,
 }
@@ -58,7 +58,7 @@ impl IdentityGossipSigner {
         })?;
 
         Ok(Self {
-            identity_client: kels::IdentityClient::new(identity_url).map_err(|e| {
+            identity_client: kels_core::IdentityClient::new(identity_url).map_err(|e| {
                 SignerError::Identity(format!("Failed to build identity client: {}", e))
             })?,
             node_prefix,
@@ -100,7 +100,7 @@ impl Signer for IdentityGossipSigner {
 }
 
 // ============================================================================
-// KelsPeerVerifier — implements gossip::net::PeerVerifier
+// KelsPeerVerifier — implements kels_gossip_core::net::PeerVerifier
 // ============================================================================
 
 /// Verifies peer identity during gossip handshake using the allowlist and KEL.
@@ -115,7 +115,7 @@ pub struct KelsPeerVerifier {
     kels_url: String,
     federation_registry_urls: Vec<String>,
     node_id: String,
-    registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
+    registry_kel_store: std::sync::Arc<dyn kels_core::KelStore>,
     requires_kem_1024: crate::allowlist::RequiresKem1024,
 }
 
@@ -125,7 +125,7 @@ impl KelsPeerVerifier {
         kels_url: &str,
         federation_registry_urls: Vec<String>,
         node_id: String,
-        registry_kel_store: std::sync::Arc<dyn kels::KelStore>,
+        registry_kel_store: std::sync::Arc<dyn kels_core::KelStore>,
         requires_kem_1024: crate::allowlist::RequiresKem1024,
     ) -> Self {
         Self {
@@ -168,16 +168,16 @@ impl KelsPeerVerifier {
         prefix: &str,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
-        let source = kels::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
+        let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP client: {}", e))
             })?;
-        let kel_verification = kels::verify_key_events(
+        let kel_verification = kels_core::verify_key_events(
             prefix,
             &source,
-            kels::KelVerifier::new(prefix),
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::KelVerifier::new(prefix),
+            kels_core::page_size(),
+            kels_core::max_pages(),
         )
         .await
         .map_err(|e| {
@@ -254,19 +254,20 @@ impl KelsPeerVerifier {
         };
 
         // Forward KEL from peer's KELS to our local KELS (paginated)
-        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}")
+        let source = kels_core::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}")
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP source: {}", e))
             })?;
-        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events").map_err(|e| {
-            GossipError::VerificationFailed(format!("Failed to build HTTP sink: {}", e))
-        })?;
-        if let Err(e) = kels::forward_key_events(
+        let sink =
+            kels_core::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events").map_err(|e| {
+                GossipError::VerificationFailed(format!("Failed to build HTTP sink: {}", e))
+            })?;
+        if let Err(e) = kels_core::forward_key_events(
             prefix,
             &source,
             &sink,
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
             None,
         )
         .await
@@ -291,7 +292,7 @@ impl PeerVerifier for KelsPeerVerifier {
         })?;
 
         // Authorization: check peer is in allowlist, refresh once if not found
-        let authorized = kels::retry_once!(
+        let authorized = kels_core::retry_once!(
             self.is_in_allowlist(&prefix_str),
             |ok: &bool| *ok,
             self.is_in_allowlist_refreshed(&prefix_str),
@@ -308,7 +309,7 @@ impl PeerVerifier for KelsPeerVerifier {
         }
 
         // Authentication: verify against local KEL, refresh from peer on mismatch
-        let verified = kels::retry_once!(
+        let verified = kels_core::retry_once!(
             self.try_verify(&prefix_str, data, signature),
             |ok: &bool| *ok,
             self.try_verify_refreshed(&prefix_str, data, signature),
@@ -328,7 +329,7 @@ impl PeerVerifier for KelsPeerVerifier {
 }
 
 // ============================================================================
-// IdentitySigner — implements kels::PeerSigner
+// IdentitySigner — implements kels_core::PeerSigner
 // ============================================================================
 
 /// Registry signer implementation using the identity service.
@@ -336,32 +337,33 @@ impl PeerVerifier for KelsPeerVerifier {
 /// Signs registry API requests via the identity service, ensuring the same
 /// key is used for all signing operations (gossip handshakes, registry requests).
 pub struct IdentitySigner {
-    identity_client: kels::IdentityClient,
+    identity_client: kels_core::IdentityClient,
     peer_prefix: String,
 }
 
 impl IdentitySigner {
-    pub fn new(identity_url: &str, peer_prefix: String) -> Result<Self, kels::KelsError> {
+    pub fn new(identity_url: &str, peer_prefix: String) -> Result<Self, kels_core::KelsError> {
         Ok(Self {
-            identity_client: kels::IdentityClient::new(identity_url)?,
+            identity_client: kels_core::IdentityClient::new(identity_url)?,
             peer_prefix,
         })
     }
 }
 
 #[async_trait::async_trait]
-impl kels::PeerSigner for IdentitySigner {
-    async fn sign(&self, data: &[u8]) -> Result<kels::SignResult, kels::KelsError> {
-        let data_str = std::str::from_utf8(data)
-            .map_err(|e| kels::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e)))?;
+impl kels_core::PeerSigner for IdentitySigner {
+    async fn sign(&self, data: &[u8]) -> Result<kels_core::SignResult, kels_core::KelsError> {
+        let data_str = std::str::from_utf8(data).map_err(|e| {
+            kels_core::KelsError::SigningFailed(format!("Data is not UTF-8: {}", e))
+        })?;
 
         let result = self
             .identity_client
             .sign(data_str)
             .await
-            .map_err(|e| kels::KelsError::SigningFailed(e.to_string()))?;
+            .map_err(|e| kels_core::KelsError::SigningFailed(e.to_string()))?;
 
-        Ok(kels::SignResult {
+        Ok(kels_core::SignResult {
             signature: result.signature,
             peer_prefix: self.peer_prefix.clone(),
         })
@@ -419,8 +421,8 @@ mod tests {
         let sig_qb64 = cesr_sig.qb64().into_bytes();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let store: Arc<dyn kels::KelStore> =
-            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let store: Arc<dyn kels_core::KelStore> =
+            Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
         let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,
@@ -442,8 +444,8 @@ mod tests {
         let bad_sig = b"0BAAbadbadbadbadbad";
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let store: Arc<dyn kels::KelStore> =
-            Arc::new(kels::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let store: Arc<dyn kels_core::KelStore> =
+            Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
         let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,

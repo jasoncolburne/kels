@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Custom gossip protocol (HyParView + PlumTree over TCP with ML-KEM + AES-GCM-256)
-gossip = { package = "kels-gossip-proto", path = "../../lib/gossip" }
+kels_gossip_core = { package = "kels-gossip-core", path = "../../lib/gossip" }
 
 # Bytes for gossip API message content
 bytes = "1"
@@ -28,14 +28,14 @@ blake3 = "1"
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 
 # KELS library for types and server utilities (shutdown_signal)
-libkels = { path = "../../lib/kels", features = ["server", "federation"] }
+kels-core = { path = "../../lib/kels", features = ["server", "federation"] }
 
 # Verifiable storage for Chained trait and PostgreSQL backend
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 # Derive macros for SignedEvents
-libkels-derive = { path = "../../lib/kels-derive" }
+kels-derive = { path = "../../lib/derive" }
 
 # Redis for pub/sub
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }

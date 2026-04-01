@@ -26,7 +26,7 @@ pub enum AllowlistRefreshError {
 }
 
 /// Shared allowlist type - maps peer_prefix (KELS prefix string) to full Peer data
-pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels::Peer>>>;
+pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels_core::Peer>>>;
 
 /// Shared flag: true if any peer in the federation uses ML-DSA-87, requiring ML-KEM-1024.
 /// Initialized to `true` (fail secure — use KEM-1024 until federation algorithms are known).
@@ -47,7 +47,7 @@ pub type RequiresKem1024 = Arc<AtomicBool>;
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
     registry_urls: &[String],
-    registry_kel_store: &(dyn kels::KelStore + Sync),
+    registry_kel_store: &(dyn kels_core::KelStore + Sync),
     allowlist: &SharedAllowlist,
     exclude_node_id: Option<&str>,
     requires_kem_1024: &RequiresKem1024,
@@ -57,21 +57,22 @@ pub async fn refresh_allowlist(
     let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
     drop(original_peers);
 
-    let trusted = kels::trusted_prefixes();
+    let trusted = kels_core::trusted_prefixes();
 
     // Fetch peers from any available registry
     let t0 = std::time::Instant::now();
     debug!("Fetching peers from registries");
-    let response = kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
-        c.fetch_peers().await
-    })
-    .await
-    .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    let response =
+        kels_core::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
+            c.fetch_peers().await
+        })
+        .await
+        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
     debug!("fetch_peers completed in {:?}", t0.elapsed());
 
     // Fetch completed proposals for peer vote verification
     let proposals_response =
-        kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
+        kels_core::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
             c.fetch_completed_proposals().await
         })
         .await
@@ -100,7 +101,8 @@ pub async fn refresh_allowlist(
             }
 
             // Verify peer record anchoring in authorizing registry KEL
-            match kels::verify_peer_anchoring(registry_kel_store, latest, registry_urls).await {
+            match kels_core::verify_peer_anchoring(registry_kel_store, latest, registry_urls).await
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     warn!(
@@ -124,7 +126,7 @@ pub async fn refresh_allowlist(
 
             // Verify the proposal has sufficient verified votes
             let tv = std::time::Instant::now();
-            if !kels::verify_peer_votes(
+            if !kels_core::verify_peer_votes(
                 registry_kel_store,
                 &latest.peer_prefix,
                 &proposals_response,
@@ -156,7 +158,7 @@ pub async fn refresh_allowlist(
     // If any peer uses ML-DSA-87, all connections must use ML-KEM-1024.
     let mut any_dsa_87 = false;
     for peer_prefix in authorized_peers.keys() {
-        let source = match kels::HttpKelSource::new(kels_url, "/api/v1/kels/kel/{prefix}") {
+        let source = match kels_core::HttpKelSource::new(kels_url, "/api/v1/kels/kel/{prefix}") {
             Ok(s) => s,
             Err(e) => {
                 warn!(peer_prefix, error = %e, "Failed to build HTTP client for algorithm check, assuming ML-DSA-87 (fail secure)");
@@ -164,12 +166,12 @@ pub async fn refresh_allowlist(
                 break;
             }
         };
-        match kels::verify_key_events(
+        match kels_core::verify_key_events(
             peer_prefix,
             &source,
-            kels::KelVerifier::new(peer_prefix),
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::KelVerifier::new(peer_prefix),
+            kels_core::page_size(),
+            kels_core::max_pages(),
         )
         .await
         {
@@ -243,7 +245,7 @@ pub async fn refresh_allowlist(
 /// Performs full KEL verification against the trust anchor.
 pub async fn run_allowlist_refresh_loop(
     registry_urls: &[String],
-    registry_kel_store: &(dyn kels::KelStore + Sync),
+    registry_kel_store: &(dyn kels_core::KelStore + Sync),
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
     node_id: &str,
@@ -282,8 +284,8 @@ pub async fn run_allowlist_refresh_loop(
 mod tests {
     use super::*;
 
-    fn _create_test_peer(peer_prefix: &str) -> kels::Peer {
-        kels::Peer {
+    fn _create_test_peer(peer_prefix: &str) -> kels_core::Peer {
+        kels_core::Peer {
             said: "test-said".to_string(),
             prefix: "test-prefix".to_string(),
             previous: None,

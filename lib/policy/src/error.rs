@@ -30,8 +30,8 @@ impl From<verifiable_storage::StorageError> for PolicyError {
     }
 }
 
-impl From<kels::KelsError> for PolicyError {
-    fn from(e: kels::KelsError) -> Self {
+impl From<kels_core::KelsError> for PolicyError {
+    fn from(e: kels_core::KelsError) -> Self {
         PolicyError::KelError(e.to_string())
     }
 }

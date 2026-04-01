@@ -9,8 +9,8 @@ use cesr::Matter;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
-use kels::{EventKind, KelStore};
-use kels::{
+use kels_core::{EventKind, KelStore};
+use kels_core::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
     KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig, VerificationKeyCode,
 };
@@ -318,7 +318,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         }
 
         let store = create_kel_store(cli, "registry-discovery")?;
-        let peers = kels::nodes_sorted_by_latency(
+        let peers = kels_core::nodes_sorted_by_latency(
             &registry_urls,
             std::time::Duration::from_secs(2),
             &store,
@@ -375,9 +375,12 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     );
 
     let store = create_kel_store(cli, "registry-discovery")?;
-    let peers =
-        kels::nodes_sorted_by_latency(&registry_urls, std::time::Duration::from_secs(2), &store)
-            .await?;
+    let peers = kels_core::nodes_sorted_by_latency(
+        &registry_urls,
+        std::time::Duration::from_secs(2),
+        &store,
+    )
+    .await?;
 
     if peers.is_empty() {
         println!("{}", "No ready peers found.".yellow());
@@ -480,7 +483,7 @@ async fn cmd_rotate(cli: &Cli, prefix: &str, algorithm: Option<VerificationKeyCo
             println!("  Event SAID: {}", rot.event.said);
             Ok(())
         }
-        Err(kels::KelsError::DivergenceDetected {
+        Err(kels_core::KelsError::DivergenceDetected {
             submission_accepted: true,
             ref diverged_at,
         }) => {
@@ -610,13 +613,13 @@ async fn cmd_recover(
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
-    let server_verification = kels::verify_key_events(
+    let source = kels_core::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
+    let server_verification = kels_core::verify_key_events(
         prefix,
         &source,
         KelVerifier::new(prefix),
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
     )
     .await
     .map_err(|e| anyhow!("{}", e))?;
@@ -624,7 +627,7 @@ async fn cmd_recover(
         .last_establishment_event()
         .map(|e| e.serial)
         .unwrap_or(0);
-    let add_rot = kels::should_rotate_with_recovery(
+    let add_rot = kels_core::should_rotate_with_recovery(
         &server_verification,
         builder.rotation_count(),
         owner_last_est_serial,
@@ -736,12 +739,12 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     println!("{}", msg.green());
 
     // Verify and print events in a single pass
-    let kel_verification = kels::verify_key_events_with(
+    let kel_verification = kels_core::verify_key_events_with(
         prefix,
         &source,
         KelVerifier::new(prefix),
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         |events| {
             for signed_event in events {
                 let event = &signed_event.event;
@@ -765,13 +768,13 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
         let mut offset = 0u64;
         loop {
             let page = client
-                .fetch_kel_audit(prefix, kels::page_size(), offset)
+                .fetch_kel_audit(prefix, kels_core::page_size(), offset)
                 .await?;
             all_records.extend(page.records);
             if !page.has_more {
                 break;
             }
-            offset += kels::page_size() as u64;
+            offset += kels_core::page_size() as u64;
         }
         if !all_records.is_empty() {
             println!();
@@ -828,11 +831,11 @@ async fn cmd_list(cli: &Cli) -> Result<()> {
 async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
 
-    let kel_verification = kels::completed_verification(
-        &mut kels::StorePageLoader::new(&kel_store),
+    let kel_verification = kels_core::completed_verification(
+        &mut kels_core::StorePageLoader::new(&kel_store),
         prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         iter::empty(),
     )
     .await?;
@@ -975,12 +978,17 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
     );
 
     let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels::StoreKelSource::new(&kel_store);
+    let source = kels_core::StoreKelSource::new(&kel_store);
 
-    let mut events =
-        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
-            .await
-            .map_err(|e| anyhow!("{}", e))?;
+    let mut events = kels_core::resolve_key_events(
+        prefix,
+        &source,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -1006,11 +1014,16 @@ async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
 #[cfg(feature = "dev-tools")]
 async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels::StoreKelSource::new(&kel_store);
-    let all_events =
-        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
-            .await
-            .map_err(|e| anyhow!("{}", e))?;
+    let source = kels_core::StoreKelSource::new(&kel_store);
+    let all_events = kels_core::resolve_key_events(
+        prefix,
+        &source,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
 
     if all_events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
@@ -1033,11 +1046,16 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
 
     // Load the local KEL to get the chain state (dev-tools, not production)
     let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels::StoreKelSource::new(&kel_store);
-    let events =
-        kels::resolve_key_events(prefix, &source, kels::page_size(), kels::max_pages(), None)
-            .await
-            .map_err(|e| anyhow!("{}", e))?;
+    let source = kels_core::StoreKelSource::new(&kel_store);
+    let events = kels_core::resolve_key_events(
+        prefix,
+        &source,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
     if events.is_empty() {
         return Err(anyhow!("KEL not found locally: {}", prefix));
     }
@@ -1070,7 +1088,7 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     for kind in &event_kinds {
         let signed = match kind {
             EventKind::Ixn => {
-                let anchor = kels::generate_nonce();
+                let anchor = kels_core::generate_nonce();
                 builder.interact(&anchor).await?
             }
             EventKind::Rot => builder.rotate().await?,
@@ -1122,7 +1140,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
             .context("Failed to compute SAID for object")?;
     }
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let said = client
         .post_sad_object(&value)
         .await
@@ -1133,7 +1151,7 @@ async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let value = client
         .get_sad_object(said)
         .await
@@ -1146,10 +1164,10 @@ async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
 async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let records: Vec<kels::SignedSadPointer> =
+    let records: Vec<kels_core::SignedSadPointer> =
         serde_json::from_str(&data).context("Failed to parse SignedSadPointer JSON")?;
 
-    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     if repair {
         client
             .repair_sad_chain(&records)
@@ -1171,7 +1189,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
 }
 
 async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
-    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = client
         .fetch_sad_chain(prefix, None)
         .await
@@ -1183,7 +1201,7 @@ async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
 
 fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
     let prefix =
-        kels::compute_sad_prefix(kel_prefix, kind).context("Failed to compute SAD prefix")?;
+        kels_core::compute_sad_prefix(kel_prefix, kind).context("Failed to compute SAD prefix")?;
     println!("{}", prefix);
     Ok(())
 }

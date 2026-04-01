@@ -10,7 +10,9 @@ use axum::{
     routing::{get, post},
 };
 use cacheable::create_pubsub_subscriber;
-use kels::{LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal};
+use kels_core::{
+    LocalCache, ServerKelCache, parse_pubsub_message, pubsub_channel, shutdown_signal,
+};
 use redis::Client as RedisClient;
 use verifiable_storage_postgres::RepositoryConnection;
 
@@ -93,11 +95,11 @@ pub async fn run(
     };
 
     let repo = Arc::new(repo);
-    let kel_store: Arc<dyn kels::KelStore> = {
+    let kel_store: Arc<dyn kels_core::KelStore> = {
         let kel_event_repo = Arc::new(crate::repository::KeyEventRepository::new(
             repo.key_events.pool.clone(),
         ));
-        Arc::new(kels::RepositoryKelStore::new(kel_event_repo))
+        Arc::new(kels_core::RepositoryKelStore::new(kel_event_repo))
     };
     let state = Arc::new(AppState {
         repo,

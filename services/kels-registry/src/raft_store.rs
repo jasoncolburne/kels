@@ -4,8 +4,8 @@
 
 use verifiable_storage_postgres::{PgPool, Stored};
 
-use kels::{KeyEvent, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
-use libkels_derive::SignedEvents;
+use kels_core::{KeyEvent, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote};
+use kels_derive::SignedEvents;
 
 /// PostgreSQL-backed Raft vote repository
 #[derive(Clone, Stored)]

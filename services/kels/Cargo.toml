@@ -20,8 +20,8 @@ cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 cacheable = { git = "https://github.com/jasoncolburne/cacheable", features = ["redis"] }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
-libkels = { path = "../../lib/kels", features = ["redis", "server-caching", "server"] }
-libkels-derive = { path = "../../lib/kels-derive" }
+kels-core = { path = "../../lib/kels", features = ["redis", "server-caching", "server"] }
+kels-derive = { path = "../../lib/derive" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use futures::stream::StreamExt;
-use kels::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
+use kels_core::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote};
 
 /// Verify a SAID is anchored in a member's KEL stored in the MemberKelRepository.
 /// Consuming: paginated read + verification + inline anchor check.
@@ -19,14 +19,14 @@ async fn verify_member_anchoring_from_repo(
     said: &str,
     member_prefix: &str,
 ) -> Result<(), String> {
-    let store = kels::RepositoryKelStore::new(Arc::new(
+    let store = kels_core::RepositoryKelStore::new(Arc::new(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
     ));
-    let kel_verification = kels::completed_verification(
-        &mut kels::StorePageLoader::new(&store),
+    let kel_verification = kels_core::completed_verification(
+        &mut kels_core::StorePageLoader::new(&store),
         member_prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         iter::once(said.to_string()),
     )
     .await
@@ -488,7 +488,7 @@ impl StateMachineData {
                 );
 
                 // Check if rejection threshold met — reject before checking approval
-                if rejection_count >= kels::REJECTION_THRESHOLD {
+                if rejection_count >= kels_core::REJECTION_THRESHOLD {
                     info!(
                         proposal_id = %proposal_id,
                         rejection_count = rejection_count,
@@ -701,7 +701,7 @@ impl StateMachineStore {
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<kels::SignedKeyEventPage, String> {
+    ) -> Result<kels_core::SignedKeyEventPage, String> {
         let repo = self
             .member_kel_repo
             .as_ref()
@@ -712,7 +712,7 @@ impl StateMachineStore {
             .await
             .map_err(|e| format!("Failed to read member KEL: {}", e))?;
 
-        Ok(kels::SignedKeyEventPage { events, has_more })
+        Ok(kels_core::SignedKeyEventPage { events, has_more })
     }
 
     /// Verify a SAID is anchored in a federation member's KEL.

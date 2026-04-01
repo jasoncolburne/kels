@@ -42,8 +42,8 @@ pub enum CredentialError {
     ReservedLabel(String),
 }
 
-impl From<kels::KelsError> for CredentialError {
-    fn from(e: kels::KelsError) -> Self {
+impl From<kels_core::KelsError> for CredentialError {
+    fn from(e: kels_core::KelsError) -> Self {
         CredentialError::KelError(e.to_string())
     }
 }

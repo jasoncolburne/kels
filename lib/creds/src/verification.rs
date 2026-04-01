@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use kels::PagedKelSource;
+use kels_core::PagedKelSource;
 use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 

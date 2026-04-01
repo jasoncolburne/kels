@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
-use kels::{
+use kels_core::{
     KelRecoveryEvent, KeyEvent, PrefixListResponse, PrefixState, RecoveryRecord, SignedKeyEvent,
 };
-use libkels_derive::SignedEvents;
+use kels_derive::SignedEvents;
 
 #[derive(Stored, SignedEvents)]
 #[stored(item_type = KeyEvent, table = "kels_key_events", version_field = "serial")]
@@ -43,11 +43,11 @@ impl KeyEventRepository {
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels_core::KelsError> {
         use verifiable_storage::TransactionExecutor;
 
         let mut tx = self.pool.begin_transaction().await?;
-        let result = kels::load_signed_history(
+        let result = kels_core::load_signed_history(
             &mut tx,
             "kels_archived_events",
             "kels_archived_event_signatures",
@@ -66,10 +66,10 @@ impl KeyEventRepository {
         recovery_said: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<SignedKeyEvent>, bool), kels::KelsError> {
+    ) -> Result<(Vec<SignedKeyEvent>, bool), kels_core::KelsError> {
         use verifiable_storage::TransactionExecutor;
 
-        let clamped_limit = limit.min(kels::page_size() as u64);
+        let clamped_limit = limit.min(kels_core::page_size() as u64);
 
         let mut tx = self.pool.begin_transaction().await?;
 
@@ -101,11 +101,12 @@ impl KeyEventRepository {
         let events: Vec<KeyEvent> = tx.fetch(events_query).await?;
 
         // Fetch signatures for those events.
-        let sig_query = Query::<kels::EventSignature>::for_table("kels_archived_event_signatures")
-            .r#in("event_said", event_saids);
-        let signatures: Vec<kels::EventSignature> = tx.fetch(sig_query).await?;
+        let sig_query =
+            Query::<kels_core::EventSignature>::for_table("kels_archived_event_signatures")
+                .r#in("event_said", event_saids);
+        let signatures: Vec<kels_core::EventSignature> = tx.fetch(sig_query).await?;
 
-        let mut sig_map: HashMap<String, Vec<kels::EventSignature>> = HashMap::new();
+        let mut sig_map: HashMap<String, Vec<kels_core::EventSignature>> = HashMap::new();
         for sig in signatures {
             sig_map.entry(sig.event_said.clone()).or_default().push(sig);
         }
@@ -115,7 +116,7 @@ impl KeyEventRepository {
         let mut result = Vec::with_capacity(events.len());
         for event in events {
             let sigs = sig_map.get(&event.said).ok_or_else(|| {
-                kels::KelsError::StorageError(format!(
+                kels_core::KelsError::StorageError(format!(
                     "No signatures found for event {}",
                     event.said
                 ))
@@ -141,7 +142,7 @@ impl KeyEventRepository {
     /// For non-divergent KELs, the SAID is the tip event's SAID.
     /// For divergent KELs (frozen due to conflicting events), the SAID is a Blake3 hash
     /// of all sorted tip SAIDs — ensuring deterministic comparison between nodes that
-    /// have the same divergent branches. See [`kels::compute_effective_said`] for details.
+    /// have the same divergent branches. See [`kels_core::compute_effective_said`] for details.
     pub async fn list_prefixes(
         &self,
         since: Option<&str>,
@@ -276,7 +277,7 @@ impl RecoveryRecordRepository {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<RecoveryRecord>, bool), StorageError> {
-        let clamped_limit = limit.min(kels::page_size() as u64);
+        let clamped_limit = limit.min(kels_core::page_size() as u64);
         let query = Query::<RecoveryRecord>::new()
             .eq("kel_prefix", kel_prefix)
             .order_by("created_at", Order::Asc)

@@ -27,4 +27,4 @@ Thumbs.db
 
 # Swift/iOS
 clients/kels-client/.build/
-lib/kels-ffi/include/libkels.h
+lib/ffi/include/libkels.h

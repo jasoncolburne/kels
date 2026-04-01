@@ -1,4 +1,4 @@
-# cargo-deny configuration for libkels-ffi
+# cargo-deny configuration for kels-ffi
 
 [graph]
 targets = []

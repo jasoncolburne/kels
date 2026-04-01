@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 
 use verifiable_storage::{Chained, StorageDatetime};
 
-use kels::{
+use kels_core::{
     FederationStatus, IdentityClient, KelsError, KelsRegistryClient, PeerAdditionProposal,
     PeerRemovalProposal, ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
     compute_approval_threshold,
@@ -113,7 +113,7 @@ enum IdentityAction {
         #[arg(short, long)]
         json: bool,
         /// Maximum number of pages to fetch
-        #[arg(long, default_value_t = kels::max_pages())]
+        #[arg(long, default_value_t = kels_core::max_pages())]
         max_pages: usize,
     },
 }
@@ -160,7 +160,7 @@ impl AdminContext {
     async fn get_federation_status(&self) -> anyhow::Result<Option<FederationStatus>> {
         match self.registry_client.fetch_federation_status().await {
             Ok(status) => Ok(Some(status)),
-            Err(KelsError::ServerError(_, kels::ErrorCode::NotFound)) => Ok(None),
+            Err(KelsError::ServerError(_, kels_core::ErrorCode::NotFound)) => Ok(None),
             Err(e) => Err(anyhow!("Failed to get federation status: {}", e)),
         }
     }
@@ -717,7 +717,7 @@ async fn show_identity_status(
     for _ in 0..max_pages {
         let page = ctx
             .identity_client
-            .get_key_events(since.as_deref(), kels::page_size())
+            .get_key_events(since.as_deref(), kels_core::page_size())
             .await
             .context("Failed to get identity KEL")?;
         if page.events.is_empty() {
@@ -730,7 +730,7 @@ async fn show_identity_status(
         }
     }
     let event_count = all_events.len();
-    let mut verifier = kels::KelVerifier::new(&prefix);
+    let mut verifier = kels_core::KelVerifier::new(&prefix);
     let verification = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()
     } else {

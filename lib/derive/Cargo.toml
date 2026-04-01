@@ -1,12 +1,14 @@
 [package]
-name = "libkels-derive"
+name = "kels-derive"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Jason Colburne"]
-description = "Derive macros for libkels - generates signed event repository methods"
+description = "Derive macros for kels-core - generates signed event repository methods"
 
 [lib]
+name = "kels_derive"
+path = "src/lib.rs"
 proc-macro = true
 
 [dependencies]

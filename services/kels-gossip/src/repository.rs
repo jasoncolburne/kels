@@ -2,8 +2,8 @@
 //!
 //! Stores local copies of registry KELs for anchoring verification.
 
-use kels::KeyEvent;
-use libkels_derive::SignedEvents;
+use kels_core::KeyEvent;
+use kels_derive::SignedEvents;
 use verifiable_storage_postgres::{PgPool, Stored};
 
 /// PostgreSQL-backed registry KEL repository (local copy for anchoring verification)

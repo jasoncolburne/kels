@@ -5,7 +5,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
-use kels::{IdentityClient, RotateMode};
+use kels_core::{IdentityClient, RotateMode};
 
 #[derive(Parser)]
 #[command(name = "identity-admin")]
@@ -58,18 +58,18 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to get prefix: {}", e))?;
 
     let operation = match &cli.command {
-        Commands::Rotate => kels::ManageKelOperation::Rotate {
+        Commands::Rotate => kels_core::ManageKelOperation::Rotate {
             mode: RotateMode::Standard,
         },
-        Commands::RotateRecovery => kels::ManageKelOperation::Rotate {
+        Commands::RotateRecovery => kels_core::ManageKelOperation::Rotate {
             mode: RotateMode::Recovery,
         },
-        Commands::ScheduledRotate => kels::ManageKelOperation::Rotate {
+        Commands::ScheduledRotate => kels_core::ManageKelOperation::Rotate {
             mode: RotateMode::Scheduled,
         },
-        Commands::Recover => kels::ManageKelOperation::Recover,
-        Commands::Contest => kels::ManageKelOperation::Contest,
-        Commands::Decommission => kels::ManageKelOperation::Decommission,
+        Commands::Recover => kels_core::ManageKelOperation::Recover,
+        Commands::Contest => kels_core::ManageKelOperation::Contest,
+        Commands::Decommission => kels_core::ManageKelOperation::Decommission,
         Commands::Status => unreachable!(),
     };
 
@@ -82,9 +82,9 @@ async fn main() -> anyhow::Result<()> {
 async fn manage_kel(
     identity_client: &IdentityClient,
     prefix: &str,
-    operation: kels::ManageKelOperation,
-) -> anyhow::Result<kels::ManageKelResponse> {
-    let request = kels::ManageKelRequest {
+    operation: kels_core::ManageKelOperation,
+) -> anyhow::Result<kels_core::ManageKelResponse> {
+    let request = kels_core::ManageKelRequest {
         prefix: prefix.to_string(),
         operation,
     };
@@ -94,7 +94,7 @@ async fn manage_kel(
         .map_err(|e| anyhow::anyhow!("Operation failed: {}", e))
 }
 
-fn print_manage_response(response: &kels::ManageKelResponse, json: bool) {
+fn print_manage_response(response: &kels_core::ManageKelResponse, json: bool) {
     if json {
         if let Ok(s) = serde_json::to_string_pretty(response) {
             println!("{}", s);

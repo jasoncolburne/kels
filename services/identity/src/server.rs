@@ -8,12 +8,12 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use kels::{KelStore, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal};
+use kels_core::{KelStore, KeyEventBuilder, KeyProvider, RepositoryKelStore, shutdown_signal};
 use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
 
-use kels::{ManageKelOperation, ManageKelResponse, RotateMode};
+use kels_core::{ManageKelOperation, ManageKelResponse, RotateMode};
 
 use crate::{
     handlers::{self, AppState},
@@ -234,11 +234,15 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 }
 
 fn rotation_interval() -> Duration {
-    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_INTERVAL_DAYS", 30) as u64 * 24 * 3600)
+    Duration::from_secs(
+        kels_core::env_usize("IDENTITY_ROTATION_INTERVAL_DAYS", 30) as u64 * 24 * 3600,
+    )
 }
 
 fn rotation_check_period() -> Duration {
-    Duration::from_secs(kels::env_usize("IDENTITY_ROTATION_CHECK_PERIOD_MINUTES", 360) as u64 * 60)
+    Duration::from_secs(
+        kels_core::env_usize("IDENTITY_ROTATION_CHECK_PERIOD_MINUTES", 360) as u64 * 60,
+    )
 }
 
 async fn auto_rotation_loop(state: Arc<AppState>) {
@@ -297,11 +301,11 @@ async fn check_and_rotate(
     // Consuming: verify full KEL under advisory lock with inline anchor checking
     let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
     let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
-    let kel_verification = kels::completed_verification(
+    let kel_verification = kels_core::completed_verification(
         &mut tx,
         prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         binding_saids,
     )
     .await?;
@@ -407,16 +411,16 @@ pub(crate) async fn perform_kel_operation(
             let add_rot = if let Some(ref forward_url) = state.forward_url
                 && let Some(prefix) = builder.prefix()
             {
-                let source = kels::HttpKelSource::new(
+                let source = kels_core::HttpKelSource::new(
                     forward_url,
                     &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
                 )?;
-                match kels::verify_key_events(
+                match kels_core::verify_key_events(
                     prefix,
                     &source,
-                    kels::KelVerifier::new(prefix),
-                    kels::page_size(),
-                    kels::max_pages(),
+                    kels_core::KelVerifier::new(prefix),
+                    kels_core::page_size(),
+                    kels_core::max_pages(),
                 )
                 .await
                 {
@@ -425,7 +429,7 @@ pub(crate) async fn perform_kel_operation(
                             .last_establishment_event()
                             .map(|e| e.serial)
                             .unwrap_or(0);
-                        kels::should_rotate_with_recovery(
+                        kels_core::should_rotate_with_recovery(
                             &server_verification,
                             builder.rotation_count(),
                             owner_last_est_serial,
@@ -541,7 +545,7 @@ pub(crate) async fn perform_kel_operation(
 /// be fixed by rotating, so triggering rotation here would loop forever.
 fn audit_binding_chain(
     bindings: &[HsmKeyBinding],
-    kel_verification: &kels::KelVerification,
+    kel_verification: &kels_core::KelVerification,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");
@@ -587,7 +591,7 @@ fn audit_binding_chain(
 /// actively wrong with the current key state and defensive rotation is warranted.
 fn verify_latest_binding(
     bindings: &[HsmKeyBinding],
-    kel_verification: &kels::KelVerification,
+    kel_verification: &kels_core::KelVerification,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if kel_verification.is_divergent() {
         error!("SECURITY: Identity KEL diverged — refusing to verify bindings");

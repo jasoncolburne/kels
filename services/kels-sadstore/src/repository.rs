@@ -2,7 +2,7 @@
 
 use cesr::VerificationKey;
 
-use kels::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
+use kels_core::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
     UnchainedRepository, Value,
@@ -90,9 +90,9 @@ impl SadPointerRepository {
         tx: &mut Tx,
         prefix: &str,
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
-    ) -> Result<kels::SadChainVerifier, StorageError> {
-        let page_size = kels::page_size() as u64;
-        let mut verifier = kels::SadChainVerifier::new(prefix, establishment_keys.clone());
+    ) -> Result<kels_core::SadChainVerifier, StorageError> {
+        let page_size = kels_core::page_size() as u64;
+        let mut verifier = kels_core::SadChainVerifier::new(prefix, establishment_keys.clone());
 
         let mut offset: u64 = 0;
         loop {
@@ -119,7 +119,7 @@ impl SadPointerRepository {
                 sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
             // Build SignedSadPointers for the verifier
-            let signed_records: Vec<kels::SignedSadPointer> = page
+            let signed_records: Vec<kels_core::SignedSadPointer> = page
                 .into_iter()
                 .map(|record| {
                     let sig_record = sig_map.get(record.said.as_str()).ok_or_else(|| {
@@ -128,7 +128,7 @@ impl SadPointerRepository {
                             record.said
                         ))
                     })?;
-                    Ok(kels::SignedSadPointer {
+                    Ok(kels_core::SignedSadPointer {
                         pointer: record,
                         signature: sig_record.signature.clone(),
                         establishment_serial: sig_record.establishment_serial,
@@ -178,7 +178,7 @@ impl SadPointerRepository {
         Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
 
         // Archive records and signatures page-at-a-time before deleting
-        let page_size = kels::page_size();
+        let page_size = kels_core::page_size();
         let mut repair_said: Option<String> = None;
         let mut version_cursor = from_version;
 
@@ -328,7 +328,7 @@ impl SadPointerRepository {
         prefix: &str,
         since_said: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<Vec<kels::SignedSadPointer>, StorageError> {
+    ) -> Result<Vec<kels_core::SignedSadPointer>, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Resolve SAID cursor to a (version, said) position
@@ -403,14 +403,15 @@ impl SadPointerRepository {
 
         // Batch-fetch all signatures in one query
         let saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
-        let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
-            Self::SIGNATURES_TABLE_NAME,
-        )
-        .r#in("pointer_said", saids);
-        let sigs: Vec<kels::SadPointerSignature> = self.pool.fetch(query).await?;
+        let query =
+            verifiable_storage_postgres::Query::<kels_core::SadPointerSignature>::for_table(
+                Self::SIGNATURES_TABLE_NAME,
+            )
+            .r#in("pointer_said", saids);
+        let sigs: Vec<kels_core::SadPointerSignature> = self.pool.fetch(query).await?;
 
         // Index signatures by pointer_said for O(1) lookup
-        let sig_map: std::collections::HashMap<&str, &kels::SadPointerSignature> =
+        let sig_map: std::collections::HashMap<&str, &kels_core::SadPointerSignature> =
             sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
         let mut stored = Vec::with_capacity(records.len());
@@ -421,7 +422,7 @@ impl SadPointerRepository {
                     record.said
                 ))
             })?;
-            stored.push(kels::SignedSadPointer {
+            stored.push(kels_core::SignedSadPointer {
                 pointer: record,
                 signature: sig.signature.clone(),
                 establishment_serial: sig.establishment_serial,
@@ -434,14 +435,15 @@ impl SadPointerRepository {
     pub async fn get_signature(
         &self,
         pointer_said: &str,
-    ) -> Result<Option<kels::SadPointerSignature>, StorageError> {
+    ) -> Result<Option<kels_core::SadPointerSignature>, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
-            Self::SIGNATURES_TABLE_NAME,
-        )
-        .eq("pointer_said", pointer_said)
-        .limit(1);
+        let query =
+            verifiable_storage_postgres::Query::<kels_core::SadPointerSignature>::for_table(
+                Self::SIGNATURES_TABLE_NAME,
+            )
+            .eq("pointer_said", pointer_said)
+            .limit(1);
         self.pool.fetch_optional(query).await
     }
 
@@ -459,7 +461,7 @@ impl SadPointerRepository {
         };
 
         if self.is_divergent(prefix).await? {
-            let said = kels::hash_effective_said(&format!("divergent:{}", prefix));
+            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix));
             return Ok(Some((said, true)));
         }
 
@@ -475,15 +477,15 @@ impl SadPointerRepository {
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SadPointerRepair>, bool), StorageError> {
+    ) -> Result<(Vec<kels_core::SadPointerRepair>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels::SadPointerRepair>::new()
+        let query = verifiable_storage_postgres::Query::<kels_core::SadPointerRepair>::new()
             .eq("pointer_prefix", prefix)
             .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
             .offset(offset)
             .limit(limit + 1);
-        let mut repairs: Vec<kels::SadPointerRepair> = self.pool.fetch(query).await?;
+        let mut repairs: Vec<kels_core::SadPointerRepair> = self.pool.fetch(query).await?;
 
         let has_more = repairs.len() as u64 > limit;
         repairs.truncate(limit as usize);
@@ -499,7 +501,7 @@ impl SadPointerRepository {
         repair_said: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SignedSadPointer>, bool), StorageError> {
+    ) -> Result<(Vec<kels_core::SignedSadPointer>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Fetch repair-record links with limit+1 for has_more
@@ -546,7 +548,7 @@ impl SadPointerRepository {
                     record.said
                 ))
             })?;
-            signed.push(kels::SignedSadPointer {
+            signed.push(kels_core::SignedSadPointer {
                 pointer: record,
                 signature: sig.signature.clone(),
                 establishment_serial: sig.establishment_serial,
@@ -567,7 +569,7 @@ impl SadPointerRepository {
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<kels::PrefixListResponse, StorageError> {
+    ) -> Result<kels_core::PrefixListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let mut query =
@@ -583,9 +585,9 @@ impl SadPointerRepository {
 
         let records: Vec<SadPointer> = self.pool.fetch(query).await?;
 
-        let mut prefix_states: Vec<kels::PrefixState> = records
+        let mut prefix_states: Vec<kels_core::PrefixState> = records
             .into_iter()
-            .map(|r| kels::PrefixState {
+            .map(|r| kels_core::PrefixState {
                 prefix: r.prefix,
                 said: r.said,
             })
@@ -606,7 +608,7 @@ impl SadPointerRepository {
                         .lte("prefix", cursor)
                         .limit(remaining as u64);
                 let wrap_records: Vec<SadPointer> = self.pool.fetch(wrap_query).await?;
-                prefix_states.extend(wrap_records.into_iter().map(|r| kels::PrefixState {
+                prefix_states.extend(wrap_records.into_iter().map(|r| kels_core::PrefixState {
                     prefix: r.prefix,
                     said: r.said,
                 }));
@@ -635,11 +637,11 @@ impl SadPointerRepository {
         // Replace divergent chain SAIDs with synthetic effective SAIDs
         for state in &mut prefix_states {
             if divergent_prefixes.contains(&state.prefix) {
-                state.said = kels::hash_effective_said(&format!("divergent:{}", state.prefix));
+                state.said = kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
             }
         }
 
-        Ok(kels::PrefixListResponse {
+        Ok(kels_core::PrefixListResponse {
             prefixes: prefix_states,
             next_cursor,
         })
@@ -651,7 +653,7 @@ impl SadPointerRepository {
 /// Uses `SadObjectEntry` as the storable type — a minimal SelfAddressed struct
 /// with just a SAID field, matching the `sad_objects` table.
 #[derive(Stored)]
-#[stored(item_type = kels::SadObjectEntry, table = "sad_objects", chained = false)]
+#[stored(item_type = kels_core::SadObjectEntry, table = "sad_objects", chained = false)]
 pub struct SadObjectIndex {
     pub pool: PgPool,
 }
@@ -667,7 +669,7 @@ impl SadObjectIndex {
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        let entry = kels::SadObjectEntry::create(sad_said.to_string())?;
+        let entry = kels_core::SadObjectEntry::create(sad_said.to_string())?;
 
         let mut tx = self.pool.begin_transaction().await?;
 
@@ -693,10 +695,11 @@ impl SadObjectIndex {
     pub async fn is_tracked(&self, sad_said: &str) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query =
-            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
-                .eq("sad_said", sad_said)
-                .limit(1);
+        let query = verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
+            Self::TABLE_NAME,
+        )
+        .eq("sad_said", sad_said)
+        .limit(1);
         Ok(self.pool.fetch_optional(query).await?.is_some())
     }
 
@@ -709,19 +712,20 @@ impl SadObjectIndex {
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<kels::SadObjectListResponse, StorageError> {
+    ) -> Result<kels_core::SadObjectListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let mut query =
-            verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(Self::TABLE_NAME)
-                .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
-                .limit(limit as u64 + 1);
+        let mut query = verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
+            Self::TABLE_NAME,
+        )
+        .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
+        .limit(limit as u64 + 1);
 
         if let Some(cursor) = cursor {
             query = query.gt("sad_said", cursor);
         }
 
-        let entries: Vec<kels::SadObjectEntry> = self.pool.fetch(query).await?;
+        let entries: Vec<kels_core::SadObjectEntry> = self.pool.fetch(query).await?;
 
         let mut saids: Vec<String> = entries.into_iter().map(|e| e.sad_said).collect();
 
@@ -733,13 +737,14 @@ impl SadObjectIndex {
             let remaining = limit - saids.len();
             if remaining > 0 {
                 let wrap_query =
-                    verifiable_storage_postgres::Query::<kels::SadObjectEntry>::for_table(
+                    verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
                         Self::TABLE_NAME,
                     )
                     .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
                     .lte("sad_said", cursor)
                     .limit(remaining as u64);
-                let wrap_entries: Vec<kels::SadObjectEntry> = self.pool.fetch(wrap_query).await?;
+                let wrap_entries: Vec<kels_core::SadObjectEntry> =
+                    self.pool.fetch(wrap_query).await?;
                 saids.extend(wrap_entries.into_iter().map(|e| e.sad_said));
             }
             None
@@ -747,7 +752,7 @@ impl SadObjectIndex {
             None
         };
 
-        Ok(kels::SadObjectListResponse { saids, next_cursor })
+        Ok(kels_core::SadObjectListResponse { saids, next_cursor })
     }
 }
 

@@ -193,7 +193,7 @@ impl FederationConfig {
     /// Compute approval threshold from member count.
     /// Usable without a full config (e.g., from CLI with federation status).
     pub fn compute_approval_threshold(n: usize) -> usize {
-        kels::compute_approval_threshold(n)
+        kels_core::compute_approval_threshold(n)
     }
 
     /// Get all member prefixes.

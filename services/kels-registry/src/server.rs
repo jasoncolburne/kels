@@ -8,7 +8,7 @@ use axum::{
     extract::DefaultBodyLimit,
     routing::{get, post},
 };
-use kels::{IdentityClient, shutdown_signal};
+use kels_core::{IdentityClient, shutdown_signal};
 use verifiable_storage::RepositoryConnection;
 
 use crate::{

@@ -32,12 +32,12 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use gossip::{Gossip, GossipConfig};
-//! use gossip::proto::{TopicId, Scope};
-//! use gossip::addr::PeerAddr;
+//! use kels_gossip_core::{Gossip, GossipConfig};
+//! use kels_gossip_core::proto::{TopicId, Scope};
+//! use kels_gossip_core::addr::PeerAddr;
 //! use bytes::Bytes;
 //!
-//! # async fn example() -> Result<(), gossip::net::Error> {
+//! # async fn example() -> Result<(), kels_gossip_core::net::Error> {
 //! // Create and start a gossip instance (requires Signer + PeerVerifier impls).
 //! // let gossip = Gossip::new(config, signer, verifier, listen_addr).await?;
 //! //

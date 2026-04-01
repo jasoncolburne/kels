@@ -10,7 +10,7 @@ use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels::{SadPointer, compute_sad_prefix};
+use kels_core::{SadPointer, compute_sad_prefix};
 use reqwest::Client;
 use testcontainers::{
     ContainerAsync, GenericImage, Image,
@@ -407,7 +407,7 @@ async fn test_submit_record_invalid_said_rejected() {
     .unwrap();
     pointer.kind = "tampered".to_string(); // Tamper after SAID computation
 
-    let records = vec![kels::SignedSadPointer {
+    let records = vec![kels_core::SignedSadPointer {
         pointer,
         signature: "fake_sig".to_string(),
         establishment_serial: 0,
@@ -431,10 +431,10 @@ async fn test_list_prefixes_empty() {
         return;
     };
 
-    let body = kels::SignedRequest {
-        payload: kels::PaginatedSelfAddressedRequest {
+    let body = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },
@@ -451,7 +451,7 @@ async fn test_list_prefixes_empty() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let body: kels::PrefixListResponse = resp.json().await.unwrap();
+    let body: kels_core::PrefixListResponse = resp.json().await.unwrap();
     // May or may not be empty depending on test ordering, but should succeed
     assert!(body.prefixes.len() <= 100);
 }
@@ -462,10 +462,10 @@ async fn test_list_objects_empty() {
         return;
     };
 
-    let body = kels::SignedRequest {
-        payload: kels::PaginatedSelfAddressedRequest {
+    let body = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },

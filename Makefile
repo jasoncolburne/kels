@@ -1,6 +1,6 @@
-LIBS_PACKAGES := libkels libkels-derive kels-creds kels-policy libkels-ffi kels-mock-hsm
+LIBS_PACKAGES := kels-core kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
+LIBS_SUBDIRS := kels derive creds policy ffi mock-hsm
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
@@ -100,7 +100,7 @@ test:
 # - FFI code (kels-ffi) - C bindings
 # - Server setup (server.rs in services) - integration code
 # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
-COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
+COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|lib/ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
 
 coverage:
 	@if ! command -v cargo-llvm-cov &> /dev/null; then \

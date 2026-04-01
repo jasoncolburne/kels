@@ -1,5 +1,5 @@
 [package]
-name = "kels-gossip-proto"
+name = "kels-gossip-core"
 version = "0.1.0"
 edition = "2024"
 authors = ["Jason Colburne"]
@@ -7,7 +7,7 @@ license = "MIT"
 description = "KELS gossip protocol - HyParView membership + PlumTree broadcast (inspired by iroh-gossip)"
 
 [lib]
-name = "gossip"
+name = "kels_gossip_core"
 path = "src/lib.rs"
 
 [dependencies]

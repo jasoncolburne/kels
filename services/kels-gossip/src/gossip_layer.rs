@@ -7,10 +7,10 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use gossip::Gossip;
-use gossip::identity::NodePrefix;
-use gossip::net::actor::Event;
-use gossip::proto::TopicId;
+use kels_gossip_core::Gossip;
+use kels_gossip_core::identity::NodePrefix;
+use kels_gossip_core::net::actor::Event;
+use kels_gossip_core::proto::TopicId;
 use thiserror::Error;
 
 use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
@@ -61,7 +61,7 @@ pub async fn run_gossip(
                 match cmd {
                     GossipCommand::AnnounceKel(announcement) => {
                         let data = serde_json::to_vec(&announcement)?;
-                        if let Err(e) = gossip_handle.broadcast(kel_topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
+                        if let Err(e) = gossip_handle.broadcast(kel_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
                             warn!("Failed to broadcast KEL announcement: {}", e);
                         } else {
                             debug!("Broadcast KEL announcement for prefix: {}", announcement.prefix);
@@ -69,7 +69,7 @@ pub async fn run_gossip(
                     }
                     GossipCommand::AnnounceSad(message) => {
                         let data = serde_json::to_vec(&message)?;
-                        if let Err(e) = gossip_handle.broadcast(sad_topic, Bytes::from(data), gossip::proto::Scope::Swarm).await {
+                        if let Err(e) = gossip_handle.broadcast(sad_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
                             warn!("Failed to broadcast SAD announcement: {}", e);
                         } else {
                             debug!("Broadcast SAD announcement");

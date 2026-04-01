@@ -11,7 +11,7 @@ use tokio::{sync::OnceCell, time::sleep};
 
 use cesr::{Matter, SigningKey, VerificationKey, generate_secp256r1};
 use ctor::dtor;
-use kels::{SadPointer, SadPointerSignature};
+use kels_core::{SadPointer, SadPointerSignature};
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;

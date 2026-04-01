@@ -15,18 +15,18 @@ use std::{
 use tokio::runtime::Runtime;
 
 #[cfg(feature = "dev-tools")]
-use kels::EventKind;
+use kels_core::EventKind;
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 ))]
-use kels::HardwareKeyProvider;
+use kels_core::HardwareKeyProvider;
 #[cfg(not(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
 )))]
-use kels::SoftwareKeyProvider;
-use kels::{
+use kels_core::SoftwareKeyProvider;
+use kels_core::{
     FileKelStore, FileKeyStateStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
     VerificationKeyCode,
 };
@@ -922,18 +922,18 @@ pub unsafe extern "C" fn kels_recover(
             let kels_url = match ctx.kels_url.read() {
                 Ok(url) => url.clone(),
                 Err(_) => {
-                    return Err(kels::KelsError::StorageError(
+                    return Err(kels_core::KelsError::StorageError(
                         "kels_url lock poisoned".to_string(),
                     ));
                 }
             };
-            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
-            match kels::verify_key_events(
+            let source = kels_core::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
+            match kels_core::verify_key_events(
                 prefix,
                 &source,
-                kels::KelVerifier::new(prefix),
-                kels::page_size(),
-                kels::max_pages(),
+                kels_core::KelVerifier::new(prefix),
+                kels_core::page_size(),
+                kels_core::max_pages(),
             )
             .await
             {
@@ -942,7 +942,7 @@ pub unsafe extern "C" fn kels_recover(
                         .last_establishment_event()
                         .map(|e| e.serial)
                         .unwrap_or(0);
-                    kels::should_rotate_with_recovery(
+                    kels_core::should_rotate_with_recovery(
                         &server_verification,
                         builder_guard.rotation_count(),
                         owner_last_est_serial,
@@ -1199,7 +1199,7 @@ pub unsafe extern "C" fn kels_status(
         feature = "secure-enclave"
     ))]
     {
-        result.use_hardware = kels::se_is_available();
+        result.use_hardware = kels_core::se_is_available();
     }
 
     #[cfg(not(all(
@@ -1261,7 +1261,7 @@ pub unsafe extern "C" fn kels_get_kel(
     };
 
     // Clamp limit to configured page size
-    let limit = limit.min(kels::page_size() as u64);
+    let limit = limit.min(kels_core::page_size() as u64);
 
     // Load a page of events from store
     let result = ctx
@@ -1605,12 +1605,12 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         drop(builder_guard);
 
         // Load events from store for the adversary builder
-        let source = kels::StoreKelSource::new(ctx.store.as_ref());
-        let events = match kels::resolve_key_events(
+        let source = kels_core::StoreKelSource::new(ctx.store.as_ref());
+        let events = match kels_core::resolve_key_events(
             &prefix,
             &source,
-            kels::page_size(),
-            kels::max_pages(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
             None,
         )
         .await
@@ -1755,7 +1755,7 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
     // Load KEL from store, truncate, and save
     ctx.runtime.block_on(async {
         // Load current KEL
-        let (events, _has_more) = match ctx.store.load(&prefix, kels::LOAD_ALL, 0).await {
+        let (events, _has_more) = match ctx.store.load(&prefix, kels_core::LOAD_ALL, 0).await {
             Ok(result) => result,
             Err(e) => {
                 set_last_error(&format!("Failed to load KEL: {}", e));
@@ -1824,8 +1824,15 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
 
     // Load events from store
     let events = ctx.runtime.block_on(async {
-        let source = kels::StoreKelSource::new(ctx.store.as_ref());
-        kels::resolve_key_events(&prefix, &source, kels::page_size(), kels::max_pages(), None).await
+        let source = kels_core::StoreKelSource::new(ctx.store.as_ref());
+        kels_core::resolve_key_events(
+            &prefix,
+            &source,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            None,
+        )
+        .await
     });
 
     match events {
@@ -1889,7 +1896,7 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
         feature = "secure-enclave"
     ))]
     {
-        let _ = kels::se_delete_all_keys();
+        let _ = kels_core::se_delete_all_keys();
     }
 
     let mut error_count = 0;
@@ -2026,7 +2033,8 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let store = FileKelStore::new(&store_dir)?;
 
         let peers =
-            kels::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store).await?;
+            kels_core::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store)
+                .await?;
 
         let peer_infos: Vec<PeerInfoJson> = peers
             .into_iter()
@@ -2151,7 +2159,7 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     };
 
     let fetch_result = runtime.block_on(async {
-        let client = kels::KelsRegistryClient::new(&url)?;
+        let client = kels_core::KelsRegistryClient::new(&url)?;
         client.fetch_registry_prefix().await
     });
 
@@ -2386,8 +2394,10 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_server_error() {
-        let err =
-            KelsError::ServerError("server failed".to_string(), kels::ErrorCode::InternalError);
+        let err = KelsError::ServerError(
+            "server failed".to_string(),
+            kels_core::ErrorCode::InternalError,
+        );
         assert_eq!(map_error_to_status(&err), KelsStatus::NetworkError);
     }
 

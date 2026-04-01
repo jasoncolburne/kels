@@ -1,4 +1,4 @@
-# cargo-deny configuration for libkels-derive
+# cargo-deny configuration for kels-derive
 
 [graph]
 targets = []

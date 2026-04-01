@@ -21,7 +21,7 @@ use super::{
     config::FederationConfig,
     types::{FederationError, FederationNodeId, TypeConfig},
 };
-use kels::IdentityClient;
+use kels_core::IdentityClient;
 
 /// Snapshot transfer data for federation RPC.
 ///
@@ -80,7 +80,7 @@ impl FederationNetwork {
     pub fn new(
         config: FederationConfig,
         identity_client: Arc<IdentityClient>,
-    ) -> Result<Self, kels::KelsError> {
+    ) -> Result<Self, kels_core::KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(5))

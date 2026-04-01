@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use serde::Deserialize;
 
-use kels::PagedKelSource;
+use kels_core::PagedKelSource;
 use kels_policy::{InMemoryPolicyResolver, Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 

@@ -23,8 +23,8 @@ path = "src/lib.rs"
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
-libkels = { path = "../../lib/kels", features = ["server"] }
-libkels-derive = { path = "../../lib/kels-derive" }
+kels-core = { path = "../../lib/kels", features = ["server"] }
+kels-derive = { path = "../../lib/derive" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
