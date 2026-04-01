@@ -170,7 +170,7 @@ impl BootstrapSync {
         let mut total_synced = 0u64;
 
         for peer in &ready_peers {
-            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
+            let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;
@@ -250,7 +250,7 @@ impl BootstrapSync {
         let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
 
         for peer in &ready_peers {
-            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
+            let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
             let mut cursor: Option<String> = None;

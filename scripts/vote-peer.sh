@@ -46,8 +46,8 @@ if [ "$APPROVE" = "true" ]; then
     APPROVE_FLAG="--approve"
 fi
 
-VOTE_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/kels-registry -c kels-registry -- \
-    /app/kels-registry-admin peer vote \
+VOTE_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+    /app/registry-admin peer vote \
     --proposal-id "$PROPOSAL_ID" \
     $APPROVE_FLAG 2>&1)
 

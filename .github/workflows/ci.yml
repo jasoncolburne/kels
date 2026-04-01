@@ -41,10 +41,10 @@ jobs:
             lib/kels-ffi \
             services/identity \
             services/kels \
-            services/kels-gossip \
-            services/kels-registry \
-            clients/kels-cli \
-            clients/kels-bench
+            services/gossip \
+            services/registry \
+            clients/cli \
+            clients/bench
           do
             echo "Checking $dir..."
             (cd "$dir" && cargo deny check -A no-license-field) || exit 1

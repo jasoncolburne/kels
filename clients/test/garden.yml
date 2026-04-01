@@ -12,8 +12,8 @@ include:
   - Cargo.toml
   - lib/kels/**/*
   - lib/kels-derive/**/*
-  - clients/kels-bench/**/*
-  - clients/kels-cli/**/*
+  - clients/bench/**/*
+  - clients/cli/**/*
   - clients/test/**/*
 
 spec:

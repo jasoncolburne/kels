@@ -5,7 +5,7 @@ LIBS_SUBDIRS := kels derive creds policy ffi mock-hsm
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
 
-CLIENT_PACKAGES := kels-bench
+CLIENT_PACKAGES := bench
 CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
@@ -75,11 +75,11 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in identity kels kels-gossip kels-registry kels-sadstore; do \
+	@for service in identity kels gossip registry sadstore; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for client in kels-cli kels-bench; do \
+	@for client in cli bench; do \
 		echo "Checking clients/$$client..."; \
 		(cd $(CLIENTS_DIR)/$$client && cargo deny check -A no-license-field) || exit 1; \
 	done
@@ -161,10 +161,10 @@ test-voting:
 	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1a: unauthenticated GET to federation proposals endpoint should succeed (read-only)
-	kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	kubectl exec -n kels-node-a test-client -- curl -sf http://registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1b: POST to federation proposals endpoint should fail (method not allowed)
-	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1c: proposal-status via admin CLI should succeed
 	garden run proposal-status --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -193,7 +193,7 @@ test-voting:
 	# Continue voting to approve
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
+	kubectl rollout restart deployment/gossip -n kels-node-a && kubectl rollout status deployment/gossip -n kels-node-a
 
 	# Remove
 	garden run propose-remove-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
@@ -245,18 +245,18 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
 restart-gossip-services:
-	kubectl rollout restart deployment/kels-gossip -n kels-node-a
-	kubectl rollout restart deployment/kels-gossip -n kels-node-b
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-d
-	kubectl rollout restart deployment/kels-gossip -n kels-node-e
-	kubectl rollout restart deployment/kels-gossip -n kels-node-f
-	kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl rollout status deployment/kels-gossip -n kels-node-d
-	kubectl rollout status deployment/kels-gossip -n kels-node-e
-	kubectl rollout status deployment/kels-gossip -n kels-node-f
+	kubectl rollout restart deployment/gossip -n kels-node-a
+	kubectl rollout restart deployment/gossip -n kels-node-b
+	kubectl rollout restart deployment/gossip -n kels-node-c
+	kubectl rollout restart deployment/gossip -n kels-node-d
+	kubectl rollout restart deployment/gossip -n kels-node-e
+	kubectl rollout restart deployment/gossip -n kels-node-f
+	kubectl rollout status deployment/gossip -n kels-node-a
+	kubectl rollout status deployment/gossip -n kels-node-b
+	kubectl rollout status deployment/gossip -n kels-node-c
+	kubectl rollout status deployment/gossip -n kels-node-d
+	kubectl rollout status deployment/gossip -n kels-node-e
+	kubectl rollout status deployment/gossip -n kels-node-f
 
 test-resync:
 	scripts/coredns.sh apply
@@ -311,7 +311,7 @@ wait-for-gossip:
 		while [ $$elapsed -lt 120 ]; do \
 			all_ready=true; \
 			for node in a b c d e f; do \
-				status=$$(curl -s -o /dev/null -w "%{http_code}" http://kels-gossip.kels-node-$$node.kels/ready 2>/dev/null); \
+				status=$$(curl -s -o /dev/null -w "%{http_code}" http://gossip.kels-node-$$node.kels/ready 2>/dev/null); \
 				if [ "$$status" != "200" ]; then \
 					all_ready=false; \
 					break; \

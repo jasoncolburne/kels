@@ -28,8 +28,8 @@ fi
 echo "Withdrawing proposal $PROPOSAL_ID from $REGISTRY_NS..." >&2
 
 # Withdraw the proposal
-WITHDRAW_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/kels-registry -c kels-registry -- \
-    /app/kels-registry-admin peer withdraw \
+WITHDRAW_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+    /app/registry-admin peer withdraw \
     --proposal-id "$PROPOSAL_ID" 2>&1)
 
 echo "$WITHDRAW_OUTPUT"

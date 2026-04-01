@@ -82,7 +82,7 @@ pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge
 /// with the actual number of new events inserted.
 ///
-/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+/// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -106,7 +106,7 @@ fn check_prefix_rate_limit(
 
 /// Accrue the actual number of new events after merge completes.
 ///
-/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+/// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,

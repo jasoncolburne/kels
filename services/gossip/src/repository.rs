@@ -1,4 +1,4 @@
-//! PostgreSQL repository for kels-gossip
+//! PostgreSQL repository for gossip
 //!
 //! Stores local copies of registry KELs for anchoring verification.
 
@@ -20,7 +20,7 @@ pub struct RegistryKelRepository {
     pub pool: PgPool,
 }
 
-/// Combined repository that manages all kels-gossip database tables.
+/// Combined repository that manages all gossip database tables.
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct GossipRepository {

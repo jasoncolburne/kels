@@ -469,7 +469,7 @@ impl SyncHandler {
     async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
         let guard = self.allowlist.read().await;
         let peer = guard.get(peer_prefix)?;
-        Some(format!("http://kels-sadstore.{}", peer.base_domain))
+        Some(format!("http://sadstore.{}", peer.base_domain))
     }
 
     /// Handle an announcement from a peer.
@@ -1328,7 +1328,7 @@ pub async fn run_sad_anti_entropy_loop(
                 .map(|p| {
                     (
                         p.peer_prefix.clone(),
-                        format!("http://kels-sadstore.{}", p.base_domain),
+                        format!("http://sadstore.{}", p.base_domain),
                     )
                 })
                 .collect()

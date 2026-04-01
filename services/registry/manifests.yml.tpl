@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kels-registry
+  name: registry
   labels:
-    app: kels-registry
+    app: registry
 spec:
   replicas: ${var.registry.replicas}
   selector:
     matchLabels:
-      app: kels-registry
+      app: registry
   template:
     metadata:
       labels:
-        app: kels-registry
+        app: registry
     spec:
       initContainers:
         - name: wait-for-postgres
@@ -38,8 +38,8 @@ spec:
               done;
               echo "Identity service is ready!";
       containers:
-        - name: kels-registry
-          image: ${actions.build.kels-registry.outputs.deployment-image-id}
+        - name: registry
+          image: ${actions.build.registry.outputs.deployment-image-id}
           ports:
             - containerPort: 80
               name: http
@@ -81,9 +81,9 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: kels-registry
+  name: registry
   labels:
-    app: kels-registry
+    app: registry
 spec:
   type: ClusterIP
   ports:
@@ -92,26 +92,26 @@ spec:
       protocol: TCP
       name: http
   selector:
-    app: kels-registry
+    app: registry
 
 ---
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: kels-registry
+  name: registry
   labels:
-    app: kels-registry
+    app: registry
 spec:
   ingressClassName: traefik
   rules:
-    - host: kels-registry.${environment.namespace}.kels
+    - host: registry.${environment.namespace}.kels
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: kels-registry
+                name: registry
                 port:
                   number: ${var.registry.port}

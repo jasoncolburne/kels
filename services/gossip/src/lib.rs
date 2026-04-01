@@ -81,7 +81,7 @@ pub struct Config {
     /// Unique node identifier (e.g., "node-a")
     pub node_id: String,
     /// Base domain for service discovery (e.g., "kels-node-a.kels").
-    /// KELS URL = http://kels.{base_domain}, SADStore URL = http://kels-sadstore.{base_domain}
+    /// KELS URL = http://kels.{base_domain}, SADStore URL = http://sadstore.{base_domain}
     pub base_domain: String,
     /// PostgreSQL database URL for local registry KEL store
     pub database_url: String,
@@ -95,7 +95,7 @@ pub struct Config {
     pub federation_registry_urls: Vec<String>,
     /// Gossip listen address (e.g., 0.0.0.0:4001)
     pub listen_addr: SocketAddr,
-    /// Advertised gossip address for registry (e.g., kels-gossip.kels-node-a.kels:4001)
+    /// Advertised gossip address for registry (e.g., gossip.kels-node-a.kels:4001)
     pub advertise_addr: String,
     /// Gossip topic name
     pub topic: String,
@@ -117,7 +117,7 @@ impl Config {
 
     /// Local SADStore URL derived from base_domain.
     pub fn sadstore_url(&self) -> String {
-        format!("http://kels-sadstore.{}", self.base_domain)
+        format!("http://sadstore.{}", self.base_domain)
     }
 }
 
@@ -396,7 +396,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     "=======================================================================\n\
                      AUTHORIZATION REQUIRED: This node is not in the allowlist.\n\
                      Peer prefix: {}\n\
-                     Add this peer via: kels-registry-admin peer add --peer-prefix {} --node-id {}\n\
+                     Add this peer via: registry-admin peer add --peer-prefix {} --node-id {}\n\
                      Preloading KELs while waiting...\n\
                      =======================================================================",
                     peer_prefix_str, peer_prefix_str, config.node_id
@@ -830,7 +830,7 @@ mod tests {
         if let Ok(config) = result {
             assert_eq!(config.base_domain, "example.com");
             assert_eq!(config.kels_url(), "http://kels.example.com");
-            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
+            assert_eq!(config.sadstore_url(), "http://sadstore.example.com");
         }
     }
 
@@ -845,7 +845,7 @@ mod tests {
         if let Ok(config) = result {
             assert_eq!(config.node_id, "node-unknown");
             assert_eq!(config.kels_url(), "http://kels.example.com");
-            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
+            assert_eq!(config.sadstore_url(), "http://sadstore.example.com");
             assert_eq!(config.redis_url, "redis://redis:6379");
             assert_eq!(config.hsm_url, "http://hsm");
             assert_eq!(config.allowlist_refresh_interval_secs, 60);

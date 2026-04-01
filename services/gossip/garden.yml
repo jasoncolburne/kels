@@ -1,5 +1,5 @@
 kind: Build
-name: kels-gossip
+name: gossip
 type: container
 
 # Gossip service is not needed in the registry environment
@@ -15,12 +15,12 @@ include:
   - lib/gossip/**/*
   - lib/kels/**/*
   - lib/kels-derive/**/*
-  - services/kels-gossip/**/*
+  - services/gossip/**/*
   - project.garden.yml
   - .kels/federated-registries.json
 
 spec:
-  dockerfile: services/kels-gossip/Dockerfile
+  dockerfile: services/gossip/Dockerfile
   buildArgs:
     # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
     TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
@@ -28,7 +28,7 @@ spec:
 ---
 
 kind: Deploy
-name: kels-gossip
+name: gossip
 type: kubernetes
 
 # Gossip service is not needed in the registry environment
@@ -36,7 +36,7 @@ disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
   - run.federation-read-urls
-  - build.kels-gossip
+  - build.gossip
   - deploy.postgres
   - deploy.kels
   - deploy.redis
@@ -46,7 +46,7 @@ variables:
   gossipDatabaseUrl: ${var.postgres.url}/kels_gossip
   redisUrl: "${var.redis.gossipUrl}"
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
-  gossipAdvertiseAddress: "kels-gossip.kels-${environment.name}.kels:${var.gossip.port}"
+  gossipAdvertiseAddress: "gossip.kels-${environment.name}.kels:${var.gossip.port}"
   gossipAntiEntropyIntervalSecs: "${var.gossip.antiEntropyIntervalSecs}"
   identityUrl: ${var.identity.url}
 
@@ -63,7 +63,7 @@ type: exec
 disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
-  - deploy.kels-gossip
+  - deploy.gossip
 
 spec:
   command:

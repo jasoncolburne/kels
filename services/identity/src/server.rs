@@ -44,7 +44,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .unwrap_or(0);
     let hsm_pin = std::env::var("HSM_PIN").unwrap_or_else(|_| "1234".to_string());
     let key_handle_prefix =
-        std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "kels-registry".to_string());
+        std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "registry".to_string());
     let forward_url = std::env::var("KEL_FORWARD_URL")
         .ok()
         .filter(|u| !u.is_empty());

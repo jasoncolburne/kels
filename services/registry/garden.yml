@@ -1,5 +1,5 @@
 kind: Build
-name: kels-registry
+name: registry
 type: container
 
 disabled: ${var.envType != "registry"}
@@ -13,25 +13,25 @@ source:
 include:
   - lib/kels/**/*
   - lib/kels-derive/**/*
-  - services/kels-registry/**/*
+  - services/registry/**/*
   - project.garden.yml
   - .kels/federated-registries.json
 
 spec:
-  dockerfile: services/kels-registry/Dockerfile
+  dockerfile: services/registry/Dockerfile
   buildArgs:
     TRUSTED_REGISTRY_MEMBERS: ${actions.run.federation-read-members.outputs.log}
 
 ---
 
 kind: Deploy
-name: kels-registry
+name: registry
 type: kubernetes
 
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - build.kels-registry
+  - build.registry
   - deploy.postgres
   - deploy.identity
   - run.federation-read-prefix
@@ -80,7 +80,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:
@@ -102,7 +102,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:
@@ -124,7 +124,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:
@@ -148,7 +148,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:
@@ -172,7 +172,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:
@@ -195,7 +195,7 @@ source:
 disabled: ${var.envType != "registry"}
 
 dependencies:
-  - deploy.kels-registry
+  - deploy.registry
 
 spec:
   command:

@@ -16,18 +16,18 @@ RUN apt-get update && \
 # Copy source code
 COPY lib/kels-derive /app/lib/kels-derive
 COPY lib/kels /app/lib/kels
-COPY services/kels-registry /app/services/kels-registry
+COPY services/registry /app/services/registry
 
 # Build with BuildKit cache mounts
 # TRUSTED_REGISTRY_MEMBERS must be provided at build time for zero-trust federation
 ARG TRUSTED_REGISTRY_MEMBERS
-WORKDIR /app/services/kels-registry
+WORKDIR /app/services/registry
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=kels-registry-target,target=/app/services/kels-registry/target \
+    --mount=type=cache,id=registry-target,target=/app/services/registry/target \
     TRUSTED_REGISTRY_MEMBERS="${TRUSTED_REGISTRY_MEMBERS}" \
-    cargo build --release --bin kels-registry --bin kels-registry-admin && \
-    cp /app/services/kels-registry/target/release/kels-registry /app/kels-registry && \
-    cp /app/services/kels-registry/target/release/kels-registry-admin /app/kels-registry-admin
+    cargo build --release --bin registry --bin registry-admin && \
+    cp /app/services/registry/target/release/registry /app/registry && \
+    cp /app/services/registry/target/release/registry-admin /app/registry-admin
 
 # Final stage
 FROM debian:bookworm-slim
@@ -41,12 +41,12 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built binaries
-COPY --from=builder /app/kels-registry /app/kels-registry
-COPY --from=builder /app/kels-registry-admin /app/kels-registry-admin
+COPY --from=builder /app/registry /app/registry
+COPY --from=builder /app/registry-admin /app/registry-admin
 
 # Copy migrations
-COPY --from=builder /app/services/kels-registry/migrations /app/services/kels-registry/migrations
+COPY --from=builder /app/services/registry/migrations /app/services/registry/migrations
 
 EXPOSE 80
 
-CMD ["/app/kels-registry"]
+CMD ["/app/registry"]

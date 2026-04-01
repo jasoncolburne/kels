@@ -1,7 +1,7 @@
 //! Registry API client for node registration and discovery.
 //!
 //! Shared client used by gossip nodes, CLI, and other clients to interact
-//! with the kels-registry service.
+//! with the registry service.
 
 use std::{cmp::Ordering, collections::HashSet, future::Future, iter, time::Duration};
 use tracing::{debug, info, warn};
@@ -86,7 +86,7 @@ where
     })
 }
 
-/// Client for interacting with the kels-registry service.
+/// Client for interacting with the registry service.
 #[derive(Clone)]
 pub struct KelsRegistryClient {
     client: reqwest::Client,

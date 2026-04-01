@@ -17,7 +17,7 @@
 #   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
 #   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.kels-node-c.kels)
 #   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
-#   REGISTRY_HOST - registry hostname (default: kels-registry.kels-registry-a.kels)
+#   REGISTRY_HOST - registry hostname (default: registry.kels-registry-a.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
@@ -28,7 +28,7 @@ NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.kels-node-c.kels}"
 NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
 NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
 NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
-REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry-a.kels}"
+REGISTRY_HOST="${REGISTRY_HOST:-registry.kels-registry-a.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 NODE_C_URL="http://${NODE_C_KELS_HOST}"

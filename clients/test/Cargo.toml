@@ -4,8 +4,8 @@ resolver = "2"
 members = [
     "lib/kels",
     "lib/derive",
-    "clients/kels-bench",
-    "clients/kels-cli",
+    "clients/bench",
+    "clients/cli",
 ]
 
 # Shared dependencies across workspace for version consistency

@@ -10,12 +10,12 @@ members = [
     "lib/ffi",
     "lib/mock-hsm",
     "services/kels",
-    "services/kels-gossip",
-    "services/kels-registry",
-    "services/kels-sadstore",
+    "services/gossip",
+    "services/registry",
+    "services/sadstore",
     "services/identity",
-    "clients/kels-bench",
-    "clients/kels-cli",
+    "clients/bench",
+    "clients/cli",
 ]
 
 # Workspace-wide clippy lints - deny panicky code patterns

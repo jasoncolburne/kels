@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kels-gossip
+  name: gossip
   labels:
-    app: kels-gossip
+    app: gossip
 spec:
   replicas: ${var.gossip.replicas}
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: kels-gossip
+      app: gossip
   template:
     metadata:
       labels:
-        app: kels-gossip
+        app: gossip
     spec:
       initContainers:
         - name: wait-for-postgres
@@ -62,8 +62,8 @@ spec:
               done;
               echo "Identity is ready!";
       containers:
-        - name: kels-gossip
-          image: ${actions.build.kels-gossip.outputs.deployment-image-id}
+        - name: gossip
+          image: ${actions.build.gossip.outputs.deployment-image-id}
           ports:
             - containerPort: 4001
               name: gossip
@@ -115,9 +115,9 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: kels-gossip
+  name: gossip
   labels:
-    app: kels-gossip
+    app: gossip
 spec:
   type: ClusterIP
   ports:
@@ -130,4 +130,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    app: kels-gossip
+    app: gossip

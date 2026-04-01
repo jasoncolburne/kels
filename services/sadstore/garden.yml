@@ -1,5 +1,5 @@
 kind: Build
-name: kels-sadstore
+name: sadstore
 type: container
 
 # SADStore is not needed in the registry environment
@@ -11,23 +11,23 @@ source:
 include:
   - lib/kels/**/*
   - lib/kels-derive/**/*
-  - services/kels-sadstore/**/*
+  - services/sadstore/**/*
   - project.garden.yml
 
 spec:
-  dockerfile: services/kels-sadstore/Dockerfile
+  dockerfile: services/sadstore/Dockerfile
 
 ---
 
 kind: Deploy
-name: kels-sadstore
+name: sadstore
 type: kubernetes
 
 # SADStore is not needed in the registry environment
 disabled: ${var.envType == "registry"}
 
 dependencies:
-  - build.kels-sadstore
+  - build.sadstore
   - deploy.postgres
   - deploy.minio
 

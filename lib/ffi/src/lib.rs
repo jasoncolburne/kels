@@ -1972,7 +1972,7 @@ struct PeerInfoJson {
 /// 3. Verifies each peer's SAID is anchored in the registry's KEL
 ///
 /// # Arguments
-/// * `registry_url` - Comma-separated URLs of kels-registry services
+/// * `registry_url` - Comma-separated URLs of registry services
 /// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
 ///
 /// # Safety
@@ -2126,7 +2126,7 @@ impl Default for KelsPrefixResult {
 /// The caller should verify the returned prefix is in their trusted set.
 ///
 /// # Arguments
-/// * `registry_url` - URL of the kels-registry service
+/// * `registry_url` - URL of the registry service
 ///
 /// # Safety
 /// - `registry_url` must be a valid C string

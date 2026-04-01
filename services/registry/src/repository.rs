@@ -1,4 +1,4 @@
-//! Combined PostgreSQL repository for kels-registry
+//! Combined PostgreSQL repository for registry
 //!
 //! Manages migrations for all registry tables.
 
@@ -9,7 +9,7 @@ use crate::raft_store::{
     RaftVoteRepository,
 };
 
-/// Combined repository that manages all kels-registry database tables.
+/// Combined repository that manages all registry database tables.
 ///
 /// The `migrations` attribute tells Stored to look for SQL files in the
 /// "migrations" directory and run them via `initialize()`.

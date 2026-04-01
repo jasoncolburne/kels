@@ -7,12 +7,12 @@ license = "MIT"
 description = "KELS Node Registry - Service discovery for KELS gossip nodes"
 
 [[bin]]
-name = "kels-registry"
+name = "registry"
 path = "src/main.rs"
 
 [[bin]]
-name = "kels-registry-admin"
-path = "src/bin/kels-registry-admin.rs"
+name = "registry-admin"
+path = "src/bin/registry-admin.rs"
 
 [lib]
 name = "kels_registry"

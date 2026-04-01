@@ -7,7 +7,7 @@ license = "MIT"
 description = "KELS Gossip Protocol - Synchronizes KELs between KELS deployments"
 
 [[bin]]
-name = "kels-gossip"
+name = "gossip"
 path = "src/main.rs"
 
 [lib]

@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kels-sadstore
+  name: sadstore
   labels:
-    app: kels-sadstore
+    app: sadstore
 spec:
   replicas: ${var.sadstore.replicas}
   selector:
     matchLabels:
-      app: kels-sadstore
+      app: sadstore
   template:
     metadata:
       labels:
-        app: kels-sadstore
+        app: sadstore
     spec:
       initContainers:
         - name: wait-for-postgres
@@ -38,8 +38,8 @@ spec:
               done;
               echo "MinIO is ready!";
       containers:
-        - name: kels-sadstore
-          image: ${actions.build.kels-sadstore.outputs.deployment-image-id}
+        - name: sadstore
+          image: ${actions.build.sadstore.outputs.deployment-image-id}
           ports:
             - containerPort: 80
               name: http
@@ -101,9 +101,9 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: kels-sadstore
+  name: sadstore
   labels:
-    app: kels-sadstore
+    app: sadstore
 spec:
   type: ClusterIP
   ports:
@@ -112,26 +112,26 @@ spec:
       protocol: TCP
       name: http
   selector:
-    app: kels-sadstore
+    app: sadstore
 
 ---
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: kels-sadstore
+  name: sadstore
   labels:
-    app: kels-sadstore
+    app: sadstore
 spec:
   ingressClassName: traefik
   rules:
-    - host: kels-sadstore.${environment.namespace}.kels
+    - host: sadstore.${environment.namespace}.kels
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: kels-sadstore
+                name: sadstore
                 port:
                   number: ${var.sadstore.port}

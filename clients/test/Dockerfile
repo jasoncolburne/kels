@@ -10,21 +10,21 @@ WORKDIR /app
 COPY clients/test/Cargo.toml /app/
 COPY lib/kels /app/lib/kels
 COPY lib/kels-derive /app/lib/kels-derive
-COPY clients/kels-bench /app/clients/kels-bench
-COPY clients/kels-cli /app/clients/kels-cli
+COPY clients/bench /app/clients/bench
+COPY clients/cli /app/clients/cli
 
 # TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries
 ARG TRUSTED_REGISTRY_PREFIXES
 
 # Build kels-bench
-WORKDIR /app/clients/kels-bench
+WORKDIR /app/clients/bench
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-bench-target,target=/app/target \
     TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release && \
     cp /app/target/release/kels-bench /app/kels-bench
 
 # Build kels-cli with dev-tools for adversarial testing
-WORKDIR /app/clients/kels-cli
+WORKDIR /app/clients/cli
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=kels-cli-target,target=/app/target \
     TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --features dev-tools && \

@@ -7,7 +7,7 @@ license = "MIT"
 description = "KELS SADStore - Replicated Self-Addressed Data Store"
 
 [[bin]]
-name = "kels-sadstore"
+name = "sadstore"
 path = "src/main.rs"
 
 [lib]

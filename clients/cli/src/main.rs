@@ -16,13 +16,13 @@ use kels_core::{
 };
 
 const DEFAULT_BASE_DOMAIN: &str = "kels-node-a.kels";
-const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
+const DEFAULT_REGISTRY_URL: &str = "http://registry.kels-registry-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Base domain for service discovery (e.g., "kels-node-a.kels").
-    /// KELS URL = http://kels.{domain}, SADStore URL = http://kels-sadstore.{domain}
+    /// KELS URL = http://kels.{domain}, SADStore URL = http://sadstore.{domain}
     #[arg(short = 'd', long, env = "BASE_DOMAIN", default_value = DEFAULT_BASE_DOMAIN)]
     base_domain: String,
 
@@ -352,7 +352,7 @@ impl Cli {
     fn sadstore_url(&self) -> String {
         self.sadstore_url
             .clone()
-            .unwrap_or_else(|| format!("http://kels-sadstore.{}", self.base_domain))
+            .unwrap_or_else(|| format!("http://sadstore.{}", self.base_domain))
     }
 }
 

@@ -1,6 +1,6 @@
-//! kels-registry-admin CLI - Peer allowlist management
+//! registry-admin CLI - Peer allowlist management
 //!
-//! This CLI manages the peer allowlist in the kels-registry.
+//! This CLI manages the peer allowlist in the registry.
 //! All peer changes go through federation proposals (propose, vote, withdraw).
 //! Connects via localhost HTTP to the registry for proposals and via identity service for signing.
 
@@ -16,7 +16,7 @@ use kels_core::{
 };
 
 #[derive(Parser)]
-#[command(name = "kels-registry-admin")]
+#[command(name = "registry-admin")]
 #[command(about = "KELS Registry Administration CLI")]
 struct Cli {
     #[command(subcommand)]

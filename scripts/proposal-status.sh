@@ -17,8 +17,8 @@ fi
 
 echo "Querying proposal $PROPOSAL_ID from $REGISTRY_NS..." >&2
 
-STATUS_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/kels-registry -c kels-registry -- \
-    /app/kels-registry-admin peer proposal-status \
+STATUS_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+    /app/registry-admin peer proposal-status \
     --proposal-id "$PROPOSAL_ID" 2>&1)
 
 echo "$STATUS_OUTPUT"
