@@ -246,6 +246,10 @@ enum SadCommands {
     Submit {
         /// Path to JSON file containing SignedSadPointer(s)
         file: PathBuf,
+
+        /// Submit as a repair operation (truncates divergent records and replaces)
+        #[arg(long)]
+        repair: bool,
     },
 
     /// Fetch and display a SAD pointer chain
@@ -1144,21 +1148,29 @@ async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
+async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
     let records: Vec<kels::SignedSadPointer> =
         serde_json::from_str(&data).context("Failed to parse SignedSadPointer JSON")?;
 
     let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
-    client
-        .submit_sad_records(&records)
-        .await
-        .context("Failed to submit SAD records")?;
+    if repair {
+        client
+            .repair_sad_chain(&records)
+            .await
+            .context("Failed to submit SAD repair")?;
+    } else {
+        client
+            .submit_sad_records(&records)
+            .await
+            .context("Failed to submit SAD records")?;
+    }
 
+    let label = if repair { "repaired" } else { "submitted" };
     println!(
         "{}",
-        format!("{} SAD record(s) submitted", records.len()).green()
+        format!("{} SAD record(s) {}", records.len(), label).green()
     );
     Ok(())
 }
@@ -1246,7 +1258,7 @@ async fn main() -> Result<()> {
         Commands::Sad(sad_cmd) => match sad_cmd {
             SadCommands::Put { file } => cmd_sad_put(&cli, file).await,
             SadCommands::Get { said } => cmd_sad_get(&cli, said).await,
-            SadCommands::Submit { file } => cmd_sad_submit(&cli, file).await,
+            SadCommands::Submit { file, repair } => cmd_sad_submit(&cli, file, *repair).await,
             SadCommands::Pointer { prefix } => cmd_sad_chain(&cli, prefix).await,
             SadCommands::Prefix { kel_prefix, kind } => cmd_sad_prefix(kel_prefix, kind),
         },

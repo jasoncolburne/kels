@@ -199,13 +199,13 @@ pub struct SadObjectListResponse {
 /// distinguished by their `repaired_at` timestamp and unique SAID.
 /// The displaced records are linked via `SadChainRepairRecord`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_chain_repairs")]
+#[storable(table = "sad_pointer_repairs")]
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerRepair {
     #[said]
     pub said: String,
     /// The chain prefix that was repaired.
-    pub record_prefix: String,
+    pub pointer_prefix: String,
     /// The version at which divergence occurred.
     pub diverged_at_version: u64,
     /// When the repair was performed.
@@ -225,7 +225,7 @@ pub struct SadPointerRepairPage {
 ///
 /// One entry per archived pointer, all sharing the same `repair_said`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_chain_repair_records")]
+#[storable(table = "sad_pointer_repair_records")]
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerRepairRecord {
     #[said]

@@ -152,8 +152,6 @@ impl SadPointerRepository {
 
     const ARCHIVED_RECORDS_TABLE: &'static str = "sad_pointer_archives";
     const ARCHIVED_SIGNATURES_TABLE: &'static str = "sad_pointer_archive_signatures";
-    const REPAIRS_TABLE: &'static str = "sad_pointer_repairs";
-    const REPAIR_RECORDS_TABLE: &'static str = "sad_pointer_repair_records";
 
     /// Truncate records at and after the first replacement's version and insert replacements.
     ///
@@ -202,7 +200,7 @@ impl SadPointerRepository {
                 Some(said) => said,
                 None => {
                     let repair = SadPointerRepair::create(prefix.clone(), from_version)?;
-                    tx.insert_with_table(&repair, Self::REPAIRS_TABLE).await?;
+                    tx.insert(&repair).await?;
                     repair_said = Some(repair.said);
                     repair_said.as_ref().ok_or_else(|| {
                         StorageError::StorageError("repair SAID missing".to_string())
@@ -222,8 +220,7 @@ impl SadPointerRepository {
                     .await?;
                 let repair_record =
                     SadPointerRepairRecord::create(repair_said_ref.clone(), record.said.clone())?;
-                tx.insert_with_table(&repair_record, Self::REPAIR_RECORDS_TABLE)
-                    .await?;
+                tx.insert(&repair_record).await?;
             }
             for sig in &sigs {
                 tx.insert_with_table(sig, Self::ARCHIVED_SIGNATURES_TABLE)
@@ -481,13 +478,11 @@ impl SadPointerRepository {
     ) -> Result<(Vec<kels::SadPointerRepair>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels::SadPointerRepair>::for_table(
-            Self::REPAIRS_TABLE,
-        )
-        .eq("record_prefix", prefix)
-        .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
-        .offset(offset)
-        .limit(limit + 1);
+        let query = verifiable_storage_postgres::Query::<kels::SadPointerRepair>::new()
+            .eq("pointer_prefix", prefix)
+            .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
+            .offset(offset)
+            .limit(limit + 1);
         let mut repairs: Vec<kels::SadPointerRepair> = self.pool.fetch(query).await?;
 
         let has_more = repairs.len() as u64 > limit;
@@ -508,12 +503,10 @@ impl SadPointerRepository {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Fetch repair-record links with limit+1 for has_more
-        let link_query = verifiable_storage_postgres::Query::<SadPointerRepairRecord>::for_table(
-            Self::REPAIR_RECORDS_TABLE,
-        )
-        .eq("repair_said", repair_said)
-        .offset(offset)
-        .limit(limit + 1);
+        let link_query = verifiable_storage_postgres::Query::<SadPointerRepairRecord>::new()
+            .eq("repair_said", repair_said)
+            .offset(offset)
+            .limit(limit + 1);
         let mut links: Vec<SadPointerRepairRecord> = self.pool.fetch(link_query).await?;
 
         let has_more = links.len() as u64 > limit;

@@ -342,27 +342,130 @@ fi
 echo ""
 
 # ========================================
-# Scenario 7: Divergence Detection
+# Scenario 7: Divergence Detection + Repair
 # ========================================
-echo -e "${CYAN}=== Scenario 7: Divergence Detection ===${NC}"
-echo "When two nodes receive different pointers at the same version,"
-echo "both pointers are stored and the chain is frozen until repaired."
+echo -e "${CYAN}=== Scenario 7: Divergence Detection + Repair ===${NC}"
+echo "Create divergence by submitting conflicting pointers at the same version"
+echo "to different nodes, then repair the chain."
 echo ""
 
-# This scenario requires submitting conflicting pointers to different nodes.
-# Since we need KEL signatures for chain pointers, and we can't easily forge
-# two different valid pointers for the same version in a test script,
-# we verify the mechanism exists by checking:
-# 1. The effective-said endpoint returns consistent results
-# 2. Divergent chains would return a synthetic effective SAID
+DIV_KIND="kels/v1/test-diverge"
 
-run_test "Effective SAID endpoint consistent" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Eany_prefix_____________________________________/effective-said') = '404' ]"
+# Create a KEL for the divergence test
+DIV_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+if [ -z "$DIV_KEL_PREFIX" ]; then
+    echo -e "${RED}Failed to create KEL for divergence test${NC}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+else
+    echo "Created KEL: $DIV_KEL_PREFIX"
 
-echo ""
-echo "Note: Full divergence detection and repair testing requires programmatic"
-echo "chain pointer submission with valid KEL signatures. This is covered by the"
-echo "Rust integration tests in services/kels-sadstore/tests/."
+    DIV_PREFIX=$(kels-cli sad prefix "$DIV_KEL_PREFIX" "$DIV_KIND" 2>/dev/null)
+    echo "Chain prefix: $DIV_PREFIX"
+
+    # --- Build and submit v0 to node-a ---
+    D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
+    D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
+    D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
+    D_V0_SAID=$(compute_said "$D_V0_JSON")
+    D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg s "$D_V0_SAID" '.said = $s')
+
+    D_V0_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V0_SAID" 2>/dev/null)
+    echo "[$(jq -nc --argjson r "$D_V0_JSON" --arg sig "$D_V0_SIG" \
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v0.json"
+
+    run_test "Divergence: v0 submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v0.json"
+
+    # Wait for v0 to propagate to node-b
+    sleep "$PROPAGATION_DELAY"
+    run_test "Divergence: v0 propagated to node-b" \
+        wait_for_chain_propagation "$DIV_PREFIX" "$D_V0_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+
+    # --- Build two conflicting v1 pointers ---
+    # v1-a: submitted to node-a
+    D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
+        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_a"}')
+    D_V1A_SAID=$(compute_said "$D_V1A_JSON")
+    D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
+
+    D_V1A_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V1A_SAID" 2>/dev/null)
+    echo "[$(jq -nc --argjson r "$D_V1A_JSON" --arg sig "$D_V1A_SIG" \
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v1a.json"
+
+    # v1-b: submitted to node-b (different content_said → different SAID)
+    D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
+        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_b"}')
+    D_V1B_SAID=$(compute_said "$D_V1B_JSON")
+    D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
+
+    D_V1B_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V1B_SAID" 2>/dev/null)
+    echo "[$(jq -nc --argjson r "$D_V1B_JSON" --arg sig "$D_V1B_SIG" \
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v1b.json"
+
+    run_test "Divergence: v1-a and v1-b have different SAIDs" [ "$D_V1A_SAID" != "$D_V1B_SAID" ]
+
+    # Submit conflicting pointers to different nodes
+    run_test "Divergence: v1-a submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v1a.json"
+
+    run_test "Divergence: v1-b submitted to node-b" \
+        kels-cli --sadstore-url "$NODE_B_SAD_URL" sad submit "$TEMP_DIR/div-v1b.json"
+
+    # Wait for gossip to propagate conflicting pointers
+    sleep "$PROPAGATION_DELAY"
+
+    # Both nodes should now have both v1 records (gossip replicates them)
+    # and the chain should be divergent on at least one node
+    A_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
+    B_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
+
+    # Check if at least one node reports divergence (synthetic effective SAID)
+    A_DIVERGENT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
+    B_DIVERGENT=$(curl -sf "${NODE_B_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
+
+    echo "Node-a effective: $A_EFFECTIVE (divergent: $A_DIVERGENT)"
+    echo "Node-b effective: $B_EFFECTIVE (divergent: $B_DIVERGENT)"
+
+    # After gossip, both nodes should have both conflicting records → divergent
+    run_test "Divergence: node-a detects divergence" [ "$A_DIVERGENT" = "true" ]
+    run_test "Divergence: node-b detects divergence" [ "$B_DIVERGENT" = "true" ]
+    run_test "Divergence: both nodes agree on effective SAID" [ "$A_EFFECTIVE" = "$B_EFFECTIVE" ]
+
+    # --- Repair: submit replacement v1 with --repair ---
+    D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
+        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_repaired"}')
+    D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
+    D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
+
+    D_REPAIR_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_REPAIR_SAID" 2>/dev/null)
+    echo "[$(jq -nc --argjson r "$D_REPAIR_JSON" --arg sig "$D_REPAIR_SIG" \
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-repair.json"
+
+    run_test "Repair: submitted with --repair to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit --repair "$TEMP_DIR/div-repair.json"
+
+    # Verify node-a is no longer divergent
+    A_POST_DIVERGENT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
+    A_POST_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
+    run_test "Repair: node-a no longer divergent" [ "$A_POST_DIVERGENT" = "false" ]
+    run_test "Repair: node-a tip is repair record" [ "$A_POST_EFFECTIVE" = "$D_REPAIR_SAID" ]
+
+    # Verify repair audit record exists
+    REPAIR_COUNT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/repairs" | jq '.repairs | length')
+    run_test "Repair: audit record created" [ "$REPAIR_COUNT" -ge 1 ]
+
+    # Wait for repair to propagate to node-b via gossip
+    sleep "$PROPAGATION_DELAY"
+
+    B_POST_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
+    run_test "Repair: propagated to node-b" \
+        bash -c "[ '$B_POST_EFFECTIVE' = '$D_REPAIR_SAID' ] || sleep $CONVERGENCE_TIMEOUT && [ \$(curl -sf '${NODE_B_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said' | jq -r '.said') = '$D_REPAIR_SAID' ]"
+fi
+
 echo ""
 
 print_summary "SADStore Test Summary"
