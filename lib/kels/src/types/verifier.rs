@@ -109,9 +109,8 @@ pub struct KelVerifier {
     /// Whether the proactive ror interval has been violated.
     proactive_ror_compliant: bool,
     /// Optional: collect establishment keys at specific serials during verification.
-    /// Bounded by caller — at most `page_size()` entries.
     requested_establishment_serials: BTreeSet<u64>,
-    /// Collected establishment keys (serial → public_key qb64).
+    /// Collected establishment keys (serial → parsed VerificationKey).
     collected_establishment_keys: HashMap<u64, VerificationKey>,
 }
 

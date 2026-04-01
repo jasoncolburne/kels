@@ -279,7 +279,7 @@ impl SadRecordRepository {
     const REPAIRS_TABLE: &'static str = "sad_chain_repairs";
     const REPAIR_RECORDS_TABLE: &'static str = "sad_chain_repair_records";
 
-    /// Truncate records at version >= `from_version` and insert replacements.
+    /// Truncate records at and after the first replacement's version and insert replacements.
     ///
     /// Used to repair divergent chains. The owner submits a batch starting at the
     /// divergent version. This method archives all records (and their signatures)
@@ -288,7 +288,6 @@ impl SadRecordRepository {
     /// the context of a verified KEL signature.
     pub async fn truncate_and_replace(
         &self,
-        from_version: u64,
         records: &[(SadRecord, SadRecordSignature)],
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<(), StorageError> {
@@ -297,6 +296,7 @@ impl SadRecordRepository {
         }
 
         let prefix = &records[0].0.prefix;
+        let from_version = records[0].0.version;
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix).await?;
 
@@ -446,27 +446,40 @@ impl SadRecordRepository {
         Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
-    /// Fetch all unique establishment serials from existing signatures for a chain.
+    /// Fetch unique establishment serials from existing signatures for a chain.
+    /// Bounded by `max` — returns an error if more than `max` unique serials exist.
     pub async fn existing_establishment_serials(
         &self,
         prefix: &str,
+        max: usize,
     ) -> Result<std::collections::BTreeSet<u64>, StorageError> {
-        // Get all record SAIDs for this chain
-        let record_query =
-            verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
-                .eq("prefix", prefix);
-        let records: Vec<SadRecord> = self.pool.fetch(record_query).await?;
-        if records.is_empty() {
-            return Ok(std::collections::BTreeSet::new());
+        use verifiable_storage::ScalarSubquery;
+
+        let serial_query = ColumnQuery::new(Self::SIGNATURES_TABLE_NAME, "establishment_serial")
+            .distinct()
+            .in_subquery(
+                "record_said",
+                ScalarSubquery::new(
+                    Self::TABLE_NAME,
+                    "said",
+                    vec![Filter::Eq(
+                        "prefix".to_string(),
+                        Value::String(prefix.to_string()),
+                    )],
+                ),
+            )
+            .limit(max as u64 + 1);
+        let serials: Vec<i64> = self.pool.fetch_column(serial_query).await?;
+
+        if serials.len() > max {
+            return Err(StorageError::StorageError(format!(
+                "Too many unique establishment serials ({} > {})",
+                serials.len(),
+                max
+            )));
         }
 
-        let record_saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
-        let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
-            Self::SIGNATURES_TABLE_NAME,
-        )
-        .r#in("record_said", record_saids);
-        let sigs: Vec<SadRecordSignature> = self.pool.fetch(sig_query).await?;
-        Ok(sigs.iter().map(|s| s.establishment_serial).collect())
+        Ok(serials.into_iter().map(|s| s as u64).collect())
     }
 
     /// Get the chain with signatures as `SignedSadRecord`s.

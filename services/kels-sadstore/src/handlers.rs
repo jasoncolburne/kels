@@ -498,7 +498,7 @@ pub async fn submit_sad_records(
     match state
         .repo
         .sad_records
-        .existing_establishment_serials(chain_prefix)
+        .existing_establishment_serials(chain_prefix, kels::max_collected_keys())
         .await
     {
         Ok(existing) => establishment_serials.extend(existing),
@@ -628,11 +628,10 @@ pub async fn submit_sad_records(
 
     if is_repair {
         // Repair mode: truncate from the first record's version and replace
-        let from_version = records[0].record.version;
         if let Err(e) = state
             .repo
             .sad_records
-            .truncate_and_replace(from_version, &pairs, &establishment_keys)
+            .truncate_and_replace(&pairs, &establishment_keys)
             .await
         {
             warn!("Failed to repair chain: {}", e);
