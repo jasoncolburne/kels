@@ -491,10 +491,24 @@ pub async fn submit_sad_records(
         }
     }
 
-    // Collect unique establishment serials (bounded)
-    let establishment_serials: std::collections::BTreeSet<u64> =
+    // Collect unique establishment serials from both existing chain and incoming batch
+    let mut establishment_serials: std::collections::BTreeSet<u64> =
         records.iter().map(|r| r.establishment_serial).collect();
-    if establishment_serials.len() > kels::page_size() {
+
+    match state
+        .repo
+        .sad_records
+        .existing_establishment_serials(chain_prefix)
+        .await
+    {
+        Ok(existing) => establishment_serials.extend(existing),
+        Err(e) => {
+            warn!("Failed to fetch existing establishment serials: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    }
+
+    if establishment_serials.len() > kels::max_collected_keys() {
         return (
             StatusCode::BAD_REQUEST,
             "Too many unique establishment serials",
@@ -502,9 +516,9 @@ pub async fn submit_sad_records(
             .into_response();
     }
 
-    // Verify KEL once, collecting establishment keys
+    // Verify KEL once, collecting establishment keys for all serials
     let verifier = match kels::KelVerifier::new(kel_prefix)
-        .with_establishment_key_collection(establishment_serials, kels::page_size())
+        .with_establishment_key_collection(establishment_serials, kels::max_collected_keys())
     {
         Ok(v) => v,
         Err(e) => {
@@ -650,7 +664,7 @@ pub async fn submit_sad_records(
         match state
             .repo
             .sad_records
-            .save_batch_with_verified_signatures(&pairs)
+            .save_batch_with_verified_signatures(&pairs, &establishment_keys)
             .await
         {
             Ok(count) => {

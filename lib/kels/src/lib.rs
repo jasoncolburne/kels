@@ -165,6 +165,20 @@ pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
 }
 
+/// Maximum number of unique establishment keys to collect during verification.
+/// Each key rotation produces a new establishment serial, so this bounds the
+/// number of rotations a chain can span. Default 256.
+/// Override with `KELS_MAX_COLLECTED_KEYS` environment variable.
+pub const DEFAULT_MAX_COLLECTED_KEYS: usize = 256;
+
+static MAX_COLLECTED_KEYS: LazyLock<usize> =
+    LazyLock::new(|| env_usize("KELS_MAX_COLLECTED_KEYS", DEFAULT_MAX_COLLECTED_KEYS));
+
+/// Read the max collected keys, cached from env on first access.
+pub fn max_collected_keys() -> usize {
+    *MAX_COLLECTED_KEYS
+}
+
 /// Sentinel limit for loading an entire KEL without pagination.
 /// Only appropriate for client-side local stores (CLI, FFI) and tests —
 /// never use on server-side code paths.

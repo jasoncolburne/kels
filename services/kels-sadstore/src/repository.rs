@@ -1,5 +1,7 @@
 //! PostgreSQL Repository for KELS SADStore
 
+use cesr::{Matter, Signature, VerificationKey};
+
 use kels::{SadChainRepair, SadChainRepairRecord, SadRecord, SadRecordSignature};
 use verifiable_storage::{
     Chained, ChainedRepository, ColumnQuery, QueryExecutor, SelfAddressed, StorageError,
@@ -18,20 +20,22 @@ impl SadRecordRepository {
     pub const SIGNATURES_TABLE_NAME: &'static str = "sad_record_signatures";
 
     /// Store a batch of records with their signatures, with advisory lock and full
-    /// chain verification.
-    ///
-    /// **Precondition:** the caller must have already verified each record's signature
-    /// against the KEL. This method does not verify signatures — it trusts the caller.
+    /// chain verification including signature verification against provided keys.
     ///
     /// Acquires an advisory lock on the chain prefix, walks the entire existing chain
-    /// to verify integrity (DB cannot be trusted), then appends the batch. If a record
-    /// already exists at the same version with a different SAID, both are stored and
-    /// the chain is considered divergent. Divergent chains are frozen until repaired.
+    /// to verify structural integrity AND signatures (DB cannot be trusted), then
+    /// appends the batch with signature verification. If a record already exists at
+    /// the same version with a different SAID, both are stored and the chain is
+    /// considered divergent. Divergent chains are frozen until repaired.
+    ///
+    /// `establishment_keys` maps KEL serial → public key (CESR qb64). Must contain
+    /// keys for all serials used by both existing and new records.
     ///
     /// Returns the number of new records actually inserted (excludes deduplicates).
     pub async fn save_batch_with_verified_signatures(
         &self,
         records: &[(SadRecord, SadRecordSignature)],
+        establishment_keys: &std::collections::HashMap<u64, String>,
     ) -> Result<u32, StorageError> {
         if records.is_empty() {
             return Ok(0);
@@ -63,6 +67,16 @@ impl SadRecordRepository {
             if page.is_empty() {
                 break;
             }
+
+            // Batch-fetch signatures for this page
+            let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
+            let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+                Self::SIGNATURES_TABLE_NAME,
+            )
+            .r#in("record_said", page_saids);
+            let sigs: Vec<SadRecordSignature> = tx.fetch(sig_query).await?;
+            let sig_map: std::collections::HashMap<&str, &SadRecordSignature> =
+                sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
 
             for existing in &page {
                 // Divergence: duplicate version (same version as previous record)
@@ -110,6 +124,34 @@ impl SadRecordRepository {
                     return Err(StorageError::StorageError(
                         "Existing record has invalid SAID — DB tampered".to_string(),
                     ));
+                }
+
+                // Verify signature against establishment key
+                let sig_record = sig_map.get(existing.said.as_str()).ok_or_else(|| {
+                    StorageError::StorageError(format!(
+                        "Missing signature for existing record {} — DB tampered",
+                        existing.said
+                    ))
+                })?;
+                let public_key_qb64 = establishment_keys
+                    .get(&sig_record.establishment_serial)
+                    .ok_or_else(|| {
+                        StorageError::StorageError(format!(
+                            "No establishment key for serial {} — DB tampered",
+                            sig_record.establishment_serial
+                        ))
+                    })?;
+                let public_key = VerificationKey::from_qb64(public_key_qb64).map_err(|e| {
+                    StorageError::StorageError(format!("Invalid public key: {}", e))
+                })?;
+                let sig = Signature::from_qb64(&sig_record.signature).map_err(|e| {
+                    StorageError::StorageError(format!("Invalid signature format: {}", e))
+                })?;
+                if public_key.verify(existing.said.as_bytes(), &sig).is_err() {
+                    return Err(StorageError::StorageError(format!(
+                        "Signature verification failed for existing record {} — DB tampered",
+                        existing.said
+                    )));
                 }
 
                 last_said = Some(existing.said.clone());
@@ -390,6 +432,29 @@ impl SadRecordRepository {
             .limit(1);
         let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
         Ok(counts.first().is_some_and(|&c| c > 1))
+    }
+
+    /// Fetch all unique establishment serials from existing signatures for a chain.
+    pub async fn existing_establishment_serials(
+        &self,
+        prefix: &str,
+    ) -> Result<std::collections::BTreeSet<u64>, StorageError> {
+        // Get all record SAIDs for this chain
+        let record_query =
+            verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix);
+        let records: Vec<SadRecord> = self.pool.fetch(record_query).await?;
+        if records.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+
+        let record_saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
+        let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+            Self::SIGNATURES_TABLE_NAME,
+        )
+        .r#in("record_said", record_saids);
+        let sigs: Vec<SadRecordSignature> = self.pool.fetch(sig_query).await?;
+        Ok(sigs.iter().map(|s| s.establishment_serial).collect())
     }
 
     /// Get the chain with signatures as `SignedSadRecord`s.
