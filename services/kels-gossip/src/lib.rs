@@ -34,10 +34,10 @@ mod allowlist;
 mod bootstrap;
 mod gossip_layer;
 mod hsm_signer;
-mod protocol;
 mod repository;
 mod server;
 mod sync;
+pub mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -51,8 +51,8 @@ use thiserror::Error;
 
 use allowlist::SharedAllowlist;
 use bootstrap::{BootstrapConfig, BootstrapSync};
-use gossip_layer::{GossipCommand, GossipEvent};
 use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
+use types::{GossipCommand, GossipEvent};
 
 #[derive(Error, Debug)]
 pub enum ServiceError {

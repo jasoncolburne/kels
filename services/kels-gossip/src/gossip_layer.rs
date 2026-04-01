@@ -13,7 +13,7 @@ use gossip::net::actor::Event;
 use gossip::proto::TopicId;
 use thiserror::Error;
 
-use crate::protocol::KelAnnouncement;
+use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
 
 /// Default gossip topic name for KEL announcements
 pub const DEFAULT_TOPIC: &str = "kels/events/v1";
@@ -31,28 +31,6 @@ pub enum GossipError {
     Serialization(#[from] serde_json::Error),
     #[error("Channel closed")]
     ChannelClosed,
-}
-
-/// Events emitted by the gossip layer to the sync layer
-#[derive(Debug)]
-pub enum GossipEvent {
-    /// Received a KEL announcement from a peer
-    KelAnnouncementReceived { announcement: KelAnnouncement },
-    /// Received a SAD announcement from a peer
-    SadAnnouncementReceived { announcement: kels::SadAnnouncement },
-    /// New peer connected
-    PeerConnected(String),
-    /// Peer disconnected
-    PeerDisconnected(String),
-}
-
-/// Commands sent from sync layer to gossip layer
-#[derive(Debug)]
-pub enum GossipCommand {
-    /// Broadcast a KEL announcement to the network
-    AnnounceKel(KelAnnouncement),
-    /// Broadcast a SAD announcement to the network
-    AnnounceSad(kels::SadAnnouncement),
 }
 
 /// Derive a TopicId from a topic name string (Blake3 hash → first 32 bytes).
@@ -129,7 +107,7 @@ pub async fn run_gossip(
                                 }
                             }
                         } else if msg.topic == sad_topic {
-                            match serde_json::from_slice::<kels::SadAnnouncement>(&msg.content) {
+                            match serde_json::from_slice::<SadAnnouncement>(&msg.content) {
                                 Ok(announcement) => {
                                     debug!("Received SAD announcement");
                                     event_tx
