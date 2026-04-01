@@ -248,8 +248,8 @@ enum SadCommands {
         file: PathBuf,
     },
 
-    /// Fetch and display a SAD record chain
-    Chain {
+    /// Fetch and display a SAD pointer chain
+    Pointer {
         /// The chain prefix to fetch
         prefix: String,
     },
@@ -1247,7 +1247,7 @@ async fn main() -> Result<()> {
             SadCommands::Put { file } => cmd_sad_put(&cli, file).await,
             SadCommands::Get { said } => cmd_sad_get(&cli, said).await,
             SadCommands::Submit { file } => cmd_sad_submit(&cli, file).await,
-            SadCommands::Chain { prefix } => cmd_sad_chain(&cli, prefix).await,
+            SadCommands::Pointer { prefix } => cmd_sad_chain(&cli, prefix).await,
             SadCommands::Prefix { kel_prefix, kind } => cmd_sad_prefix(kel_prefix, kind),
         },
 

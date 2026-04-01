@@ -176,7 +176,7 @@ On the gossip service, `BASE_DOMAIN` env var derives both KELS and SADStore URLs
 kels-cli sad put <file>              # Store a self-addressed object
 kels-cli sad get <said>              # Retrieve object by SAID
 kels-cli sad submit <file>           # Submit signed chain record
-kels-cli sad chain <prefix>          # Fetch chain
+kels-cli sad pointer <prefix>          # Fetch pointer chain
 kels-cli sad prefix <kel-prefix> <kind>  # Compute prefix offline
 ```
 

@@ -264,10 +264,10 @@ else
     run_test "v0 submitted via CLI (sad submit)" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v0-submit.json"
 
-    # Fetch the chain via kels-cli sad chain
-    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad chain "$CHAIN_PREFIX" 2>/dev/null)
+    # Fetch the chain via kels-cli sad pointer
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
     CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
-    run_test "Chain fetched via CLI (sad chain) with 1 record" [ "$CHAIN_LEN" = "1" ]
+    run_test "Chain fetched via CLI (sad pointer) with 1 record" [ "$CHAIN_LEN" = "1" ]
 
     # Verify the fetched record's SAID matches
     FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.records[0].record.said' 2>/dev/null)
@@ -290,7 +290,7 @@ else
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v1-submit.json"
 
     # Verify chain now has 2 records
-    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad chain "$CHAIN_PREFIX" 2>/dev/null)
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
     CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
     run_test "Chain has 2 records after v1 submit" [ "$CHAIN_LEN" = "2" ]
 
