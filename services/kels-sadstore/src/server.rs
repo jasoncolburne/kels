@@ -35,23 +35,23 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
         .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
         // Chain records (Layer 2 — Postgres)
-        .route("/api/v1/sad/records", post(handlers::submit_sad_records))
-        .route("/api/v1/sad/chain/:prefix", get(handlers::get_sad_chain))
+        .route("/api/v1/sad/pointers", post(handlers::submit_sad_records))
+        .route("/api/v1/sad/pointers/:prefix", get(handlers::get_sad_chain))
         .route(
-            "/api/v1/sad/chain/:prefix/effective-said",
+            "/api/v1/sad/pointers/:prefix/effective-said",
             get(handlers::get_sad_effective_said),
         )
         // Chain repair history
         .route(
-            "/api/v1/sad/chain/:prefix/repairs",
+            "/api/v1/sad/pointers/:prefix/repairs",
             get(handlers::get_sad_repairs),
         )
         .route(
-            "/api/v1/sad/chain/:prefix/repairs/:said/records",
+            "/api/v1/sad/pointers/:prefix/repairs/:said/records",
             get(handlers::get_repair_records),
         )
         // Listing (authenticated — federation peers only)
-        .route("/api/v1/sad/objects", post(handlers::list_sad_objects))
+        .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
         .route("/api/v1/sad/prefixes", post(handlers::list_sad_prefixes));
 
     if *TEST_ENDPOINTS_ENABLED {

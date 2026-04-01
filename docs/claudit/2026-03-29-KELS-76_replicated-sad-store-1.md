@@ -20,7 +20,7 @@ Branch `KELS-76_replicated-sad-store` vs `main`: 45 files changed, 4517 insertio
 
 ~~When gossip replicates a chain, each record is submitted to the local SADStore via `submit_sad_record`. The handler performs a full KEL verification on every submission. For a chain with N records, this means N full KEL verifications.~~
 
-**Resolution:** Added `POST /api/v1/sad/records/batch` endpoint that accepts `Vec<SignedSadRecord>`, verifies the KEL once with bounded establishment key collection (`KelVerifier::with_establishment_key_collection`), verifies all signatures against collected keys, and stores all records. Gossip sync, anti-entropy, and bootstrap all use `submit_sad_records_batch`. Added `verify_key_events_with_establishment_keys` to the verification infrastructure.
+**Resolution:** Added `POST /api/v1/sad/pointers/batch` endpoint that accepts `Vec<SignedSadRecord>`, verifies the KEL once with bounded establishment key collection (`KelVerifier::with_establishment_key_collection`), verifies all signatures against collected keys, and stores all records. Gossip sync, anti-entropy, and bootstrap all use `submit_sad_records_batch`. Added `verify_key_events_with_establishment_keys` to the verification infrastructure.
 
 ### ~~2. Conflict resolution replaces records but doesn't verify the incoming record's signature~~ — RESOLVED
 

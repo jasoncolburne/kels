@@ -11,7 +11,7 @@ Two layers:
 
 ## Data Model
 
-### SadRecord
+### SadPointer
 
 A chained, self-addressed record. The v0 (inception) record has `content_said: None`, making the prefix fully deterministic from `kel_prefix` + `kind` alone. Content is added in v1+ records.
 
@@ -36,16 +36,16 @@ let prefix = compute_sad_prefix(kel_prefix, kind)?;
 
 This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
 
-### SignedSadRecord
+### SignedSadPointer
 
 A SAD record paired with its signature and the server-derived `establishment_serial`, as returned by the chain API. Analogous to `SignedKeyEvent`.
 
 Fields:
-- `record` — The `SadRecord`
+- `record` — The `SadPointer`
 - `signature` — Signature over the record's SAID
 - `establishment_serial` — Which KEL establishment event's key signed this
 
-### SadRecordSubmission
+### SadPointerSubmission
 
 The submission type for creating/updating chains. Contains `record` + `signature` but no `establishment_serial` — the server determines it by finding the most recent establishment event in the owner's KEL.
 
@@ -83,7 +83,7 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadRecordVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which performs two-pass O(page_size) verification:
+The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which performs two-pass O(page_size) verification:
 
 1. **Pass 1 (structure):** Pages through the chain, verifying SAID integrity, chain linkage, version monotonicity, and consistent kel_prefix/kind. Collects establishment serials.
 2. **Between:** Verifies the owner's KEL, collecting establishment keys for the referenced serials.
@@ -104,17 +104,17 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/records` | Submit signed chain records; `?repair=true` to repair divergent chain |
-| `GET` | `/api/v1/sad/chain/:prefix` | Fetch chain (returns `SignedSadRecord`s with signatures); `?since=N` for delta |
-| `GET` | `/api/v1/sad/chain/:prefix/effective-said` | Tip SAID for sync comparison |
-| `GET` | `/api/v1/sad/chain/:prefix/repairs` | Paginated repair history (`?limit=N&offset=N`); returns `SadChainRepairPage` |
-| `GET` | `/api/v1/sad/chain/:prefix/repairs/:said/records` | Archived records displaced by a specific repair (`?limit=N&offset=N`); returns `SadRecordPage` |
+| `POST` | `/api/v1/sad/pointers` | Submit signed chain records; `?repair=true` to repair divergent chain |
+| `GET` | `/api/v1/sad/pointers/:prefix` | Fetch chain (returns `SignedSadPointer`s with signatures); `?since=N` for delta |
+| `GET` | `/api/v1/sad/pointers/:prefix/effective-said` | Tip SAID for sync comparison |
+| `GET` | `/api/v1/sad/pointers/:prefix/repairs` | Paginated repair history (`?limit=N&offset=N`); returns `SadChainRepairPage` |
+| `GET` | `/api/v1/sad/pointers/:prefix/repairs/:said/records` | Archived records displaced by a specific repair (`?limit=N&offset=N`); returns `SadPointerPage` |
 
 ### Listing (for bootstrap + anti-entropy)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/sad/objects` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
+| `GET` | `/api/v1/sad/saids` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
 | `GET` | `/api/v1/sad/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
 
 ### Client Workflow
@@ -123,7 +123,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 2. `POST /api/v1/sad` — store content in SAD store
 3. Create chain record with `content_said` pointing to that SAID
 4. Sign the record's SAID with current KEL key
-5. `POST /api/v1/sad/records` — submit the signed chain record
+5. `POST /api/v1/sad/pointers` — submit the signed chain record
 
 ## Gossip Replication
 

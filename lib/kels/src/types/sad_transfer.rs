@@ -6,7 +6,7 @@
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_records` — two-pass verify, returns `SadRecordVerification`
+//! - `verify_sad_records` — two-pass verify, returns `SadPointerVerification`
 //! - `forward_sad_records` — forward without verification, supports delta via `since`
 //!
 //! Verification uses a two-pass approach to stay O(page_size) in memory:
@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use cesr::{Matter, Signature, VerificationKey};
 use verifiable_storage::{Chained, SelfAddressed};
 
-use crate::{KelVerifier, KelsError, SadRecordVerification, SignedSadRecord};
+use crate::{KelVerifier, KelsError, SadPointerVerification, SignedSadPointer};
 
 // ==================== Source / Sink Traits ====================
 
@@ -35,13 +35,13 @@ pub trait PagedSadSource: Send + Sync {
         prefix: &str,
         since: Option<&str>,
         limit: usize,
-    ) -> Result<(Vec<SignedSadRecord>, bool), KelsError>;
+    ) -> Result<(Vec<SignedSadPointer>, bool), KelsError>;
 }
 
 /// Destination for signed SAD records (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
-    async fn store_page(&self, records: &[SignedSadRecord]) -> Result<(), KelsError>;
+    async fn store_page(&self, records: &[SignedSadPointer]) -> Result<(), KelsError>;
 }
 
 // ==================== Sink Implementations ====================
@@ -51,7 +51,7 @@ struct NoOpSadSink;
 
 #[async_trait]
 impl PagedSadSink for NoOpSadSink {
-    async fn store_page(&self, _records: &[SignedSadRecord]) -> Result<(), KelsError> {
+    async fn store_page(&self, _records: &[SignedSadPointer]) -> Result<(), KelsError> {
         Ok(())
     }
 }
@@ -84,9 +84,9 @@ impl PagedSadSource for HttpSadSource {
         prefix: &str,
         since: Option<&str>,
         limit: usize,
-    ) -> Result<(Vec<SignedSadRecord>, bool), KelsError> {
+    ) -> Result<(Vec<SignedSadPointer>, bool), KelsError> {
         let mut url = format!(
-            "{}/api/v1/sad/chain/{}?limit={}",
+            "{}/api/v1/sad/pointers/{}?limit={}",
             self.base_url, prefix, limit
         );
         if let Some(since_said) = since {
@@ -96,7 +96,7 @@ impl PagedSadSource for HttpSadSource {
         let resp = self.client.get(&url).send().await?;
 
         if resp.status().is_success() {
-            let page: crate::SadRecordPage = resp.json().await?;
+            let page: crate::SadPointerPage = resp.json().await?;
             Ok((page.records, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
@@ -142,15 +142,15 @@ impl HttpSadSink {
 
 #[async_trait]
 impl PagedSadSink for HttpSadSink {
-    async fn store_page(&self, records: &[SignedSadRecord]) -> Result<(), KelsError> {
+    async fn store_page(&self, records: &[SignedSadPointer]) -> Result<(), KelsError> {
         if records.is_empty() {
             return Ok(());
         }
 
         let url = if self.repair {
-            format!("{}/api/v1/sad/records?repair=true", self.base_url)
+            format!("{}/api/v1/sad/pointers?repair=true", self.base_url)
         } else {
-            format!("{}/api/v1/sad/records", self.base_url)
+            format!("{}/api/v1/sad/pointers", self.base_url)
         };
         let resp = self.client.post(&url).json(records).send().await?;
 
@@ -189,7 +189,7 @@ pub struct SadChainVerifier {
     last_said: Option<String>,
     kel_prefix: Option<String>,
     kind: Option<String>,
-    tip: Option<SignedSadRecord>,
+    tip: Option<SignedSadPointer>,
     saw_any_records: bool,
     is_divergent: bool,
     establishment_keys: HashMap<u64, VerificationKey>,
@@ -215,10 +215,10 @@ impl SadChainVerifier {
     }
 
     /// Verify a page of records incrementally. Carries forward state for the next page.
-    pub fn verify_page(&mut self, records: &[SignedSadRecord]) -> Result<(), KelsError> {
+    pub fn verify_page(&mut self, records: &[SignedSadPointer]) -> Result<(), KelsError> {
         for stored in records {
             self.saw_any_records = true;
-            let record = &stored.record;
+            let record = &stored.pointer;
 
             // Divergence: duplicate version (same version as previous record)
             if record.version + 1 == self.expected_version {
@@ -306,7 +306,7 @@ impl SadChainVerifier {
         Ok(())
     }
 
-    pub fn finish(self) -> Result<(SignedSadRecord, String), KelsError> {
+    pub fn finish(self) -> Result<(SignedSadPointer, String), KelsError> {
         if !self.saw_any_records {
             return Err(KelsError::VerificationFailed(
                 "Empty SAD record chain".into(),
@@ -348,11 +348,11 @@ pub async fn collect_establishment_serials(
         for stored in &records {
             serials.insert(stored.establishment_serial);
             if kel_prefix.is_none() {
-                kel_prefix = Some(stored.record.kel_prefix.clone());
+                kel_prefix = Some(stored.pointer.kel_prefix.clone());
             }
         }
 
-        since = records.last().map(|r| r.record.said.clone());
+        since = records.last().map(|r| r.pointer.said.clone());
 
         if !has_more {
             break;
@@ -397,7 +397,7 @@ async fn transfer_sad_records(
             return Ok(());
         }
 
-        since = records.last().map(|r| r.record.said.clone());
+        since = records.last().map(|r| r.pointer.said.clone());
 
         if let Some(ref mut v) = verifier {
             v.verify_page(&records)?;
@@ -430,7 +430,7 @@ pub async fn verify_sad_records(
     kels_source: &(dyn crate::PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
-) -> Result<SadRecordVerification, KelsError> {
+) -> Result<SadPointerVerification, KelsError> {
     // Pass 1: collect establishment serials
     let (establishment_serials, kel_prefix) =
         collect_establishment_serials(prefix, source, page_size, max_pages).await?;
@@ -468,8 +468,8 @@ pub async fn verify_sad_records(
 
     let (tip, _kel_prefix) = verifier.finish()?;
 
-    Ok(SadRecordVerification::new(
-        tip.record,
+    Ok(SadPointerVerification::new(
+        tip.pointer,
         tip.establishment_serial,
     ))
 }
@@ -495,16 +495,16 @@ mod tests {
     use verifiable_storage::{Chained, SelfAddressed};
 
     use super::*;
-    use crate::SadRecord;
+    use crate::SadPointer;
 
     fn test_keys() -> (VerificationKey, cesr::SigningKey) {
         generate_secp256r1().unwrap()
     }
 
-    fn signed(record: &SadRecord, signing_key: &cesr::SigningKey) -> SignedSadRecord {
+    fn signed(record: &SadPointer, signing_key: &cesr::SigningKey) -> SignedSadPointer {
         let sig = signing_key.sign(record.said.as_bytes()).unwrap();
-        SignedSadRecord {
-            record: record.clone(),
+        SignedSadPointer {
+            pointer: record.clone(),
             signature: sig.qb64(),
             establishment_serial: 0,
         }
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_valid_chain() {
         let (vk, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -548,13 +548,13 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_broken_linkage_fails() {
         let (vk, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-        let mut v1 = SadRecord::create(
+        let mut v1 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_inconsistent_kind_fails() {
         let (vk, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_wrong_version_fails() {
         let (vk, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_multi_page() {
         let (vk, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -650,7 +650,7 @@ mod tests {
         );
 
         let (tip, kel_prefix) = verifier.finish().unwrap();
-        assert_eq!(tip.record.version, 2);
+        assert_eq!(tip.pointer.version, 2);
         assert_eq!(kel_prefix, "Ekel123");
     }
 
@@ -658,7 +658,7 @@ mod tests {
     fn test_sad_chain_verifier_bad_signature_fails() {
         let (vk, _) = test_keys();
         let (_, other_sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_missing_key_fails() {
         let (_, sk) = test_keys();
-        let v0 = SadRecord::create(
+        let v0 = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,

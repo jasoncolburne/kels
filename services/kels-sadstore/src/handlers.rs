@@ -430,7 +430,7 @@ pub struct RecordSubmitQuery {
 
 /// Submit signed SAD records — unified endpoint for clients, gossip sync, and repair.
 ///
-/// Accepts `Vec<SignedSadRecord>` (with establishment serials from the source node).
+/// Accepts `Vec<SignedSadPointer>` (with establishment serials from the source node).
 /// Verifies the KEL once, collecting establishment keys for all referenced serials,
 /// then verifies each record's signature and stores all records.
 ///
@@ -440,7 +440,7 @@ pub async fn submit_sad_records(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels::SignedSadRecord>>,
+    Json(records): Json<Vec<kels::SignedSadPointer>>,
 ) -> impl IntoResponse {
     if records.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
@@ -452,8 +452,8 @@ pub async fn submit_sad_records(
     }
 
     // All records must be for the same chain prefix
-    let chain_prefix = &records[0].record.prefix;
-    if records.iter().any(|r| r.record.prefix != *chain_prefix) {
+    let chain_prefix = &records[0].pointer.prefix;
+    if records.iter().any(|r| r.pointer.prefix != *chain_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -471,8 +471,8 @@ pub async fn submit_sad_records(
     }
 
     // All records must be for the same KEL prefix
-    let kel_prefix = &records[0].record.kel_prefix;
-    if records.iter().any(|r| r.record.kel_prefix != *kel_prefix) {
+    let kel_prefix = &records[0].pointer.kel_prefix;
+    if records.iter().any(|r| r.pointer.kel_prefix != *kel_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same kel_prefix",
@@ -482,10 +482,10 @@ pub async fn submit_sad_records(
 
     // Verify SAID integrity for all records
     for r in &records {
-        if r.record.verify_said().is_err() {
+        if r.pointer.verify_said().is_err() {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Record SAID verification failed: {}", r.record.said),
+                format!("Record SAID verification failed: {}", r.pointer.said),
             )
                 .into_response();
         }
@@ -561,7 +561,7 @@ pub async fn submit_sad_records(
                 StatusCode::BAD_REQUEST,
                 format!(
                     "No establishment key found for serial {} (record {})",
-                    r.establishment_serial, r.record.said
+                    r.establishment_serial, r.pointer.said
                 ),
             )
                 .into_response();
@@ -572,21 +572,21 @@ pub async fn submit_sad_records(
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    format!("Invalid signature on record {}: {}", r.record.said, e),
+                    format!("Invalid signature on record {}: {}", r.pointer.said, e),
                 )
                     .into_response();
             }
         };
 
         if verification_key
-            .verify(r.record.said.as_bytes(), &sig)
+            .verify(r.pointer.said.as_bytes(), &sig)
             .is_err()
         {
             return (
                 StatusCode::FORBIDDEN,
                 format!(
                     "Signature verification failed for record {} at serial {}",
-                    r.record.said, r.establishment_serial
+                    r.pointer.said, r.establishment_serial
                 ),
             )
                 .into_response();
@@ -594,8 +594,8 @@ pub async fn submit_sad_records(
     }
 
     // Verify prefix derivation for v0 if present
-    if let Some(v0) = records.iter().find(|r| r.record.version == 0)
-        && v0.record.verify_prefix().is_err()
+    if let Some(v0) = records.iter().find(|r| r.pointer.version == 0)
+        && v0.pointer.verify_prefix().is_err()
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -607,8 +607,8 @@ pub async fn submit_sad_records(
     // Build (record, signature) pairs for storage
     let mut pairs = Vec::with_capacity(records.len());
     for r in &records {
-        let sig_record = match kels::SadRecordSignature::create(
-            r.record.said.clone(),
+        let sig_record = match kels::SadPointerSignature::create(
+            r.pointer.said.clone(),
             r.signature.clone(),
             r.establishment_serial,
         ) {
@@ -618,7 +618,7 @@ pub async fn submit_sad_records(
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
-        pairs.push((r.record.clone(), sig_record));
+        pairs.push((r.pointer.clone(), sig_record));
     }
 
     let is_repair = query.repair.unwrap_or(false);
@@ -734,7 +734,7 @@ pub async fn get_sad_chain(
         Ok(records) => {
             let has_more = records.len() as u64 > limit;
             let records: Vec<_> = records.into_iter().take(limit as usize).collect();
-            let page = kels::SadRecordPage { has_more, records };
+            let page = kels::SadPointerPage { has_more, records };
             (StatusCode::OK, Json(page)).into_response()
         }
         Err(e) => {
@@ -889,7 +889,7 @@ pub(crate) async fn get_sad_repairs(
     {
         Ok((repairs, has_more)) => (
             StatusCode::OK,
-            Json(kels::SadChainRepairPage { repairs, has_more }),
+            Json(kels::SadPointerRepairPage { repairs, has_more }),
         )
             .into_response(),
         Err(e) => {
@@ -917,7 +917,7 @@ pub(crate) async fn get_repair_records(
     {
         Ok((records, has_more)) => (
             StatusCode::OK,
-            Json(kels::SadRecordPage { records, has_more }),
+            Json(kels::SadPointerPage { records, has_more }),
         )
             .into_response(),
         Err(e) => {

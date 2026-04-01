@@ -1,20 +1,20 @@
-//! SAD (Self-Addressing Data) record types for the replicated SADStore.
+//! SAD (Self-Addressing Data) pointer types for the replicated SADStore.
 //!
 //! Two layers:
 //! - **SAD objects** — content-addressed JSON blobs stored/retrieved by SAID (MinIO).
 //! - **Chained records** — versioned chains with deterministic prefix discovery and
-//!   KEL ownership. Each record references content in the SAD store via `content_said`.
+//!   KEL ownership. Each pointer references content in the SAD store via `content_said`.
 //!
 //! Prefix derivation is fully deterministic: given a KEL prefix and kind, anyone can
-//! compute the chain prefix offline by constructing the v0 inception record (which has
+//! compute the chain prefix offline by constructing the v0 inception pointer (which has
 //! no non-deterministic fields) and reading its prefix.
 
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
 
-/// A chained, self-addressed record in the SADStore.
+/// A chained, self-addressed pointer in the SADStore.
 ///
-/// The v0 (inception) record has `content_said: None` — this makes the prefix
+/// The v0 (inception) pointer has `content_said: None` — this makes the prefix
 /// fully deterministic from `kel_prefix` + `kind` alone. Content is added in v1+.
 ///
 /// No `created_at` field — intentionally omitted so inception records are fully
@@ -25,7 +25,7 @@ use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_records")]
 #[serde(rename_all = "camelCase")]
-pub struct SadRecord {
+pub struct SadPointer {
     #[said]
     pub said: String,
     #[prefix]
@@ -37,7 +37,7 @@ pub struct SadRecord {
     pub version: u64,
     /// The owning KEL's prefix.
     pub kel_prefix: String,
-    /// The record kind (e.g., `"kels/v1/mlkem-pubkey"`).
+    /// The pointer kind (e.g., `"kels/v1/mlkem-pubkey"`).
     pub kind: String,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,14 +47,14 @@ pub struct SadRecord {
 /// Compute the SAD chain prefix for a given KEL prefix and kind.
 ///
 /// Anyone can call this offline — no server needed. The prefix is derived from
-/// the v0 inception record content (with said+prefix as placeholders), which
+/// the v0 inception pointer content (with said+prefix as placeholders), which
 /// contains only deterministic fields.
 pub fn compute_sad_prefix(kel_prefix: &str, kind: &str) -> Result<String, StorageError> {
-    let record = SadRecord::create(kel_prefix.to_string(), kind.to_string(), None)?;
-    Ok(record.prefix)
+    let pointer = SadPointer::create(kel_prefix.to_string(), kind.to_string(), None)?;
+    Ok(pointer.prefix)
 }
 
-/// Signature for a SAD record, stored separately from the record itself.
+/// Signature for a SAD pointer, stored separately from the pointer itself.
 ///
 /// Stored in `sad_record_signatures` table (1:1 with `sad_records`).
 /// The `establishment_serial` is server-derived, not client-provided.
@@ -62,71 +62,58 @@ pub fn compute_sad_prefix(kel_prefix: &str, kind: &str) -> Result<String, Storag
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_record_signatures")]
 #[serde(rename_all = "camelCase")]
-pub struct SadRecordSignature {
+pub struct SadPointerSignature {
     #[said]
     pub said: String,
-    pub record_said: String,
+    pub pointer_said: String,
     pub signature: String,
     pub establishment_serial: u64,
 }
 
-/// A SAD record submission — record + signature, no establishment serial.
-///
-/// The `establishment_serial` is NOT included — the server determines it by
-/// finding the most recent establishment event in the KEL and verifying the
-/// signature against that key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SadRecordSubmission {
-    pub record: SadRecord,
-    /// Signature over the record's SAID, using the current KEL signing key.
-    pub signature: String,
-}
-
-/// A signed SAD record as returned by the API.
+/// A signed SAD pointer as returned by the API.
 ///
 /// Analogous to `SignedKeyEvent` (event + signatures). Includes the
 /// server-derived `establishment_serial` so verifiers know which KEL
 /// establishment key to check against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SignedSadRecord {
-    pub record: SadRecord,
+pub struct SignedSadPointer {
+    pub pointer: SadPointer,
     pub signature: String,
     pub establishment_serial: u64,
 }
 
-/// Proof-of-verification token for a SAD record chain.
+/// Proof-of-verification token for a SAD pointer chain.
 ///
-/// Cannot be constructed outside this crate — only via `SadRecordVerifier`.
-/// Having a `SadRecordVerification` proves the chain was fully verified
+/// Cannot be constructed outside this crate — only via `SadPointerVerifier`.
+/// Having a `SadPointerVerification` proves the chain was fully verified
 /// (structural integrity + signature verification against the KEL).
 #[derive(Debug, Clone)]
-pub struct SadRecordVerification {
-    tip: SadRecord,
+pub struct SadPointerVerification {
+    tip: SadPointer,
     establishment_serial: u64,
 }
 
-impl SadRecordVerification {
+impl SadPointerVerification {
     /// Create a new verification token. Crate-internal only.
-    pub(crate) fn new(tip: SadRecord, establishment_serial: u64) -> Self {
+    pub(crate) fn new(tip: SadPointer, establishment_serial: u64) -> Self {
         Self {
             tip,
             establishment_serial,
         }
     }
 
-    /// The latest verified record in the chain.
-    pub fn current_record(&self) -> &SadRecord {
+    /// The latest verified pointer in the chain.
+    pub fn current_record(&self) -> &SadPointer {
         &self.tip
     }
 
-    /// The SAID of the content object referenced by the current record.
+    /// The SAID of the content object referenced by the current pointer.
     pub fn current_content_said(&self) -> Option<&str> {
         self.tip.content_said.as_deref()
     }
 
-    /// The KEL establishment serial that signed the tip record.
+    /// The KEL establishment serial that signed the tip pointer.
     pub fn establishment_serial(&self) -> u64 {
         self.establishment_serial
     }
@@ -141,7 +128,7 @@ impl SadRecordVerification {
         &self.tip.kel_prefix
     }
 
-    /// The record kind.
+    /// The pointer kind.
     pub fn kind(&self) -> &str {
         &self.tip.kind
     }
@@ -161,11 +148,11 @@ pub enum SadAnnouncement {
         /// The peer prefix that stored it.
         origin: String,
     },
-    /// A SAD record chain was updated.
-    Chain {
+    /// A SAD pointer chain was updated.
+    Pointer {
         /// The chain prefix that was updated.
         chain_prefix: String,
-        /// The SAID of the latest chain record.
+        /// The SAID of the latest chain pointer.
         said: String,
         /// The peer prefix that stored it.
         origin: String,
@@ -193,8 +180,8 @@ pub struct SadObjectEntry {
 /// A page of stored SAD records returned by the chain API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SadRecordPage {
-    pub records: Vec<SignedSadRecord>,
+pub struct SadPointerPage {
+    pub records: Vec<SignedSadPointer>,
     pub has_more: bool,
 }
 
@@ -206,7 +193,7 @@ pub struct SadObjectListResponse {
     pub next_cursor: Option<String>,
 }
 
-/// Audit record for a completed SAD chain repair.
+/// Audit pointer for a completed SAD chain repair.
 ///
 /// Each repair gets its own SAID. Multiple repairs to the same chain are
 /// distinguished by their `repaired_at` timestamp and unique SAID.
@@ -214,7 +201,7 @@ pub struct SadObjectListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_chain_repairs")]
 #[serde(rename_all = "camelCase")]
-pub struct SadChainRepair {
+pub struct SadPointerRepair {
     #[said]
     pub said: String,
     /// The chain prefix that was repaired.
@@ -229,23 +216,23 @@ pub struct SadChainRepair {
 /// A page of chain repairs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SadChainRepairPage {
-    pub repairs: Vec<SadChainRepair>,
+pub struct SadPointerRepairPage {
+    pub repairs: Vec<SadPointerRepair>,
     pub has_more: bool,
 }
 
-/// Links a repair to an archived record it displaced.
+/// Links a repair to an archived pointer it displaced.
 ///
-/// One entry per archived record, all sharing the same `repair_said`.
+/// One entry per archived pointer, all sharing the same `repair_said`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_chain_repair_records")]
 #[serde(rename_all = "camelCase")]
-pub struct SadChainRepairRecord {
+pub struct SadPointerRepairRecord {
     #[said]
     pub said: String,
-    /// The repair this record belongs to.
+    /// The repair this pointer belongs to.
     pub repair_said: String,
-    /// The SAID of the archived record.
+    /// The SAID of the archived pointer.
     pub record_said: String,
 }
 
@@ -275,38 +262,38 @@ mod tests {
 
     #[test]
     fn test_sad_record_inception_no_content() {
-        let record = SadRecord::create(
+        let pointer = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-        assert_eq!(record.version, 0);
-        assert!(record.previous.is_none());
-        assert!(record.content_said.is_none());
-        assert!(!record.said.is_empty());
-        assert!(!record.prefix.is_empty());
+        assert_eq!(pointer.version, 0);
+        assert!(pointer.previous.is_none());
+        assert!(pointer.content_said.is_none());
+        assert!(!pointer.said.is_empty());
+        assert!(!pointer.prefix.is_empty());
     }
 
     #[test]
     fn test_sad_record_chain_increment() {
-        let mut record = SadRecord::create(
+        let mut pointer = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
 
-        let v0_said = record.said.clone();
-        let prefix = record.prefix.clone();
+        let v0_said = pointer.said.clone();
+        let prefix = pointer.prefix.clone();
 
-        record.content_said = Some("Econtent_said_abc".to_string());
-        record.increment().unwrap();
+        pointer.content_said = Some("Econtent_said_abc".to_string());
+        pointer.increment().unwrap();
 
-        assert_eq!(record.version, 1);
-        assert_eq!(record.previous, Some(v0_said));
-        assert_eq!(record.prefix, prefix);
-        assert_eq!(record.content_said, Some("Econtent_said_abc".to_string()));
+        assert_eq!(pointer.version, 1);
+        assert_eq!(pointer.previous, Some(v0_said));
+        assert_eq!(pointer.prefix, prefix);
+        assert_eq!(pointer.content_said, Some("Econtent_said_abc".to_string()));
     }
 
     #[test]
@@ -319,7 +306,7 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, SadAnnouncement::Object { .. }));
 
-        let chain_msg = SadAnnouncement::Chain {
+        let chain_msg = SadAnnouncement::Pointer {
             chain_prefix: "Eprefix".to_string(),
             said: "Esaid456".to_string(),
             origin: "Eorigin".to_string(),
@@ -329,11 +316,11 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Chain { repair: false, .. }
+            SadAnnouncement::Pointer { repair: false, .. }
         ));
 
         // Repair messages round-trip correctly
-        let repair_msg = SadAnnouncement::Chain {
+        let repair_msg = SadAnnouncement::Pointer {
             chain_prefix: "Eprefix".to_string(),
             said: "Esaid789".to_string(),
             origin: "Eorigin".to_string(),
@@ -343,12 +330,12 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Chain { repair: true, .. }
+            SadAnnouncement::Pointer { repair: true, .. }
         ));
 
         // Backwards compatibility: messages without repair field default to false
         // (serde(default) on the field handles this)
-        let without_repair = serde_json::to_string(&SadAnnouncement::Chain {
+        let without_repair = serde_json::to_string(&SadAnnouncement::Pointer {
             chain_prefix: "Ep".to_string(),
             said: "Es".to_string(),
             origin: "Eo".to_string(),
@@ -360,74 +347,57 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&legacy_json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Chain { repair: false, .. }
+            SadAnnouncement::Pointer { repair: false, .. }
         ));
     }
 
     #[test]
-    fn test_sad_record_submission_serialization() {
-        let record = SadRecord::create(
-            "Ekel123".to_string(),
-            "kels/v1/mlkem-pubkey".to_string(),
-            None,
-        )
-        .unwrap();
-        let submission = SadRecordSubmission {
-            record,
-            signature: "sig123".to_string(),
-        };
-        let json = serde_json::to_string(&submission).unwrap();
-        let parsed: SadRecordSubmission = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.signature, "sig123");
-    }
-
-    #[test]
     fn test_signed_sad_record_serialization() {
-        let record = SadRecord::create(
+        let pointer = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-        let signed = SignedSadRecord {
-            record,
+        let signed = SignedSadPointer {
+            pointer,
             signature: "sig123".to_string(),
             establishment_serial: 2,
         };
         let json = serde_json::to_string(&signed).unwrap();
-        let parsed: SignedSadRecord = serde_json::from_str(&json).unwrap();
+        let parsed: SignedSadPointer = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.signature, "sig123");
         assert_eq!(parsed.establishment_serial, 2);
     }
 
     #[test]
     fn test_sad_record_verify_said() {
-        let record = SadRecord::create(
+        let pointer = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-        assert!(record.verify_said().is_ok());
+        assert!(pointer.verify_said().is_ok());
 
         // Tamper with content
-        let mut tampered = record;
+        let mut tampered = pointer;
         tampered.kind = "kels/v1/tampered".to_string();
         assert!(tampered.verify_said().is_err());
     }
 
     #[test]
     fn test_sad_record_verify_prefix() {
-        let record = SadRecord::create(
+        let pointer = SadPointer::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-        assert!(record.verify_prefix().is_ok());
+        assert!(pointer.verify_prefix().is_ok());
 
         // Tamper with kel_prefix
-        let mut tampered = record;
+        let mut tampered = pointer;
         tampered.kel_prefix = "Etampered".to_string();
         tampered.derive_said().unwrap();
         assert!(tampered.verify_prefix().is_err());

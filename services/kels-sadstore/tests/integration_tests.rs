@@ -10,7 +10,7 @@ use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels::{SadRecord, compute_sad_prefix};
+use kels::{SadPointer, compute_sad_prefix};
 use reqwest::Client;
 use testcontainers::{
     ContainerAsync, GenericImage, Image,
@@ -367,7 +367,7 @@ async fn test_chain_fetch_not_found() {
 
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/chain/Enonexistent_chain_prefix_________________"))
+        .get(harness.url("/api/v1/sad/pointers/Enonexistent_chain_prefix_________________"))
         .send()
         .await
         .unwrap();
@@ -380,15 +380,15 @@ async fn test_effective_said_not_found() {
         return;
     };
 
-    let resp = harness
-        .client()
-        .get(
-            harness
-                .url("/api/v1/sad/chain/Enonexistent_chain_prefix_________________/effective-said"),
-        )
-        .send()
-        .await
-        .unwrap();
+    let resp =
+        harness
+            .client()
+            .get(harness.url(
+                "/api/v1/sad/pointers/Enonexistent_chain_prefix_________________/effective-said",
+            ))
+            .send()
+            .await
+            .unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -399,23 +399,23 @@ async fn test_submit_record_invalid_said_rejected() {
     };
 
     // Create a record but tamper with the SAID
-    let mut record = SadRecord::create(
+    let mut pointer = SadPointer::create(
         "Ekel_test_prefix".to_string(),
         "kels/v1/test-kind".to_string(),
         None,
     )
     .unwrap();
-    record.kind = "tampered".to_string(); // Tamper after SAID computation
+    pointer.kind = "tampered".to_string(); // Tamper after SAID computation
 
-    let records = vec![kels::SignedSadRecord {
-        record,
+    let records = vec![kels::SignedSadPointer {
+        pointer,
         signature: "fake_sig".to_string(),
         establishment_serial: 0,
     }];
 
     let resp = harness
         .client()
-        .post(harness.url("/api/v1/sad/records"))
+        .post(harness.url("/api/v1/sad/pointers"))
         .json(&records)
         .send()
         .await

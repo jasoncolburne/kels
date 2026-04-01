@@ -2,7 +2,7 @@
 
 use cesr::VerificationKey;
 
-use kels::{SadChainRepair, SadChainRepairRecord, SadRecord, SadRecordSignature};
+use kels::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
     UnchainedRepository, Value,
@@ -10,12 +10,12 @@ use verifiable_storage::{
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
 #[derive(Stored)]
-#[stored(item_type = SadRecord, table = "sad_records", chained = true)]
-pub struct SadRecordRepository {
+#[stored(item_type = SadPointer, table = "sad_records", chained = true)]
+pub struct SadPointerRepository {
     pub pool: PgPool,
 }
 
-impl SadRecordRepository {
+impl SadPointerRepository {
     /// The signatures table name.
     pub const SIGNATURES_TABLE_NAME: &'static str = "sad_record_signatures";
 
@@ -31,7 +31,7 @@ impl SadRecordRepository {
     /// Returns the number of new records actually inserted (excludes deduplicates).
     pub async fn save_batch_with_verified_signatures(
         &self,
-        records: &[(SadRecord, SadRecordSignature)],
+        records: &[(SadPointer, SadPointerSignature)],
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<u32, StorageError> {
         if records.is_empty() {
@@ -97,12 +97,12 @@ impl SadRecordRepository {
         let mut offset: u64 = 0;
         loop {
             let query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .order_by("version", verifiable_storage_postgres::Order::Asc)
                     .limit(page_size)
                     .offset(offset);
-            let page: Vec<SadRecord> = tx.fetch(query).await?;
+            let page: Vec<SadPointer> = tx.fetch(query).await?;
 
             if page.is_empty() {
                 break;
@@ -110,16 +110,16 @@ impl SadRecordRepository {
 
             // Batch-fetch signatures for this page
             let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
-            let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+            let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
             .r#in("record_said", page_saids);
-            let sigs: Vec<SadRecordSignature> = tx.fetch(sig_query).await?;
-            let sig_map: std::collections::HashMap<&str, &SadRecordSignature> =
-                sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
+            let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
+            let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
+                sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
-            // Build SignedSadRecords for the verifier
-            let signed_records: Vec<kels::SignedSadRecord> = page
+            // Build SignedSadPointers for the verifier
+            let signed_records: Vec<kels::SignedSadPointer> = page
                 .into_iter()
                 .map(|record| {
                     let sig_record = sig_map.get(record.said.as_str()).ok_or_else(|| {
@@ -128,8 +128,8 @@ impl SadRecordRepository {
                             record.said
                         ))
                     })?;
-                    Ok(kels::SignedSadRecord {
-                        record,
+                    Ok(kels::SignedSadPointer {
+                        pointer: record,
                         signature: sig_record.signature.clone(),
                         establishment_serial: sig_record.establishment_serial,
                     })
@@ -164,7 +164,7 @@ impl SadRecordRepository {
     /// the context of a verified KEL signature.
     pub async fn truncate_and_replace(
         &self,
-        records: &[(SadRecord, SadRecordSignature)],
+        records: &[(SadPointer, SadPointerSignature)],
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<(), StorageError> {
         if records.is_empty() {
@@ -186,12 +186,12 @@ impl SadRecordRepository {
 
         loop {
             let page_query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .eq("prefix", prefix)
                     .gte("version", version_cursor)
                     .order_by("version", verifiable_storage::Order::Asc)
                     .limit(page_size as u64);
-            let page: Vec<SadRecord> = tx.fetch(page_query).await?;
+            let page: Vec<SadPointer> = tx.fetch(page_query).await?;
 
             if page.is_empty() {
                 break;
@@ -201,7 +201,7 @@ impl SadRecordRepository {
             let repair_said_ref = match &repair_said {
                 Some(said) => said,
                 None => {
-                    let repair = SadChainRepair::create(prefix.clone(), from_version)?;
+                    let repair = SadPointerRepair::create(prefix.clone(), from_version)?;
                     tx.insert_with_table(&repair, Self::REPAIRS_TABLE).await?;
                     repair_said = Some(repair.said);
                     repair_said.as_ref().ok_or_else(|| {
@@ -211,17 +211,17 @@ impl SadRecordRepository {
             };
 
             let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
-            let sig_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+            let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
             .r#in("record_said", page_saids);
-            let sigs: Vec<SadRecordSignature> = tx.fetch(sig_query).await?;
+            let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
 
             for record in &page {
                 tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
                     .await?;
                 let repair_record =
-                    SadChainRepairRecord::create(repair_said_ref.clone(), record.said.clone())?;
+                    SadPointerRepairRecord::create(repair_said_ref.clone(), record.said.clone())?;
                 tx.insert_with_table(&repair_record, Self::REPAIR_RECORDS_TABLE)
                     .await?;
             }
@@ -240,7 +240,7 @@ impl SadRecordRepository {
         }
 
         // Delete records at and after from_version — signatures cascade via FK ON DELETE CASCADE
-        let delete_records = verifiable_storage::Delete::<SadRecord>::for_table(Self::TABLE_NAME)
+        let delete_records = verifiable_storage::Delete::<SadPointer>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)
             .gte("version", from_version);
         tx.delete(delete_records).await?;
@@ -315,7 +315,7 @@ impl SadRecordRepository {
         Ok(serials.into_iter().map(|s| s as u64).collect())
     }
 
-    /// Get the chain with signatures as `SignedSadRecord`s.
+    /// Get the chain with signatures as `SignedSadPointer`s.
     ///
     /// If `since_said` is provided, looks up that SAID's record and returns
     /// records strictly after it in chain order. If the SAID is not found
@@ -331,13 +331,13 @@ impl SadRecordRepository {
         prefix: &str,
         since_said: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<Vec<kels::SignedSadRecord>, StorageError> {
+    ) -> Result<Vec<kels::SignedSadPointer>, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Resolve SAID cursor to a (version, said) position
         let since_position: Option<(u64, String)> = if let Some(said) = since_said {
             let cursor_query =
-                verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .eq("said", said)
                     .limit(1);
             self.pool
@@ -351,7 +351,7 @@ impl SadRecordRepository {
         };
 
         let mut query =
-            verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                 .eq("prefix", prefix)
                 .order_by("version", verifiable_storage_postgres::Order::Asc)
                 .order_by("said", verifiable_storage_postgres::Order::Asc);
@@ -377,7 +377,7 @@ impl SadRecordRepository {
             query = query.limit(fetch_limit);
         }
 
-        let mut records: Vec<SadRecord> = self.pool.fetch(query).await?;
+        let mut records: Vec<SadPointer> = self.pool.fetch(query).await?;
 
         // Skip records at or before the cursor position
         if let Some((version, said)) = &since_position {
@@ -406,15 +406,15 @@ impl SadRecordRepository {
 
         // Batch-fetch all signatures in one query
         let saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
-        let query = verifiable_storage_postgres::Query::<kels::SadRecordSignature>::for_table(
+        let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
             Self::SIGNATURES_TABLE_NAME,
         )
         .r#in("record_said", saids);
-        let sigs: Vec<kels::SadRecordSignature> = self.pool.fetch(query).await?;
+        let sigs: Vec<kels::SadPointerSignature> = self.pool.fetch(query).await?;
 
         // Index signatures by record_said for O(1) lookup
-        let sig_map: std::collections::HashMap<&str, &kels::SadRecordSignature> =
-            sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
+        let sig_map: std::collections::HashMap<&str, &kels::SadPointerSignature> =
+            sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
@@ -424,8 +424,8 @@ impl SadRecordRepository {
                     record.said
                 ))
             })?;
-            stored.push(kels::SignedSadRecord {
-                record,
+            stored.push(kels::SignedSadPointer {
+                pointer: record,
                 signature: sig.signature.clone(),
                 establishment_serial: sig.establishment_serial,
             });
@@ -437,10 +437,10 @@ impl SadRecordRepository {
     pub async fn get_signature(
         &self,
         record_said: &str,
-    ) -> Result<Option<kels::SadRecordSignature>, StorageError> {
+    ) -> Result<Option<kels::SadPointerSignature>, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels::SadRecordSignature>::for_table(
+        let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
             Self::SIGNATURES_TABLE_NAME,
         )
         .eq("record_said", record_said)
@@ -478,17 +478,17 @@ impl SadRecordRepository {
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SadChainRepair>, bool), StorageError> {
+    ) -> Result<(Vec<kels::SadPointerRepair>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels::SadChainRepair>::for_table(
+        let query = verifiable_storage_postgres::Query::<kels::SadPointerRepair>::for_table(
             Self::REPAIRS_TABLE,
         )
         .eq("record_prefix", prefix)
         .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
         .offset(offset)
         .limit(limit + 1);
-        let mut repairs: Vec<kels::SadChainRepair> = self.pool.fetch(query).await?;
+        let mut repairs: Vec<kels::SadPointerRepair> = self.pool.fetch(query).await?;
 
         let has_more = repairs.len() as u64 > limit;
         repairs.truncate(limit as usize);
@@ -498,23 +498,23 @@ impl SadRecordRepository {
     /// Get archived records for a specific repair, paginated.
     ///
     /// Fetches `SadChainRepairRecord` links for the repair SAID, then batch-fetches
-    /// the archived records and their signatures. Returns `SignedSadRecord`s.
+    /// the archived records and their signatures. Returns `SignedSadPointer`s.
     pub async fn get_repair_records(
         &self,
         repair_said: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SignedSadRecord>, bool), StorageError> {
+    ) -> Result<(Vec<kels::SignedSadPointer>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Fetch repair-record links with limit+1 for has_more
-        let link_query = verifiable_storage_postgres::Query::<SadChainRepairRecord>::for_table(
+        let link_query = verifiable_storage_postgres::Query::<SadPointerRepairRecord>::for_table(
             Self::REPAIR_RECORDS_TABLE,
         )
         .eq("repair_said", repair_said)
         .offset(offset)
         .limit(limit + 1);
-        let mut links: Vec<SadChainRepairRecord> = self.pool.fetch(link_query).await?;
+        let mut links: Vec<SadPointerRepairRecord> = self.pool.fetch(link_query).await?;
 
         let has_more = links.len() as u64 > limit;
         links.truncate(limit as usize);
@@ -527,24 +527,24 @@ impl SadRecordRepository {
         let record_saids: Vec<String> = links.iter().map(|l| l.record_said.clone()).collect();
 
         // Batch-fetch archived records
-        let records_query = verifiable_storage_postgres::Query::<SadRecord>::for_table(
+        let records_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
             Self::ARCHIVED_RECORDS_TABLE,
         )
         .r#in("said", record_saids.clone());
-        let records: Vec<SadRecord> = self.pool.fetch(records_query).await?;
+        let records: Vec<SadPointer> = self.pool.fetch(records_query).await?;
 
         // Batch-fetch archived signatures
-        let sigs_query = verifiable_storage_postgres::Query::<SadRecordSignature>::for_table(
+        let sigs_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
             Self::ARCHIVED_SIGNATURES_TABLE,
         )
         .r#in("record_said", record_saids);
-        let sigs: Vec<SadRecordSignature> = self.pool.fetch(sigs_query).await?;
+        let sigs: Vec<SadPointerSignature> = self.pool.fetch(sigs_query).await?;
 
         // Index signatures by record_said
-        let sig_map: std::collections::HashMap<&str, &SadRecordSignature> =
-            sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
+        let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
+            sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
-        // Zip into SignedSadRecord
+        // Zip into SignedSadPointer
         let mut signed = Vec::with_capacity(records.len());
         for record in records {
             let sig = sig_map.get(record.said.as_str()).ok_or_else(|| {
@@ -553,8 +553,8 @@ impl SadRecordRepository {
                     record.said
                 ))
             })?;
-            signed.push(kels::SignedSadRecord {
-                record,
+            signed.push(kels::SignedSadPointer {
+                pointer: record,
                 signature: sig.signature.clone(),
                 establishment_serial: sig.establishment_serial,
             });
@@ -578,7 +578,7 @@ impl SadRecordRepository {
         use verifiable_storage_postgres::QueryExecutor;
 
         let mut query =
-            verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                 .distinct_on("prefix")
                 .order_by("prefix", verifiable_storage_postgres::Order::Asc)
                 .order_by("version", verifiable_storage_postgres::Order::Desc)
@@ -588,7 +588,7 @@ impl SadRecordRepository {
             query = query.gt("prefix", cursor);
         }
 
-        let records: Vec<SadRecord> = self.pool.fetch(query).await?;
+        let records: Vec<SadPointer> = self.pool.fetch(query).await?;
 
         let mut prefix_states: Vec<kels::PrefixState> = records
             .into_iter()
@@ -606,13 +606,13 @@ impl SadRecordRepository {
             let remaining = limit - prefix_states.len();
             if remaining > 0 {
                 let wrap_query =
-                    verifiable_storage_postgres::Query::<SadRecord>::for_table(Self::TABLE_NAME)
+                    verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                         .distinct_on("prefix")
                         .order_by("prefix", verifiable_storage_postgres::Order::Asc)
                         .order_by("version", verifiable_storage_postgres::Order::Desc)
                         .lte("prefix", cursor)
                         .limit(remaining as u64);
-                let wrap_records: Vec<SadRecord> = self.pool.fetch(wrap_query).await?;
+                let wrap_records: Vec<SadPointer> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_records.into_iter().map(|r| kels::PrefixState {
                     prefix: r.prefix,
                     said: r.said,
@@ -761,6 +761,6 @@ impl SadObjectIndex {
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
-    pub sad_records: SadRecordRepository,
+    pub sad_records: SadPointerRepository,
     pub sad_objects: SadObjectIndex,
 }

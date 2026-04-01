@@ -7,7 +7,7 @@ mod node;
 mod peer;
 mod raft;
 mod recovery;
-mod sad_record;
+mod sad_pointer;
 #[allow(clippy::too_many_arguments)]
 mod sad_transfer;
 mod sync;
@@ -22,7 +22,7 @@ pub use node::*;
 pub use peer::*;
 pub use raft::*;
 pub use recovery::*;
-pub use sad_record::*;
+pub use sad_pointer::*;
 pub use sad_transfer::*;
 pub use sync::*;
 pub use verification::*;

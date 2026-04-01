@@ -181,7 +181,7 @@ pub async fn run_sad_redis_subscriber(
                 &payload
             };
             if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
-                kels::SadAnnouncement::Chain {
+                kels::SadAnnouncement::Pointer {
                     chain_prefix: ann.prefix,
                     said: ann.said,
                     origin: local_peer_prefix.clone(),
@@ -306,7 +306,7 @@ impl SyncHandler {
             kels::SadAnnouncement::Object { said, origin } => {
                 self.handle_sad_object_announcement(&said, &origin).await;
             }
-            kels::SadAnnouncement::Chain {
+            kels::SadAnnouncement::Pointer {
                 chain_prefix,
                 said,
                 origin,

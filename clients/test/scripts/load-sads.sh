@@ -173,7 +173,7 @@ create_group() {
 
     # 6. Submit all records in one batch
     local submit_resp
-    submit_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad/records" \
+    submit_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad/pointers" \
         -H 'Content-Type: application/json' \
         -d "$records_json")
     local submit_code

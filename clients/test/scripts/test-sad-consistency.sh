@@ -285,7 +285,7 @@ fetch_all_sad_records() {
     local since=""
 
     while true; do
-        local query_url="${url}/api/v1/sad/chain/${prefix}"
+        local query_url="${url}/api/v1/sad/pointers/${prefix}"
         if [ -n "$since" ]; then
             query_url="${query_url}?since=${since}"
         fi

@@ -83,25 +83,25 @@ sad_object_exists() {
 sad_chain_exists() {
     local url="$1"
     local prefix="$2"
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/chain/${prefix}")" = "200" ]
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/pointers/${prefix}")" = "200" ]
 }
 
 get_chain_tip_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/chain/${prefix}" | jq -r '.records[-1].record.said // empty'
+    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq -r '.records[-1].record.said // empty'
 }
 
 get_effective_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/chain/${prefix}/effective-said" | jq -r '.said // empty'
+    curl -sf "${url}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.said // empty'
 }
 
 get_chain_length() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/chain/${prefix}" | jq '.records | length'
+    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq '.records | length'
 }
 
 wait_for_sad_object_propagation() {
@@ -165,15 +165,15 @@ echo ""
 
 # GET non-existent chain
 run_test "GET non-existent chain returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/Enonexistent____________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________') = '404' ]"
 
 # Effective SAID non-existent
 run_test "Effective SAID non-existent returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/Enonexistent____________________________________/effective-said') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________/effective-said') = '404' ]"
 
 # Submit record with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/records' -H 'Content-Type: application/json' -d '[{\"record\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"record\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
 
 echo ""
 
@@ -239,7 +239,7 @@ else
     run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
 
     run_test "Chain does not exist yet" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/${CHAIN_PREFIX}') = '404' ]"
+        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/${CHAIN_PREFIX}') = '404' ]"
 
     # --- Build v0 inception record ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
@@ -357,7 +357,7 @@ echo ""
 # 2. Divergent chains would return a synthetic effective SAID
 
 run_test "Effective SAID endpoint consistent" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/chain/Eany_prefix_____________________________________/effective-said') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Eany_prefix_____________________________________/effective-said') = '404' ]"
 
 echo ""
 echo "Note: Full divergence detection and repair testing requires programmatic"

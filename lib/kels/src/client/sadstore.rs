@@ -8,7 +8,7 @@ use std::time::Duration;
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadChainRepairPage, SadRecordPage, SadRecordVerification,
+    KelsError, SadPointerPage, SadPointerRepairPage, SadPointerVerification,
     types::{EffectiveSaidResponse, ErrorCode},
 };
 
@@ -131,9 +131,9 @@ impl SadStoreClient {
     /// Submit signed SAD records.
     pub async fn submit_sad_records(
         &self,
-        records: &[crate::SignedSadRecord],
+        records: &[crate::SignedSadPointer],
     ) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/records", self.base_url);
+        let url = format!("{}/api/v1/sad/pointers", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
         if resp.status().is_success() {
@@ -150,9 +150,9 @@ impl SadStoreClient {
     /// the batch. Used to resolve divergent chains.
     pub async fn repair_sad_chain(
         &self,
-        records: &[crate::SignedSadRecord],
+        records: &[crate::SignedSadPointer],
     ) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/records?repair=true", self.base_url);
+        let url = format!("{}/api/v1/sad/pointers?repair=true", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
         if resp.status().is_success() {
@@ -172,8 +172,8 @@ impl SadStoreClient {
         &self,
         prefix: &str,
         since: Option<&str>,
-    ) -> Result<SadRecordPage, KelsError> {
-        let mut url = format!("{}/api/v1/sad/chain/{}", self.base_url, prefix);
+    ) -> Result<SadPointerPage, KelsError> {
+        let mut url = format!("{}/api/v1/sad/pointers/{}", self.base_url, prefix);
         if let Some(since_said) = since {
             url.push_str(&format!("?since={}", since_said));
         }
@@ -196,7 +196,7 @@ impl SadStoreClient {
         prefix: &str,
     ) -> Result<Option<String>, KelsError> {
         let url = format!(
-            "{}/api/v1/sad/chain/{}/effective-said",
+            "{}/api/v1/sad/pointers/{}/effective-said",
             self.base_url, prefix
         );
         let resp = self.client.get(&url).send().await?;
@@ -228,7 +228,7 @@ impl SadStoreClient {
         let signed = crate::sign_request(signer, &request).await?;
         let resp = self
             .client
-            .post(format!("{}/api/v1/sad/objects", self.base_url))
+            .post(format!("{}/api/v1/sad/saids", self.base_url))
             .json(&signed)
             .send()
             .await?;
@@ -276,9 +276,9 @@ impl SadStoreClient {
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<SadChainRepairPage, KelsError> {
+    ) -> Result<SadPointerRepairPage, KelsError> {
         let url = format!(
-            "{}/api/v1/sad/chain/{}/repairs?limit={}&offset={}",
+            "{}/api/v1/sad/pointers/{}/repairs?limit={}&offset={}",
             self.base_url, prefix, limit, offset
         );
         let resp = self.client.get(&url).send().await?;
@@ -300,9 +300,9 @@ impl SadStoreClient {
         repair_said: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<SadRecordPage, KelsError> {
+    ) -> Result<SadPointerPage, KelsError> {
         let url = format!(
-            "{}/api/v1/sad/chain/{}/repairs/{}/records?limit={}&offset={}",
+            "{}/api/v1/sad/pointers/{}/repairs/{}/records?limit={}&offset={}",
             self.base_url, prefix, repair_said, limit, offset
         );
         let resp = self.client.get(&url).send().await?;
@@ -329,7 +329,7 @@ impl SadStoreClient {
         &self,
         prefix: &str,
         kels_client: &crate::KelsClient,
-    ) -> Result<SadRecordVerification, KelsError> {
+    ) -> Result<SadPointerVerification, KelsError> {
         crate::verify_sad_records(
             prefix,
             &self.as_sad_source()?,

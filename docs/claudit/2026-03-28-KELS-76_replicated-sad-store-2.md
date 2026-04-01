@@ -94,7 +94,7 @@ Branch `KELS-76_replicated-sad-store` vs `main`: 59 files changed, ~5100 inserti
 
 - **Divergence detection parallels KEL divergence.** Multiple records at the same version are stored (not replaced), chain is frozen, effective SAID becomes synthetic `hash_effective_said("divergent:{prefix}")`, and repair via `?repair=true` truncate-and-replace. Clean, predictable model.
 
-- **Unified record submission endpoint.** Single `POST /api/v1/sad/records` replaces separate single/batch endpoints. Check-before/accrue-after rate limiting with dedup-aware counting matches the KEL `submit_events` pattern.
+- **Unified record submission endpoint.** Single `POST /api/v1/sad/pointers` replaces separate single/batch endpoints. Check-before/accrue-after rate limiting with dedup-aware counting matches the KEL `submit_events` pattern.
 
 - **Prefix derivation is fully deterministic.** The v0 inception record with no `created_at` or `content_said` field means anyone can compute the chain prefix offline from just `kel_prefix` + `kind`. No directory service needed for discovery.
 
