@@ -254,7 +254,10 @@ impl SadRecordRepository {
 
         // Verify the full chain (pre-existing + replacements) — catches structural
         // issues, signature failures, and DB tampering. Rolls back on failure.
-        Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        let verifier = Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        verifier.finish().map_err(|e| {
+            StorageError::StorageError(format!("Chain verification incomplete: {}", e))
+        })?;
 
         tx.commit().await?;
         Ok(())
