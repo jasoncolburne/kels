@@ -5,6 +5,7 @@ use std::{iter, path::PathBuf};
 #[cfg(feature = "dev-tools")]
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
+use cesr::Matter;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 #[cfg(feature = "dev-tools")]
@@ -15,15 +16,16 @@ use kels::{
     VerificationKeyCode,
 };
 
-const DEFAULT_KELS_URL: &str = "http://kels.kels-node-a.kels";
+const DEFAULT_BASE_DOMAIN: &str = "kels-node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://kels-registry.kels-registry-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// KELS server URL (ignored if --auto-select is used)
-    #[arg(short, long, env = "KELS_URL", default_value = DEFAULT_KELS_URL)]
-    url: String,
+    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// KELS URL = http://kels.{domain}, SADStore URL = http://kels-sadstore.{domain}
+    #[arg(short = 'd', long, env = "BASE_DOMAIN", default_value = DEFAULT_BASE_DOMAIN)]
+    base_domain: String,
 
     /// Registry URLs for node discovery (comma-separated)
     #[arg(long, env = "KELS_REGISTRY_URLS", default_value = DEFAULT_REGISTRY_URL)]
@@ -32,6 +34,14 @@ struct Cli {
     /// Auto-select the fastest available node from registry (requires --registry)
     #[arg(long)]
     auto_select: bool,
+
+    /// Override KELS URL (takes precedence over base_domain)
+    #[arg(long, env = "KELS_URL")]
+    kels_url: Option<String>,
+
+    /// Override SADStore URL (takes precedence over base_domain)
+    #[arg(long, env = "SADSTORE_URL")]
+    sadstore_url: Option<String>,
 
     /// Config directory (default: ~/.kels-cli)
     #[arg(long, env = "KELS_CLI_HOME")]
@@ -156,6 +166,20 @@ enum Commands {
         yes: bool,
     },
 
+    /// Sign arbitrary data with the current signing key and print the CESR signature
+    Sign {
+        /// KEL prefix whose signing key to use
+        #[arg(long)]
+        prefix: String,
+
+        /// Data to sign (raw string)
+        data: String,
+    },
+
+    /// SAD store commands (self-addressed data)
+    #[command(subcommand)]
+    Sad(SadCommands),
+
     /// Development and testing commands
     #[cfg(feature = "dev-tools")]
     #[command(subcommand)]
@@ -201,6 +225,46 @@ enum AdversaryCommands {
         /// Comma-separated list of event types to inject (e.g., "ixn,ixn,rot")
         #[arg(long)]
         events: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SadCommands {
+    /// Store a self-addressed JSON object in the SAD store
+    Put {
+        /// Path to JSON file containing the self-addressed object
+        file: PathBuf,
+    },
+
+    /// Retrieve a self-addressed object by SAID
+    Get {
+        /// The SAID of the object to retrieve
+        said: String,
+    },
+
+    /// Submit a signed SAD pointer to a chain
+    Submit {
+        /// Path to JSON file containing SignedSadPointer(s)
+        file: PathBuf,
+
+        /// Submit as a repair operation (truncates divergent records and replaces)
+        #[arg(long)]
+        repair: bool,
+    },
+
+    /// Fetch and display a SAD pointer chain
+    Pointer {
+        /// The chain prefix to fetch
+        prefix: String,
+    },
+
+    /// Compute a SAD pointer prefix from a KEL prefix and kind
+    Prefix {
+        /// The KEL prefix
+        kel_prefix: String,
+
+        /// The record kind (e.g., "kels/v1/mlkem-pubkey")
+        kind: String,
     },
 }
 
@@ -279,12 +343,26 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         println!();
 
         let url = match nodes.first() {
-            Some(n) => n.kels_url.clone(),
+            Some(n) => format!("http://kels.{}", n.base_domain),
             None => return Err(anyhow!("Failed to find kels url of fastest node")),
         };
-        Ok(KelsClient::new(&url))
+        Ok(KelsClient::new(&url)?)
     } else {
-        Ok(KelsClient::new(&cli.url))
+        Ok(KelsClient::new(&cli.kels_url())?)
+    }
+}
+
+impl Cli {
+    fn kels_url(&self) -> String {
+        self.kels_url
+            .clone()
+            .unwrap_or_else(|| format!("http://kels.{}", self.base_domain))
+    }
+
+    fn sadstore_url(&self) -> String {
+        self.sadstore_url
+            .clone()
+            .unwrap_or_else(|| format!("http://kels-sadstore.{}", self.base_domain))
     }
 }
 
@@ -333,7 +411,7 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
 
         println!(
             "  {} [{}] - {} (latency: {})",
-            node.node_id, status_str, node.kels_url, latency_str
+            node.node_id, status_str, node.base_domain, latency_str
         );
     }
 
@@ -471,6 +549,16 @@ async fn cmd_rotate_recovery(
     Ok(())
 }
 
+async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> {
+    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
+    let sig = key_provider
+        .sign(data.as_bytes())
+        .await
+        .context("Signing failed")?;
+    println!("{}", sig.qb64());
+    Ok(())
+}
+
 async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
@@ -527,7 +615,7 @@ async fn cmd_recover(
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
+    let source = kels::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
     let server_verification = kels::verify_key_events(
         prefix,
         &source,
@@ -643,7 +731,7 @@ fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
 
 async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
-    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}");
+    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
 
     let msg = if audit {
         format!("Fetching KEL {} with audit records...", prefix)
@@ -678,11 +766,22 @@ async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     print_kel_status(&kel_verification, !audit);
 
     if audit {
-        let recovery_records = client.fetch_kel_audit(prefix).await?;
-        if !recovery_records.is_empty() {
+        let mut all_records = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let page = client
+                .fetch_kel_audit(prefix, kels::page_size(), offset)
+                .await?;
+            all_records.extend(page.records);
+            if !page.has_more {
+                break;
+            }
+            offset += kels::page_size() as u64;
+        }
+        if !all_records.is_empty() {
             println!();
             println!("{}", "Recovery History:".yellow().bold());
-            for (i, record) in recovery_records.iter().enumerate() {
+            for (i, record) in all_records.iter().enumerate() {
                 println!("  [{}] {} ({})", i, &record.said[..16], record.created_at);
                 println!(
                     "      diverged_at={} recovery_serial={}",
@@ -1010,6 +1109,90 @@ async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Resu
     Ok(())
 }
 
+// ==================== SAD Commands ====================
+
+async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
+    use verifiable_storage::SelfAddressed;
+
+    let data = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&data).context("Failed to parse JSON file")?;
+
+    // Compute the SAID if missing or placeholder
+    let current_said = value.get_said();
+    if current_said.is_empty() || current_said.chars().all(|c| c == '#') {
+        value
+            .derive_said()
+            .context("Failed to compute SAID for object")?;
+    }
+
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let said = client
+        .post_sad_object(&value)
+        .await
+        .context("Failed to store SAD object")?;
+
+    println!("{}", said);
+    Ok(())
+}
+
+async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let value = client
+        .get_sad_object(said)
+        .await
+        .context("Failed to retrieve SAD object")?;
+
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
+    let data = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    let records: Vec<kels::SignedSadPointer> =
+        serde_json::from_str(&data).context("Failed to parse SignedSadPointer JSON")?;
+
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    if repair {
+        client
+            .repair_sad_chain(&records)
+            .await
+            .context("Failed to submit SAD repair")?;
+    } else {
+        client
+            .submit_sad_records(&records)
+            .await
+            .context("Failed to submit SAD records")?;
+    }
+
+    let label = if repair { "repaired" } else { "submitted" };
+    println!(
+        "{}",
+        format!("{} SAD record(s) {}", records.len(), label).green()
+    );
+    Ok(())
+}
+
+async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
+    let client = kels::SadStoreClient::new(&cli.sadstore_url())?;
+    let page = client
+        .fetch_sad_chain(prefix, None)
+        .await
+        .context("Failed to fetch SAD chain")?;
+
+    println!("{}", serde_json::to_string_pretty(&page)?);
+    Ok(())
+}
+
+fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
+    let prefix =
+        kels::compute_sad_prefix(kel_prefix, kind).context("Failed to compute SAD prefix")?;
+    println!("{}", prefix);
+    Ok(())
+}
+
 // ==================== Main ====================
 
 #[tokio::main]
@@ -1049,6 +1232,7 @@ async fn main() -> Result<()> {
                 .transpose()?;
             cmd_rotate_recovery(&cli, prefix, signing, recovery).await
         }
+        Commands::Sign { prefix, data } => cmd_sign(&cli, prefix, data).await,
         Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
         Commands::Recover {
             prefix,
@@ -1070,6 +1254,14 @@ async fn main() -> Result<()> {
         Commands::ListNodes => cmd_list_nodes(&cli).await,
         Commands::Status { prefix } => cmd_status(&cli, prefix).await,
         Commands::Reset { prefix, yes } => cmd_reset(&cli, prefix.as_deref(), *yes).await,
+
+        Commands::Sad(sad_cmd) => match sad_cmd {
+            SadCommands::Put { file } => cmd_sad_put(&cli, file).await,
+            SadCommands::Get { said } => cmd_sad_get(&cli, said).await,
+            SadCommands::Submit { file, repair } => cmd_sad_submit(&cli, file, *repair).await,
+            SadCommands::Pointer { prefix } => cmd_sad_chain(&cli, prefix).await,
+            SadCommands::Prefix { kel_prefix, kind } => cmd_sad_prefix(kel_prefix, kind),
+        },
 
         #[cfg(feature = "dev-tools")]
         Commands::Dev(dev_cmd) => match dev_cmd {

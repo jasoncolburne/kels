@@ -35,13 +35,13 @@ create_kel() {
     tmpdir=$(mktemp -d)
     # Create KEL with inception + interaction events
     local prefix
-    prefix=$(kels-cli --url "$KELS_URL" --config-dir "$tmpdir" incept --signing-algorithm "$ALGORITHM" 2>/dev/null | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
+    prefix=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" incept --signing-algorithm "$ALGORITHM" 2>/dev/null | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
     if [ -z "$prefix" ]; then
         rm -rf "$tmpdir"
         return 1
     fi
     for j in $(seq 1 "$EVENTS_PER_KEL"); do
-        kels-cli --url "$KELS_URL" --config-dir "$tmpdir" interact "$prefix" --anchor "load-test-${i}-${j}" >/dev/null 2>&1 || true
+        kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" interact "$prefix" --anchor "load-test-${i}-${j}" >/dev/null 2>&1 || true
     done
     rm -rf "$tmpdir"
 }

@@ -87,7 +87,9 @@ impl FederationNode {
             .with_identity_url(identity_client.base_url().to_string());
 
         // Create network layer (with signing capability)
-        let network = FederationNetwork::new(config.clone(), identity_client);
+        let network = FederationNetwork::new(config.clone(), identity_client).map_err(|e| {
+            FederationError::NetworkError(format!("Failed to build HTTP client: {}", e))
+        })?;
 
         // Create Raft instance
         let raft_config = openraft::Config {

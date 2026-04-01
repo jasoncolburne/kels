@@ -7,6 +7,9 @@ mod node;
 mod peer;
 mod raft;
 mod recovery;
+mod sad_pointer;
+#[allow(clippy::too_many_arguments)]
+mod sad_transfer;
 mod sync;
 #[allow(clippy::too_many_arguments)]
 mod verification;
@@ -19,6 +22,8 @@ pub use node::*;
 pub use peer::*;
 pub use raft::*;
 pub use recovery::*;
+pub use sad_pointer::*;
+pub use sad_transfer::*;
 pub use sync::*;
 pub use verification::*;
 pub use verifier::*;
@@ -87,7 +92,7 @@ mod tests {
             "node-a".to_string(),
             "KAuthorizingKel_____________________________".to_string(),
             true,
-            "http://node-a:8080".to_string(),
+            "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
         )
         .unwrap();
@@ -98,7 +103,7 @@ mod tests {
         assert!(!peer.said.is_empty());
         // Prefix is derived from content hash, not manually set
         assert!(!peer.prefix.is_empty());
-        assert_eq!(peer.kels_url, "http://node-a:8080");
+        assert_eq!(peer.base_domain, "node-a.kels");
         assert_eq!(peer.gossip_addr, "127.0.0.1:4001");
     }
 
@@ -109,7 +114,7 @@ mod tests {
             "node-a".to_string(),
             "KAuthorizingKel_____________________________".to_string(),
             true,
-            "http://node-a:8080".to_string(),
+            "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
         )
         .unwrap();

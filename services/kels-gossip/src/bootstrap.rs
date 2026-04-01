@@ -47,6 +47,8 @@ pub struct BootstrapConfig {
     pub node_id: String,
     /// Local KELS URL (for this node to use)
     pub kels_url: String,
+    /// Local SADStore URL
+    pub sadstore_url: String,
     /// HTTP port for the gossip service (used to query peer /ready endpoints)
     pub http_port: u16,
     /// Page size for prefix listing
@@ -58,6 +60,7 @@ impl Default for BootstrapConfig {
         Self {
             node_id: String::new(),
             kels_url: String::new(),
+            sadstore_url: String::new(),
             http_port: 80,
             page_size: 100,
         }
@@ -86,21 +89,21 @@ impl BootstrapSync {
         urls: Vec<String>,
         allowlist: crate::allowlist::SharedAllowlist,
         signer: Arc<dyn PeerSigner>,
-    ) -> Self {
+    ) -> Result<Self, BootstrapError> {
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .map_err(|e| BootstrapError::Failed(format!("Failed to build HTTP client: {}", e)))?;
 
-        Self {
+        Ok(Self {
             config,
             urls,
             allowlist,
             signer,
             http_client,
             redis: None,
-        }
+        })
     }
 
     /// Set the Redis connection for stale prefix tracking.
@@ -145,6 +148,169 @@ impl BootstrapSync {
         Ok(())
     }
 
+    /// Preload SAD objects from Ready peers.
+    ///
+    /// Paginates through the remote object listing, checks local existence, and
+    /// fetches any missing objects. Runs before chain record sync so that
+    /// content objects are available when chains reference them.
+    pub async fn preload_sad_objects(&self) -> Result<(), BootstrapError> {
+        let ready_peers = self.get_ready_peers().await;
+
+        if ready_peers.is_empty() {
+            info!("No Ready peers found for SAD object preload");
+            return Ok(());
+        }
+
+        info!(
+            "Preloading SAD objects from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
+        let mut total_synced = 0u64;
+
+        for peer in &ready_peers {
+            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = match remote_client
+                    .fetch_sad_objects(
+                        self.signer.as_ref(),
+                        cursor.as_deref(),
+                        self.config.page_size,
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to fetch SAD objects from {}: {}", peer.node_id, e);
+                        break;
+                    }
+                };
+
+                for said in &page.saids {
+                    // Check if we already have it locally
+                    match local_client.sad_object_exists(said).await {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) => {
+                            debug!("Failed to check SAD object {} existence: {}", said, e);
+                            continue;
+                        }
+                    }
+
+                    // Fetch from remote and store locally
+                    match remote_client.get_sad_object(said).await {
+                        Ok(object) => {
+                            if let Err(e) = local_client.post_sad_object(&object).await {
+                                debug!("Failed to store SAD object {}: {}", said, e);
+                            } else {
+                                total_synced += 1;
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to fetch SAD object {} from peer: {}", said, e);
+                        }
+                    }
+                }
+
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        info!(
+            "SAD object preload complete: {} objects synced",
+            total_synced
+        );
+        Ok(())
+    }
+
+    /// Preload SAD records from Ready peers.
+    ///
+    /// Lists chain prefixes from each Ready peer's SADStore, compares with local
+    /// state, and syncs any chains that are missing or behind.
+    pub async fn preload_sad_records(&self) -> Result<(), BootstrapError> {
+        let ready_peers = self.get_ready_peers().await;
+
+        if ready_peers.is_empty() {
+            info!("No Ready peers found for SAD preload");
+            return Ok(());
+        }
+
+        info!(
+            "Preloading SAD records from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+
+        let local_client = kels::SadStoreClient::new(&self.config.sadstore_url)?;
+
+        for peer in &ready_peers {
+            let peer_sadstore_url = format!("http://kels-sadstore.{}", peer.base_domain);
+            let remote_client = kels::SadStoreClient::new(&peer_sadstore_url)?;
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = match remote_client
+                    .fetch_sad_prefixes(
+                        self.signer.as_ref(),
+                        cursor.as_deref(),
+                        self.config.page_size,
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to fetch SAD prefixes from {}: {}", peer.node_id, e);
+                        break;
+                    }
+                };
+
+                for state in &page.prefixes {
+                    // Check if we already have this chain at the same state
+                    let local_said = local_client
+                        .fetch_sad_effective_said(&state.prefix)
+                        .await
+                        .ok()
+                        .flatten();
+
+                    if local_said.as_deref() == Some(&state.said) {
+                        continue;
+                    }
+
+                    // Forward the full chain (paginated) from remote to local
+                    if let Err(e) = kels::forward_sad_records(
+                        &state.prefix,
+                        &remote_client.as_sad_source()?,
+                        &local_client.as_sad_sink()?,
+                        kels::page_size(),
+                        kels::max_pages(),
+                        local_said.as_deref(),
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to sync SAD chain {} from {} during bootstrap: {}",
+                            state.prefix, peer.node_id, e
+                        );
+                    }
+                }
+
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        info!("SAD record preload complete");
+        Ok(())
+    }
+
     /// Get peers from allowlist that are ready (respond to /ready with success).
     async fn get_ready_peers(&self) -> Vec<kels::Peer> {
         let allowlist = self.allowlist.read().await;
@@ -161,7 +327,7 @@ impl BootstrapSync {
     pub async fn is_peer_authorized(&self, peer_prefix: &str) -> Result<bool, BootstrapError> {
         // Try each registry URL until one succeeds
         for url in &self.urls {
-            let client = KelsRegistryClient::new(url);
+            let client = KelsRegistryClient::new(url)?;
             match client.fetch_peers().await {
                 Ok((peers_response, _)) => {
                     return Ok(peers_response.peers.iter().any(|history| {
@@ -214,8 +380,8 @@ impl BootstrapSync {
     }
 
     /// Get the URL to use for node-to-node sync.
-    fn get_sync_url(peer: &kels::Peer) -> &str {
-        &peer.kels_url
+    fn get_sync_url(peer: &kels::Peer) -> String {
+        format!("http://kels.{}", peer.base_domain)
     }
 
     /// Sync KELs from bootstrap peers.
@@ -228,7 +394,7 @@ impl BootstrapSync {
             return Ok(());
         }
 
-        let local_client = KelsClient::new(&self.config.kels_url);
+        let local_client = KelsClient::new(&self.config.kels_url)?;
 
         // Step 1: Collect all unique prefixes from all peers that need syncing.
         // Track (since_said, source_kels_url, source_peer_prefix) per kel prefix.
@@ -237,7 +403,7 @@ impl BootstrapSync {
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
-            let peer_client = KelsClient::new(peer_url);
+            let peer_client = KelsClient::new(&peer_url)?;
             let mut cursor: Option<String> = None;
 
             loop {
@@ -286,7 +452,13 @@ impl BootstrapSync {
             .map(|(prefix, (since, source_url, source_peer_prefix))| {
                 let local = local_client.clone();
                 async move {
-                    let remote = KelsClient::new(&source_url);
+                    let remote = match KelsClient::new(&source_url) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(prefix = %prefix, error = %e, "Failed to build HTTP client for KEL sync");
+                            return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed);
+                        }
+                    };
                     let result =
                         crate::sync::sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
                     (prefix, source_peer_prefix, result)
@@ -380,6 +552,7 @@ mod tests {
         let config = BootstrapConfig {
             node_id: "node-1".to_string(),
             kels_url: "http://localhost:8080".to_string(),
+            sadstore_url: "http://localhost:8082".to_string(),
             http_port: 8081,
             page_size: 50,
         };
@@ -430,9 +603,12 @@ mod tests {
             node_id: "node-1".to_string(),
             authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
             active: true,
-            kels_url: "http://kels:8080".to_string(),
+            base_domain: "node-1.kels".to_string(),
             gossip_addr: "/ip4/127.0.0.1/tcp/4001".to_string(),
         };
-        assert_eq!(BootstrapSync::get_sync_url(&peer), "http://kels:8080");
+        assert_eq!(
+            BootstrapSync::get_sync_url(&peer),
+            "http://kels.node-1.kels"
+        );
     }
 }

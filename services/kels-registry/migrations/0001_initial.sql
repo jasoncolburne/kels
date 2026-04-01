@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_member_key_events_prefix_previous ON member_key_e
 
 CREATE TABLE IF NOT EXISTS member_key_event_signatures (
     said TEXT PRIMARY KEY,
-    event_said TEXT NOT NULL,
+    event_said TEXT NOT NULL REFERENCES member_key_events(said) ON DELETE CASCADE,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
@@ -124,5 +124,15 @@ CREATE INDEX IF NOT EXISTS idx_member_recovery_kel_prefix ON member_recovery(kel
 -- Archive tables for member KELs
 CREATE TABLE IF NOT EXISTS member_archived_events (LIKE member_key_events INCLUDING ALL);
 CREATE TABLE IF NOT EXISTS member_archived_event_signatures (LIKE member_key_event_signatures INCLUDING ALL);
+ALTER TABLE member_archived_event_signatures
+    ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
+    REFERENCES member_archived_events(said) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS member_recovery_events (
+    said TEXT PRIMARY KEY,
+    recovery_said TEXT NOT NULL REFERENCES member_recovery(said) ON DELETE CASCADE,
+    event_said TEXT NOT NULL REFERENCES member_archived_events(said) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS member_recovery_events_recovery_idx ON member_recovery_events(recovery_said);
 
 COMMIT;

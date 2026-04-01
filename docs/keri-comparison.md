@@ -438,7 +438,7 @@ However, the KERI ecosystem provides no guidance for deploying the operational i
 
 **Initial setup:** Simple for a single node, complex for the full federation. A single KELS node (kels service + PostgreSQL) provides the full KEL API — inception, rotation, interaction, recovery, contest, decommission, divergence handling — without gossip or registries. This is comparable in complexity to any single-service web application. You can scale a single kels deployment horizontally by adding redis.
 
-For the full federation with gossip replication, the deployment is more involved but fully automated and reproducible (`make test-federation` deploys everything in ~25 minutes). The full federation deployment requires:
+For the full federation with gossip replication, the deployment is more involved but fully automated, tested and reproducible (`make test-federation` deploys/tests everything in ~35 minutes; `make deploy-fresh-federation` deploys without tests in ~10 minutes). The full federation deployment requires:
 1. Deploy 3 registries in standalone mode (each running 4 services: registry, identity, PostgreSQL, Redis)
 2. Collect prefixes from each registry
 3. Recompile all binaries with collected prefixes as compile-time trust anchors
@@ -461,7 +461,7 @@ This two-phase deployment (standalone → collect prefixes → recompile → fed
 |--------|------|------|
 | Minimum services for a deployment | 2-3 (agent + witnesses) | 1 (kels) + PostgreSQL; scales horizontally with Redis |
 | Full architecture deployable | No (watchers/jurors/judges lack implementations) | Yes (`make test-federation` deploys everything) |
-| Time to first identifier | Minutes (without duplicity detection) | ~30 seconds (single node, with divergence, reconciliation, and contest features); ~25 minutes (full federation + tests) |
+| Time to first identifier | Minutes (without duplicity detection) | ~2.5 minutes (single node, with divergence, reconciliation, and contest features); ~10 minutes (full federation deploy); ~35 minutes (full federation + tests) |
 | Adding infrastructure nodes | Rotation event (seconds) | Multi-party vote (minutes) |
 | Trusting a participant (identifier) | OOBI resolution (seconds) | Fetch KEL + verify (seconds) |
 | Adding federation infrastructure | N/A (no federated infrastructure layer) | Recompile + redeploy all binaries (hours to days) |
@@ -677,7 +677,7 @@ compute_rotation_hash(), compute_approval_threshold()
 **Error variants:** Descriptive English:
 
 ```
-EventNotFound, InvalidKeyEvent, SignatureVerificationFailed,
+NotFound, InvalidKeyEvent, SignatureVerificationFailed,
 KelDecommissioned, ContestRequired, DivergenceDetected
 ```
 
@@ -835,7 +835,7 @@ Both protocols support offline and airgapped key operations — pre-rotation com
 
 The terminology gap compounds the architectural differences. KERIpy's custom vocabulary (~30+ project-specific terms like `Kevery`, `Habery`, `Serder`, `Siger`) creates a significant onboarding barrier that slows auditing, limits the contributor pool, and increases the risk of misunderstanding during security review. KELS's conventional naming makes the codebase immediately legible to anyone familiar with cryptography and distributed systems, reducing the distance between "reading the code" and "understanding the security model." For a domain-experienced cryptographer, the estimated time to first meaningful code review is 2-3 weeks for KERIpy (due to vocabulary overhead) versus 1 week for KELS (if Rust-proficient).
 
-The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy for a minimal setup but lacks reproducible orchestration and deployable implementations of its full architecture. KELS is heavier to deploy in full federation mode but provides a single-node development path (~30 seconds to first identifier with divergence, reconciliation, and contest features) and a fully automated federation deployment (~25 minutes including integration tests). The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
+The deployment and operational tradeoffs reinforce this split: KERI is lighter to deploy for a minimal setup but lacks reproducible orchestration and deployable implementations of its full architecture. KELS is heavier to deploy in full federation mode but provides a single-node development path (~2.5 minutes to first identifier with divergence, reconciliation, and contest features) and a fully automated federation deployment (~10 minutes without tests, ~35 minutes including integration tests). The language choice (Python vs Rust) mirrors the same tension — accessibility and iteration speed versus compile-time safety guarantees and performance.
 
 Device integration is another differentiator. KELS was designed for hardware-backed keys from the start — the Swift client with Secure Enclave integration, C FFI bindings for cross-language use, HSM-backed service identities (ML-DSA-65/87 via PKCS#11), and an Android SDK on the roadmap reflect this. KERI's client ecosystem is web-first (signify-ts in browsers, signifypy in Python), with no native mobile SDK or hardware key integration. As mobile-first identity wallets become the norm, KELS's native device support and ML-DSA-65 compatibility with Apple Secure Enclave (iOS 26+) provide a clear advantage.
 

@@ -80,10 +80,8 @@ spec:
               value: "${var.rustLogLevel}"
             - name: NODE_ID
               value: "${environment.name}"
-            - name: KELS_URL
-              value: "${var.kels.url}"
-            - name: KELS_ADVERTISE_URL
-              value: "${var.kelsAdvertiseUrl}"
+            - name: BASE_DOMAIN
+              value: "${environment.namespace}.kels"
             - name: REDIS_URL
               value: "${var.redisUrl}"
             - name: IDENTITY_URL

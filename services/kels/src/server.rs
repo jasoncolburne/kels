@@ -38,6 +38,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             get(handlers::get_kel_audit),
         )
         .route(
+            "/api/v1/kels/kel/:prefix/audit/:said/events",
+            get(handlers::get_recovery_events),
+        )
+        .route(
             "/api/v1/kels/kel/:prefix/archived",
             get(handlers::get_kel_archived),
         )
@@ -110,6 +114,8 @@ pub async fn run(
         let local_cache = cache.local_cache();
         tokio::spawn(cache_sync_subscriber(redis_url.to_string(), local_cache));
     }
+
+    handlers::spawn_rate_limit_reaper(Arc::clone(&state));
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 

@@ -83,6 +83,9 @@ variables:
     gossipUrl: "redis://gossip:${var.redis.gossipPassword}@${var.redis.host}:${var.redis.port}"
     gossipPassword: "gossip-redis-pass"
     gossipPasswordHash: "94f18ec001065c2ae1a41d4d2b3bd0cddd76105264833e267336ab8cd1cff0d3"
+    sadstoreUrl: "redis://sadstore:${var.redis.sadstorePassword}@${var.redis.host}:${var.redis.port}"
+    sadstorePassword: "sadstore-redis-pass"
+    sadstorePasswordHash: "6a3c9e0faf19ebda997ac4ce6c3f5e8c41f2a37166fa24dd6a7691750a1d216f"
   kels:
     replicas: 2
     host: kels
@@ -107,6 +110,20 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
+  minio:
+    host: minio
+    port: "9000"
+    region: "us-east-1"
+    accessKey: "minioadmin"
+    secretKey: "minioadmin"
+  sadstore:
+    replicas: 1
+    port: "80"
+    bucket: "kels-sad"
+    maxRecordsPerPrefixPerDay: "16"
+    maxWritesPerIpPerSecond: "100"
+    ipRateLimitBurst: "500"
+    maxObjectSize: "1048576"
   identity:
     port: "80"
     host: identity

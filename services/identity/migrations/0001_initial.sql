@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_key_events_prefix_previous ON identity_key_events
 -- Signatures for key events
 CREATE TABLE IF NOT EXISTS identity_key_event_signatures (
     said TEXT PRIMARY KEY,
-    event_said TEXT NOT NULL,
+    event_said TEXT NOT NULL REFERENCES identity_key_events(said) ON DELETE CASCADE,
     label TEXT NOT NULL,
     signature TEXT NOT NULL
 );
@@ -82,3 +82,13 @@ CREATE INDEX IF NOT EXISTS idx_identity_recovery_kel_prefix ON identity_recovery
 -- Archive tables for identity KEL
 CREATE TABLE IF NOT EXISTS identity_archived_events (LIKE identity_key_events INCLUDING ALL);
 CREATE TABLE IF NOT EXISTS identity_archived_event_signatures (LIKE identity_key_event_signatures INCLUDING ALL);
+ALTER TABLE identity_archived_event_signatures
+    ADD CONSTRAINT fk_archived_sigs_event FOREIGN KEY (event_said)
+    REFERENCES identity_archived_events(said) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS identity_recovery_events (
+    said TEXT PRIMARY KEY,
+    recovery_said TEXT NOT NULL REFERENCES identity_recovery(said) ON DELETE CASCADE,
+    event_said TEXT NOT NULL REFERENCES identity_archived_events(said) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS identity_recovery_events_recovery_idx ON identity_recovery_events(recovery_said);

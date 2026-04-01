@@ -383,10 +383,10 @@ async fn test_list_prefixes() {
 
     // List prefixes via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: None,
         },
         peer_prefix: "mock".to_string(),
@@ -501,9 +501,10 @@ async fn test_get_kel_with_audit() {
         .expect("Failed to get audit records");
 
     assert_eq!(response.status(), 200);
-    let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
+    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
     // No recovery records for a simple KEL
-    assert!(recovery_records.is_empty());
+    assert!(page.records.is_empty());
+    assert!(!page.has_more);
 }
 
 #[tokio::test]
@@ -526,10 +527,10 @@ async fn test_list_prefixes_with_limit() {
 
     // List with limit=2 via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: Some(2),
         },
         peer_prefix: "mock".to_string(),
@@ -662,10 +663,10 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
     // Get first page with limit=1 via signed POST
     let request = kels::SignedRequest {
-        payload: kels::PrefixesRequest {
+        payload: kels::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
             nonce: kels::generate_nonce(),
-            since: None,
+            cursor: None,
             limit: Some(1),
         },
         peer_prefix: "mock".to_string(),
@@ -687,10 +688,10 @@ async fn test_list_prefixes_pagination_with_cursor() {
     // Use cursor to get next page if available
     if let Some(cursor) = &result.next_cursor {
         let request = kels::SignedRequest {
-            payload: kels::PrefixesRequest {
+            payload: kels::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
                 nonce: kels::generate_nonce(),
-                since: Some(cursor.clone()),
+                cursor: Some(cursor.clone()),
                 limit: Some(1),
             },
             peer_prefix: "mock".to_string(),
@@ -1004,9 +1005,9 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let recovery_records: Vec<kels::RecoveryRecord> = response.json().await.unwrap();
-    assert_eq!(recovery_records.len(), 1);
-    let record = &recovery_records[0];
+    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
     assert_eq!(record.diverged_at, 3);
     assert_eq!(record.recovery_serial, 4);
     assert_eq!(record.owner_first_serial, 4);

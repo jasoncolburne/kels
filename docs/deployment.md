@@ -10,17 +10,27 @@ KELS supports two deployment modes:
 
 The Garden configuration in this repository (`project.garden.yml` and per-service `garden.yml` files) is an example used for local testing. It can be used as a guide for understanding the deployment flow, but is not a reference for production deployments.
 
-- `make test-node` deploys and tests a standalone node (~2 minutes)
-- `make test-federation` deploys and tests a full federation (~22 minutes)
+- `make deploy-fresh-node` deploys a standalone node (~2.5 minutes)
+- `make deploy-fresh-federation` deploys a full federation (~10 minutes)
+- `make test-node` deploys and tests a standalone node (~5 minutes)
+- `make test-federation` deploys and tests a full federation (~35 minutes)
+
+Notably, the benchmarks run without caching in standlone mode, and with caching in federated mode.
 
 ## Standalone Deployment
 
-A standalone KELS node requires only two components:
+A standalone KELS node requires:
 
 - `kels` — KEL storage and retrieval API
-- `postgres` — event and signature storage
+- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `postgres` — event, signature, and SAD record storage
+- `minio` — S3-compatible object storage for SAD content blobs
 
 This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, contest, and decommission. Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
+
+It also provides the full SAD store API: object write, object read, record submission, record repair, paginated record retrieval.
+
+Both APIs support recovery/repair, and subsequent audit.
 
 Standalone mode does not include:
 - Gossip replication (no `kels-gossip`)
@@ -40,10 +50,12 @@ Each **registry** runs:
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
-- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL replication
+- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL and SAD replication
 - `identity` — the node's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
-- `postgres` — KEL storage and gossip peer cache
-- `redis` — KEL caching and pub/sub invalidation
+- `postgres` — KEL storage, SAD record storage, and gossip peer cache
+- `redis` — KEL caching, pub/sub invalidation, and SAD gossip announcements
+- `minio` — S3-compatible object storage for SAD content blobs
 
 The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
@@ -202,16 +214,35 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | Variable | Description |
 |----------|-------------|
 | `NODE_ID` | Unique node identifier |
-| `KELS_URL` | Local KELS service URL |
-| `KELS_ADVERTISE_URL` | URL clients use to reach this node's KELS service |
+| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `kels-node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://kels-sadstore.{BASE_DOMAIN}` |
+| `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections |
 | `GOSSIP_TOPIC` | Gossip topic name |
 | `HTTP_PORT` | HTTP server port for ready endpoint |
 | `REDIS_URL` | Redis for ready state and caching |
+| `HSM_URL` | HSM service URL for identity keys |
+| `IDENTITY_URL` | Identity service URL for KELS prefix |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
+| `RUST_LOG` | Logging level |
+
+### SADStore Service (`kels-sadstore`)
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection URL |
+| `PORT` | HTTP server port (default: `80`) |
+| `KELS_URL` | KELS service URL for KEL verification (default: `http://kels:80`) |
+| `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated, for peer verification) |
+| `REDIS_URL` | Redis for caching (optional) |
+| `MINIO_ENDPOINT` | MinIO/S3 endpoint URL (default: `http://minio:9000`) |
+| `MINIO_REGION` | MinIO/S3 region (default: `us-east-1`) |
+| `MINIO_ACCESS_KEY` | MinIO/S3 access key (required) |
+| `MINIO_SECRET_KEY` | MinIO/S3 secret key (required) |
+| `KELS_SAD_BUCKET` | S3 bucket for SAD objects (default: `kels-sad`) |
+| `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
 ## Peer Lifecycle
@@ -222,14 +253,14 @@ Peers require multi-party approval (minimum 3 votes from federation members):
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-add-peer \
-  --peer-id <peer_prefix> \
+kels-registry-admin peer propose \
+  --peer-prefix <peer_prefix> \
   --node-id <node_id> \
-  --kels-url <kels_url> \
+  --base-domain <base_domain> \
   --gossip-addr <host:port>
 
 # Produces a proposal ID. Vote from each registry:
-kels-registry-admin peer vote --proposal <proposal_id> --approve
+kels-registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is added to the allowlist.
 # Restart the node's kels-gossip to pick up authorization.
@@ -241,10 +272,10 @@ Peer removal also requires multi-party approval:
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-removal --peer-id <peer_prefix>
+kels-registry-admin peer propose-removal --peer-prefix <peer_prefix>
 
 # Vote from each registry:
-kels-registry-admin peer vote --proposal <proposal_id> --approve
+kels-registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```

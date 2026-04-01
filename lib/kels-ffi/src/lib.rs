@@ -261,7 +261,7 @@ fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
 
 fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
-        KelsError::EventNotFound(_) => KelsStatus::KelNotFound,
+        KelsError::NotFound(_) => KelsStatus::KelNotFound,
         KelsError::HsmKeyNotFound(_) => KelsStatus::Error,
         KelsError::NotIncepted => KelsStatus::NotIncepted,
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
@@ -415,7 +415,13 @@ pub extern "C" fn kels_init(
     };
 
     // Create KELS client
-    let client = KelsClient::new(&url);
+    let client = match KelsClient::new(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(&format!("Failed to build HTTP client: {}", e));
+            return std::ptr::null_mut();
+        }
+    };
 
     // Create builder
     let builder = runtime.block_on(async {
@@ -494,7 +500,13 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     }
 
     // Create new client and update builder
-    let client = KelsClient::new(&url);
+    let client = match KelsClient::new(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(&format!("Failed to build HTTP client: {}", e));
+            return -1;
+        }
+    };
 
     let Ok(mut builder_guard) = ctx.builder.lock() else {
         set_last_error("Failed to acquire builder lock");
@@ -915,7 +927,7 @@ pub unsafe extern "C" fn kels_recover(
                     ));
                 }
             };
-            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}");
+            let source = kels::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
             match kels::verify_key_events(
                 prefix,
                 &source,
@@ -1612,7 +1624,13 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
 
         // Create adversary builder WITH KELS client but NO kel_store
         // Events submit to KELS but don't save locally (simulating adversary)
-        let client = KelsClient::new(&kels_url);
+        let client = match KelsClient::new(&kels_url) {
+            Ok(c) => c,
+            Err(e) => {
+                set_last_error(&format!("Failed to build HTTP client: {}", e));
+                return -1;
+            }
+        };
         let mut adversary_builder =
             KeyEventBuilder::with_events(adversary_keys, Some(client), None, events);
 
@@ -1941,7 +1959,7 @@ impl Default for KelsNodesResult {
 #[serde(rename_all = "camelCase")]
 struct NodeInfoJson {
     node_id: String,
-    kels_url: String,
+    base_domain: String,
     status: String,
     latency_ms: Option<u64>,
 }
@@ -2025,7 +2043,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
             .into_iter()
             .map(|node| NodeInfoJson {
                 node_id: node.node_id,
-                kels_url: node.kels_url,
+                base_domain: node.base_domain,
                 status: match node.status {
                     NodeStatus::Bootstrapping => "bootstrapping".to_string(),
                     NodeStatus::Ready => "ready".to_string(),
@@ -2148,7 +2166,7 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     };
 
     let fetch_result = runtime.block_on(async {
-        let client = kels::KelsRegistryClient::new(&url);
+        let client = kels::KelsRegistryClient::new(&url)?;
         client.fetch_registry_prefix().await
     });
 
@@ -2360,7 +2378,7 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_key_not_found() {
-        let err = KelsError::EventNotFound("test".to_string());
+        let err = KelsError::NotFound("test".to_string());
         assert_eq!(map_error_to_status(&err), KelsStatus::KelNotFound);
     }
 

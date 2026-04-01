@@ -1,0 +1,65 @@
+[package]
+name = "kels-sadstore"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS SADStore - Replicated Self-Addressed Data Store"
+
+[[bin]]
+name = "kels-sadstore"
+path = "src/main.rs"
+
+[lib]
+name = "kels_sadstore"
+path = "src/lib.rs"
+
+[dependencies]
+# Local libraries
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+libkels = { path = "../../lib/kels", features = ["redis", "server"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1"
+async-trait = "0.1"
+
+# Per-prefix rate limiting
+dashmap = "6"
+
+# S3-compatible object storage (MinIO)
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Redis for pub/sub announcements
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+[dev-dependencies]
+chrono = "0.4"
+tokio-test = "0.4"
+testcontainers = "0.26"
+ctor = "0.4"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serial_test = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

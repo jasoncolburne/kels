@@ -44,7 +44,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 ### Outbound (local event → gossip network)
 
 1. Client submits events to KELS via HTTP
-2. KELS writes to DB, then explicitly publishes `{prefix}:{said}` to Redis `kel_updates` channel, where `said` is the last **submitted** event's SAID (not the sorted KEL's last event — this distinction matters for same-kind forks where the sorted tail may be an event other nodes already have)
+2. KELS writes to DB, then publishes `{prefix}:{effective_said}` to Redis `kel_updates` channel, where `effective_said` is the prefix's effective SAID (tip event SAID for non-divergent KELs, synthetic hash for divergent/contested KELs). This ensures the gossip feedback loop cache key matches regardless of KEL state.
 3. `kels-gossip` receives notification via Redis SUBSCRIBE
 4. Broadcasts `KelAnnouncement { prefix, said }` via PlumTree to all peers
 
@@ -55,7 +55,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
 4. If SAID is new:
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
-   - **Audit fetch** (on `EventNotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
+   - **Audit fetch** (on `NotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
    - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Contest events (`cnt`) are always placed in the second (recovery) batch because they require divergence to already be established — the first batch must include the non-contest fork event to create the divergence that contest resolves. When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
@@ -83,7 +83,7 @@ services/kels-gossip/
     ├── gossip_layer.rs # Custom gossip protocol wrapper (HyParView + PlumTree)
     ├── server.rs       # HTTP server for ready endpoint
     ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
-    ├── protocol.rs     # Message types (KelAnnouncement)
+    ├── protocol.rs     # Message types (KelAnnouncement, SadGossipMessage)
     ├── allowlist.rs    # Connection filtering based on verified peer allowlist
     ├── bootstrap.rs    # Bootstrap sync from existing peers
     └── hsm_signer.rs   # HSM-backed request signing and peer verification
@@ -100,6 +100,22 @@ struct KelAnnouncement {
 }
 ```
 
+### SAD Store Replication
+
+The gossip service also replicates SAD store data on a separate topic (`kels/sad/v1`). See `docs/design/sadstore.md` for full details.
+
+Two Redis channels drive announcements:
+- `sad_updates` — new SAD objects (payload: `{said}`)
+- `sad_chain_updates` — chain updates (payload: `{chain_prefix}:{effective_said}` or `{chain_prefix}:{effective_said}:repair`)
+
+Message type:
+```rust
+enum SadGossipMessage {
+    Object { said, origin },
+    Chain { chain_prefix, said, origin },
+}
+```
+
 ### Protocols
 
 | Protocol | Transport | Purpose |
@@ -113,7 +129,8 @@ struct KelAnnouncement {
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NODE_ID` | Unique node identifier | `node-unknown` |
-| `KELS_URL` | Local KELS HTTP endpoint | `http://kels` |
+| `BASE_DOMAIN` | Base domain for service URL derivation | (derives KELS + SADStore URLs) |
+| `KELS_URL` | Local KELS HTTP endpoint (override) | `http://kels` |
 | `KELS_ADVERTISE_URL` | Advertised KELS URL for clients | (required) |
 | `REDIS_URL` | Redis for pub/sub | `redis://redis:6379` |
 | `PKCS11_LIBRARY_PATH` | Path to PKCS#11 .so (mock HSM or real HSM) | (required) |
@@ -163,7 +180,7 @@ Gossip nodes use persistent HSM-backed identities:
 - **Delta fetch** (`?since=<said>`) is the primary sync mechanism — only fetches events newer than local state
 - Uses the `serial` field on `KeyEvent` for efficient DB-ordered queries (`ORDER BY serial ASC`)
 - Falls back to **full KEL fetch** when delta is unavailable (e.g., new prefix, network error)
-- **Recovery-aware audit fetch**: when a delta fetch fails with `EventNotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/v1/kels/kel/:prefix` + `/api/v1/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
+- **Recovery-aware audit fetch**: when a delta fetch fails with `NotFound` (local SAID was purged by recovery on the remote), fetches the KEL and audit records separately (`/api/v1/kels/kel/:prefix` + `/api/v1/kels/kel/:prefix/audit`) to retrieve both the clean chain and archived adversary events
 - Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split before the event preceding the first recovery-revealing event and submitted in stages so merge() processes recovery correctly. The owner's event at the divergence serial is bundled with the recovery event — this ensures nodes that have only adversary events at that serial (no owner event) can insert the owner event as part of recovery processing (the submit handler's divergent recovery branch handles this via look-ahead for `rec` in the batch)
 - KELS handles duplicate events idempotently
 

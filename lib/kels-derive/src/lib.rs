@@ -21,6 +21,7 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 /// - `recovery_table`: Recovery audit table (required)
 /// - `archived_events_table`: Mirror table for archived adversary events (required)
 /// - `archived_signatures_table`: Mirror table for archived adversary signatures (required)
+/// - `recovery_events_table`: Join table linking recoveries to archived events (required)
 ///
 /// ## Example
 ///
@@ -32,6 +33,7 @@ use syn::{DeriveInput, Lit, parse_macro_input};
 ///     recovery_table = "kels_recovery",
 ///     archived_events_table = "kels_archived_events",
 ///     archived_signatures_table = "kels_archived_event_signatures",
+///     recovery_events_table = "kels_recovery_events",
 /// )]
 /// pub struct KeyEventRepository {
 ///     pub pool: PgPool,
@@ -53,6 +55,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
     let mut recovery_table: Option<String> = None;
     let mut archived_events_table: Option<String> = None;
     let mut archived_signatures_table: Option<String> = None;
+    let mut recovery_events_table: Option<String> = None;
 
     signed_events_attr
         .parse_nested_meta(|meta| {
@@ -80,6 +83,12 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 if let Lit::Str(s) = lit {
                     archived_signatures_table = Some(s.value());
                 }
+            } else if meta.path.is_ident("recovery_events_table") {
+                meta.input.parse::<syn::Token![=]>()?;
+                let lit: Lit = meta.input.parse()?;
+                if let Lit::Str(s) = lit {
+                    recovery_events_table = Some(s.value());
+                }
             }
             Ok(())
         })
@@ -92,6 +101,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         archived_events_table.expect("Missing archived_events_table in #[signed_events(...)]");
     let archived_signatures_table = archived_signatures_table
         .expect("Missing archived_signatures_table in #[signed_events(...)]");
+    let recovery_events_table =
+        recovery_events_table.expect("Missing recovery_events_table in #[signed_events(...)]");
 
     // Generate the methods
     let methods = quote! {
@@ -409,6 +420,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     #recovery_table,
                     #archived_events_table,
                     #archived_signatures_table,
+                    #recovery_events_table,
                 );
 
                 match merge_tx.merge_events(events).await {

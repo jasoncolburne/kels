@@ -12,6 +12,7 @@ members = [
     "services/kels",
     "services/kels-gossip",
     "services/kels-registry",
+    "services/kels-sadstore",
     "services/identity",
     "clients/kels-bench",
     "clients/kels-cli",

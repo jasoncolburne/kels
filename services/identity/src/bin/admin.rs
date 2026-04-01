@@ -45,7 +45,7 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let identity_client = IdentityClient::new(&cli.identity_url);
+    let identity_client = IdentityClient::new(&cli.identity_url)?;
 
     if let Commands::Status = &cli.command {
         cmd_status(&identity_client, cli.json).await?;

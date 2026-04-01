@@ -54,7 +54,8 @@ class KelsViewModel: ObservableObject {
     static let registryUrls = [
         ("registry-a", "http://kels-registry.kels-registry-a.kels"),
         ("registry-b", "http://kels-registry.kels-registry-b.kels"),
-        ("registry-c", "http://kels-registry.kels-registry-c.kels")
+        ("registry-c", "http://kels-registry.kels-registry-c.kels"),
+        ("registry-d", "http://kels-registry.kels-registry-d.kels")
     ]
 
     @Published var selectedRegistry: String = "registry-a" {

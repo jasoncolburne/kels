@@ -16,9 +16,9 @@ use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
 use crate::{
-    BranchTip, EventKind, EventSignature, KelMergeResult, KelVerification, KelVerifier, KelsError,
-    KeyEvent, RecoveryRecord, SignedKeyEvent, completed_verification, load_signed_history,
-    repository::zip_events_with_signatures, types::PageLoader,
+    BranchTip, EventKind, EventSignature, KelMergeResult, KelRecoveryEvent, KelVerification,
+    KelVerifier, KelsError, KeyEvent, RecoveryRecord, SignedKeyEvent, completed_verification,
+    load_signed_history, repository::zip_events_with_signatures, types::PageLoader,
 };
 
 /// Outcome of a merge operation.
@@ -56,9 +56,11 @@ pub struct MergeTransaction<T: TransactionExecutor> {
     recovery_table: &'static str,
     archived_events_table: &'static str,
     archived_signatures_table: &'static str,
+    recovery_events_table: &'static str,
 }
 
 impl<T: TransactionExecutor> MergeTransaction<T> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tx: T,
         prefix: String,
@@ -67,6 +69,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         recovery_table: &'static str,
         archived_events_table: &'static str,
         archived_signatures_table: &'static str,
+        recovery_events_table: &'static str,
     ) -> Self {
         Self {
             tx,
@@ -76,6 +79,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             recovery_table,
             archived_events_table,
             archived_signatures_table,
+            recovery_events_table,
         }
     }
 
@@ -279,10 +283,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     /// Archive adversary events synchronously: move events + signatures to
-    /// archive tables and delete from live tables. Bounded by proactive ror
-    /// enforcement — the adversary chain fits in one page.
+    /// archive tables, create join records linking to the recovery, and delete
+    /// from live tables. Bounded by proactive ror enforcement — the adversary
+    /// chain fits in one page.
     async fn archive_adversary_events(
         &mut self,
+        recovery_said: &str,
         adversary_saids: Vec<String>,
     ) -> Result<(), KelsError> {
         if adversary_saids.is_empty() {
@@ -299,10 +305,16 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .r#in("event_said", adversary_saids.clone());
         let signatures: Vec<EventSignature> = self.tx.fetch(sig_query).await?;
 
-        // Insert into archive tables
+        // Insert into archive tables and create recovery-event links
         for event in &events {
             self.tx
                 .insert_with_table(event, self.archived_events_table)
+                .await?;
+            let recovery_event =
+                KelRecoveryEvent::create(recovery_said.to_string(), event.said.clone())
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            self.tx
+                .insert_with_table(&recovery_event, self.recovery_events_table)
                 .await?;
         }
         for sig in &signatures {
@@ -311,13 +323,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .await?;
         }
 
-        // Delete from live tables
-        let sig_saids: Vec<String> = signatures.iter().map(|s| s.said.clone()).collect();
-        if !sig_saids.is_empty() {
-            let sig_delete =
-                Delete::<EventSignature>::for_table(self.signatures_table).r#in("said", sig_saids);
-            self.tx.delete(sig_delete).await?;
-        }
+        // Delete from live tables — signatures cascade via FK ON DELETE CASCADE
         let event_delete =
             Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
         self.tx.delete(event_delete).await?;
@@ -334,6 +340,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ///   use `find_adversary_event` to identify the adversary branch.
     async fn archive_adversary_chain(
         &mut self,
+        recovery_said: &str,
         first_serial: u64,
         diverged_at: u64,
         rec_previous: &str,
@@ -349,7 +356,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .await?
         };
 
-        self.archive_adversary_events(adversary_saids).await
+        self.archive_adversary_events(recovery_said, adversary_saids)
+            .await
     }
 
     /// Collect SAIDs of all adversary events when owner has no events at divergence.
@@ -905,17 +913,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             self.check_contest_required(first_serial, diverged_at, rec_previous)
                 .await?;
 
-            // Archive adversary events BEFORE inserting new events. Inserting
-            // rec/rot first would create extra events at serials beyond the
-            // divergence point, confusing find_adversary_event.
-            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
-                .await?;
-
-            for event in new_events {
-                self.insert_signed_event(event).await?;
-            }
-
-            // Write terminal audit record
+            // Create the recovery audit record first so we have its SAID for
+            // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
                 self.prefix.clone(),
                 rec_event.event.serial,
@@ -925,6 +924,21 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.insert_recovery_record(&recovery_record).await?;
+
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(
+                &recovery_record.said,
+                first_serial,
+                diverged_at,
+                rec_previous,
+            )
+            .await?;
+
+            for event in new_events {
+                self.insert_signed_event(event).await?;
+            }
 
             return Ok((KelMergeResult::Recovered, None));
         }
@@ -1024,17 +1038,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
             let first_serial = new_events[0].event.serial;
 
-            // Archive adversary events BEFORE inserting new events. Inserting
-            // rec/rot first would create extra events at serials beyond the
-            // divergence point, confusing find_adversary_event.
-            self.archive_adversary_chain(first_serial, diverged_at, rec_previous)
-                .await?;
-
-            for event in new_events {
-                self.insert_signed_event(event).await?;
-            }
-
-            // Write terminal audit record
+            // Create the recovery audit record first so we have its SAID for
+            // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
                 self.prefix.clone(),
                 rec_event.event.serial,
@@ -1044,6 +1049,21 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.insert_recovery_record(&recovery_record).await?;
+
+            // Archive adversary events BEFORE inserting new events. Inserting
+            // rec/rot first would create extra events at serials beyond the
+            // divergence point, confusing find_adversary_event.
+            self.archive_adversary_chain(
+                &recovery_record.said,
+                first_serial,
+                diverged_at,
+                rec_previous,
+            )
+            .await?;
+
+            for event in new_events {
+                self.insert_signed_event(event).await?;
+            }
 
             return Ok((KelMergeResult::Recovered, None));
         }

@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -75,7 +75,7 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in identity kels kels-gossip kels-registry; do \
+	@for service in identity kels kels-gossip kels-registry kels-sadstore; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done
@@ -259,6 +259,8 @@ restart-gossip-services:
 	kubectl rollout status deployment/kels-gossip -n kels-node-f
 
 test-resync:
+	scripts/coredns.sh apply
+	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh seed
 	scripts/coredns.sh break-node-b
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh setup
 	scripts/coredns.sh apply
@@ -297,7 +299,10 @@ test-shrink-federation:
 	kubectl exec -n kels-node-a -it test-client -- ./test-shrink-federation.sh
 
 seed-kels:
-	kubectl exec -n kels-node-a -it test-client -- bash -c 'TEST_KELS_HOST=kels.kels-node-a.kels ./test-kels.sh'
+	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 500 5 ml-dsa-65 50 
+
+seed-sads:
+	kubectl exec -n kels-node-a -it test-client -- ./load-sads.sh 774 50
 
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
@@ -344,7 +349,7 @@ rotate-registry-b:
 	# Wait for sync loop to pick up rotation (not required due to upcoming vote which will sync)
 	# sleep 30
 
-test-suite:
+test-kels-suite:
 	$(MAKE) wait-for-gossip
 	DNS_CACHE_TTL=2 scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./test-redis-acl.sh
@@ -357,11 +362,21 @@ test-suite:
 	$(MAKE) test-rotation
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || { scripts/dump-gossip; false; }
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
+	$(MAKE) test-kem-upgrade
+	scripts/coredns.sh apply
+
+test-sad-suite:
+	kubectl exec -n kels-node-a -it test-client -- ./test-sadstore.sh
+
+test-grow-shrink:
 	$(MAKE) test-grow-federation
 	$(MAKE) test-shrink-federation
-	$(MAKE) test-kem-upgrade
-	kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
-	scripts/coredns.sh apply
+
+test-kel-consistency:
+	kubectl exec -n kels-node-a -it test-client -- ./test-kel-consistency.sh
+
+test-sad-consistency:
+	kubectl exec -n kels-node-a -it test-client -- ./test-sad-consistency.sh
 
 test-kem-upgrade:
 	# Upgrade node-a identity to ML-DSA-87: first rotation commits the new algorithm,
@@ -384,10 +399,14 @@ test-kem-upgrade:
 	$(MAKE) restart-gossip-services
 	$(MAKE) wait-for-gossip
 
-test-node: clean-standalone
+deploy-fresh-node:
 	garden deploy --env=standalone
+
+deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes vote-nodes restart-gossip-services
+
+test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels rotate-registry-b vote-nodes restart-gossip-services test-suite
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services test-kels-suite test-sad-suite test-grow-shrink test-sad-consistency test-kel-consistency

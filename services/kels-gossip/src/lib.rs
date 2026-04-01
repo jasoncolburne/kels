@@ -40,7 +40,10 @@ mod server;
 mod sync;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
-use tokio::sync::{RwLock, mpsc};
+use tokio::{
+    sync::{RwLock, mpsc},
+    time::Duration,
+};
 use tracing::{error, info};
 
 use redis::AsyncCommands;
@@ -77,10 +80,9 @@ fn registry_kel_store(
 pub struct Config {
     /// Unique node identifier (e.g., "node-a")
     pub node_id: String,
-    /// Local KELS HTTP endpoint (for this service to use)
-    pub kels_url: String,
-    /// Advertised KELS HTTP endpoint for clients and node-to-node sync
-    pub kels_advertise_url: String,
+    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// KELS URL = http://kels.{base_domain}, SADStore URL = http://kels-sadstore.{base_domain}
+    pub base_domain: String,
     /// PostgreSQL database URL for local registry KEL store
     pub database_url: String,
     /// Redis URL for pub/sub
@@ -107,12 +109,23 @@ pub struct Config {
     pub anti_entropy_interval_secs: u64,
 }
 
+impl Config {
+    /// Local KELS URL derived from base_domain.
+    pub fn kels_url(&self) -> String {
+        format!("http://kels.{}", self.base_domain)
+    }
+
+    /// Local SADStore URL derived from base_domain.
+    pub fn sadstore_url(&self) -> String {
+        format!("http://kels-sadstore.{}", self.base_domain)
+    }
+}
+
 /// Raw environment values before validation
 #[derive(Default)]
 pub struct EnvValues {
     pub node_id: Option<String>,
-    pub kels_url: Option<String>,
-    pub kels_advertise_url: Option<String>,
+    pub base_domain: Option<String>,
     pub database_url: Option<String>,
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
@@ -130,9 +143,9 @@ pub struct EnvValues {
 impl Config {
     /// Create config from explicit values (for testing and direct construction)
     pub fn from_values(env: EnvValues) -> Result<Self, ServiceError> {
-        let kels_advertise_url = env
-            .kels_advertise_url
-            .ok_or_else(|| ServiceError::Config("KELS_ADVERTISE_URL is required".to_string()))?;
+        let base_domain = env
+            .base_domain
+            .ok_or_else(|| ServiceError::Config("BASE_DOMAIN is required".to_string()))?;
 
         let listen_addr_str = env
             .listen_addr
@@ -152,8 +165,7 @@ impl Config {
 
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
-            kels_url: env.kels_url.unwrap_or_else(|| "http://kels".to_string()),
-            kels_advertise_url,
+            base_domain,
             database_url: env.database_url.unwrap_or_else(|| {
                 "postgres://kels_admin:password@postgres:5432/kels_gossip".to_string()
             }),
@@ -183,8 +195,7 @@ impl Config {
     pub fn from_env() -> Result<Self, ServiceError> {
         let env = EnvValues {
             node_id: env::var("NODE_ID").ok(),
-            kels_url: env::var("KELS_URL").ok(),
-            kels_advertise_url: env::var("KELS_ADVERTISE_URL").ok(),
+            base_domain: env::var("BASE_DOMAIN").ok(),
             database_url: env::var("DATABASE_URL").ok(),
             redis_url: env::var("REDIS_URL").ok(),
             hsm_url: env::var("HSM_URL").ok(),
@@ -211,13 +222,13 @@ impl Config {
 
 /// Run the gossip service
 pub async fn run(config: Config) -> Result<(), ServiceError> {
-    use tokio::time::Duration;
     use tracing::warn;
 
     info!("Starting KELS gossip service");
     info!("Node ID: {}", config.node_id);
-    info!("KELS URL (local): {}", config.kels_url);
-    info!("KELS URL (advertised): {}", config.kels_advertise_url);
+    info!("Base domain: {}", config.base_domain);
+    info!("KELS URL: {}", config.kels_url());
+    info!("SADStore URL: {}", config.sadstore_url());
     info!("Connecting to Redis");
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
@@ -253,7 +264,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 1: Fetch identity prefix and KEL from the identity service
     info!("Fetching identity prefix...");
-    let identity_client = kels::IdentityClient::new(&config.identity_url);
+    let identity_client = kels::IdentityClient::new(&config.identity_url)
+        .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
     let peer_prefix_str = identity_client
         .get_prefix()
         .await
@@ -265,7 +277,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .get_key_events(None, kels::page_size())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity KEL: {}", e)))?;
-    let local_kels_client = kels::KelsClient::new(&config.kels_url);
+    let local_kels_client = kels::KelsClient::new(&config.kels_url())
+        .map_err(|e| ServiceError::Config(format!("Failed to build KELS client: {}", e)))?;
     let events = identity_page.events;
     if !events.is_empty() {
         let _ = local_kels_client
@@ -282,7 +295,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone());
+    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone())
+        .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
     let registry_signer: Arc<dyn kels::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
 
@@ -353,7 +367,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
-        kels_url: config.kels_url.clone(),
+        kels_url: config.kels_url(),
+        sadstore_url: config.sadstore_url(),
         http_port: config.http_listen_port,
         page_size: 100,
     };
@@ -363,7 +378,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         federation_registry_urls.clone(),
         allowlist.clone(),
         registry_signer.clone(),
-    );
+    )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
     }
@@ -386,9 +401,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     peer_prefix_str, peer_prefix_str, config.node_id
                 );
 
-                // Preload KELs from Ready peers (read-only, no registration)
+                // Preload KELs, SAD objects, and SAD records from Ready peers
                 if let Err(e) = bootstrap.preload_kels().await {
                     warn!("KEL preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_objects().await {
+                    warn!("SAD object preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_records().await {
+                    warn!("SAD record preload failed: {}", e);
                 }
 
                 // Wait 5 minutes before checking again
@@ -432,7 +453,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         &allowlist,
         Some(&config.node_id),
         &requires_kem_1024,
-        &config.kels_url,
+        &config.kels_url(),
     )
     .await
     {
@@ -473,20 +494,60 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Shared state to prevent Redis feedback loop when gossip stores events
     let recently_stored: sync::RecentlyStoredFromGossip = Arc::new(RwLock::new(HashMap::new()));
 
+    // Periodic reaper for recently_stored — prevents unbounded growth
+    {
+        let map = recently_stored.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(sync::RECENTLY_STORED_TTL).await;
+                let mut guard = map.write().await;
+                guard.retain(|_, instant| instant.elapsed() < sync::RECENTLY_STORED_TTL);
+            }
+        });
+    }
+
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
     let redis_peer_prefix = peer_prefix_str.clone();
     let redis_handle = tokio::spawn(async move {
-        if let Err(e) = sync::run_redis_subscriber(
-            &redis_url,
-            redis_peer_prefix,
-            redis_command_tx,
-            redis_recently_stored,
-        )
-        .await
-        {
-            error!("Redis subscriber error: {}", e);
+        loop {
+            if let Err(e) = sync::run_redis_subscriber(
+                &redis_url,
+                redis_peer_prefix.clone(),
+                redis_command_tx.clone(),
+                redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+
+    // Start SAD Redis subscriber (listens for SAD object and chain updates)
+    let sad_redis_command_tx = command_tx.clone();
+    let sad_redis_url = config.redis_url.clone();
+    let sad_redis_recently_stored = recently_stored.clone();
+    let sad_redis_peer_prefix = peer_prefix_str.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sync::run_sad_redis_subscriber(
+                &sad_redis_url,
+                sad_redis_peer_prefix.clone(),
+                sad_redis_command_tx.clone(),
+                sad_redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("SAD Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("SAD Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
 
@@ -500,7 +561,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
         allowlist.clone(),
-        &config.kels_url,
+        &config.kels_url(),
         federation_registry_urls.clone(),
         config.node_id.clone(),
         verifier_store,
@@ -517,12 +578,17 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             .await
             .map_err(|e| ServiceError::Config(format!("Failed to start gossip: {}", e)))?;
 
-    // Derive topic ID and join with bootstrap peers
+    // Derive topic IDs and join with bootstrap peers
     let topic_id = gossip_layer::topic_id_from_name(&config.topic);
+    let sad_topic_id = gossip_layer::topic_id_from_name(gossip_layer::SAD_TOPIC);
     gossip_instance
-        .join(topic_id, peer_addrs)
+        .join(topic_id, peer_addrs.clone())
         .await
-        .map_err(|e| ServiceError::Config(format!("Failed to join gossip topic: {}", e)))?;
+        .map_err(|e| ServiceError::Config(format!("Failed to join KEL gossip topic: {}", e)))?;
+    gossip_instance
+        .join(sad_topic_id, peer_addrs)
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to join SAD gossip topic: {}", e)))?;
 
     // Get local NodePrefix for the gossip event loop
     let local_node_prefix = gossip::identity::NodePrefix::option_from_str(&peer_prefix_str)
@@ -534,6 +600,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         gossip_layer::run_gossip(
             gossip_instance_clone,
             topic_id,
+            sad_topic_id,
             command_rx,
             event_tx,
             local_node_prefix,
@@ -548,13 +615,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // The sync handler processes all events (announcements, peer connects/disconnects) as
     // they arrive. A oneshot channel signals back when the first peer connects.
     let (peer_connected_tx, peer_connected_rx) = tokio::sync::oneshot::channel::<()>();
-    let kels_url = config.kels_url.clone();
+    let kels_url = config.kels_url().clone();
+    let sadstore_url = config.sadstore_url().clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
+            sadstore_url,
             event_rx,
             sync_command_tx,
             sync_allowlist,
@@ -577,9 +646,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Waiting for first peer connection...");
         match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
             Ok(Ok(())) => {
-                info!("First peer connected — preloading KELs from ready peers...");
+                info!("First peer connected — preloading KELs, SAD objects, and SAD records...");
                 if let Err(e) = bootstrap.preload_kels().await {
                     error!("KEL preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_objects().await {
+                    error!("SAD object preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_sad_records().await {
+                    error!("SAD record preload failed: {}", e);
                 }
             }
             Ok(Err(_)) => {
@@ -608,11 +683,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Spawn periodic anti-entropy loop (repairs silent divergence and failed gossip fetches)
+    // Spawn periodic anti-entropy loops (repairs silent divergence and failed gossip fetches)
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
-        let ae_kels_url = config.kels_url.clone();
+        let ae_kels_url = config.kels_url().clone();
         let ae_signer = registry_signer.clone();
         let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
@@ -625,15 +700,32 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             )
             .await;
         });
+
+        // SAD anti-entropy loop
+        let sad_ae_redis = redis.clone();
+        let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_signer = registry_signer.clone();
+        let sad_ae_sadstore_url = config.sadstore_url().clone();
+        let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
+        tokio::spawn(async move {
+            sync::run_sad_anti_entropy_loop(
+                sad_ae_redis,
+                sad_ae_allowlist,
+                sad_ae_signer,
+                sad_ae_sadstore_url,
+                sad_ae_interval,
+            )
+            .await;
+        });
     }
 
     // Start allowlist refresh loop
-    let refresh_interval = std::time::Duration::from_secs(config.allowlist_refresh_interval_secs);
+    let refresh_interval = Duration::from_secs(config.allowlist_refresh_interval_secs);
     let refresh_urls = federation_registry_urls.clone();
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
     let refresh_kem_flag = requires_kem_1024.clone();
-    let refresh_kels_url = config.kels_url.clone();
+    let refresh_kels_url = config.kels_url().clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &refresh_urls,
@@ -714,7 +806,7 @@ mod tests {
 
     #[test]
     fn test_config_missing_required() {
-        // Missing kels_advertise_url
+        // Missing base_domain
         let env = EnvValues {
             ..Default::default()
         };
@@ -725,28 +817,30 @@ mod tests {
     #[test]
     fn test_config_with_required_vars() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             ..Default::default()
         };
 
         let result = Config::from_values(env);
         if let Ok(config) = result {
-            assert_eq!(config.kels_advertise_url, "http://kels.example.com");
+            assert_eq!(config.base_domain, "example.com");
+            assert_eq!(config.kels_url(), "http://kels.example.com");
+            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
         }
     }
 
     #[test]
     fn test_config_defaults() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             ..Default::default()
         };
 
         let result = Config::from_values(env);
         if let Ok(config) = result {
-            // Check defaults
             assert_eq!(config.node_id, "node-unknown");
-            assert_eq!(config.kels_url, "http://kels");
+            assert_eq!(config.kels_url(), "http://kels.example.com");
+            assert_eq!(config.sadstore_url(), "http://kels-sadstore.example.com");
             assert_eq!(config.redis_url, "redis://redis:6379");
             assert_eq!(config.hsm_url, "http://hsm");
             assert_eq!(config.allowlist_refresh_interval_secs, 60);
@@ -758,7 +852,7 @@ mod tests {
     #[test]
     fn test_config_invalid_listen_addr() {
         let env = EnvValues {
-            kels_advertise_url: Some("http://kels.example.com".to_string()),
+            base_domain: Some("example.com".to_string()),
             listen_addr: Some("not-a-valid-address".to_string()),
             ..Default::default()
         };

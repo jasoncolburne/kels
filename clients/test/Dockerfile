@@ -35,7 +35,9 @@ FROM debian:bookworm-slim
 
 # Install testing tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    b3sum \
     bash \
+    xxd \
     curl \
     dnsutils \
     python3 \

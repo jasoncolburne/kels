@@ -20,7 +20,7 @@ The merge function returns a `MergeOutcome`:
 - **`diverged_at`** - Serial at which divergence was detected, if any
 - **`tip_said`** - SAID of the new tip event for linear appends, or `None` for divergent/complex paths
 
-During recovery, adversary events are identified, archived to mirror tables, and removed from the live chain — all synchronously within the merge transaction. A `RecoveryRecord` audit entry is created atomically.
+During recovery, adversary events are identified, archived to mirror tables, and removed from the live chain — all synchronously within the merge transaction. A `RecoveryRecord` audit entry is created atomically, and `kels_recovery_events` join records link the recovery to each archived adversary event.
 
 ### KelMergeResult Variants
 
@@ -138,7 +138,7 @@ if batch contains a rec event:
     check if adversary revealed recovery key (detailed check via find_adversary_event)
     archive adversary events
     append all events (owner's chain + rec + optional rot)
-    create RecoveryRecord
+    create RecoveryRecord + kels_recovery_events links
     return Recovered
 ```
 

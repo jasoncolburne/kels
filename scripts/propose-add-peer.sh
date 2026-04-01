@@ -10,8 +10,8 @@ if [ -z "$NODE_NAME" ]; then
     exit 1
 fi
 
-# Construct URLs for the node
-KELS_URL="http://kels.kels-${NODE_NAME}.kels:80"
+# Construct base domain and gossip address for the node
+BASE_DOMAIN="kels-${NODE_NAME}.kels"
 GOSSIP_ADDR="kels-gossip.kels-${NODE_NAME}.kels:4001"
 
 # Fetch the peer prefix from the node's gossip service
@@ -38,7 +38,7 @@ PROPOSE_OUTPUT=$(kubectl exec -n "$LEADER_NS" deploy/kels-registry -c kels-regis
     /app/kels-registry-admin peer propose \
     --peer-prefix "$PEER_PREFIX" \
     --node-id "$NODE_NAME" \
-    --kels-url "$KELS_URL" \
+    --base-domain "$BASE_DOMAIN" \
     --gossip-addr "$GOSSIP_ADDR" 2>&1)
 
 echo "$PROPOSE_OUTPUT" >&2

@@ -65,9 +65,9 @@ pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use cesr::VerificationKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
-    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode, SignResponse,
-    SignResult, nodes_sorted_by_latency, sign_request, sync_member_kel, trusted_prefixes,
-    verify_peer_anchoring, verify_peer_votes, with_failover,
+    ManageKelOperation, ManageKelRequest, ManageKelResponse, PeerSigner, RotateMode,
+    SadStoreClient, SignResponse, SignResult, nodes_sorted_by_latency, sign_request,
+    sync_member_kel, trusted_prefixes, verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
@@ -81,17 +81,23 @@ pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
-    EventSignature, FederationStatus, HttpKelSink, HttpKelSource, KelMergeResult, KelVerification,
-    KelVerifier, KeyEvent, KeyEventSignature, NodeInfo, NodeStatus, NodeType, PageLoader,
-    PagedKelSink, PagedKelSource, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, PrefixListResponse, PrefixState, PrefixesRequest, Proposal, ProposalHistory,
+    EventSignature, FederationStatus, HttpKelSink, HttpKelSource, HttpSadSink, HttpSadSource,
+    KelMergeResult, KelRecoveryEvent, KelVerification, KelVerifier, KeyEvent, KeyEventSignature,
+    NodeInfo, NodeStatus, NodeType, PageLoader, PagedKelSink, PagedKelSource, PagedSadSink,
+    PagedSadSource, PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, Proposal, ProposalHistory,
     ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
     REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
-    RemovalHistory, RemovalWithVotes, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
-    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
-    completed_verification, compute_approval_threshold, compute_rotation_hash, forward_key_events,
+    RecoveryRecordPage, RemovalHistory, RemovalWithVotes, SadAnnouncement, SadChainVerifier,
+    SadObjectEntry, SadObjectListResponse, SadPointer, SadPointerPage, SadPointerRepair,
+    SadPointerRepairPage, SadPointerRepairRecord, SadPointerSignature, SadPointerVerification,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadPointer, StoreKelSource,
+    StorePageLoader, SubmitEventsResponse, Vote, benchmark_key_events,
+    collect_establishment_serials, completed_verification, compute_approval_threshold,
+    compute_rotation_hash, compute_sad_prefix, forward_key_events, forward_sad_records,
     generate_nonce, hash_effective_said, truncate_incomplete_generation, validate_timestamp,
-    verify_key_events, verify_key_events_with,
+    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
+    verify_sad_records,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
@@ -158,6 +164,20 @@ static MAX_VERIFICATION_PAGES: LazyLock<usize> = LazyLock::new(|| {
 /// Read the max verification pages, cached from env on first access.
 pub fn max_pages() -> usize {
     *MAX_VERIFICATION_PAGES
+}
+
+/// Maximum number of unique establishment keys to collect during verification.
+/// Each key rotation produces a new establishment serial, so this bounds the
+/// number of rotations a chain can span. Default 256.
+/// Override with `KELS_MAX_COLLECTED_KEYS` environment variable.
+pub const DEFAULT_MAX_COLLECTED_KEYS: usize = 256;
+
+static MAX_COLLECTED_KEYS: LazyLock<usize> =
+    LazyLock::new(|| env_usize("KELS_MAX_COLLECTED_KEYS", DEFAULT_MAX_COLLECTED_KEYS));
+
+/// Read the max collected keys, cached from env on first access.
+pub fn max_collected_keys() -> usize {
+    *MAX_COLLECTED_KEYS
 }
 
 /// Sentinel limit for loading an entire KEL without pagination.

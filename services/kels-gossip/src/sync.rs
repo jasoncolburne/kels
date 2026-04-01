@@ -35,7 +35,7 @@ pub type RedisConnection = Arc<redis::aio::ConnectionManager>;
 /// Optional Redis connection — None in tests where Redis is unavailable.
 pub type OptionalRedis = Option<RedisConnection>;
 
-const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
+pub const RECENTLY_STORED_TTL: Duration = Duration::from_secs(60);
 
 /// Redis pub/sub channel name (same as libkels uses)
 const PUBSUB_CHANNEL: &str = "kel_updates";
@@ -76,12 +76,12 @@ pub async fn run_redis_subscriber(
 
         debug!("Received Redis pub/sub message: {}", payload);
 
-        // Check if this was recently stored via gossip (feedback loop prevention)
+        // Check if this was recently stored via gossip (feedback loop prevention).
+        // The KELS service publishes {prefix}:{effective_said}, which matches the
+        // cache key inserted by handle_announcement before forwarding.
         {
             let mut guard = recently_stored.write().await;
-            // Clean up expired entries
             guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
-            // Check if this payload is in the cache
             if guard.contains_key(&payload) {
                 debug!(
                     "Skipping Redis message {} (recently stored from gossip)",
@@ -93,7 +93,11 @@ pub async fn run_redis_subscriber(
 
         if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
             debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
-            if command_tx.send(GossipCommand::Announce(ann)).await.is_err() {
+            if command_tx
+                .send(GossipCommand::AnnounceKel(ann))
+                .await
+                .is_err()
+            {
                 error!("Failed to send announce command - channel closed");
                 return Err(SyncError::ChannelClosed);
             }
@@ -101,6 +105,106 @@ pub async fn run_redis_subscriber(
     }
 
     warn!("Redis subscriber stream ended");
+    Ok(())
+}
+
+/// Redis pub/sub channel for SAD object updates
+const SAD_PUBSUB_CHANNEL: &str = "sad_updates";
+
+/// Redis pub/sub channel for SAD chain updates
+const SAD_CHAIN_PUBSUB_CHANNEL: &str = "sad_chain_updates";
+
+/// Runs the Redis subscriber for SAD store updates (both objects and chains).
+/// Broadcasts announcements to the gossip network on the SAD topic.
+pub async fn run_sad_redis_subscriber(
+    redis_url: &str,
+    local_peer_prefix: String,
+    command_tx: mpsc::Sender<GossipCommand>,
+    recently_stored: RecentlyStoredFromGossip,
+) -> Result<(), SyncError> {
+    let client = redis::Client::open(redis_url)?;
+    let mut pubsub = client.get_async_pubsub().await?;
+
+    pubsub.subscribe(SAD_PUBSUB_CHANNEL).await?;
+    pubsub.subscribe(SAD_CHAIN_PUBSUB_CHANNEL).await?;
+    info!(
+        "Subscribed to Redis channels: {}, {}",
+        SAD_PUBSUB_CHANNEL, SAD_CHAIN_PUBSUB_CHANNEL
+    );
+
+    let mut stream = pubsub.on_message();
+    while let Some(msg) = stream.next().await {
+        let channel: String = match msg.get_channel_name().parse() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let payload: String = match msg.get_payload() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to get SAD Redis message payload: {}", e);
+                continue;
+            }
+        };
+
+        // Feedback loop prevention — key format must match what the gossip
+        // handlers insert before storing locally.
+        {
+            let mut guard = recently_stored.write().await;
+            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
+            let cache_key = if channel == SAD_PUBSUB_CHANNEL {
+                format!("sad-object:{}", payload)
+            } else {
+                // Chain updates: strip ":repair" suffix before checking, since
+                // the handler inserts without it. The SADStore publishes the
+                // effective SAID, which matches the handler's cache key.
+                let core = payload.strip_suffix(":repair").unwrap_or(&payload);
+                format!("sad-record:{}", core)
+            };
+            if guard.contains_key(&cache_key) {
+                debug!("Skipping SAD Redis message (recently stored from gossip)");
+                continue;
+            }
+        }
+
+        let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
+            // Object update: payload is just the SAID
+            kels::SadAnnouncement::Object {
+                said: payload,
+                origin: local_peer_prefix.clone(),
+            }
+        } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
+            // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
+            let repair = payload.ends_with(":repair");
+            let core = if repair {
+                &payload[..payload.len() - ":repair".len()]
+            } else {
+                &payload
+            };
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
+                kels::SadAnnouncement::Pointer {
+                    chain_prefix: ann.prefix,
+                    said: ann.said,
+                    origin: local_peer_prefix.clone(),
+                    repair,
+                }
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        if command_tx
+            .send(GossipCommand::AnnounceSad(gossip_message))
+            .await
+            .is_err()
+        {
+            error!("Failed to send SAD announce command - channel closed");
+            return Err(SyncError::ChannelClosed);
+        }
+    }
+
+    warn!("SAD Redis subscriber stream ended");
     Ok(())
 }
 
@@ -115,6 +219,7 @@ const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
+    sadstore_client: kels::SadStoreClient,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<String, String>,
     /// Shared allowlist for peer URL lookups
@@ -130,18 +235,20 @@ pub struct SyncHandler {
 impl SyncHandler {
     pub fn new(
         kels_url: &str,
+        sadstore_url: &str,
         allowlist: SharedAllowlist,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
-    ) -> Self {
-        Self {
-            kels_client: KelsClient::new(kels_url),
+    ) -> Result<Self, kels::KelsError> {
+        Ok(Self {
+            kels_client: KelsClient::new(kels_url)?,
+            sadstore_client: kels::SadStoreClient::new(sadstore_url)?,
             local_saids: HashMap::new(),
             allowlist,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             redis,
-        }
+        })
     }
 
     /// Record a prefix as stale for anti-entropy repair.
@@ -156,7 +263,12 @@ impl SyncHandler {
         let guard = self.allowlist.read().await;
         guard
             .values()
-            .map(|peer| (peer.peer_prefix.clone(), peer.kels_url.clone()))
+            .map(|peer| {
+                (
+                    peer.peer_prefix.clone(),
+                    format!("http://kels.{}", peer.base_domain),
+                )
+            })
             .collect()
     }
 
@@ -167,8 +279,13 @@ impl SyncHandler {
         _command_tx: &mpsc::Sender<GossipCommand>,
     ) -> Result<(), SyncError> {
         match event {
-            GossipEvent::AnnouncementReceived { announcement } => {
+            GossipEvent::KelAnnouncementReceived { announcement } => {
                 self.handle_announcement(announcement).await?;
+            }
+            GossipEvent::SadAnnouncementReceived {
+                announcement: message,
+            } => {
+                self.handle_sad_announcement(message).await;
             }
             GossipEvent::PeerConnected(peer_prefix) => {
                 debug!("Peer connected: {}", peer_prefix);
@@ -178,6 +295,182 @@ impl SyncHandler {
             }
         }
         Ok(())
+    }
+
+    /// Handle a SAD gossip announcement.
+    ///
+    /// For chain announcements: compare tip SAIDs and fetch chain if different.
+    /// For object announcements: check existence and fetch if missing.
+    async fn handle_sad_announcement(&self, message: kels::SadAnnouncement) {
+        match message {
+            kels::SadAnnouncement::Object { said, origin } => {
+                self.handle_sad_object_announcement(&said, &origin).await;
+            }
+            kels::SadAnnouncement::Pointer {
+                chain_prefix,
+                said,
+                origin,
+                repair,
+            } => {
+                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin, repair)
+                    .await;
+            }
+        }
+    }
+
+    /// Handle a SAD object announcement — fetch the object if we don't have it.
+    async fn handle_sad_object_announcement(&self, said: &str, origin: &str) {
+        // Look up origin peer's SADStore URL
+        let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
+            debug!("No SADStore URL for origin peer {}", origin);
+            return;
+        };
+
+        let local_client = self.sadstore_client.clone();
+        let remote_client = match kels::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build HTTP client for SAD object sync: {}", e);
+                return;
+            }
+        };
+
+        // Check if we already have it locally (HEAD check, no data transfer)
+        match local_client.sad_object_exists(said).await {
+            Ok(true) => {
+                debug!("SAD object {} already exists locally", said);
+                return;
+            }
+            Ok(false) => {} // need to fetch
+            Err(e) => {
+                warn!("Failed to check local SAD object {}: {}", said, e);
+                return;
+            }
+        }
+
+        // Mark as recently stored BEFORE storing to prevent Redis feedback loop.
+        // The POST will publish to Redis `sad_updates`, which the subscriber checks
+        // against this cache key.
+        {
+            let cache_key = format!("sad-object:{}", said);
+            self.recently_stored
+                .write()
+                .await
+                .insert(cache_key, Instant::now());
+        }
+
+        // Fetch from remote and store locally
+        match remote_client.get_sad_object(said).await {
+            Ok(object) => {
+                if let Err(e) = local_client.post_sad_object(&object).await {
+                    warn!("Failed to store SAD object {} locally: {}", said, e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch SAD object {} from {}: {}", said, origin, e);
+            }
+        }
+    }
+
+    /// Handle a SAD chain announcement — fetch the chain if our tip differs.
+    ///
+    /// When `repair` is true, the origin node repaired a divergent chain. We use
+    /// `?repair=true` to replace our local divergent state. The full chain is
+    /// fetched (no delta) since repair truncates and replaces from the divergence point.
+    async fn handle_sad_chain_announcement(
+        &self,
+        chain_prefix: &str,
+        remote_said: &str,
+        origin: &str,
+        repair: bool,
+    ) {
+        let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
+            debug!("No SADStore URL for origin peer {}", origin);
+            return;
+        };
+
+        let local_client = self.sadstore_client.clone();
+
+        // Compare effective SAIDs
+        let local_said = match local_client.fetch_sad_effective_said(chain_prefix).await {
+            Ok(said) => said,
+            Err(e) => {
+                warn!(
+                    "Failed to get local effective SAID for {}: {}",
+                    chain_prefix, e
+                );
+                None
+            }
+        };
+
+        if local_said.as_deref() == Some(remote_said) {
+            debug!("SAD chain {} already in sync", chain_prefix);
+            return;
+        }
+
+        // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+        // The SADStore publishes {prefix}:{effective_said} (or with :repair suffix)
+        // to sad_chain_updates. The subscriber strips :repair before checking.
+        let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
+
+        let remote_client = match kels::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build HTTP client for SAD record sync: {}", e);
+                return;
+            }
+        };
+
+        // For repair: fetch full chain and submit with ?repair=true.
+        // For normal: delta fetch from local tip.
+        let sink = match if repair {
+            local_client.as_sad_repair_sink()
+        } else {
+            local_client.as_sad_sink()
+        } {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP SAD sink: {}", e);
+                return;
+            }
+        };
+        let since = if repair { None } else { local_said.as_deref() };
+
+        let source = match remote_client.as_sad_source() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP SAD source: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = kels::forward_sad_records(
+            chain_prefix,
+            &source,
+            &sink,
+            kels::page_size(),
+            kels::max_pages(),
+            since,
+        )
+        .await
+        {
+            self.recently_stored.write().await.remove(&cache_key);
+            warn!(
+                "Failed to replicate SAD chain {} from {}: {}",
+                chain_prefix, origin, e
+            );
+        }
+    }
+
+    /// Derive a peer's SADStore URL from their base domain.
+    async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
+        let guard = self.allowlist.read().await;
+        let peer = guard.get(peer_prefix)?;
+        Some(format!("http://kels-sadstore.{}", peer.base_domain))
     }
 
     /// Handle an announcement from a peer.
@@ -232,7 +525,7 @@ impl SyncHandler {
         }
 
         let max_pages = kels::max_pages();
-        let local_sink = self.kels_client.as_kel_sink();
+        let local_sink = self.kels_client.as_kel_sink()?;
 
         for (peer_prefix, kels_url) in &peers {
             // Per-peer rate limiting
@@ -258,9 +551,11 @@ impl SyncHandler {
                 }
             }
 
-            let remote_source = KelsClient::new(kels_url).as_kel_source();
+            let remote_source = KelsClient::new(kels_url)?.as_kel_source()?;
 
             // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
+            // The KELS service publishes {prefix}:{effective_said} to kel_updates,
+            // which matches this key for both divergent and non-divergent KELs.
             let key = format!("{}:{}", prefix, remote_effective_said);
             self.recently_stored
                 .write()
@@ -303,7 +598,7 @@ impl SyncHandler {
                     self.record_stale(prefix, &announcement.origin).await;
                     return Ok(());
                 }
-                Err(KelsError::EventNotFound(_)) => {
+                Err(KelsError::NotFound(_)) => {
                     warn!("KEL not found on remote {} for {}", kels_url, prefix);
                     continue;
                 }
@@ -379,8 +674,10 @@ impl SyncHandler {
 /// If `peer_connected_tx` is provided, it will be signaled on the first
 /// `PeerConnected` event. This allows the bootstrap flow to wait for
 /// connectivity without consuming the event stream directly.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_sync_handler(
     kels_url: String,
+    sadstore_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
@@ -388,18 +685,36 @@ pub async fn run_sync_handler(
     redis: OptionalRedis,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
-    let mut handler = SyncHandler::new(&kels_url, allowlist, recently_stored, redis);
+    let mut handler =
+        SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis)?;
+    let mut reap_interval = tokio::time::interval(Duration::from_secs(300));
+    reap_interval.tick().await; // consume initial tick
 
-    while let Some(event) = event_rx.recv().await {
-        // Signal first PeerConnected to the bootstrap flow
-        if matches!(&event, GossipEvent::PeerConnected(_))
-            && let Some(tx) = peer_connected_tx.take()
-        {
-            let _ = tx.send(());
-        }
+    loop {
+        tokio::select! {
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
 
-        if let Err(e) = handler.handle_event(event, &command_tx).await {
-            error!("Error handling gossip event: {}", e);
+                // Signal first PeerConnected to the bootstrap flow
+                if matches!(&event, GossipEvent::PeerConnected(_))
+                    && let Some(tx) = peer_connected_tx.take()
+                {
+                    let _ = tx.send(());
+                }
+
+                if let Err(e) = handler.handle_event(event, &command_tx).await {
+                    error!("Error handling gossip event: {}", e);
+                }
+            }
+            _ = reap_interval.tick() => {
+                let now = Instant::now();
+                handler.peer_fetch_counts.retain(|_, (_, t)| now.duration_since(*t) < Duration::from_secs(60));
+                // Clear cached effective SAIDs — they'll be re-fetched on next
+                // access. Prevents unbounded growth from accumulated prefixes.
+                handler.local_saids.clear();
+            }
         }
     }
 
@@ -410,7 +725,7 @@ pub async fn run_sync_handler(
 /// Forward events from a remote source to a local sink with delta-with-fallback.
 ///
 /// Tries delta fetch first (using `since`), falls back to full fetch on
-/// `EventNotFound` (remote may have recovered, removing the since SAID).
+/// `NotFound` (remote may have recovered, removing the since SAID).
 async fn forward_with_fallback(
     prefix: &str,
     source: &kels::HttpKelSource,
@@ -430,7 +745,7 @@ async fn forward_with_fallback(
         .await
         {
             Ok(()) => return Ok(()),
-            Err(KelsError::EventNotFound(_)) => {
+            Err(KelsError::NotFound(_)) => {
                 info!(
                     "Since SAID not found on remote for {} (likely recovery). Falling back to full fetch.",
                     prefix
@@ -444,31 +759,97 @@ async fn forward_with_fallback(
     kels::forward_key_events(prefix, source, sink, kels::page_size(), max_pages, None).await
 }
 
-/// Record a stale prefix for anti-entropy repair.
-///
-/// Adds an entry to the Redis hash mapping `kel_prefix → source_node_prefix`.
-/// The source node is the peer that was expected to have the KEL.
+/// Maximum retry count before giving up on a stale prefix. Phase 2 random
+/// sampling will rediscover it if the inconsistency persists.
+const MAX_STALE_RETRIES: u32 = 10;
+
+/// Base backoff interval for stale prefix retries (seconds).
+const STALE_BACKOFF_BASE_SECS: u64 = 30;
+
+/// Parsed stale prefix entry from Redis.
+struct StaleEntry {
+    source: String,
+    retries: u32,
+}
+
+/// Encode a stale entry value for Redis: `{source}:{retries}:{not_before_epoch}`.
+fn encode_stale_value(source: &str, retries: u32) -> String {
+    let backoff_secs = STALE_BACKOFF_BASE_SECS * 2u64.saturating_pow(retries);
+    let not_before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + backoff_secs;
+    format!("{}:{}:{}", source, retries, not_before)
+}
+
+/// Decode a stale entry value: `{source}:{retries}:{not_before_epoch}`.
+fn decode_stale_value(value: &str) -> (String, u32, u64) {
+    let parts: Vec<&str> = value.rsplitn(3, ':').collect();
+    if parts.len() == 3 {
+        let not_before = parts[0].parse::<u64>().unwrap_or(0);
+        let retries = parts[1].parse::<u32>().unwrap_or(0);
+        (parts[2].to_string(), retries, not_before)
+    } else {
+        // Malformed entry — treat as first attempt due immediately
+        warn!("Malformed stale entry value: {}", value);
+        (value.to_string(), 0, 0)
+    }
+}
+
+/// Record a stale prefix for anti-entropy repair (first occurrence).
 pub async fn record_stale_prefix(
     redis: &redis::aio::ConnectionManager,
     kel_prefix: &str,
     source_node_prefix: &str,
 ) {
+    record_stale_entry(redis, STALE_PREFIX_KEY, kel_prefix, source_node_prefix, 0).await;
+}
+
+/// Re-queue a stale prefix with incremented retry count and exponential backoff.
+async fn requeue_stale_entry(
+    redis: &redis::aio::ConnectionManager,
+    key: &str,
+    prefix: &str,
+    source: &str,
+    retries: u32,
+) {
+    let next_retries = retries + 1;
+    if next_retries > MAX_STALE_RETRIES {
+        warn!(
+            "Anti-entropy: giving up on stale prefix {} after {} retries",
+            prefix, retries
+        );
+        return;
+    }
+    record_stale_entry(redis, key, prefix, source, next_retries).await;
+}
+
+/// Write a stale entry to a Redis hash with backoff encoding.
+async fn record_stale_entry(
+    redis: &redis::aio::ConnectionManager,
+    hash_key: &str,
+    prefix: &str,
+    source: &str,
+    retries: u32,
+) {
     let mut conn = redis.clone();
+    let value = encode_stale_value(source, retries);
     if let Err(e) = redis::cmd("HSET")
-        .arg(STALE_PREFIX_KEY)
-        .arg(kel_prefix)
-        .arg(source_node_prefix)
+        .arg(hash_key)
+        .arg(prefix)
+        .arg(&value)
         .query_async::<()>(&mut conn)
         .await
     {
         warn!(
             "Failed to record stale prefix {} from {}: {}",
-            kel_prefix, source_node_prefix, e
+            prefix, source, e
         );
     } else {
         debug!(
-            "Recorded stale prefix {} (source: {})",
-            kel_prefix, source_node_prefix
+            "Recorded stale prefix {} (source: {}, retries: {})",
+            prefix, source, retries
         );
     }
 }
@@ -492,8 +873,20 @@ pub(crate) async fn sync_prefix(
     prefix: &str,
     since: Option<&str>,
 ) -> RepairResult {
-    let remote_source = source.as_kel_source();
-    let local_sink = dest.as_kel_sink();
+    let remote_source = match source.as_kel_source() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(prefix = %prefix, error = %e, "Failed to build HTTP KEL source");
+            return RepairResult::Failed;
+        }
+    };
+    let local_sink = match dest.as_kel_sink() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(prefix = %prefix, error = %e, "Failed to build HTTP KEL sink");
+            return RepairResult::Failed;
+        }
+    };
 
     match forward_with_fallback(
         prefix,
@@ -505,24 +898,28 @@ pub(crate) async fn sync_prefix(
     .await
     {
         Ok(()) => RepairResult::Repaired,
-        Err(KelsError::EventNotFound(_)) => RepairResult::NoOp,
+        Err(KelsError::NotFound(_)) => RepairResult::NoOp,
         Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
         Err(_) => RepairResult::Failed,
     }
 }
 
-/// Drain the stale prefix hash from Redis, returning entries and deleting the key atomically.
-async fn drain_stale_prefixes(
+/// Drain due stale entries from a Redis hash.
+///
+/// Reads all entries, returns those whose `not_before` has passed, and re-queues
+/// entries that aren't due yet (still backing off).
+async fn drain_due_stale_entries(
     redis: &redis::aio::ConnectionManager,
-) -> Option<HashMap<String, String>> {
+    key: &str,
+) -> Option<HashMap<String, StaleEntry>> {
     let mut conn = redis.clone();
     let flat: Vec<String> = redis::cmd("HGETALL")
-        .arg(STALE_PREFIX_KEY)
+        .arg(key)
         .query_async(&mut conn)
         .await
         .ok()?;
 
-    let map: HashMap<String, String> = flat
+    let raw: Vec<(String, String)> = flat
         .chunks(2)
         .filter_map(|pair| {
             if pair.len() == 2 {
@@ -533,14 +930,45 @@ async fn drain_stale_prefixes(
         })
         .collect();
 
-    if !map.is_empty() {
-        let _ = redis::cmd("DEL")
-            .arg(STALE_PREFIX_KEY)
-            .query_async::<()>(&mut conn)
-            .await;
+    if raw.is_empty() {
+        return Some(HashMap::new());
     }
 
-    Some(map)
+    // Delete the whole hash — we'll re-queue entries that aren't due yet
+    let _ = redis::cmd("DEL")
+        .arg(key)
+        .query_async::<()>(&mut conn)
+        .await;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut due = HashMap::new();
+    for (prefix, value) in raw {
+        let (source, retries, not_before) = decode_stale_value(&value);
+        if now >= not_before {
+            due.insert(prefix, StaleEntry { source, retries });
+        } else {
+            // Not due yet — re-queue with same retries/not_before
+            let _ = redis::cmd("HSET")
+                .arg(key)
+                .arg(&prefix)
+                .arg(&value)
+                .query_async::<()>(&mut conn)
+                .await;
+        }
+    }
+
+    Some(due)
+}
+
+/// Drain due stale KEL prefixes from Redis.
+async fn drain_stale_prefixes(
+    redis: &redis::aio::ConnectionManager,
+) -> Option<HashMap<String, StaleEntry>> {
+    drain_due_stale_entries(redis, STALE_PREFIX_KEY).await
 }
 
 /// Periodically runs anti-entropy repair to detect and fix silent divergence.
@@ -557,7 +985,13 @@ pub async fn run_anti_entropy_loop(
     signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
-    let local_client = KelsClient::new(&local_kels_url);
+    let local_client = match KelsClient::new(&local_kels_url) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to build HTTP client for anti-entropy loop: {}", e);
+            return;
+        }
+    };
 
     loop {
         tokio::time::sleep(interval).await;
@@ -566,7 +1000,12 @@ pub async fn run_anti_entropy_loop(
             let guard = allowlist.read().await;
             guard
                 .values()
-                .map(|p| (p.peer_prefix.clone(), p.kels_url.clone()))
+                .map(|p| {
+                    (
+                        p.peer_prefix.clone(),
+                        format!("http://kels.{}", p.base_domain),
+                    )
+                })
                 .collect()
         };
 
@@ -593,14 +1032,14 @@ pub async fn run_anti_entropy_loop(
             // who has a different (newer) state, then sync only from those peers.
             // Parallelized across prefixes.
             let mut tasks = Vec::new();
-            for (kel_prefix, source_node_prefix) in &stale_entries {
+            for (kel_prefix, entry) in &stale_entries {
                 // Build ordered peer list: source peer first, then others
                 let mut ordered_peers: Vec<(String, String)> = Vec::new();
-                if let Some(source) = peers.iter().find(|(pp, _)| pp == source_node_prefix) {
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
                     ordered_peers.push(source.clone());
                 }
                 for peer in &peers {
-                    if peer.0 != *source_node_prefix {
+                    if peer.0 != entry.source {
                         ordered_peers.push(peer.clone());
                     }
                 }
@@ -610,7 +1049,8 @@ pub async fn run_anti_entropy_loop(
 
                 let local = local_client.clone();
                 let prefix = kel_prefix.clone();
-                let source = source_node_prefix.clone();
+                let source = entry.source.clone();
+                let retries = entry.retries;
                 tasks.push(async move {
                     let local_said = local
                         .fetch_effective_said(&prefix)
@@ -623,7 +1063,16 @@ pub async fn run_anti_entropy_loop(
                     // that have a different state than local.
                     let mut any_peer_differs = false;
                     for (_, kels_url) in &ordered_peers {
-                        let remote = KelsClient::new(kels_url);
+                        let remote = match KelsClient::new(kels_url) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(
+                                    "Anti-entropy: failed to build client for {}: {}",
+                                    kels_url, e
+                                );
+                                continue;
+                            }
+                        };
                         let remote_effective =
                             remote.fetch_effective_said(&prefix).await.ok().flatten();
                         let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_str());
@@ -645,7 +1094,7 @@ pub async fn run_anti_entropy_loop(
                         };
                         let result = sync_prefix(&remote, &local, &prefix, since_for_sync).await;
                         if matches!(result, RepairResult::Contested) {
-                            return (prefix, source, RepairResult::Contested);
+                            return (prefix, source, retries, RepairResult::Contested);
                         }
 
                         // Check if local state actually changed
@@ -656,21 +1105,19 @@ pub async fn run_anti_entropy_loop(
                             .flatten()
                             .map(|(s, _)| s);
                         if new_said != local_said {
-                            return (prefix, source, RepairResult::Repaired);
+                            return (prefix, source, retries, RepairResult::Repaired);
                         }
                     }
 
                     if any_peer_differs {
-                        // Peers had different state but sync didn't help — re-queue
-                        (prefix, source, RepairResult::Failed)
+                        (prefix, source, retries, RepairResult::Failed)
                     } else {
-                        // All peers agree on same state — nothing to repair
-                        (prefix, source, RepairResult::NoOp)
+                        (prefix, source, retries, RepairResult::NoOp)
                     }
                 });
             }
 
-            for (kel_prefix, source_node_prefix, result) in join_all(tasks).await {
+            for (kel_prefix, source_node_prefix, retries, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
                         info!("Anti-entropy: repaired {}", kel_prefix);
@@ -679,8 +1126,19 @@ pub async fn run_anti_entropy_loop(
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
                     }
                     RepairResult::Failed => {
-                        warn!("Anti-entropy: re-queuing stale prefix {}", kel_prefix);
-                        record_stale_prefix(redis.as_ref(), &kel_prefix, &source_node_prefix).await;
+                        warn!(
+                            "Anti-entropy: re-queuing stale prefix {} (retry {})",
+                            kel_prefix,
+                            retries + 1
+                        );
+                        requeue_stale_entry(
+                            redis.as_ref(),
+                            STALE_PREFIX_KEY,
+                            &kel_prefix,
+                            &source_node_prefix,
+                            retries,
+                        )
+                        .await;
                     }
                     RepairResult::NoOp => {
                         debug!("Anti-entropy: all peers agree on state for {}", kel_prefix);
@@ -698,7 +1156,16 @@ pub async fn run_anti_entropy_loop(
             }
         };
 
-        let remote_client = KelsClient::new(&peer_kels_url);
+        let remote_client = match KelsClient::new(&peer_kels_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "Anti-entropy: failed to build client for {}: {}",
+                    peer_kels_url, e
+                );
+                continue;
+            }
+        };
 
         let random_cursor = kels::generate_nonce();
         let local_page = local_client
@@ -803,6 +1270,342 @@ pub async fn run_anti_entropy_loop(
     }
 }
 
+// ==================== SAD Anti-Entropy ====================
+
+/// Redis hash key for SAD chain anti-entropy stale prefix tracking.
+const SAD_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sad_chain_stale";
+
+/// Record a SAD chain prefix as stale for anti-entropy repair (first occurrence).
+pub async fn record_sad_stale_prefix(
+    redis: &redis::aio::ConnectionManager,
+    chain_prefix: &str,
+    source_node_prefix: &str,
+) {
+    record_stale_entry(
+        redis,
+        SAD_STALE_PREFIX_KEY,
+        chain_prefix,
+        source_node_prefix,
+        0,
+    )
+    .await;
+}
+
+/// Periodically runs anti-entropy repair for SAD chain data.
+///
+/// Two phases per cycle:
+/// - **Phase 1 (targeted):** Process known-stale chain prefixes from Redis hash.
+/// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a random peer.
+pub async fn run_sad_anti_entropy_loop(
+    redis: Arc<redis::aio::ConnectionManager>,
+    allowlist: SharedAllowlist,
+    signer: Arc<dyn kels::PeerSigner>,
+    sadstore_url: String,
+    interval: Duration,
+) {
+    let local_client = match kels::SadStoreClient::new(&sadstore_url) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("SAD anti-entropy: failed to build local client: {}", e);
+            return;
+        }
+    };
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let peers: Vec<(String, String)> = {
+            let guard = allowlist.read().await;
+            guard
+                .values()
+                .map(|p| {
+                    (
+                        p.peer_prefix.clone(),
+                        format!("http://kels-sadstore.{}", p.base_domain),
+                    )
+                })
+                .collect()
+        };
+
+        if peers.is_empty() {
+            continue;
+        }
+
+        // Phase 1: Process known-stale chain prefixes
+        let stale_entries =
+            match drain_due_stale_entries(redis.as_ref(), SAD_STALE_PREFIX_KEY).await {
+                Some(map) => map,
+                None => {
+                    warn!("SAD anti-entropy: failed to read stale prefixes");
+                    continue;
+                }
+            };
+
+        if !stale_entries.is_empty() {
+            info!(
+                "SAD anti-entropy: processing {} stale chain prefixes",
+                stale_entries.len()
+            );
+
+            let mut tasks = Vec::new();
+            for (chain_prefix, entry) in &stale_entries {
+                let mut ordered_peers: Vec<(String, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
+                    ordered_peers.push(source.clone());
+                }
+                for peer in &peers {
+                    if peer.0 != entry.source {
+                        ordered_peers.push(peer.clone());
+                    }
+                }
+                if ordered_peers.is_empty() {
+                    continue;
+                }
+
+                let local = local_client.clone();
+                let prefix = chain_prefix.clone();
+                let source = entry.source.clone();
+                let retries = entry.retries;
+                tasks.push(async move {
+                    let local_said = local.fetch_sad_effective_said(&prefix).await.ok().flatten();
+
+                    for (_, sadstore_url) in &ordered_peers {
+                        let remote = match kels::SadStoreClient::new(sadstore_url) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        let remote_said = remote
+                            .fetch_sad_effective_said(&prefix)
+                            .await
+                            .ok()
+                            .flatten();
+
+                        if remote_said == local_said {
+                            continue;
+                        }
+
+                        let (Ok(remote_source), Ok(local_sink)) =
+                            (remote.as_sad_source(), local.as_sad_sink())
+                        else {
+                            continue;
+                        };
+                        if kels::forward_sad_records(
+                            &prefix,
+                            &remote_source,
+                            &local_sink,
+                            kels::page_size(),
+                            kels::max_pages(),
+                            local_said.as_deref(),
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            return (prefix, source, retries, true);
+                        }
+                    }
+                    (prefix, source, retries, false)
+                });
+            }
+
+            for (chain_prefix, source_node_prefix, retries, success) in join_all(tasks).await {
+                if success {
+                    info!("SAD anti-entropy: repaired chain {}", chain_prefix);
+                } else {
+                    warn!(
+                        "SAD anti-entropy: re-queuing stale chain {} (retry {})",
+                        chain_prefix,
+                        retries + 1
+                    );
+                    requeue_stale_entry(
+                        redis.as_ref(),
+                        SAD_STALE_PREFIX_KEY,
+                        &chain_prefix,
+                        &source_node_prefix,
+                        retries,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // Phase 2: Random sampling — compare chain effective SAIDs with a random peer
+        let (peer_prefix, peer_sadstore_url) = {
+            let mut rng = rand::thread_rng();
+            match peers.choose(&mut rng) {
+                Some(p) => p.clone(),
+                None => continue,
+            }
+        };
+
+        let remote_client = match kels::SadStoreClient::new(&peer_sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "SAD anti-entropy: failed to build remote client for {}: {}",
+                    peer_sadstore_url, e
+                );
+                continue;
+            }
+        };
+
+        let random_cursor = kels::generate_nonce();
+        let local_page = local_client
+            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+        let remote_page = remote_client
+            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+
+        let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
+            debug!("SAD anti-entropy: failed to fetch prefix pages for comparison");
+            continue;
+        };
+
+        let local_map: HashMap<&str, &str> = local_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+        let remote_map: HashMap<&str, &str> = remote_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .collect();
+
+        if local_map == remote_map {
+            debug!("SAD anti-entropy: random sample matched");
+            continue;
+        }
+
+        info!("SAD anti-entropy: random sample mismatch detected, reconciling");
+
+        // Pull: remote prefixes that are missing or different locally
+        let mut pull_tasks = Vec::new();
+        for state in &remote_page.prefixes {
+            if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            let local_said = local_client
+                .fetch_sad_effective_said(&state.prefix)
+                .await
+                .ok()
+                .flatten();
+
+            let (remote, local) = match (remote_client.as_sad_source(), local_client.as_sad_sink())
+            {
+                (Ok(r), Ok(l)) => (r, l),
+                _ => continue,
+            };
+            let prefix = state.prefix.clone();
+            let peer = peer_prefix.clone();
+            pull_tasks.push(async move {
+                let result = kels::forward_sad_records(
+                    &prefix,
+                    &remote,
+                    &local,
+                    kels::page_size(),
+                    kels::max_pages(),
+                    local_said.as_deref(),
+                )
+                .await;
+                (prefix, peer, result)
+            });
+        }
+
+        for (prefix, peer, result) in join_all(pull_tasks).await {
+            match result {
+                Ok(()) => {
+                    info!("SAD anti-entropy: pulled {} from remote", prefix);
+                }
+                Err(_) => {
+                    record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                }
+            }
+        }
+
+        // Push: local prefixes that are missing or different on remote
+        for state in &local_page.prefixes {
+            if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+                continue;
+            }
+            let remote_said = remote_client
+                .fetch_sad_effective_said(&state.prefix)
+                .await
+                .ok()
+                .flatten();
+
+            let (Ok(local_source), Ok(remote_sink)) =
+                (local_client.as_sad_source(), remote_client.as_sad_sink())
+            else {
+                continue;
+            };
+            if let Ok(()) = kels::forward_sad_records(
+                &state.prefix,
+                &local_source,
+                &remote_sink,
+                kels::page_size(),
+                kels::max_pages(),
+                remote_said.as_deref(),
+            )
+            .await
+            {
+                info!("SAD anti-entropy: pushed {} to remote", state.prefix);
+            }
+        }
+
+        // Phase 3: Object comparison — compare SAD object sets with the same random peer
+        let obj_cursor = kels::generate_nonce();
+        let local_objects = local_client
+            .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
+            .await;
+        let remote_objects = remote_client
+            .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
+            .await;
+
+        let (Ok(local_objects), Ok(remote_objects)) = (local_objects, remote_objects) else {
+            debug!("SAD anti-entropy: failed to fetch object pages for comparison");
+            continue;
+        };
+
+        let local_obj_set: std::collections::HashSet<&str> =
+            local_objects.saids.iter().map(|s| s.as_str()).collect();
+        let remote_obj_set: std::collections::HashSet<&str> =
+            remote_objects.saids.iter().map(|s| s.as_str()).collect();
+
+        if local_obj_set == remote_obj_set {
+            debug!("SAD anti-entropy: object sample matched");
+            continue;
+        }
+
+        // Pull: objects on remote but not local
+        let mut obj_pulled = 0u64;
+        for said in remote_obj_set.difference(&local_obj_set) {
+            if let Ok(object) = remote_client.get_sad_object(said).await
+                && local_client.post_sad_object(&object).await.is_ok()
+            {
+                obj_pulled += 1;
+            }
+        }
+
+        // Push: objects on local but not remote
+        let mut obj_pushed = 0u64;
+        for said in local_obj_set.difference(&remote_obj_set) {
+            if let Ok(object) = local_client.get_sad_object(said).await
+                && remote_client.post_sad_object(&object).await.is_ok()
+            {
+                obj_pushed += 1;
+            }
+        }
+
+        if obj_pulled > 0 || obj_pushed > 0 {
+            info!(
+                "SAD anti-entropy: objects — pulled {}, pushed {}",
+                obj_pulled, obj_pushed
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,7 +1615,14 @@ mod tests {
     fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
-        SyncHandler::new("http://localhost:8080", allowlist, recently_stored, None)
+        SyncHandler::new(
+            "http://localhost:8080",
+            "http://localhost:8081",
+            allowlist,
+            recently_stored,
+            None,
+        )
+        .unwrap()
     }
 
     // ==================== Constants Tests ====================
@@ -887,6 +1697,7 @@ mod tests {
         // run_sync_handler should complete when receiver closes
         let result = run_sync_handler(
             "http://localhost:8080".to_string(),
+            "http://localhost:8082".to_string(),
             event_rx,
             command_tx,
             allowlist,

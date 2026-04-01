@@ -277,15 +277,25 @@ Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
 
 Returns a `SignedKeyEventPage`. Use `?since=SAID` for delta fetch (events after a given SAID). Use `?limit=N` to control page size (1-64, default 64). Loop with `hasMore` for full retrieval.
 
-### Fetch Recovery History
+### Fetch Recovery History (paginated)
 
 ```
-GET /api/v1/kels/kel/:prefix/audit
+GET /api/v1/kels/kel/:prefix/audit?limit=N&offset=N
 
-Response: [RecoveryRecord, ...]
+Response: { "records": [RecoveryRecord, ...], "hasMore": bool }
 ```
 
-Recovery records are separate from the paginated KEL endpoint. Each record is an immutable audit entry documenting a recovery — when it happened, what serial the divergence was at, and what was archived.
+Returns a `RecoveryRecordPage`. Recovery records are separate from the paginated KEL endpoint. Each record is an immutable audit entry documenting a recovery — when it happened, what serial the divergence was at, and what was archived. The `kels_recovery_events` join table links each recovery to the specific archived adversary events it displaced.
+
+### Fetch Archived Events for a Recovery (paginated)
+
+```
+GET /api/v1/kels/kel/:prefix/audit/:said/events?limit=N&offset=N
+
+Response: { "events": [SignedKeyEvent, ...], "hasMore": bool }
+```
+
+Returns a `SignedKeyEventPage` containing the archived adversary events displaced by a specific recovery (identified by the recovery record's SAID).
 
 ## CLI Commands
 

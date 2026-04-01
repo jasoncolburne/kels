@@ -52,7 +52,11 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 
 #[async_trait]
 impl<R: SignedEventRepository + 'static> PagedKelSink for RepositoryKelStore<R> {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let prefix = &events[0].event.prefix;
         self.append(prefix, events).await
     }
 }

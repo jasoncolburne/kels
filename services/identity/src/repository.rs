@@ -110,7 +110,8 @@ impl AuthorityRepository {
     signatures_table = "identity_key_event_signatures",
     recovery_table = "identity_recovery",
     archived_events_table = "identity_archived_events",
-    archived_signatures_table = "identity_archived_event_signatures"
+    archived_signatures_table = "identity_archived_event_signatures",
+    recovery_events_table = "identity_recovery_events"
 )]
 pub struct KeyEventRepository {
     pub pool: PgPool,

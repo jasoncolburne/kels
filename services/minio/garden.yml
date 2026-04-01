@@ -1,0 +1,10 @@
+kind: Deploy
+name: minio
+type: kubernetes
+
+# MinIO is not needed in the registry environment
+disabled: ${var.envType == "registry"}
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

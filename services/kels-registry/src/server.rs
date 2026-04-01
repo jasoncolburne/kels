@@ -8,10 +8,8 @@ use axum::{
     extract::DefaultBodyLimit,
     routing::{get, post},
 };
-use kels::shutdown_signal;
+use kels::{IdentityClient, shutdown_signal};
 use verifiable_storage::RepositoryConnection;
-
-use kels::IdentityClient;
 
 use crate::{
     federation::{FederationConfig, FederationNode},
@@ -106,7 +104,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     let identity_url =
         std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity:80".to_string());
     info!("Connecting to identity service at {}", identity_url);
-    let identity_client = Arc::new(IdentityClient::new(&identity_url));
+    let identity_client = Arc::new(IdentityClient::new(&identity_url)?);
 
     // Fetch the registry prefix from the identity service
     let prefix = identity_client
@@ -189,13 +187,15 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
                         });
                     }
 
-                    Some(Arc::new(FederationState {
+                    let fed_state = Arc::new(FederationState {
                         node,
                         identity_client: identity_client.clone(),
                         member_kel_repo: repo.member_kels.clone(),
                         member_kel_ip_rate_limits: dashmap::DashMap::new(),
                         member_kel_prefix_rate_limits: dashmap::DashMap::new(),
-                    }))
+                    });
+                    handlers::spawn_rate_limit_reaper(Arc::clone(&fed_state));
+                    Some(fed_state)
                 }
                 Err(e) => {
                     error!("Failed to initialize federation node: {}", e);

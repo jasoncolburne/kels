@@ -16,15 +16,13 @@ use cesr::Matter;
 use dashmap::DashMap;
 use kels::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
-    KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
-    Proposal, ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotesMethods,
-    RemovalHistory, SignedKeyEvent, SignedKeyEventPage, Vote,
+    IdentityClient, KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
+    PeersResponse, Proposal, ProposalHistory, ProposalResponse, ProposalStatus,
+    ProposalWithVotesMethods, RemovalHistory, SignedKeyEvent, SignedKeyEventPage, Vote,
 };
 use serde::Deserialize;
 use tracing::warn;
 use verifiable_storage::SelfAddressed;
-
-use kels::IdentityClient;
 
 use crate::federation::{
     FederationNode, FederationResponse, FederationRpc, FederationRpcResponse, FederationStatus,
@@ -44,6 +42,25 @@ fn max_member_events_per_prefix_per_day() -> u32 {
 }
 
 const SECS_PER_DAY: u64 = 86_400;
+const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Spawn a background task that periodically removes expired entries from
+/// rate limit maps. Prevents unbounded growth from attacker-generated keys.
+pub fn spawn_rate_limit_reaper(state: Arc<FederationState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
+            let now = Instant::now();
+            let day = Duration::from_secs(SECS_PER_DAY);
+            state
+                .member_kel_prefix_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .member_kel_ip_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+        }
+    });
+}
 
 /// Check whether adding `event_count` new events would exceed the daily limit.
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge.
@@ -202,7 +219,13 @@ async fn push_own_kel_to_members(state: &FederationState) {
 
     // Fetch own events from identity service (source of truth)
     let identity_source =
-        kels::HttpKelSource::new(state.identity_client.base_url(), "/api/v1/identity/kel");
+        match kels::HttpKelSource::new(state.identity_client.base_url(), "/api/v1/identity/kel") {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "Failed to build HTTP source for identity KEL");
+                return;
+            }
+        };
     let local_sink = kels::RepositoryKelStore::new(std::sync::Arc::new(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
@@ -240,7 +263,14 @@ async fn push_own_kel_to_members(state: &FederationState) {
                     crate::raft_store::MemberKelRepository::new(pool),
                 ));
                 let repo_source = kels::StoreKelSource::new(&repo_store);
-                let member_sink = kels::HttpKelSink::new(&member_url, "/api/v1/member-kels/events");
+                let member_sink =
+                    match kels::HttpKelSink::new(&member_url, "/api/v1/member-kels/events") {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(member = %member_prefix, error = %e, "Failed to build HTTP sink");
+                            return;
+                        }
+                    };
                 match tokio::time::timeout(
                     Duration::from_secs(5),
                     kels::forward_key_events(
@@ -315,7 +345,8 @@ pub async fn federation_rpc(
             let source = kels::HttpKelSource::new(
                 &member.url,
                 &format!("/api/v1/member-kels/kel/{}", signed_rpc.sender_prefix),
-            );
+            )
+            .map_err(|e| ApiError::internal_error(format!("Failed to build HTTP client: {}", e)))?;
             kels::verify_key_events(
                 &signed_rpc.sender_prefix,
                 &source,
@@ -459,7 +490,7 @@ pub async fn list_completed_proposals(
 pub struct AddPeerRequest {
     pub peer_prefix: String,
     pub node_id: String,
-    pub kels_url: String,
+    pub base_domain: String,
     pub gossip_addr: String,
 }
 
@@ -869,7 +900,7 @@ pub async fn admin_vote_proposal(
                             v0.node_id.clone(),
                             self_prefix.clone(),
                             true,
-                            v0.kels_url.clone(),
+                            v0.base_domain.clone(),
                             v0.gossip_addr.clone(),
                         )
                         .map_err(|e| {
@@ -1163,7 +1194,16 @@ pub async fn submit_member_key_events(
                 let url = member.url.clone();
                 let member_prefix = member.prefix.clone();
                 async move {
-                    let client = kels::KelsClient::with_path_prefix(&url, "/api/v1/member-kels");
+                    let client = match kels::KelsClient::with_path_prefix(
+                        &url,
+                        "/api/v1/member-kels",
+                    ) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(member = %member_prefix, error = %e, "Failed to build HTTP client");
+                            return;
+                        }
+                    };
                     match tokio::time::timeout(
                         Duration::from_secs(5),
                         client.submit_events(&events),

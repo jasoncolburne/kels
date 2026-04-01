@@ -108,6 +108,10 @@ pub struct KelVerifier {
     events_since_last_revealing: usize,
     /// Whether the proactive ror interval has been violated.
     proactive_ror_compliant: bool,
+    /// Optional: collect establishment keys at specific serials during verification.
+    requested_establishment_serials: BTreeSet<u64>,
+    /// Collected establishment keys (serial → parsed VerificationKey).
+    collected_establishment_keys: HashMap<u64, VerificationKey>,
 }
 
 impl KelVerifier {
@@ -126,7 +130,30 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing: 0,
             proactive_ror_compliant: true,
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         }
+    }
+
+    /// Request that establishment keys at the given serials be collected during
+    /// verification. The keys are available after verification via
+    /// `KelVerification::establishment_key_at()`.
+    ///
+    /// Bounded: rejects if more than `max` serials are requested.
+    pub fn with_establishment_key_collection(
+        mut self,
+        serials: BTreeSet<u64>,
+        max: usize,
+    ) -> Result<Self, KelsError> {
+        if serials.len() > max {
+            return Err(KelsError::InvalidKel(format!(
+                "Too many establishment serials requested: {} (max {})",
+                serials.len(),
+                max
+            )));
+        }
+        self.requested_establishment_serials = serials;
+        Ok(self)
     }
 
     /// Start verification from a single verified branch tip.
@@ -164,6 +191,8 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing,
             proactive_ror_compliant: true,
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         })
     }
 
@@ -200,6 +229,8 @@ impl KelVerifier {
             anchored_saids: BTreeSet::new(),
             events_since_last_revealing: kel_verification.events_since_last_revealing(),
             proactive_ror_compliant: kel_verification.is_proactive_ror_compliant(),
+            requested_establishment_serials: BTreeSet::new(),
+            collected_establishment_keys: HashMap::new(),
         })
     }
 
@@ -255,6 +286,17 @@ impl KelVerifier {
         self.event_count += events.len();
 
         Ok(())
+    }
+
+    /// Consume the verifier and produce a `KelVerification` plus any collected
+    /// establishment keys (serial → public_key qb64). Keys are only populated if
+    /// `with_establishment_key_collection` was called before verification.
+    pub fn into_verification_with_keys(
+        self,
+    ) -> Result<(KelVerification, HashMap<u64, VerificationKey>), KelsError> {
+        let keys = self.collected_establishment_keys.clone();
+        let verification = self.into_verification()?;
+        Ok((verification, keys))
     }
 
     /// Consume the verifier and produce a `KelVerification` (proof-of-verification token).
@@ -324,6 +366,15 @@ impl KelVerifier {
             }
             let event = events[0];
             self.verify_inception(event)?;
+            // Collect establishment key at serial 0 if requested
+            if self.requested_establishment_serials.contains(&0)
+                && let Some(ref pk) = event.event.public_key
+            {
+                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
+                    KelsError::InvalidSignature(format!("Invalid public key at serial 0: {}", e))
+                })?;
+                self.collected_establishment_keys.insert(0, vk);
+            }
             return Ok(());
         }
 
@@ -392,6 +443,20 @@ impl KelVerifier {
 
             // Verify the event against this branch's crypto state
             let new_state = self.verify_chain_event(event, branch)?;
+
+            // Collect establishment key at this serial if requested
+            if event.event.is_establishment()
+                && self.requested_establishment_serials.contains(&serial)
+                && let Some(ref pk) = event.event.public_key
+            {
+                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
+                    KelsError::InvalidSignature(format!(
+                        "Invalid public key at serial {}: {}",
+                        serial, e
+                    ))
+                })?;
+                self.collected_establishment_keys.insert(serial, vk);
+            }
 
             // Track anchor checking — exclude events in the divergent region.
             // Divergent events are untrusted (adversary may have forged anchors),
@@ -756,7 +821,7 @@ impl PagedKelSource for StoreKelSource<'_> {
             let offset = all
                 .iter()
                 .position(|e| e.event.said == said)
-                .ok_or_else(|| KelsError::EventNotFound(prefix.to_string()))?;
+                .ok_or_else(|| KelsError::NotFound(prefix.to_string()))?;
             let start = offset + 1;
             let end = (start + limit).min(all.len());
             let has_more = end < all.len();
@@ -852,7 +917,7 @@ pub trait PagedKelSource: Send + Sync {
 /// Destination for signed key events (e.g., local DB).
 #[async_trait]
 pub trait PagedKelSink: Send + Sync {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
 }
 
 // ==================== HTTP Source/Sink Implementations ====================
@@ -872,16 +937,15 @@ pub struct HttpKelSource {
 }
 
 impl HttpKelSource {
-    pub fn new(base_url: &str, path: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str, path: &str) -> Result<Self, KelsError> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+                .build()?,
+        })
     }
 }
 
@@ -910,7 +974,7 @@ impl PagedKelSource for HttpKelSource {
             })?;
             Ok((page.events, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::EventNotFound(prefix.to_string()))
+            Err(KelsError::NotFound(prefix.to_string()))
         } else {
             let err: super::ErrorResponse = resp.json().await.map_err(|e| {
                 KelsError::ServerError(e.to_string(), super::ErrorCode::InternalError)
@@ -925,7 +989,7 @@ pub(crate) struct NoOpSink;
 
 #[async_trait]
 impl PagedKelSink for NoOpSink {
-    async fn store_page(&self, _prefix: &str, _events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, _events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         Ok(())
     }
 }
@@ -961,15 +1025,13 @@ impl CollectSink {
 #[cfg(any(test, feature = "dev-tools"))]
 #[async_trait]
 impl PagedKelSink for CollectSink {
-    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         self.events.lock().await.extend_from_slice(events);
         Ok(())
     }
 }
 
 /// HTTP-based sink that submits events to a KELS service.
-///
-/// The path template may contain `{prefix}` which is replaced with the actual prefix.
 pub struct HttpKelSink {
     base_url: String,
     /// Path, e.g. "/api/v1/kels/events"
@@ -978,24 +1040,22 @@ pub struct HttpKelSink {
 }
 
 impl HttpKelSink {
-    pub fn new(base_url: &str, path: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str, path: &str) -> Result<Self, KelsError> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             path: path.to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+                .build()?,
+        })
     }
 }
 
 #[async_trait]
 impl PagedKelSink for HttpKelSink {
-    async fn store_page(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        let path = self.path.replace("{prefix}", prefix);
-        let url = format!("{}{}", self.base_url, path);
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        let url = format!("{}{}", self.base_url, self.path);
 
         let resp = self
             .client
@@ -1145,7 +1205,7 @@ async fn transfer_key_events(
                 }
             } else {
                 // No divergence on this page
-                sink.store_page(prefix, &events).await?;
+                sink.store_page(&events).await?;
                 since = events.last().map(|e| e.event.said.clone());
             }
         }
@@ -1167,7 +1227,7 @@ async fn transfer_key_events(
             if let Some(ref mut v) = verifier {
                 v.verify_page(slice::from_ref(&held))?;
             }
-            sink.store_page(prefix, slice::from_ref(&held)).await?;
+            sink.store_page(slice::from_ref(&held)).await?;
         }
     }
 
@@ -1176,7 +1236,7 @@ async fn transfer_key_events(
     }
 
     // Submit divergent events in the correct order
-    send_divergent_events(prefix, sink, &pre_divergence, post_divergence, page_size).await
+    send_divergent_events(sink, &pre_divergence, post_divergence, page_size).await
 }
 
 /// Separate post-divergence events into owner and adversary chains, then send
@@ -1191,7 +1251,6 @@ async fn transfer_key_events(
 ///   1. Pre-divergence + non-revealing chain (paged, non-divergent appends)
 ///   2. Revealing chain (creates divergence; warn on failure)
 async fn send_divergent_events(
-    prefix: &str,
     sink: &(dyn PagedKelSink + Sync),
     pre_divergence: &[SignedKeyEvent],
     post_divergence: Vec<SignedKeyEvent>,
@@ -1263,7 +1322,7 @@ async fn send_divergent_events(
         let mut non_divergent = pre_divergence.to_vec();
         non_divergent.extend(non_cnt_chain);
         for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
+            sink.store_page(chunk).await?;
         }
 
         // Step 2: cnt chain as atomic batch (creates divergence + contest).
@@ -1276,7 +1335,7 @@ async fn send_divergent_events(
                 crate::MINIMUM_PAGE_SIZE,
             )));
         }
-        match sink.store_page(prefix, &cnt_chain).await {
+        match sink.store_page(&cnt_chain).await {
             Ok(()) => {}
             Err(e) => {
                 warn!(
@@ -1302,12 +1361,12 @@ async fn send_divergent_events(
         let mut non_divergent = pre_divergence.to_vec();
         non_divergent.extend(longer);
         for chunk in non_divergent.chunks(page_size) {
-            sink.store_page(prefix, chunk).await?;
+            sink.store_page(chunk).await?;
         }
 
         // Fork event from shorter chain (creates divergence)
         if let Some(fork) = shorter.first() {
-            match sink.store_page(prefix, slice::from_ref(fork)).await {
+            match sink.store_page(slice::from_ref(fork)).await {
                 Ok(()) => {}
                 Err(e) => {
                     warn!(
@@ -1343,6 +1402,32 @@ pub async fn verify_key_events(
     )
     .await?;
     verifier.into_verification()
+}
+
+/// Verify-only with establishment key collection: pages through source, verifies,
+/// returns `KelVerification` plus collected establishment keys.
+///
+/// The verifier must have been constructed with `with_establishment_key_collection`.
+pub async fn verify_key_events_collecting_establishment_keys(
+    prefix: &str,
+    source: &(dyn PagedKelSource + Sync),
+    verifier: KelVerifier,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(KelVerification, HashMap<u64, VerificationKey>), KelsError> {
+    let sink = NoOpSink;
+    let mut verifier = verifier;
+    transfer_key_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+        None,
+    )
+    .await?;
+    verifier.into_verification_with_keys()
 }
 
 /// Verify with callback: pages through source, verifies, calls `on_page` with each
@@ -1382,7 +1467,7 @@ struct CallbackSink<F: FnMut(&[SignedKeyEvent]) + Send>(std::sync::Mutex<F>);
 
 #[async_trait]
 impl<F: FnMut(&[SignedKeyEvent]) + Send> PagedKelSink for CallbackSink<F> {
-    async fn store_page(&self, _prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn store_page(&self, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
         if let Ok(mut f) = self.0.lock() {
             (f)(events);
         }
@@ -3524,7 +3609,7 @@ mod tests {
                         // Composite SAID matches effective — caller is in sync
                         return Ok((vec![], false));
                     } else {
-                        return Err(crate::error::KelsError::EventNotFound(said.to_string()));
+                        return Err(crate::error::KelsError::NotFound(said.to_string()));
                     }
                 }
                 None => 0,

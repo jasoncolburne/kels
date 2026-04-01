@@ -18,7 +18,7 @@ use tracing::warn;
 
 use kels::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
-    PrefixListResponse, RecoveryRecord, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    PrefixListResponse, RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
     SubmitEventsResponse,
 };
 
@@ -51,6 +51,29 @@ fn nonce_window_secs() -> u64 {
 }
 
 const SECS_PER_DAY: u64 = 86_400;
+const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Spawn a background task that periodically removes expired entries from
+/// rate limit and nonce maps. Prevents unbounded growth from attacker-generated keys.
+pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let nonce_window = Duration::from_secs(nonce_window_secs());
+        loop {
+            tokio::time::sleep(RATE_LIMIT_REAP_INTERVAL).await;
+            let now = Instant::now();
+            let day = Duration::from_secs(SECS_PER_DAY);
+            state
+                .prefix_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .ip_rate_limits
+                .retain(|_, (_, t)| now.duration_since(*t) < day);
+            state
+                .nonce_cache
+                .retain(|_, t| now.duration_since(*t) < nonce_window);
+        }
+    });
+}
 
 /// Per-prefix rate limit: counts events (not submissions) in a daily window.
 /// Slows adversary event accumulation. The hard resilience guarantee comes
@@ -220,7 +243,7 @@ impl From<KelsError> for ApiError {
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
             KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
-            KelsError::EventNotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
+            KelsError::NotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
             | KelsError::InvalidKel(_)
@@ -455,21 +478,17 @@ pub(crate) async fn submit_events(
             }
         }
 
-        let effective_said = if let Some(said) = outcome.tip_said {
-            Some(said)
-        } else {
-            match state
-                .repo
-                .key_events
-                .compute_prefix_effective_said(&prefix)
-                .await
-            {
-                Ok(Some((said, _))) => Some(said),
-                Ok(None) => None,
-                Err(e) => {
-                    warn!("Failed to compute effective SAID for {}: {}", prefix, e);
-                    None
-                }
+        let effective_said = match state
+            .repo
+            .key_events
+            .compute_prefix_effective_said(&prefix)
+            .await
+        {
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Failed to compute effective SAID for {}: {}", prefix, e);
+                None
             }
         };
         if let Some(ref said) = effective_said
@@ -542,17 +561,51 @@ pub(crate) async fn get_kel(
     Ok(Json(page).into_response())
 }
 
-/// Dedicated audit endpoint — returns recovery history for a prefix.
+/// Dedicated audit endpoint — returns paginated recovery history for a prefix.
+///
+/// `?limit=N` controls page size (1-page_size, default page_size).
+/// `?offset=N` skips the first N records.
 pub(crate) async fn get_kel_audit(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
-) -> Result<Json<Vec<RecoveryRecord>>, ApiError> {
-    let records = state
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<RecoveryRecordPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (records, has_more) = state
         .repo
         .recovery_records
-        .get_by_kel_prefix(&prefix)
+        .get_by_kel_prefix(&prefix, limit, offset)
         .await?;
-    Ok(Json(records))
+    Ok(Json(RecoveryRecordPage { records, has_more }))
+}
+
+/// Archived adversary events for a specific recovery — paginated.
+///
+/// `?limit=N` controls page size (1-page_size, default page_size).
+/// `?offset=N` skips the first N events.
+pub(crate) async fn get_recovery_events(
+    State(state): State<Arc<AppState>>,
+    Path((_prefix, recovery_said)): Path<(String, String)>,
+    Query(params): Query<ArchivedEventsQuery>,
+) -> Result<Json<SignedKeyEventPage>, ApiError> {
+    let limit = params
+        .limit
+        .unwrap_or(kels::page_size())
+        .clamp(1, kels::page_size()) as u64;
+    let offset = params.offset.unwrap_or(0);
+
+    let (events, has_more) = state
+        .repo
+        .key_events
+        .get_recovery_archived_events(&recovery_said, limit, offset)
+        .await?;
+
+    Ok(Json(SignedKeyEventPage { events, has_more }))
 }
 
 /// Query parameters for the archived events endpoint.
@@ -645,7 +698,7 @@ async fn query_prefixes(
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
@@ -703,7 +756,7 @@ pub(crate) async fn list_prefixes(
 
     query_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await
@@ -714,12 +767,12 @@ pub(crate) async fn list_prefixes(
 pub(crate) async fn test_list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PrefixesRequest>>,
+    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     query_prefixes(
         &state,
-        signed_request.payload.since.as_deref(),
+        signed_request.payload.cursor.as_deref(),
         signed_request.payload.limit,
     )
     .await

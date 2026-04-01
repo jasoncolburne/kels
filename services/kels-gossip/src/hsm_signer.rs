@@ -12,8 +12,10 @@ use cesr::{Matter, Signature as CesrSignature, VerificationKey};
 use thiserror::Error;
 use tracing::warn;
 
-use gossip::identity::NodePrefix;
-use gossip::net::{Error as GossipError, PeerVerifier, Signer};
+use gossip::{
+    identity::NodePrefix,
+    net::{Error as GossipError, PeerVerifier, Signer},
+};
 
 use crate::allowlist::SharedAllowlist;
 
@@ -56,7 +58,9 @@ impl IdentityGossipSigner {
         })?;
 
         Ok(Self {
-            identity_client: kels::IdentityClient::new(identity_url),
+            identity_client: kels::IdentityClient::new(identity_url).map_err(|e| {
+                SignerError::Identity(format!("Failed to build identity client: {}", e))
+            })?,
             node_prefix,
             requires_kem_1024,
         })
@@ -164,7 +168,10 @@ impl KelsPeerVerifier {
         prefix: &str,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
-        let source = kels::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}");
+        let source = kels::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
+            .map_err(|e| {
+                GossipError::VerificationFailed(format!("Failed to build HTTP client: {}", e))
+            })?;
         let kel_verification = kels::verify_key_events(
             prefix,
             &source,
@@ -240,15 +247,20 @@ impl KelsPeerVerifier {
             let guard = self.allowlist.read().await;
             guard
                 .get(prefix)
-                .map(|p| p.kels_url.clone())
+                .map(|p| format!("http://kels.{}", p.base_domain))
                 .ok_or_else(|| {
                     GossipError::VerificationFailed(format!("Peer {} not in allowlist", prefix))
                 })?
         };
 
         // Forward KEL from peer's KELS to our local KELS (paginated)
-        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}");
-        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events");
+        let source = kels::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}")
+            .map_err(|e| {
+                GossipError::VerificationFailed(format!("Failed to build HTTP source: {}", e))
+            })?;
+        let sink = kels::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events").map_err(|e| {
+            GossipError::VerificationFailed(format!("Failed to build HTTP sink: {}", e))
+        })?;
         if let Err(e) = kels::forward_key_events(
             prefix,
             &source,
@@ -329,11 +341,11 @@ pub struct IdentitySigner {
 }
 
 impl IdentitySigner {
-    pub fn new(identity_url: &str, peer_prefix: String) -> Self {
-        Self {
-            identity_client: kels::IdentityClient::new(identity_url),
+    pub fn new(identity_url: &str, peer_prefix: String) -> Result<Self, kels::KelsError> {
+        Ok(Self {
+            identity_client: kels::IdentityClient::new(identity_url)?,
             peer_prefix,
-        }
+        })
     }
 }
 
@@ -388,7 +400,8 @@ mod tests {
         let signer = IdentitySigner::new(
             "http://identity:80",
             "ETestPeerPrefix_____________________________".to_string(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             signer.peer_prefix,
             "ETestPeerPrefix_____________________________"

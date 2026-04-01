@@ -86,8 +86,9 @@ pub struct Peer {
     pub node_id: String,
     pub authorizing_kel: String,
     pub active: bool,
-    /// HTTP URL for the KELS service
-    pub kels_url: String,
+    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// Derive service URLs: http://kels.{base_domain}, http://kels-sadstore.{base_domain}
+    pub base_domain: String,
     /// Gossip address (host:port)
     pub gossip_addr: String,
 }
@@ -477,7 +478,7 @@ pub struct PeerAdditionProposal {
     pub peer_prefix: String,
     /// The node_id being proposed.
     pub node_id: String,
-    pub kels_url: String,
+    pub base_domain: String,
     pub gossip_addr: String,
     pub proposer: String,
     /// Approval threshold at time of proposal creation.
@@ -500,7 +501,7 @@ impl PeerAdditionProposal {
     pub fn empty(
         peer_prefix: &str,
         node_id: &str,
-        kels_url: &str,
+        base_domain: &str,
         gossip_addr: &str,
         proposer: &str,
         threshold: usize,
@@ -509,7 +510,7 @@ impl PeerAdditionProposal {
         Self::create(
             peer_prefix.to_string(),
             node_id.to_string(),
-            kels_url.to_string(),
+            base_domain.to_string(),
             gossip_addr.to_string(),
             proposer.to_string(),
             threshold,
