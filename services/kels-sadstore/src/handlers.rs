@@ -508,14 +508,6 @@ pub async fn submit_sad_records(
         }
     }
 
-    if establishment_serials.len() > kels::max_collected_keys() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Too many unique establishment serials",
-        )
-            .into_response();
-    }
-
     // Verify KEL once, collecting establishment keys for all serials
     let verifier = match kels::KelVerifier::new(kel_prefix)
         .with_establishment_key_collection(establishment_serials, kels::max_collected_keys())
