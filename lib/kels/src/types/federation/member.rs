@@ -1,4 +1,4 @@
-//! Federation status & approval threshold
+//! Federation member types
 
 use serde::{Deserialize, Serialize};
 

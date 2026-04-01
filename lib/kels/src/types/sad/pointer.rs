@@ -10,7 +10,7 @@
 //! no non-deterministic fields) and reading its prefix.
 
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError};
+use verifiable_storage::{SelfAddressed, StorageError};
 
 /// A chained, self-addressed pointer in the SADStore.
 ///
@@ -164,76 +164,12 @@ pub enum SadAnnouncement {
     },
 }
 
-/// Index entry tracking a SAD object stored in MinIO.
-///
-/// Has its own content-addressed SAID. The `sad_said` field is the
-/// SAID of the actual object in MinIO (foreign key to object storage).
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_objects")]
-#[serde(rename_all = "camelCase")]
-pub struct SadObjectEntry {
-    #[said]
-    pub said: String,
-    pub sad_said: String,
-}
-
 /// A page of stored SAD records returned by the chain API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerPage {
     pub pointers: Vec<SignedSadPointer>,
     pub has_more: bool,
-}
-
-/// Response for listing SAD object SAIDs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SadObjectListResponse {
-    pub saids: Vec<String>,
-    pub next_cursor: Option<String>,
-}
-
-/// Audit pointer for a completed SAD chain repair.
-///
-/// Each repair gets its own SAID. Multiple repairs to the same chain are
-/// distinguished by their `repaired_at` timestamp and unique SAID.
-/// The displaced records are linked via `SadChainRepairRecord`.
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_pointer_repairs")]
-#[serde(rename_all = "camelCase")]
-pub struct SadPointerRepair {
-    #[said]
-    pub said: String,
-    /// The chain prefix that was repaired.
-    pub pointer_prefix: String,
-    /// The version at which divergence occurred.
-    pub diverged_at_version: u64,
-    /// When the repair was performed.
-    #[created_at]
-    pub repaired_at: StorageDatetime,
-}
-
-/// A page of chain repairs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SadPointerRepairPage {
-    pub repairs: Vec<SadPointerRepair>,
-    pub has_more: bool,
-}
-
-/// Links a repair to an archived pointer it displaced.
-///
-/// One entry per archived pointer, all sharing the same `repair_said`.
-#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_pointer_repair_records")]
-#[serde(rename_all = "camelCase")]
-pub struct SadPointerRepairRecord {
-    #[said]
-    pub said: String,
-    /// The repair this pointer belongs to.
-    pub repair_said: String,
-    /// The SAID of the archived pointer.
-    pub pointer_said: String,
 }
 
 #[cfg(test)]

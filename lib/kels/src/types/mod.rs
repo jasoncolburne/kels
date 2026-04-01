@@ -1,32 +1,22 @@
 //! KELS types for API requests and responses
 
+mod auth;
 mod error;
-mod events;
 mod federation;
+mod gossip;
+mod kel;
 mod node;
-mod peer;
-mod raft;
-mod recovery;
-mod sad_pointer;
-#[allow(clippy::too_many_arguments)]
-mod sad_transfer;
+mod sad;
 mod sync;
-#[allow(clippy::too_many_arguments)]
-mod verification;
-mod verifier;
 
+pub use auth::*;
 pub use error::*;
-pub use events::*;
 pub use federation::*;
+pub use gossip::*;
+pub use kel::*;
 pub use node::*;
-pub use peer::*;
-pub use raft::*;
-pub use recovery::*;
-pub use sad_pointer::*;
-pub use sad_transfer::*;
+pub use sad::*;
 pub use sync::*;
-pub use verification::*;
-pub use verifier::*;
 
 #[cfg(test)]
 mod tests {
