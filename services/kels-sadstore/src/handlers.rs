@@ -226,7 +226,7 @@ async fn refresh_verified_peers(
 ///
 /// Validates timestamp, deduplicates nonce, verifies peer is in the federation
 /// allowlist (via Redis cache), verifies peer's KEL via the KELS service,
-/// and verifies the request signature against the peer's current public key.
+/// and verifies the request signature against the peer's current verification key.
 async fn authenticate_peer_request<T: serde::Serialize>(
     state: &AppState,
     signed_request: &kels::SignedRequest<T>,
@@ -556,7 +556,7 @@ pub async fn submit_sad_records(
 
     // Verify each incoming record's signature against its establishment key
     for r in &records {
-        let Some(public_key) = establishment_keys.get(&r.establishment_serial) else {
+        let Some(verification_key) = establishment_keys.get(&r.establishment_serial) else {
             return (
                 StatusCode::BAD_REQUEST,
                 format!(
@@ -578,7 +578,7 @@ pub async fn submit_sad_records(
             }
         };
 
-        if public_key.verify(r.record.said.as_bytes(), &sig).is_err() {
+        if verification_key.verify(r.record.said.as_bytes(), &sig).is_err() {
             return (
                 StatusCode::FORBIDDEN,
                 format!(
